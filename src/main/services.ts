@@ -7,6 +7,7 @@ import { ShellsRepo } from './repos/shells-repo';
 import { SettingsRepo } from './repos/settings-repo';
 import { PtyManager } from './pty/manager';
 import { RootWatcher } from './domain/watcher';
+import { MetaprojectClient } from './metaproject/client';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -18,6 +19,7 @@ export interface Services {
   settings: SettingsRepo;
   ptyManager: PtyManager;
   watcher: RootWatcher;
+  metaproject: MetaprojectClient;
   homeDir: string;
   migrationsDir: string;
 }
@@ -35,5 +37,6 @@ export function buildServices(opts: { dbPath?: string; migrationsDir?: string } 
   const shells = new ShellsRepo(db);
   const ptyManager = new PtyManager();
   const watcher = new RootWatcher({ cap: settings.get('max_watched_paths') });
-  return { db, roots, projects, shells, settings, ptyManager, watcher, homeDir: home, migrationsDir };
+  const metaproject = new MetaprojectClient();
+  return { db, roots, projects, shells, settings, ptyManager, watcher, metaproject, homeDir: home, migrationsDir };
 }

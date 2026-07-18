@@ -69,6 +69,16 @@ export interface IpcContract {
   /** Set every open window's opacity. percent: 30..100. */
   'app:set-window-opacity': { request: { percent: number }; response: { ok: true } };
 
+  /* ─── metaproject chat (Flask-SocketIO backed) ─── */
+  'metaproject:login':          { request: { username: string; password: string }; response: { userId: number; userName: string } };
+  'metaproject:status':         { request: undefined; response: { loggedIn: boolean; connected: boolean; userName: string | null } };
+  'metaproject:logout':         { request: undefined; response: { ok: true } };
+  'metaproject:list-channels':  { request: { projectId: number }; response: { channels: Array<{ id: number; project_id: number; name: string; is_private: boolean }> } };
+  'metaproject:list-messages':  { request: { channelId: number; limit?: number }; response: { messages: Array<{ id: number; channel_id: number; user_id: number; user_name?: string; message: string; created_at: string; parent_message_id: number | null }> } };
+  'metaproject:join-channel':   { request: { channelId: number }; response: { ok: true } };
+  'metaproject:send-message':   { request: { channelId: number; message: string; parentMessageId?: number | null }; response: { ok: true } };
+  'metaproject:mark-read':      { request: { channelId: number; lastMessageId: number }; response: { ok: true } };
+
   // health / dev
   'app:ping':    { request: undefined; response: 'pong' };
 }
@@ -86,5 +96,6 @@ export interface IpcEvents {
   'settings:changed':       { key: keyof SettingsMap };
   'alive-shells:changed':   Record<string, never>;
   'popout:changed':         { popped: Array<{ projectId: number; shellIndex: number }> };
+  'metaproject:event':      { event: string; payload: unknown };
 }
 export type IpcEventName = keyof IpcEvents;

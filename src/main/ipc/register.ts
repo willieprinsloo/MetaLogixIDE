@@ -224,6 +224,35 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     return { ok: true } as const;
   },
 
+  /* ─── metaproject chat ─── */
+  'metaproject:login': async (s, { username, password }) => {
+    const baseUrl = s.settings.get('metaproject_base_url') || 'https://projects.metalogix.solutions';
+    const info = await s.metaproject.login({ baseUrl, username, password });
+    s.metaproject.connectSocket();
+    return info;
+  },
+  'metaproject:status': async (s) => ({
+    loggedIn: s.metaproject.isLoggedIn(),
+    connected: s.metaproject.isConnected(),
+    userName: s.metaproject.currentUserName(),
+  }),
+  'metaproject:logout': async (s) => { s.metaproject.disconnect(); return { ok: true } as const; },
+  'metaproject:list-channels': async (s, { projectId }) => ({
+    channels: await s.metaproject.listChannels(projectId),
+  }),
+  'metaproject:list-messages': async (s, { channelId, limit }) => ({
+    messages: await s.metaproject.listMessages(channelId, limit),
+  }),
+  'metaproject:join-channel':  async (s, { channelId }) => { s.metaproject.joinChannel(channelId);  return { ok: true } as const; },
+  'metaproject:send-message':  async (s, { channelId, message, parentMessageId }) => {
+    s.metaproject.sendChannelMessage(channelId, message, parentMessageId ?? null);
+    return { ok: true } as const;
+  },
+  'metaproject:mark-read':     async (s, { channelId, lastMessageId }) => {
+    s.metaproject.markRead(channelId, lastMessageId);
+    return { ok: true } as const;
+  },
+
   'files:tree':   async (s, { projectId, relPath }) => {
     const p = s.projects.get(projectId);
     if (!p) throw new Error(`no project ${projectId}`);
@@ -483,6 +512,15 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
       sendEvent('pty:exit', ev);
       services.shells?.remove(ev.projectId, ev.shellIndex);
       sendEvent('alive-shells:changed', {});
+    });
+  }
+
+  // Forward every metaproject socket event to renderer as a single generic
+  // channel; the chat pane fans them out by name.
+  if (services.metaproject) {
+    services.metaproject.onEvent('*', (raw: unknown) => {
+      const { event, payload } = raw as { event: string; payload: unknown };
+      sendEvent('metaproject:event', { event, payload });
     });
   }
 

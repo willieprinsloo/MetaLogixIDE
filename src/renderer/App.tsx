@@ -4,6 +4,7 @@ import { ProjectSwitcher } from './components/ProjectSwitcher';
 import { StatusBar } from './components/StatusBar';
 import { ShellTab } from './components/ShellTab';
 import { FilesTab } from './components/FilesTab';
+import { ChatTab } from './components/ChatTab';
 import { Settings } from './components/Settings';
 import { ResizeHandle } from './components/ResizeHandle';
 import { FileFinder } from './components/FileFinder';
@@ -44,7 +45,7 @@ function MainApp() {
   const [selected, setSelected] = useState<Project | null>(null);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [aliveCount, setAliveCount] = useState(0);
-  const [mainTab, setMainTab] = useState<'shell' | 'files'>('shell');
+  const [mainTab, setMainTab] = useState<'shell' | 'files' | 'chat'>('shell');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = usePersistedNumber('metaide.sidebarWidth', 288, 200, 560);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -216,6 +217,7 @@ function MainApp() {
           <div className="flex items-stretch border-b border-[--border] text-xs shrink-0 bg-[--panel]/60">
             <TabButton active={mainTab === 'shell'} onClick={() => setMainTab('shell')}>Shell</TabButton>
             <TabButton active={mainTab === 'files'} onClick={() => setMainTab('files')}>Files</TabButton>
+            <TabButton active={mainTab === 'chat'}  onClick={() => setMainTab('chat')}>Chat</TabButton>
             <div className="ml-auto flex items-center gap-1.5 pr-2">
               {selected && (
                 <>
@@ -257,11 +259,16 @@ function MainApp() {
                           setOpenInFiles({ relPath, line });
                         }}
                       />)
-                : <FilesTab
+                : mainTab === 'files'
+                ? <FilesTab
                     projectId={selected.id}
                     openRelPath={openInFiles?.relPath ?? null}
                     openLine={openInFiles?.line ?? null}
                     onOpenRelPathConsumed={() => setOpenInFiles(null)}
+                  />
+                : <ChatTab
+                    projectId={selected.id}
+                    metaprojectProjectId={selected.config.linkedMetaprojectProjectId ?? selected.metaprojectProjectId ?? null}
                   />
             ) : <EmptyState />}
           </div>
@@ -308,21 +315,43 @@ function MainApp() {
 }
 
 function PopoutShell({ projectId, shellIndex }: PopoutInfo) {
+  const [tab, setTab] = useState<'shell' | 'files'>('shell');
+  const [openInFiles, setOpenInFiles] = useState<{ relPath: string; line: number | null } | null>(null);
   return (
     <div className="h-screen w-screen flex flex-col bg-transparent">
-      <div className="drag h-10 flex items-center pl-[76px] pr-3 shrink-0 bg-[--panel]/70 backdrop-blur-xl border-b border-[--border]">
+      <div className="drag h-9 flex items-center pl-[76px] pr-2 shrink-0 bg-[--panel]/70 backdrop-blur-xl border-b border-[--border]">
         <span className="text-xs opacity-70 font-medium">MetaLogix IDE · shell</span>
       </div>
+      <div className="flex items-stretch border-b border-[--border] text-xs shrink-0 bg-[--panel]/60">
+        <button
+          onClick={() => setTab('shell')}
+          className={`px-3 py-1.5 border-b-2 transition ${tab === 'shell' ? 'border-[--accent] text-[--text]' : 'border-transparent text-[--text-muted] hover:text-[--text]'}`}
+        >Shell</button>
+        <button
+          onClick={() => setTab('files')}
+          className={`px-3 py-1.5 border-b-2 transition ${tab === 'files' ? 'border-[--accent] text-[--text]' : 'border-transparent text-[--text-muted] hover:text-[--text]'}`}
+        >Files</button>
+      </div>
       <div className="flex-1 min-h-0 bg-[--panel-strong]/40">
-        <ShellTab
-          projectId={projectId}
-          shellIndex={shellIndex}
-          onOpenFile={(relPath) => {
-            // In the popout, opening a file just reveals it externally
-            // since there's no Files tab here — Finder is the safest bet.
-            void api.invoke('files:reveal', { projectId, relPath }).catch(() => {});
-          }}
-        />
+        {tab === 'shell' ? (
+          <ShellTab
+            projectId={projectId}
+            shellIndex={shellIndex}
+            onOpenFile={(relPath, line) => {
+              // Open the editor inline in this popout window instead of
+              // dropping the user back to Finder.
+              setTab('files');
+              setOpenInFiles({ relPath, line });
+            }}
+          />
+        ) : (
+          <FilesTab
+            projectId={projectId}
+            openRelPath={openInFiles?.relPath ?? null}
+            openLine={openInFiles?.line ?? null}
+            onOpenRelPathConsumed={() => setOpenInFiles(null)}
+          />
+        )}
       </div>
     </div>
   );
