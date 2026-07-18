@@ -14,6 +14,8 @@ type SendEvent = <E extends IpcEventName>(channel: E, payload: IpcEvents[E]) => 
 
 export interface WindowHooks {
   createPopoutWindow: (projectId: number, shellIndex: number) => Promise<number>;
+  returnPopoutWindow: (projectId: number, shellIndex: number) => boolean;
+  listPopped: () => Array<{ projectId: number; shellIndex: number }>;
 }
 
 const handlers: { [C in IpcChannelName]: Handler<C> } = {
@@ -169,6 +171,12 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'windows:popout-shell': async () => {
     throw new Error('windows:popout-shell requires WindowHooks — see registerIpc');
   },
+  'windows:return-shell': async () => {
+    throw new Error('windows:return-shell requires WindowHooks — see registerIpc');
+  },
+  'windows:list-popped': async () => {
+    throw new Error('windows:list-popped requires WindowHooks — see registerIpc');
+  },
 
   'app:set-native-theme': async (_s, { source }) => {
     nativeTheme.themeSource = source;
@@ -272,8 +280,10 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
     });
   }
 
+  const WINDOW_CHANNELS = new Set<IpcChannelName>(['windows:popout-shell', 'windows:return-shell', 'windows:list-popped']);
+
   for (const channel of Object.keys(handlers) as IpcChannelName[]) {
-    if (channel === 'windows:popout-shell') continue; // wired below
+    if (WINDOW_CHANNELS.has(channel)) continue; // wired below
     ipcMain.handle(channel, async (_e, req) => {
       const fn = handlers[channel] as (s: Services, req: unknown) => Promise<unknown>;
       const result = await fn(services, req);
@@ -283,8 +293,17 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
   }
 
   ipcMain.handle('windows:popout-shell', async (_e, req: IpcRequest<'windows:popout-shell'>) => {
-    if (!windowHooks) throw new Error('windows:popout-shell not wired — no WindowHooks passed to registerIpc');
+    if (!windowHooks) throw new Error('windows:popout-shell not wired');
     const windowId = await windowHooks.createPopoutWindow(req.projectId, req.shellIndex);
     return { windowId };
+  });
+  ipcMain.handle('windows:return-shell', async (_e, req: IpcRequest<'windows:return-shell'>) => {
+    if (!windowHooks) throw new Error('windows:return-shell not wired');
+    windowHooks.returnPopoutWindow(req.projectId, req.shellIndex);
+    return { ok: true } as const;
+  });
+  ipcMain.handle('windows:list-popped', async () => {
+    if (!windowHooks) return { popped: [] };
+    return { popped: windowHooks.listPopped() };
   });
 }

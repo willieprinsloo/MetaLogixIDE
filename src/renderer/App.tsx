@@ -10,11 +10,15 @@ import { ResizeHandle } from './components/ResizeHandle';
 import { FileFinder } from './components/FileFinder';
 import { NewProjectDialog } from './components/NewProjectDialog';
 import { ActivityBar, type ActivityView } from './components/ActivityBar';
+import { CommandPalette, type Command } from './components/CommandPalette';
+import { ToastStack } from './components/ToastStack';
+import { toast } from './hooks/useToasts';
 import { useRoots } from './hooks/useRoots';
 import type { Project } from '@shared/types';
 import { api } from './api';
 import { useTheme, type ThemeMode } from './hooks/useTheme';
 import { usePersistedNumber } from './hooks/usePersistedNumber';
+import { usePoppedShells } from './hooks/usePoppedShells';
 
 interface PopoutInfo {
   projectId: number;
@@ -48,9 +52,27 @@ function MainApp() {
   const [finderOpen, setFinderOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [openInFiles, setOpenInFiles] = useState<string | null>(null);
-  const { mode: themeMode, effective: effectiveTheme, cycle: cycleTheme } = useTheme();
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const { mode: themeMode, effective: effectiveTheme, cycle: cycleTheme, setMode: setThemeMode } = useTheme();
   const { roots } = useRoots();
+  const { isPopped } = usePoppedShells();
   const [activeView, setActiveView] = useState<ActivityView>('projects');
+
+  const commands = useMemo<Command[]>(() => [
+    { id: 'nav.projects',    category: 'Go',       title: 'Open project switcher',           hint: '⌘K',  run: () => setSwitcherOpen(true) },
+    { id: 'nav.find-file',   category: 'Go',       title: 'Find file in project',            hint: '⌘P',  run: () => setFinderOpen(true) },
+    { id: 'nav.alive',       category: 'Go',       title: 'Show alive shells',               hint: '⌘⇧A', run: () => setAlivePanelOpen(true) },
+    { id: 'view.sidebar',    category: 'View',     title: sidebarOpen ? 'Hide sidebar' : 'Show sidebar', hint: '⌘B', run: () => setSidebarOpen((v) => !v) },
+    { id: 'view.shell',      category: 'View',     title: 'Switch to Shell tab',                          run: () => setMainTab('shell') },
+    { id: 'view.files',      category: 'View',     title: 'Switch to Files tab',                          run: () => setMainTab('files') },
+    { id: 'proj.new',        category: 'Project',  title: 'New project…',                    hint: '⌘⇧N', run: () => setNewProjectOpen(true) },
+    { id: 'shell.unload',    category: 'Shell',    title: 'Unload current session',                       run: async () => { if (selected) { await api.invoke('shells:kill', { projectId: selected.id, shellIndex: 0 }); toast('Session unloaded', { kind: 'success' }); } } },
+    { id: 'shell.popout',    category: 'Shell',    title: 'Pop current shell into a new window',         run: async () => { if (selected) await api.invoke('windows:popout-shell', { projectId: selected.id, shellIndex: 0 }); } },
+    { id: 'theme.system',    category: 'Theme',    title: 'Follow system theme',                          run: () => setThemeMode('system') },
+    { id: 'theme.light',     category: 'Theme',    title: 'Use light theme',                              run: () => setThemeMode('light') },
+    { id: 'theme.dark',      category: 'Theme',    title: 'Use dark theme',                               run: () => setThemeMode('dark') },
+    { id: 'app.settings',    category: 'App',      title: 'Open Settings',                    hint: '⌘,', run: () => setSettingsOpen(true) },
+  ], [selected, sidebarOpen, setThemeMode]);
 
   const refreshAlive = useCallback(async () => {
     const { shells } = await api.invoke('shells:alive-list', undefined as never);
@@ -73,7 +95,8 @@ function MainApp() {
       if (mod && e.key === ',')                          { e.preventDefault(); setSettingsOpen(true); }
       if (mod && e.key === 'p' && !e.shiftKey)           { e.preventDefault(); setFinderOpen(true); }
       if (mod && e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); setNewProjectOpen(true); }
-      if (e.key === 'Escape')                            { setSettingsOpen(false); setFinderOpen(false); setNewProjectOpen(false); }
+      if (mod && e.shiftKey && e.key.toLowerCase() === 'p') { e.preventDefault(); setPaletteOpen(true); }
+      if (e.key === 'Escape')                            { setSettingsOpen(false); setFinderOpen(false); setNewProjectOpen(false); setPaletteOpen(false); }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -82,19 +105,30 @@ function MainApp() {
   async function pick(p: Project) {
     const { project } = await api.invoke('projects:open', { id: p.id });
     setSelected(project);
-    try { await api.invoke('shells:launch', { projectId: project.id }); } catch (e) { console.error(e); }
+    try {
+      await api.invoke('shells:launch', { projectId: project.id });
+    } catch (e) {
+      toast('Failed to launch shell', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+      console.error(e);
+    }
   }
 
   async function popoutCurrent() {
     if (!selected) return;
-    try { await api.invoke('windows:popout-shell', { projectId: selected.id, shellIndex: 0 }); }
-    catch (e) { console.error(e); }
+    try {
+      await api.invoke('windows:popout-shell', { projectId: selected.id, shellIndex: 0 });
+      toast(`Popped out ${selected.name}`, { kind: 'info', detail: 'The shell now runs in its own window. Click "Bring back" to return it here.' });
+    } catch (e) {
+      toast('Failed to pop out shell', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+      console.error(e);
+    }
   }
 
   async function unloadCurrent() {
     if (!selected) return;
     try {
       await api.invoke('shells:kill', { projectId: selected.id, shellIndex: 0 });
+      toast('Session unloaded', { kind: 'success' });
     } catch (e) { console.error(e); }
   }
 
@@ -185,7 +219,9 @@ function MainApp() {
           <div className="flex-1 relative min-h-0">
             {selected ? (
               mainTab === 'shell'
-                ? <ShellTab projectId={selected.id} shellIndex={0} />
+                ? (isPopped(selected.id, 0)
+                    ? <PoppedPlaceholder projectId={selected.id} shellIndex={0} name={selected.name} />
+                    : <ShellTab projectId={selected.id} shellIndex={0} />)
                 : <FilesTab
                     projectId={selected.id}
                     openRelPath={openInFiles}
@@ -214,8 +250,14 @@ function MainApp() {
         roots={roots}
         defaultRootId={selected ? roots.find((r) => r.id === selected.rootId)?.id ?? null : null}
         onClose={() => setNewProjectOpen(false)}
-        onCreated={(project) => { setNewProjectOpen(false); void pick(project); }}
+        onCreated={(project) => { setNewProjectOpen(false); void pick(project); toast(`Created ${project.name}`, { kind: 'success' }); }}
       />
+      <CommandPalette
+        open={paletteOpen}
+        commands={commands}
+        onClose={() => setPaletteOpen(false)}
+      />
+      <ToastStack />
     </div>
   );
 }
@@ -245,6 +287,24 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
     >
       {children}
     </button>
+  );
+}
+
+function PoppedPlaceholder({ projectId, shellIndex, name }: { projectId: number; shellIndex: number; name: string }) {
+  return (
+    <div className="h-full flex items-center justify-center p-8 text-center">
+      <div className="max-w-md space-y-3">
+        <div className="text-sm text-[--text-muted]">Shell is running in a separate window</div>
+        <div className="text-lg font-semibold">{name}</div>
+        <button
+          onClick={async () => { await api.invoke('windows:return-shell', { projectId, shellIndex }); }}
+          className="text-sm px-4 py-1.5 rounded-md bg-[color:var(--accent)] text-white hover:brightness-110"
+          data-testid="return-popout"
+        >
+          Bring back to this window
+        </button>
+      </div>
+    </div>
   );
 }
 

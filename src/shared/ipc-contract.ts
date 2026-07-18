@@ -37,7 +37,9 @@ export interface IpcContract {
   'dialogs:pick-directory': { request: undefined; response: { path: string | null } };
 
   // windows
-  'windows:popout-shell': { request: { projectId: number; shellIndex: number }; response: { windowId: number } };
+  'windows:popout-shell':      { request: { projectId: number; shellIndex: number }; response: { windowId: number } };
+  'windows:return-shell':      { request: { projectId: number; shellIndex: number }; response: { ok: true } };
+  'windows:list-popped':       { request: undefined;                                    response: { popped: Array<{ projectId: number; shellIndex: number }> } };
 
   // native theme sync (light / dark / system)
   'app:set-native-theme': { request: { source: 'system' | 'light' | 'dark' }; response: { ok: true } };
@@ -61,5 +63,6 @@ export interface IpcEvents {
   'projects:changed':       { kind: 'added' | 'removed' | 'updated'; projectId?: number };
   'settings:changed':       { key: keyof SettingsMap };
   'alive-shells:changed':   Record<string, never>;
+  'popout:changed':         { popped: Array<{ projectId: number; shellIndex: number }> };
 }
 export type IpcEventName = keyof IpcEvents;

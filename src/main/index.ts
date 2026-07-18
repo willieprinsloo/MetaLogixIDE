@@ -10,6 +10,19 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 let mainWindow: BrowserWindow | null = null;
 const popoutWindows = new Map<string, BrowserWindow>(); // key = `${projectId}:${shellIndex}`
 
+function poppedList(): Array<{ projectId: number; shellIndex: number }> {
+  return [...popoutWindows.keys()].map((k) => {
+    const [p, s] = k.split(':');
+    return { projectId: Number(p), shellIndex: Number(s) };
+  });
+}
+
+function broadcastPopoutChanged() {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) w.webContents.send('popout:changed', { popped: poppedList() });
+  }
+}
+
 function baseWebPreferences() {
   return {
     preload: join(__dirname, '../preload/index.js'),
@@ -86,9 +99,24 @@ export async function createPopoutWindow(projectId: number, shellIndex: number):
   if (process.env.ELECTRON_RENDERER_URL) await win.loadURL(`${process.env.ELECTRON_RENDERER_URL}?${query}`);
   else await win.loadFile(join(__dirname, '../renderer/index.html'), { search: `?${query}` });
   win.once('ready-to-show', () => win.show());
-  win.on('closed', () => popoutWindows.delete(key));
+  win.on('closed', () => {
+    popoutWindows.delete(key);
+    broadcastPopoutChanged();
+  });
   popoutWindows.set(key, win);
+  broadcastPopoutChanged();
   return win;
+}
+
+export function returnPopoutWindow(projectId: number, shellIndex: number): boolean {
+  const win = popoutWindows.get(`${projectId}:${shellIndex}`);
+  if (!win || win.isDestroyed()) return false;
+  win.close();
+  return true;
+}
+
+export function listPopped(): Array<{ projectId: number; shellIndex: number }> {
+  return poppedList();
 }
 
 function broadcast(channel: string, payload: unknown): void {
@@ -102,6 +130,8 @@ app.whenReady().then(async () => {
   mainWindow = await createMainWindow();
   registerIpc(ipcMain, services, broadcast, {
     createPopoutWindow: async (projectId, shellIndex) => (await createPopoutWindow(projectId, shellIndex)).id,
+    returnPopoutWindow: (projectId, shellIndex) => returnPopoutWindow(projectId, shellIndex),
+    listPopped: () => listPopped(),
   });
   Menu.setApplicationMenu(buildAppMenu(mainWindow));
 });

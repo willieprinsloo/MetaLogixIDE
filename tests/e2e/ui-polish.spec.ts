@@ -61,19 +61,20 @@ test('UI polish: sidebar toggle, in-use section, live indicator, popout window',
   // both main and popout attach to the same PTY. Wait for it in the popout.
   await expect(popout.locator('.xterm-accessibility')).toContainText('echo: popout', { timeout: 10000 });
 
-  // Theme toggle: cycle system → light → dark → system, verify data-theme.
+  // Theme toggle: single-click flip between light and dark. Set explicit
+  // light first so the first click has a deterministic result.
   const themeBtn = win.getByTestId('theme-toggle');
-  // Initial persisted may be system (fresh localStorage) — normalize.
   await win.evaluate(() => {
-    localStorage.setItem('metaide.theme', 'system');
-    document.documentElement.removeAttribute('data-theme');
+    localStorage.setItem('metaide.theme', 'light');
+    document.documentElement.setAttribute('data-theme', 'light');
   });
-  await themeBtn.click(); // system → light
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
   await expect(win.locator('html')).toHaveAttribute('data-theme', 'light', { timeout: 2000 });
   await themeBtn.click(); // light → dark
   await expect(win.locator('html')).toHaveAttribute('data-theme', 'dark', { timeout: 2000 });
-  await themeBtn.click(); // dark → system (attribute removed)
-  await expect(win.locator('html')).not.toHaveAttribute('data-theme', /.+/, { timeout: 2000 });
+  await themeBtn.click(); // dark → light
+  await expect(win.locator('html')).toHaveAttribute('data-theme', 'light', { timeout: 2000 });
 
   await app.close();
   rmSync(isolatedHome, { recursive: true, force: true });

@@ -50,9 +50,17 @@ export function useTheme(): {
   const effective: 'light' | 'dark' = mode === 'system' ? (systemDark ? 'dark' : 'light') : mode;
 
   const setMode = useCallback((m: ThemeMode) => setModeState(m), []);
+
+  // Icon click: always flip to the opposite of what's currently RENDERED,
+  // regardless of whether we're in system-follow. This is the intuitive
+  // "toggle light/dark" behaviour. Users can pick 'system' explicitly in
+  // Settings or the Command Palette.
   const cycle = useCallback(() => {
-    setModeState((prev) => (prev === 'system' ? 'light' : prev === 'light' ? 'dark' : 'system'));
-  }, []);
+    setModeState((prev) => {
+      const currentEffective = prev === 'system' ? (systemDark ? 'dark' : 'light') : prev;
+      return currentEffective === 'dark' ? 'light' : 'dark';
+    });
+  }, [systemDark]);
 
   return { mode, effective, setMode, cycle };
 }
