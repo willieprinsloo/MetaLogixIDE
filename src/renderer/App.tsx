@@ -3,12 +3,14 @@ import { Sidebar } from './components/Sidebar';
 import { ProjectSwitcher } from './components/ProjectSwitcher';
 import { StatusBar } from './components/StatusBar';
 import { ShellTab } from './components/ShellTab';
+import { AliveShellsPanel } from './components/AliveShellsPanel';
 import type { Project } from '@shared/types';
 import { api } from './api';
 
 export function App() {
   const [selected, setSelected] = useState<Project | null>(null);
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [alivePanelOpen, setAlivePanelOpen] = useState(false);
   const [aliveCount, setAliveCount] = useState(0);
 
   const refreshAlive = useCallback(async () => {
@@ -21,6 +23,7 @@ export function App() {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); setSwitcherOpen(true); }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'a') { e.preventDefault(); setAlivePanelOpen(v => !v); }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -44,6 +47,7 @@ export function App() {
       </div>
       <StatusBar project={selected} aliveCount={aliveCount} />
       <ProjectSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} onPick={pick} />
+      <AliveShellsPanel open={alivePanelOpen} onClose={() => setAlivePanelOpen(false)} />
     </div>
   );
 }
