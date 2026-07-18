@@ -11,6 +11,10 @@ import { join, relative } from 'node:path';
 type Handler<C extends IpcChannelName> = (services: Services, req: IpcRequest<C>) => Promise<IpcResponse<C>>;
 type SendEvent = <E extends IpcEventName>(channel: E, payload: IpcEvents[E]) => void;
 
+export interface WindowHooks {
+  createPopoutWindow: (projectId: number, shellIndex: number) => Promise<number>;
+}
+
 const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'dialogs:pick-directory': async () => {
     if (process.env.METAIDE_TEST_MODE === '1') {
@@ -96,6 +100,10 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'settings:get': async (s, { key }) => ({ value: s.settings.get(key) }),
   'settings:set': async (s, { key, value }) => { s.settings.set(key, value as never); return { ok: true } as const; },
 
+  'windows:popout-shell': async () => {
+    throw new Error('windows:popout-shell requires WindowHooks — see registerIpc');
+  },
+
   'files:tree':   async (s, { projectId, relPath }) => {
     const p = s.projects.get(projectId);
     if (!p) throw new Error(`no project ${projectId}`);
@@ -110,17 +118,46 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
   },
 };
 
-export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: SendEvent): void {
-  // Wire PTY data/exit events to renderer.
+const CHANNEL_EMITS: Partial<Record<IpcChannelName, IpcEventName[]>> = {
+  'roots:add':      ['projects:changed'],
+  'roots:remove':   ['projects:changed'],
+  'roots:rescan':   ['projects:changed'],
+  'projects:open':  ['projects:changed'],
+  'projects:pin':   ['projects:changed'],
+  'projects:hide':  ['projects:changed'],
+  'shells:launch':  ['alive-shells:changed', 'projects:changed'],
+  'shells:kill':    ['alive-shells:changed'],
+  'shells:pin':     ['alive-shells:changed'],
+};
+
+function eventPayload<E extends IpcEventName>(name: E): IpcEvents[E] {
+  if (name === 'projects:changed') return { kind: 'updated' } as IpcEvents[E];
+  return {} as IpcEvents[E];
+}
+
+export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: SendEvent, windowHooks?: WindowHooks): void {
   if (services.ptyManager) {
     services.ptyManager.on('data', (ev: IpcEvents['pty:data']) => sendEvent('pty:data', ev));
-    services.ptyManager.on('exit', (ev: IpcEvents['pty:exit']) => sendEvent('pty:exit', ev));
+    services.ptyManager.on('exit', (ev: IpcEvents['pty:exit']) => {
+      sendEvent('pty:exit', ev);
+      services.shells?.remove(ev.projectId, ev.shellIndex);
+      sendEvent('alive-shells:changed', {});
+    });
   }
 
   for (const channel of Object.keys(handlers) as IpcChannelName[]) {
+    if (channel === 'windows:popout-shell') continue; // wired below
     ipcMain.handle(channel, async (_e, req) => {
       const fn = handlers[channel] as (s: Services, req: unknown) => Promise<unknown>;
-      return fn(services, req);
+      const result = await fn(services, req);
+      for (const evt of CHANNEL_EMITS[channel] ?? []) sendEvent(evt, eventPayload(evt));
+      return result;
     });
   }
+
+  ipcMain.handle('windows:popout-shell', async (_e, req: IpcRequest<'windows:popout-shell'>) => {
+    if (!windowHooks) throw new Error('windows:popout-shell not wired — no WindowHooks passed to registerIpc');
+    const windowId = await windowHooks.createPopoutWindow(req.projectId, req.shellIndex);
+    return { windowId };
+  });
 }

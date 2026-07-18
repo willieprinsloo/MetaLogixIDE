@@ -9,5 +9,9 @@ export function useProjects(): { projects: Project[]; refresh: () => Promise<voi
     setProjects(projects);
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    const off = api.on('projects:changed', () => { void refresh(); });
+    return () => { off(); };
+  }, [refresh]);
   return { projects, refresh };
 }

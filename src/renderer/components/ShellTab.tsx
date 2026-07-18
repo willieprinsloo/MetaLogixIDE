@@ -18,7 +18,7 @@ export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIn
       scrollback: 10000,
       fontFamily: 'ui-monospace, SFMono-Regular, monospace',
       fontSize: 13,
-      theme: { background: '#0d1117' },
+      theme: { background: 'rgba(0,0,0,0)' },
       // allowProposedApi is required for Unicode11Addon and screenReaderMode.
       allowProposedApi: true,
       // screenReaderMode enables the .xterm-accessibility DOM layer which
@@ -60,5 +60,5 @@ export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIn
     () => { termRef.current?.write('\r\n[shell exited]\r\n'); },
   );
 
-  return <div ref={hostRef} className="w-full h-full" />;
+  return <div ref={hostRef} data-testid="shell-tab" className="w-full h-full p-2" />;
 }

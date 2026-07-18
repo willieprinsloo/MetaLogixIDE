@@ -33,6 +33,9 @@ export interface IpcContract {
   // dialogs
   'dialogs:pick-directory': { request: undefined; response: { path: string | null } };
 
+  // windows
+  'windows:popout-shell': { request: { projectId: number; shellIndex: number }; response: { windowId: number } };
+
   // health / dev
   'app:ping':    { request: undefined; response: 'pong' };
 }
