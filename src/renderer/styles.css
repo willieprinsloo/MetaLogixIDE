@@ -54,6 +54,13 @@ html, body {
   text-rendering: optimizeLegibility;
 }
 
+/* Keep xterm's canvas rendered at native device pixels. transform/filter
+   on an ancestor triggers subpixel resampling → pixelated text. */
+.xterm, .xterm .xterm-viewport, .xterm .xterm-screen {
+  transform: none !important;
+  filter: none !important;
+}
+
 #root {
   height: 100%;
   background: transparent;

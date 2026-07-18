@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { WebglAddon } from '@xterm/addon-webgl';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { SearchAddon } from '@xterm/addon-search';
@@ -32,20 +31,29 @@ export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIn
     if (!termHostRef.current) return;
     const term = new Terminal({
       scrollback: 10000,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-      fontSize: 13,
-      lineHeight: 1.15,
+      // Explicit SF Mono stack — first match wins. Falls back through
+      // common developer monospace fonts. `ui-monospace` alone can pick
+      // Menlo bitmap fallback on some setups and looks pixelated.
+      fontFamily: '"SF Mono", "JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace',
+      fontSize: 14,
+      fontWeight: 'normal',
+      fontWeightBold: 'bold',
+      lineHeight: 1.25,
       letterSpacing: 0,
       cursorBlink: true,
       cursorStyle: 'bar',
       theme: buildTheme(),
       allowProposedApi: true,
       screenReaderMode: true,
+      // Explicit — don't let xterm try to boost contrast (blurs rendering).
+      minimumContrastRatio: 1,
+      // Skip WebGL: on macOS with translucent backgrounds and retina it
+      // sometimes rasterises to a half-DPR buffer and looks pixelated.
+      // The canvas renderer (default) is subpixel-crisp here.
     });
 
     const fit = new FitAddon();
     term.loadAddon(fit);
-    try { term.loadAddon(new WebglAddon()); } catch { /* fallback to canvas */ }
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
     term.unicode.activeVersion = '11';
@@ -96,7 +104,7 @@ export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIn
     <div
       ref={containerRef}
       data-testid="shell-tab"
-      className="w-full h-full px-3 pt-2 pb-3 bg-transparent overflow-hidden"
+      className="w-full h-full px-3 pt-2 pb-3 bg-transparent"
     >
       <div ref={termHostRef} className="w-full h-full" />
     </div>
