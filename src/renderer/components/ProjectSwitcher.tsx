@@ -4,14 +4,21 @@ import { useProjects } from '@renderer/hooks/useProjects';
 import type { Project } from '@shared/types';
 
 export function ProjectSwitcher({ open, onClose, onPick }: { open: boolean; onClose: () => void; onPick: (p: Project) => void }) {
-  const { projects } = useProjects();
+  const { projects, refresh } = useProjects();
   const [query, setQuery] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
   const fuse = useMemo(() => new Fuse(projects, { keys: ['name', 'path'], threshold: 0.4 }), [projects]);
   const results = useMemo(() => (query ? fuse.search(query).map(r => r.item) : projects), [query, fuse, projects]);
 
-  useEffect(() => { if (open) inputRef.current?.focus(); else setQuery(''); }, [open]);
+  useEffect(() => {
+    if (open) {
+      void refresh();         // reload projects list each time the switcher opens
+      inputRef.current?.focus();
+    } else {
+      setQuery('');
+    }
+  }, [open, refresh]);
 
   if (!open) return null;
   return (
