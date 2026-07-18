@@ -3,6 +3,7 @@ import { Sidebar } from './components/Sidebar';
 import { ProjectSwitcher } from './components/ProjectSwitcher';
 import { StatusBar } from './components/StatusBar';
 import { ShellTab } from './components/ShellTab';
+import { FilesTab } from './components/FilesTab';
 import { AliveShellsPanel } from './components/AliveShellsPanel';
 import type { Project } from '@shared/types';
 import { api } from './api';
@@ -12,6 +13,7 @@ export function App() {
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [alivePanelOpen, setAlivePanelOpen] = useState(false);
   const [aliveCount, setAliveCount] = useState(0);
+  const [mainTab, setMainTab] = useState<'shell' | 'files'>('shell');
 
   const refreshAlive = useCallback(async () => {
     const { shells } = await api.invoke('shells:alive-list', undefined as never);
@@ -41,8 +43,16 @@ export function App() {
     <div className="h-screen flex flex-col">
       <div className="flex-1 flex">
         <Sidebar selectedProjectId={selected?.id ?? null} onSelect={pick} />
-        <main className="flex-1 relative">
-          {selected ? <ShellTab projectId={selected.id} shellIndex={0} /> : <div className="p-4 text-neutral-500">Select a project</div>}
+        <main className="flex-1 flex flex-col">
+          <div className="flex border-b border-neutral-800 text-xs">
+            <button onClick={() => setMainTab('shell')} className={`px-3 py-1 ${mainTab === 'shell' ? 'bg-neutral-800' : ''}`}>Shell</button>
+            <button onClick={() => setMainTab('files')} className={`px-3 py-1 ${mainTab === 'files' ? 'bg-neutral-800' : ''}`}>Files</button>
+          </div>
+          <div className="flex-1 relative">
+            {selected ? (
+              mainTab === 'shell' ? <ShellTab projectId={selected.id} shellIndex={0} /> : <FilesTab projectId={selected.id} />
+            ) : <div className="p-4 text-neutral-500">Select a project</div>}
+          </div>
         </main>
       </div>
       <StatusBar project={selected} aliveCount={aliveCount} />
