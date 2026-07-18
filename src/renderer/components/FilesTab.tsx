@@ -138,6 +138,22 @@ export function FilesTab({
     });
   }, []);
 
+  /** Close every open tab EXCEPT `keepRelPath` (or every one when null). */
+  const closeMany = useCallback((keepRelPath: string | null) => {
+    setOpenFiles((prev) => {
+      const toClose = prev.filter((f) => f.relPath !== keepRelPath);
+      const dirty = toClose.filter((f) => f.buffer !== f.content);
+      if (dirty.length > 0) {
+        const list = dirty.map((f) => `• ${f.relPath}`).join('\n');
+        const ok = window.confirm(`Discard unsaved changes to ${dirty.length} file${dirty.length === 1 ? '' : 's'}?\n\n${list}`);
+        if (!ok) return prev;
+      }
+      const next = prev.filter((f) => f.relPath === keepRelPath);
+      setActivePath(keepRelPath);
+      return next;
+    });
+  }, []);
+
   // Reset when project switches.
   useEffect(() => { void loadDir(undefined); setOpenFiles([]); setActivePath(null); }, [loadDir]);
 
@@ -191,6 +207,8 @@ export function FilesTab({
             activePath={activePath}
             onActivate={setActivePath}
             onClose={closeFile}
+            onCloseOthers={(kept) => closeMany(kept)}
+            onCloseAll={() => closeMany(null)}
           />
         )}
         <div className="flex-1 min-h-0">
@@ -217,13 +235,26 @@ export function FilesTab({
 }
 
 function FileTabBar({
-  openFiles, activePath, onActivate, onClose,
+  openFiles, activePath, onActivate, onClose, onCloseOthers, onCloseAll,
 }: {
   openFiles: OpenFile[];
   activePath: string | null;
   onActivate: (relPath: string) => void;
   onClose: (relPath: string) => void;
+  onCloseOthers: (kept: string) => void;
+  onCloseAll: () => void;
 }) {
+  const [menu, setMenu] = useState<{ x: number; y: number; relPath: string } | null>(null);
+
+  const tabMenuItems = (relPath: string): ContextMenuItem[] => {
+    const others = openFiles.filter((f) => f.relPath !== relPath).length;
+    return [
+      { label: 'Close',           onClick: () => onClose(relPath) },
+      { label: 'Close Others',    onClick: () => onCloseOthers(relPath), disabled: others === 0, separatorAfter: true },
+      { label: 'Close All',       onClick: () => onCloseAll(), danger: true },
+    ];
+  };
+
   return (
     <div
       role="tablist"
@@ -247,6 +278,7 @@ function FileTabBar({
             }`}
             onClick={() => onActivate(f.relPath)}
             onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); onClose(f.relPath); } }}
+            onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, relPath: f.relPath }); }}
             title={dirty ? `${f.relPath} — unsaved changes` : f.relPath}
           >
             <FileIcon isDir={false} name={name} />
@@ -266,6 +298,14 @@ function FileTabBar({
           </div>
         );
       })}
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={tabMenuItems(menu.relPath)}
+          onClose={() => setMenu(null)}
+        />
+      )}
     </div>
   );
 }
@@ -539,13 +579,7 @@ function FilePreview({
           <div className="p-4 text-sm text-[--text-muted]">Image preview is a Phase 2 feature.</div>
         )}
         {file.kind === 'text' && editing && (
-          <textarea
-            data-testid="file-editor"
-            value={file.buffer}
-            onChange={(e) => onChange(e.target.value)}
-            spellCheck={false}
-            className="w-full h-full bg-transparent p-4 text-[13px] leading-6 font-mono outline-none resize-none border-0"
-          />
+          <EditorWithLineNumbers value={file.buffer} onChange={onChange} />
         )}
         {file.kind === 'text' && !editing && isMd && (
           <div
@@ -558,6 +592,39 @@ function FilePreview({
           <SyntaxHighlightedPre content={file.buffer} lang={EXT_TO_LANG[ext] ?? ''} />
         )}
       </div>
+    </div>
+  );
+}
+
+/** Textarea with a synced left-hand gutter of line numbers. */
+function EditorWithLineNumbers({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const gutterRef = useRef<HTMLDivElement>(null);
+  const textRef = useRef<HTMLTextAreaElement>(null);
+  const lineCount = useMemo(() => (value.match(/\n/g)?.length ?? 0) + 1, [value]);
+  const gutterWidth = 12 + String(lineCount).length * 8; // digit width ~8px at 12px mono
+  return (
+    <div className="w-full h-full flex bg-transparent" data-testid="file-editor">
+      <div
+        ref={gutterRef}
+        aria-hidden
+        className="shrink-0 overflow-hidden text-right pr-2 pt-4 pb-4 pl-3 text-[12px] leading-6 font-mono text-[--text-muted]/70 select-none border-r border-[--border] bg-[--panel]/30"
+        style={{ width: gutterWidth }}
+      >
+        {Array.from({ length: lineCount }, (_, i) => (
+          <div key={i}>{i + 1}</div>
+        ))}
+      </div>
+      <textarea
+        ref={textRef}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onScroll={(e) => {
+          if (gutterRef.current) gutterRef.current.scrollTop = (e.target as HTMLTextAreaElement).scrollTop;
+        }}
+        spellCheck={false}
+        wrap="off"
+        className="flex-1 min-w-0 bg-transparent px-3 pt-4 pb-4 text-[12px] leading-6 font-mono outline-none resize-none border-0 whitespace-pre overflow-auto"
+      />
     </div>
   );
 }
