@@ -54,7 +54,10 @@ export class MetaprojectClient {
   currentUserName(): string | null { return this.userName; }
 
   async login(cfg: MetaprojectConfig): Promise<{ userId: number; userName: string }> {
-    this.base = cfg.baseUrl.replace(/\/$/, '');
+    // Normalise: strip trailing slash and prepend https:// when the user
+    // saved a bare host. fetch() only accepts fully qualified URLs.
+    const trimmed = cfg.baseUrl.trim().replace(/\/+$/, '');
+    this.base = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
     const res = await fetch(`${this.base}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },

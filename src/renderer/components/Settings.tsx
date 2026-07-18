@@ -314,7 +314,8 @@ function MetaprojectPanel() {
   }, []);
 
   async function save() {
-    const normalized = url.trim().replace(/\/$/, '');
+    let normalized = url.trim().replace(/\/+$/, '');
+    if (normalized && !/^https?:\/\//i.test(normalized)) normalized = `https://${normalized}`;
     await api.invoke('settings:set', { key: 'metaproject_base_url', value: normalized });
     setUrl(normalized);
   }
