@@ -8,9 +8,13 @@ interface Entry {
   pty: IPty; pid: number;
   cols: number; rows: number;
   startedAt: number;
+  earlyBuffer: string;   // captured output within the first 3s
+  bufferOpen: boolean;
 }
 
 const key = (p: number, s: number) => `${p}:${s}`;
+const EARLY_BUFFER_MS = 3000;
+const EARLY_BUFFER_CAP = 32 * 1024;
 
 export class PtyManager extends EventEmitter {
   private entries = new Map<string, Entry>();
@@ -26,14 +30,29 @@ export class PtyManager extends EventEmitter {
       cwd: launch.cwd,
       env: { ...process.env, ...launch.env } as { [k: string]: string },
     });
-    const entry: Entry = { projectId, shellIndex, pty, pid: pty.pid, cols, rows, startedAt: Date.now() };
+    const entry: Entry = {
+      projectId, shellIndex, pty, pid: pty.pid, cols, rows,
+      startedAt: Date.now(), earlyBuffer: '', bufferOpen: true,
+    };
     this.entries.set(k, entry);
-    pty.onData((data: string) => this.emit('data', { projectId, shellIndex, data }));
+    pty.onData((data: string) => {
+      if (entry.bufferOpen && entry.earlyBuffer.length < EARLY_BUFFER_CAP) {
+        entry.earlyBuffer += data;
+      }
+      this.emit('data', { projectId, shellIndex, data });
+    });
+    setTimeout(() => { entry.bufferOpen = false; entry.earlyBuffer = ''; }, EARLY_BUFFER_MS);
     pty.onExit(({ exitCode }: { exitCode: number }) => {
+      const captured = entry.earlyBuffer;
+      const uptimeMs = Date.now() - entry.startedAt;
       this.entries.delete(k);
-      this.emit('exit', { projectId, shellIndex, code: exitCode });
+      this.emit('exit', { projectId, shellIndex, code: exitCode, uptimeMs, earlyOutput: captured });
     });
     return { pid: pty.pid };
+  }
+
+  getEarlyBuffer(projectId: number, shellIndex: number): string {
+    return this.entries.get(key(projectId, shellIndex))?.earlyBuffer ?? '';
   }
 
   write(projectId: number, shellIndex: number, data: string): void {

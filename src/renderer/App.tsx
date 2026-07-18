@@ -5,6 +5,7 @@ import { StatusBar } from './components/StatusBar';
 import { ShellTab } from './components/ShellTab';
 import { FilesTab } from './components/FilesTab';
 import { AliveShellsPanel } from './components/AliveShellsPanel';
+import { Settings } from './components/Settings';
 import type { Project } from '@shared/types';
 import { api } from './api';
 import { useTheme, type ThemeMode } from './hooks/useTheme';
@@ -36,6 +37,7 @@ function MainApp() {
   const [aliveCount, setAliveCount] = useState(0);
   const [mainTab, setMainTab] = useState<'shell' | 'files'>('shell');
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const { mode: themeMode, effective: effectiveTheme, cycle: cycleTheme } = useTheme();
 
   const refreshAlive = useCallback(async () => {
@@ -56,6 +58,8 @@ function MainApp() {
       if (mod && e.shiftKey && e.key.toLowerCase() === 'a') { e.preventDefault(); setAlivePanelOpen((v) => !v); }
       if (mod && e.key === '\\')                         { e.preventDefault(); setSidebarOpen((v) => !v); }
       if (mod && e.key === 'b' && !e.shiftKey && !e.altKey) { e.preventDefault(); setSidebarOpen((v) => !v); }
+      if (mod && e.key === ',')                          { e.preventDefault(); setSettingsOpen(true); }
+      if (e.key === 'Escape')                            { setSettingsOpen(false); }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -85,7 +89,7 @@ function MainApp() {
         >
           <SidebarIcon />
         </button>
-        <span className="text-xs opacity-70 ml-2 font-medium">metaIDE</span>
+        <span className="text-xs opacity-70 ml-2 font-medium">MetaLogix IDE</span>
         <div className="ml-auto flex items-center gap-1 no-drag">
           <button
             onClick={cycleTheme}
@@ -96,21 +100,14 @@ function MainApp() {
           >
             <ThemeIcon mode={themeMode} effective={effectiveTheme} />
           </button>
-          {selected && (
-            <>
-              <button
-                onClick={popoutCurrent}
-                className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel-strong]"
-                title="Pop shell into its own window"
-                data-testid="popout-shell"
-              >
-                <PopoutIcon />
-              </button>
-              <span className="text-xs text-[--text-muted] px-2 truncate max-w-[240px]">
-                {selected.name}
-              </span>
-            </>
-          )}
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel-strong]"
+            title="Settings (⌘,)"
+            data-testid="settings-open"
+          >
+            <SettingsIcon />
+          </button>
         </div>
       </div>
 
@@ -119,9 +116,27 @@ function MainApp() {
           <Sidebar selectedProjectId={selected?.id ?? null} onSelect={pick} />
         )}
         <main className="flex-1 flex flex-col min-h-0 bg-[--panel-strong]/40">
-          <div className="flex border-b border-[--border] text-xs shrink-0 bg-[--panel]/60">
+          <div className="flex items-stretch border-b border-[--border] text-xs shrink-0 bg-[--panel]/60">
             <TabButton active={mainTab === 'shell'} onClick={() => setMainTab('shell')}>Shell</TabButton>
             <TabButton active={mainTab === 'files'} onClick={() => setMainTab('files')}>Files</TabButton>
+            <div className="ml-auto flex items-center gap-2 pr-2">
+              {selected && (
+                <>
+                  <span className="flex items-center gap-1.5 text-[--text] px-2 py-0.5 rounded-md bg-[--panel-strong]/70 text-[11px] max-w-[280px] truncate" title={selected.path}>
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 live-dot" />
+                    <span className="truncate font-medium">{selected.name}</span>
+                  </span>
+                  <button
+                    onClick={popoutCurrent}
+                    className="text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel-strong]"
+                    title="Pop shell into its own window"
+                    data-testid="popout-shell"
+                  >
+                    <PopoutIcon />
+                  </button>
+                </>
+              )}
+            </div>
           </div>
           <div className="flex-1 relative min-h-0">
             {selected ? (
@@ -136,6 +151,7 @@ function MainApp() {
       <StatusBar project={selected} aliveCount={aliveCount} />
       <ProjectSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} onPick={pick} />
       <AliveShellsPanel open={alivePanelOpen} onClose={() => setAlivePanelOpen(false)} />
+      <Settings open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );
 }
@@ -144,7 +160,7 @@ function PopoutShell({ projectId, shellIndex }: PopoutInfo) {
   return (
     <div className="h-screen w-screen flex flex-col bg-transparent">
       <div className="drag h-10 flex items-center pl-[76px] pr-3 shrink-0 bg-[--panel]/70 backdrop-blur-xl border-b border-[--border]">
-        <span className="text-xs opacity-70 font-medium">metaIDE · shell</span>
+        <span className="text-xs opacity-70 font-medium">MetaLogix IDE · shell</span>
       </div>
       <div className="flex-1 min-h-0 bg-[--panel-strong]/40">
         <ShellTab projectId={projectId} shellIndex={shellIndex} />
@@ -178,6 +194,15 @@ function EmptyState() {
         </div>
       </div>
     </div>
+  );
+}
+
+function SettingsIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+    </svg>
   );
 }
 

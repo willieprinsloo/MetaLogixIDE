@@ -71,7 +71,7 @@ export function Sidebar({ selectedProjectId, onSelect }: Props) {
 
       <div className="flex-1 overflow-y-auto py-1">
         {inUse.length > 0 && (
-          <Section title="In use" testId="section-in-use">
+          <Section title="In use" testId="section-in-use" accent>
             {inUse.map((p) => (
               <ProjectRow
                 key={p.id}
@@ -115,10 +115,15 @@ export function Sidebar({ selectedProjectId, onSelect }: Props) {
   );
 }
 
-function Section({ title, testId, children }: { title: string; testId: string; children: React.ReactNode }) {
+function Section({
+  title, testId, accent = false, children,
+}: { title: string; testId: string; accent?: boolean; children: React.ReactNode }) {
   return (
     <div className="mb-2" data-testid={testId}>
-      <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider text-[--text-muted] font-semibold">{title}</div>
+      <div className="px-3 pt-2 pb-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wider font-semibold text-[--text]">
+        {accent && <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 live-dot" />}
+        <span className={accent ? '' : 'text-[--text-muted]'}>{title}</span>
+      </div>
       {children}
     </div>
   );

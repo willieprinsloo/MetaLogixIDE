@@ -18,28 +18,28 @@
 
 /* ── Light palette (explicit) ── */
 :root[data-theme="light"] {
-  --panel: rgba(255, 255, 255, 0.55);
-  --panel-strong: rgba(245, 246, 249, 0.85);
-  --border: rgba(0, 0, 0, 0.10);
-  --text: #1a1d24;
-  --text-muted: #57606a;
+  --panel: rgba(255, 255, 255, 0.62);
+  --panel-strong: rgba(245, 246, 249, 0.90);
+  --border: rgba(0, 0, 0, 0.12);
+  --text: #111418;
+  --text-muted: #4b5563;
   --accent: #2563eb;
-  --term-fg: #1a1d24;
-  --term-cursor: #1a1d24;
+  --term-fg: #111418;
+  --term-cursor: #111418;
   --term-selection: rgba(0, 0, 0, 0.15);
 }
 
 /* ── System-follow: only applies when no explicit data-theme is set ── */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
-    --panel: rgba(255, 255, 255, 0.55);
-    --panel-strong: rgba(245, 246, 249, 0.85);
-    --border: rgba(0, 0, 0, 0.10);
-    --text: #1a1d24;
-    --text-muted: #57606a;
+    --panel: rgba(255, 255, 255, 0.62);
+    --panel-strong: rgba(245, 246, 249, 0.90);
+    --border: rgba(0, 0, 0, 0.12);
+    --text: #111418;
+    --text-muted: #4b5563;
     --accent: #2563eb;
-    --term-fg: #1a1d24;
-    --term-cursor: #1a1d24;
+    --term-fg: #111418;
+    --term-cursor: #111418;
     --term-selection: rgba(0, 0, 0, 0.15);
   }
 }

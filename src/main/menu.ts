@@ -5,9 +5,9 @@ export function buildAppMenu(mainWindow: BrowserWindow | null): Menu {
   const isMac = process.platform === 'darwin';
 
   const appMenu: MenuItemConstructorOptions = {
-    label: 'metaIDE',
+    label: 'MetaLogix IDE',
     submenu: [
-      { role: 'about', label: 'About metaIDE' },
+      { role: 'about', label: 'About MetaLogix IDE' },
       { type: 'separator' },
       {
         label: 'Settings\u2026',
@@ -17,11 +17,11 @@ export function buildAppMenu(mainWindow: BrowserWindow | null): Menu {
       { type: 'separator' },
       { role: 'services' },
       { type: 'separator' },
-      { role: 'hide', label: 'Hide metaIDE' },
+      { role: 'hide', label: 'Hide MetaLogix IDE' },
       { role: 'hideOthers' },
       { role: 'unhide', label: 'Show All' },
       { type: 'separator' },
-      { role: 'quit', label: 'Quit metaIDE' },
+      { role: 'quit', label: 'Quit MetaLogix IDE' },
     ],
   };
 
@@ -74,7 +74,7 @@ export function buildAppMenu(mainWindow: BrowserWindow | null): Menu {
     role: 'help',
     submenu: [
       {
-        label: 'metaIDE Help',
+        label: 'MetaLogix IDE Help',
         enabled: false,
       },
     ],

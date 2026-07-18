@@ -73,12 +73,49 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
         throw new Error('all shells are pinned — unpin one or raise cap');
       }
     }
-    const launch = resolveLaunch(project, s.settings, s.homeDir);
-    await s.ptyManager.spawn(projectId, 0, launch);
+
+    let launch = resolveLaunch(project, s.settings, s.homeDir);
+    let fallbackApplied = false;
+
+    // If subsequent variant (--continue) exits within ~3s with "no
+    // conversation found", retry using the first variant instead. This
+    // handles the case where the on-disk claude session was cleared.
+    if (launch.variant === 'subsequent') {
+      const settlement = await new Promise<'ok' | 'no-session'>((resolveP) => {
+        const timer = setTimeout(() => resolveP('ok'), 2500);
+        const onExit = (ev: { projectId: number; shellIndex: number; code: number | null; uptimeMs?: number; earlyOutput?: string }) => {
+          if (ev.projectId !== projectId || ev.shellIndex !== 0) return;
+          clearTimeout(timer);
+          s.ptyManager.off('exit', onExit);
+          const text = (ev.earlyOutput ?? '').toLowerCase();
+          if ((ev.uptimeMs ?? 0) < 2500 && /no conversation found to continue|no previous session|--continue.*(?:no|not)/i.test(text)) {
+            resolveP('no-session');
+          } else {
+            resolveP('ok');
+          }
+        };
+        s.ptyManager.on('exit', onExit);
+        void s.ptyManager.spawn(projectId, 0, launch).catch(() => resolveP('ok'));
+      });
+
+      if (settlement === 'no-session') {
+        // Force the "first" variant: temporarily null out firstLaunchedAt
+        // in the resolved project view, re-resolve, then restart cleanly.
+        s.projects.updateConfig(projectId, {}); // touch — no-op
+        const reProject = { ...project, firstLaunchedAt: null };
+        launch = resolveLaunch(reProject, s.settings, s.homeDir);
+        fallbackApplied = true;
+        await s.ptyManager.spawn(projectId, 0, launch);
+      }
+    } else {
+      await s.ptyManager.spawn(projectId, 0, launch);
+    }
+
     if (!project.firstLaunchedAt) s.projects.setFirstLaunched(projectId, new Date());
     const now = new Date();
     const nowIso = `${now.getUTCFullYear()}-${String(now.getUTCMonth()+1).padStart(2,'0')}-${String(now.getUTCDate()).padStart(2,'0')} ${String(now.getUTCHours()).padStart(2,'0')}:${String(now.getUTCMinutes()).padStart(2,'0')}:${String(now.getUTCSeconds()).padStart(2,'0')}`;
     s.shells.upsert({ projectId, shellIndex: 0, model: null, launchArgv: launch.argv, startedAt: nowIso, lastActiveAt: nowIso, pinned: false });
+    void fallbackApplied; // future: return this to renderer as a toast reason
     return { shellIndex: 0 };
   },
   'shells:kill':   async (s, { projectId, shellIndex }) => { await s.ptyManager.kill(projectId, shellIndex); s.shells.remove(projectId, shellIndex); return { ok: true } as const; },
