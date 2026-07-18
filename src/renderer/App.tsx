@@ -8,6 +8,8 @@ import { AliveShellsPanel } from './components/AliveShellsPanel';
 import { Settings } from './components/Settings';
 import { ResizeHandle } from './components/ResizeHandle';
 import { FileFinder } from './components/FileFinder';
+import { NewProjectDialog } from './components/NewProjectDialog';
+import { useRoots } from './hooks/useRoots';
 import type { Project } from '@shared/types';
 import { api } from './api';
 import { useTheme, type ThemeMode } from './hooks/useTheme';
@@ -43,8 +45,10 @@ function MainApp() {
   const [sidebarWidth, setSidebarWidth] = usePersistedNumber('metaide.sidebarWidth', 288, 200, 560);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [finderOpen, setFinderOpen] = useState(false);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [openInFiles, setOpenInFiles] = useState<string | null>(null);
   const { mode: themeMode, effective: effectiveTheme, cycle: cycleTheme } = useTheme();
+  const { roots } = useRoots();
 
   const refreshAlive = useCallback(async () => {
     const { shells } = await api.invoke('shells:alive-list', undefined as never);
@@ -66,7 +70,8 @@ function MainApp() {
       if (mod && e.key === 'b' && !e.shiftKey && !e.altKey) { e.preventDefault(); setSidebarOpen((v) => !v); }
       if (mod && e.key === ',')                          { e.preventDefault(); setSettingsOpen(true); }
       if (mod && e.key === 'p' && !e.shiftKey)           { e.preventDefault(); setFinderOpen(true); }
-      if (e.key === 'Escape')                            { setSettingsOpen(false); setFinderOpen(false); }
+      if (mod && e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); setNewProjectOpen(true); }
+      if (e.key === 'Escape')                            { setSettingsOpen(false); setFinderOpen(false); setNewProjectOpen(false); }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -128,7 +133,12 @@ function MainApp() {
       <div className="flex-1 flex min-h-0">
         {sidebarOpen && (
           <>
-            <Sidebar selectedProjectId={selected?.id ?? null} onSelect={pick} width={sidebarWidth} />
+            <Sidebar
+              selectedProjectId={selected?.id ?? null}
+              onSelect={pick}
+              onNewProject={() => setNewProjectOpen(true)}
+              width={sidebarWidth}
+            />
             <ResizeHandle
               value={sidebarWidth}
               onChange={setSidebarWidth}
@@ -196,6 +206,13 @@ function MainApp() {
           setMainTab('files');
           setOpenInFiles(relPath);
         }}
+      />
+      <NewProjectDialog
+        open={newProjectOpen}
+        roots={roots}
+        defaultRootId={selected ? roots.find((r) => r.id === selected.rootId)?.id ?? null : null}
+        onClose={() => setNewProjectOpen(false)}
+        onCreated={(project) => { setNewProjectOpen(false); void pick(project); }}
       />
     </div>
   );

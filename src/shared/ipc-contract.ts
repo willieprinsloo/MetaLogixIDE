@@ -14,6 +14,7 @@ export interface IpcContract {
   'projects:hide':          { request: { id: number; hidden: boolean };         response: { ok: true } };
   'projects:update-config': { request: { id: number; config: Project['config'] }; response: { project: Project } };
   'projects:recents':       { request: { limit?: number };                      response: { projects: Project[] } };
+  'projects:create':        { request: { rootId: number; name: string; initGit?: boolean }; response: { project: Project } };
 
   // shells
   'shells:launch':      { request: { projectId: number };                       response: { shellIndex: number } };

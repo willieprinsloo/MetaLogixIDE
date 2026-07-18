@@ -5,7 +5,8 @@ import type { IpcChannelName, IpcRequest, IpcResponse, IpcEventName, IpcEvents }
 import { discoverProjects } from '@main/domain/discovery';
 import { resolveLaunch } from '@main/domain/launch';
 import { chooseEvictee } from '@main/pty/keep-alive';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join, relative, resolve } from 'node:path';
 
 type Handler<C extends IpcChannelName> = (services: Services, req: IpcRequest<C>) => Promise<IpcResponse<C>>;
@@ -53,6 +54,34 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     if (!p) throw new Error(`no project ${id}`);
     s.projects.markLastOpened(id, new Date());
     return { project: s.projects.get(id)! };
+  },
+  'projects:create': async (s, { rootId, name, initGit }) => {
+    const root = s.roots.list().find(r => r.id === rootId);
+    if (!root) throw new Error(`no root ${rootId}`);
+    if (!name || !/^[A-Za-z0-9._-][A-Za-z0-9._ -]*$/.test(name) || name === '.' || name === '..') {
+      throw new Error('project name must start with a letter/digit and contain only letters, digits, dot, dash, underscore, or spaces');
+    }
+    const path = join(root.path, name);
+    if (existsSync(path)) throw new Error(`already exists: ${path}`);
+    mkdirSync(path, { recursive: true });
+    if (initGit) {
+      const gitDir = join(path, '.git');
+      if (!existsSync(gitDir)) {
+        const r = spawnSync('git', ['init', '-q', path], { cwd: path });
+        if (r.status !== 0) {
+          // Fall back to just an empty .git directory marker so discovery picks it up.
+          mkdirSync(gitDir, { recursive: true });
+        }
+      }
+      const readme = join(path, 'README.md');
+      if (!existsSync(readme)) writeFileSync(readme, `# ${name}\n`);
+    } else {
+      // Give discovery a marker so the project is recognized.
+      writeFileSync(join(path, '.metaproject.yaml'), `name: ${name}\n`);
+    }
+    const project = s.projects.upsert(rootId, path, name);
+    s.projects.markLastOpened(project.id, new Date());
+    return { project };
   },
   'projects:pin':          async (s, { id, pinned }) => { s.projects.setPinned(id, pinned); return { ok: true } as const; },
   'projects:hide':         async (s, { id, hidden }) => { s.projects.setHidden(id, hidden); return { ok: true } as const; },
@@ -222,6 +251,7 @@ const CHANNEL_EMITS: Partial<Record<IpcChannelName, IpcEventName[]>> = {
   'projects:open':  ['projects:changed'],
   'projects:pin':   ['projects:changed'],
   'projects:hide':  ['projects:changed'],
+  'projects:create':['projects:changed'],
   'shells:launch':  ['alive-shells:changed', 'projects:changed'],
   'shells:kill':    ['alive-shells:changed'],
   'shells:pin':     ['alive-shells:changed'],

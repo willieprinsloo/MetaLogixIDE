@@ -9,10 +9,11 @@ import { api } from '@renderer/api';
 interface Props {
   selectedProjectId: number | null;
   onSelect: (p: Project) => void;
+  onNewProject?: () => void;
   width?: number;
 }
 
-export function Sidebar({ selectedProjectId, onSelect, width }: Props) {
+export function Sidebar({ selectedProjectId, onSelect, onNewProject, width }: Props) {
   const { roots, refresh: refreshRoots } = useRoots();
   const { projects, refresh: refreshProjects } = useProjects();
   const { recents } = useRecents(10);
@@ -65,12 +66,24 @@ export function Sidebar({ selectedProjectId, onSelect, width }: Props) {
           placeholder="Filter…"
           className="w-full bg-[--panel-strong] text-sm px-2.5 py-1.5 rounded-md border border-[--border] focus:outline-none focus:ring-1 focus:ring-[--accent]/60"
         />
-        <button
-          onClick={addRoot}
-          className="w-full text-xs font-medium bg-[--accent] hover:brightness-110 active:brightness-95 transition rounded-md py-1.5"
-        >
-          + Add root
-        </button>
+        <div className="flex gap-1">
+          <button
+            onClick={addRoot}
+            className="flex-1 text-xs font-medium bg-[--panel-strong] border border-[--border] hover:bg-[--panel] transition rounded-md py-1.5"
+            title="Add a root directory"
+          >
+            + Root
+          </button>
+          <button
+            onClick={onNewProject}
+            className="flex-1 text-xs font-medium bg-[color:var(--accent)] text-white hover:brightness-110 active:brightness-95 transition rounded-md py-1.5"
+            title="Create a new project (⌘⇧N)"
+            data-testid="new-project-btn"
+            disabled={!onNewProject}
+          >
+            + Project
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto py-1">
