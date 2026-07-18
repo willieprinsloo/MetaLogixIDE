@@ -106,46 +106,18 @@ test('Phase 1 smoke: multi-root, switcher, shell, alive panel, files tab', async
   await win.keyboard.press('Enter');
   await expect(win.locator('.xterm-accessibility')).toContainText('echo: hello', { timeout: 10000 });
 
-  // ── 8. Open Alive Shells panel (Cmd+Shift+A) ──────────────────────────────
-  await win.evaluate(() => {
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, shiftKey: true, bubbles: true, cancelable: true }));
-  });
-  // The panel header has exact text "Alive shells" (capital A, capital S).
-  const alivePanel = win.getByText('Alive shells', { exact: true });
-  await expect(alivePanel).toBeVisible({ timeout: 3000 });
+  // ── 8. Sidebar "In use" section shows the alpha project ──────────────────
+  const inUseSection = win.getByTestId('section-in-use');
+  await expect(inUseSection).toBeVisible({ timeout: 3000 });
+  await expect(inUseSection.locator('[data-testid="project-row"][data-alive="1"]', { hasText: 'alpha' })).toBeVisible();
 
-  // Should list the alpha shell (1 entry)
-  const aliveRows = win.locator('[data-testid="alive-shell-row"]');
-  await expect(aliveRows.first()).toBeVisible({ timeout: 3000 });
-  // At least 1 project name visible in the panel
-  const panelText = await win.locator('[data-testid="alive-shells-panel"]').innerText();
-  expect(panelText).toContain('alpha');
-
-  // ── 9. Close panel, open second project (beta) ────────────────────────────
-  await win.evaluate(() => {
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, shiftKey: true, bubbles: true, cancelable: true }));
-  });
-  await expect(alivePanel).not.toBeVisible({ timeout: 2000 });
-
+  // ── 9. Open second project (beta) — In use grows to 2 ────────────────────
   await win.getByRole('button', { name: 'beta', exact: true }).click();
-  // Second shell spawns; xterm still visible
   await expect(win.locator('.xterm')).toBeVisible({ timeout: 10000 });
+  const inUseRows = inUseSection.locator('[data-testid="project-row"][data-alive="1"]');
+  await expect(inUseRows).toHaveCount(2, { timeout: 5000 });
 
-  // ── 10. Alive Shells panel should now show 2 entries ──────────────────────
-  await win.evaluate(() => {
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, shiftKey: true, bubbles: true, cancelable: true }));
-  });
-  await expect(win.getByText('Alive shells', { exact: true })).toBeVisible({ timeout: 3000 });
-  const aliveItems = win.locator('[data-testid="alive-shell-row"]');
-  await expect(aliveItems).toHaveCount(2, { timeout: 5000 });
-
-  // ── 11. Switch to Files tab ───────────────────────────────────────────────
-  // Close panel first so we can see the tab buttons
-  await win.evaluate(() => {
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, shiftKey: true, bubbles: true, cancelable: true }));
-  });
-  await expect(win.getByText('Alive shells', { exact: true })).not.toBeVisible({ timeout: 2000 });
-
+  // ── 10. Switch to Files tab ───────────────────────────────────────────────
   await win.getByRole('button', { name: 'Files', exact: true }).click();
   // .git folder should appear (every project has one)
   await expect(win.locator('text=.git')).toBeVisible({ timeout: 5000 });

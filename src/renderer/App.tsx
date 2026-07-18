@@ -4,7 +4,6 @@ import { ProjectSwitcher } from './components/ProjectSwitcher';
 import { StatusBar } from './components/StatusBar';
 import { ShellTab } from './components/ShellTab';
 import { FilesTab } from './components/FilesTab';
-import { AliveShellsPanel } from './components/AliveShellsPanel';
 import { Settings } from './components/Settings';
 import { ResizeHandle } from './components/ResizeHandle';
 import { FileFinder } from './components/FileFinder';
@@ -43,7 +42,6 @@ export function App() {
 function MainApp() {
   const [selected, setSelected] = useState<Project | null>(null);
   const [switcherOpen, setSwitcherOpen] = useState(false);
-  const [alivePanelOpen, setAlivePanelOpen] = useState(false);
   const [aliveCount, setAliveCount] = useState(0);
   const [mainTab, setMainTab] = useState<'shell' | 'files'>('shell');
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -62,7 +60,6 @@ function MainApp() {
   const commands = useMemo<Command[]>(() => [
     { id: 'nav.projects',    category: 'Go',       title: 'Open project switcher',           hint: '⌘K',   run: () => setSwitcherOpen(true) },
     { id: 'nav.find-file',   category: 'Go',       title: 'Find file in project',            hint: '⌘P',   run: () => setFinderOpen(true) },
-    { id: 'nav.alive',       category: 'Go',       title: 'Show alive shells',               hint: '⌘⇧A',  run: () => setAlivePanelOpen(true) },
     { id: 'view.sidebar',    category: 'View',     title: sidebarOpen ? 'Hide sidebar' : 'Show sidebar', hint: '⌘B', run: () => setSidebarOpen((v) => !v) },
     { id: 'view.shell',      category: 'View',     title: 'Switch to Shell tab',                           run: () => setMainTab('shell') },
     { id: 'view.files',      category: 'View',     title: 'Switch to Files tab',                           run: () => setMainTab('files') },
@@ -95,7 +92,6 @@ function MainApp() {
     function onKey(e: KeyboardEvent) {
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key === 'k')                          { e.preventDefault(); setSwitcherOpen(true); }
-      if (mod && e.shiftKey && e.key.toLowerCase() === 'a') { e.preventDefault(); setAlivePanelOpen((v) => !v); }
       if (mod && e.key === '\\')                         { e.preventDefault(); setSidebarOpen((v) => !v); }
       if (mod && e.key === 'b' && !e.shiftKey && !e.altKey) { e.preventDefault(); setSidebarOpen((v) => !v); }
       if (mod && e.key === ',')                          { e.preventDefault(); setSettingsOpen(true); }
@@ -174,12 +170,7 @@ function MainApp() {
         <ActivityBar
           active={activeView}
           onSelect={(v) => {
-            if (v === 'alive') {
-              // Toggle when already active — closing the panel returns to Projects.
-              if (activeView === 'alive' && alivePanelOpen) { setAlivePanelOpen(false); setActiveView('projects'); return; }
-              setActiveView('alive'); setAlivePanelOpen(true); return;
-            }
-            if (v === 'settings') { setSettingsOpen(true); return; } // don't latch activeView on settings
+            if (v === 'settings') { setSettingsOpen(true); return; }
             if (v === 'projects') { setActiveView('projects'); if (!sidebarOpen) setSidebarOpen(true); return; }
             setActiveView(v);
           }}
@@ -254,10 +245,6 @@ function MainApp() {
 
       <StatusBar project={selected} aliveCount={aliveCount} />
       <ProjectSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} onPick={pick} />
-      <AliveShellsPanel
-        open={alivePanelOpen}
-        onClose={() => { setAlivePanelOpen(false); if (activeView === 'alive') setActiveView('projects'); }}
-      />
       <Settings open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <FileFinder
         open={finderOpen && selected != null}
@@ -315,7 +302,7 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
 }
 
 const SHORTCUT_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
-  { title: 'Go',       items: [['⌘K', 'Project switcher'], ['⌘P', 'Find file in project'], ['⌘⇧A', 'Alive shells']] },
+  { title: 'Go',       items: [['⌘K', 'Project switcher'], ['⌘P', 'Find file in project']] },
   { title: 'Views',    items: [['⌘B', 'Toggle sidebar'], ['⌘,', 'Settings'], ['⌘/', 'This cheat sheet']] },
   { title: 'Palette',  items: [['⌘⇧P', 'Command palette'], ['⌘⇧N', 'New project']] },
   { title: 'Shell',    items: [['⌘F', 'Find in terminal'], ['⌘=', 'Zoom in'], ['⌘-', 'Zoom out'], ['⌘0', 'Reset zoom']] },

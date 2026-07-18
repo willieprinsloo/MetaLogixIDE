@@ -12,7 +12,6 @@ export function StatusBar({ project, aliveCount }: { project: Project | null; al
         <span className="flex items-center gap-1"><kbd>⌘K</kbd> project</span>
         <span className="flex items-center gap-1"><kbd>⌘P</kbd> file</span>
         <span className="flex items-center gap-1"><kbd>⌘B</kbd> sidebar</span>
-        <span className="flex items-center gap-1"><kbd>⌘⇧A</kbd> shells</span>
         <span className="flex items-center gap-1"><kbd>⌘,</kbd> settings</span>
       </span>
     </div>

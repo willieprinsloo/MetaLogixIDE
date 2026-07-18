@@ -1,7 +1,6 @@
-import { useAliveShellIds } from '@renderer/hooks/useAliveShellIds';
 import type { ReactNode } from 'react';
 
-export type ActivityView = 'projects' | 'alive' | 'settings';
+export type ActivityView = 'projects' | 'settings';
 
 interface Props {
   active: ActivityView;
@@ -11,8 +10,6 @@ interface Props {
 }
 
 export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen }: Props) {
-  const { aliveIds } = useAliveShellIds();
-  const aliveCount = aliveIds.size;
   return (
     <nav
       className="w-11 shrink-0 h-full border-r border-[--border] bg-[--panel]/40 backdrop-blur-md flex flex-col items-center py-1 gap-0.5"
@@ -34,15 +31,6 @@ export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen }: 
         data-testid="ab-projects"
       >
         <ProjectsIcon />
-      </ABButton>
-      <ABButton
-        label={`Alive shells${aliveCount ? ` (${aliveCount})` : ''}`}
-        active={active === 'alive'}
-        onClick={() => onSelect('alive')}
-        badge={aliveCount || undefined}
-        data-testid="ab-alive"
-      >
-        <TerminalIcon />
       </ABButton>
 
       <div className="mt-auto flex flex-col items-center gap-0.5">
@@ -115,14 +103,6 @@ function ProjectsIcon() {
   );
 }
 
-function TerminalIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="4 17 10 11 4 5" />
-      <line x1="12" y1="19" x2="20" y2="19" />
-    </svg>
-  );
-}
 
 function GearIcon() {
   return (
