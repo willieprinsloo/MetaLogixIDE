@@ -30,6 +30,9 @@ export interface IpcContract {
   // files (read-only)
   'files:tree':  { request: { projectId: number; relPath?: string };            response: { entries: Array<{ name: string; isDir: boolean; relPath: string }> } };
 
+  // dialogs
+  'dialogs:pick-directory': { request: undefined; response: { path: string | null } };
+
   // health / dev
   'app:ping':    { request: undefined; response: 'pong' };
 }

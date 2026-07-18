@@ -1,4 +1,5 @@
 import type { IpcMain } from 'electron';
+import { dialog } from 'electron';
 import type { Services } from '@main/services';
 import type { IpcChannelName, IpcRequest, IpcResponse, IpcEventName, IpcEvents } from '@shared/ipc-contract';
 import { discoverProjects } from '@main/domain/discovery';
@@ -11,6 +12,17 @@ type Handler<C extends IpcChannelName> = (services: Services, req: IpcRequest<C>
 type SendEvent = <E extends IpcEventName>(channel: E, payload: IpcEvents[E]) => void;
 
 const handlers: { [C in IpcChannelName]: Handler<C> } = {
+  'dialogs:pick-directory': async () => {
+    // In E2E test environments (indicated by METAIDE_DEFAULT_LAUNCH_FIRST),
+    // skip the native dialog so the renderer's window.prompt fallback is used.
+    if (process.env.METAIDE_DEFAULT_LAUNCH_FIRST) {
+      return { path: null };
+    }
+    const result = await dialog.showOpenDialog({ properties: ['openDirectory'] });
+    const picked = result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
+    return { path: picked ?? null };
+  },
+
   'app:ping': async () => 'pong',
 
   'roots:list':   async (s) => ({ roots: s.roots.list() }),
