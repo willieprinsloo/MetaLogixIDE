@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { usePersistedNumber } from '@renderer/hooks/usePersistedNumber';
-import { Terminal, type ITheme } from '@xterm/xterm';
+import { Terminal, type IDisposable, type ITheme, type ILinkProvider, type IBufferCellPosition } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -8,6 +8,8 @@ import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
 import { api } from '@renderer/api';
 import { useShellStream } from '@renderer/hooks/useShellStream';
+import { detectPaths } from '@shared/detect-paths';
+import { HoverPreview, type HoverPreviewState } from './HoverPreview';
 
 function readVar(name: string, fallback: string): string {
   const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -23,7 +25,13 @@ function buildTheme(): ITheme {
   };
 }
 
-export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIndex: number }) {
+export function ShellTab({
+  projectId, shellIndex, onOpenFile,
+}: {
+  projectId: number;
+  shellIndex: number;
+  onOpenFile?: (relPath: string, line: number | null) => void;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termHostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -33,6 +41,9 @@ export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIn
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [fontSize, setFontSize] = usePersistedNumber('metaide.shellFontSize', 14, 9, 28);
+  const [hover, setHover] = useState<HoverPreviewState | null>(null);
+  const onOpenFileRef = useRef<typeof onOpenFile>(onOpenFile);
+  onOpenFileRef.current = onOpenFile;
 
   useEffect(() => {
     if (!termHostRef.current) return;
@@ -70,6 +81,35 @@ export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIn
     const search = new SearchAddon();
     term.loadAddon(search);
     searchRef.current = search;
+
+    // File-path link provider: matches things like src/main/index.ts:42
+    // in terminal output, shows a hover preview, click opens in Files.
+    const pathLinkProvider: ILinkProvider = {
+      provideLinks(bufferLineNumber, callback) {
+        const buf = term.buffer.active;
+        const rawLine = buf.getLine(bufferLineNumber - 1);
+        if (!rawLine) { callback(undefined); return; }
+        const text = rawLine.translateToString(true);
+        const hits = detectPaths(text);
+        if (hits.length === 0) { callback(undefined); return; }
+        callback(hits.map((h) => ({
+          range: {
+            start: { x: h.startIndex + 1, y: bufferLineNumber } as IBufferCellPosition,
+            end:   { x: h.endIndex,       y: bufferLineNumber } as IBufferCellPosition,
+          },
+          text: h.raw,
+          activate: () => {
+            setHover(null);
+            onOpenFileRef.current?.(h.path, h.line);
+          },
+          hover: (ev: MouseEvent) => {
+            setHover({ x: ev.clientX, y: ev.clientY, projectId, path: h.path, line: h.line });
+          },
+          leave: () => { setHover(null); },
+        })));
+      },
+    };
+    const linkProviderDisposable: IDisposable = term.registerLinkProvider(pathLinkProvider);
 
     term.open(termHostRef.current);
     term.onData((data) => { void api.invoke('shells:write', { projectId, shellIndex, data }); });
@@ -110,6 +150,7 @@ export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIn
     return () => {
       ro.disconnect();
       media.removeEventListener('change', onScheme);
+      linkProviderDisposable.dispose();
       term.dispose();
       termRef.current = null;
       searchRef.current = null;
@@ -212,6 +253,10 @@ export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIn
           </button>
         </div>
       )}
+      <HoverPreview
+        state={hover}
+        onOpen={(relPath, line) => { setHover(null); onOpenFileRef.current?.(relPath, line); }}
+      />
     </div>
   );
 }

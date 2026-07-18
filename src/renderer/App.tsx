@@ -50,7 +50,7 @@ function MainApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [finderOpen, setFinderOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [openInFiles, setOpenInFiles] = useState<string | null>(null);
+  const [openInFiles, setOpenInFiles] = useState<{ relPath: string; line: number | null } | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -160,6 +160,19 @@ function MainApp() {
             <ThemeIcon mode={themeMode} effective={effectiveTheme} />
           </button>
           <button
+            onClick={async () => {
+              try {
+                const { arranged } = await api.invoke('windows:tile-all', undefined as never);
+                toast(`Tiled ${arranged} window${arranged === 1 ? '' : 's'}`, { kind: 'success', timeoutMs: 1200 });
+              } catch (e) { toast('Tile failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
+            }}
+            className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel-strong]"
+            title="Tile all our windows on the screen"
+            data-testid="tile-windows"
+          >
+            <TileIcon />
+          </button>
+          <button
             onClick={() => setSettingsOpen(true)}
             className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel-strong]"
             title="Settings (⌘,)"
@@ -236,10 +249,18 @@ function MainApp() {
               mainTab === 'shell'
                 ? (isPopped(selected.id, 0)
                     ? <PoppedPlaceholder projectId={selected.id} shellIndex={0} name={selected.name} />
-                    : <ShellTab projectId={selected.id} shellIndex={0} />)
+                    : <ShellTab
+                        projectId={selected.id}
+                        shellIndex={0}
+                        onOpenFile={(relPath, line) => {
+                          setMainTab('files');
+                          setOpenInFiles({ relPath, line });
+                        }}
+                      />)
                 : <FilesTab
                     projectId={selected.id}
-                    openRelPath={openInFiles}
+                    openRelPath={openInFiles?.relPath ?? null}
+                    openLine={openInFiles?.line ?? null}
                     onOpenRelPathConsumed={() => setOpenInFiles(null)}
                   />
             ) : <EmptyState />}
@@ -256,7 +277,7 @@ function MainApp() {
         onClose={() => setFinderOpen(false)}
         onPick={(relPath) => {
           setMainTab('files');
-          setOpenInFiles(relPath);
+          setOpenInFiles({ relPath, line: null });
         }}
       />
       <NewProjectDialog
@@ -277,9 +298,9 @@ function MainApp() {
         open={searchOpen && selected != null}
         projectId={selected?.id ?? null}
         onClose={() => setSearchOpen(false)}
-        onOpenMatch={(relPath) => {
+        onOpenMatch={(relPath, line) => {
           setMainTab('files');
-          setOpenInFiles(relPath);
+          setOpenInFiles({ relPath, line });
         }}
       />
     </div>
@@ -293,7 +314,15 @@ function PopoutShell({ projectId, shellIndex }: PopoutInfo) {
         <span className="text-xs opacity-70 font-medium">MetaLogix IDE · shell</span>
       </div>
       <div className="flex-1 min-h-0 bg-[--panel-strong]/40">
-        <ShellTab projectId={projectId} shellIndex={shellIndex} />
+        <ShellTab
+          projectId={projectId}
+          shellIndex={shellIndex}
+          onOpenFile={(relPath) => {
+            // In the popout, opening a file just reveals it externally
+            // since there's no Files tab here — Finder is the safest bet.
+            void api.invoke('files:reveal', { projectId, relPath }).catch(() => {});
+          }}
+        />
       </div>
     </div>
   );
@@ -458,6 +487,17 @@ function BoardIcon() {
       <rect x="3" y="4" width="18" height="16" rx="2" />
       <line x1="9" y1="4" x2="9" y2="20" />
       <line x1="15" y1="4" x2="15" y2="20" />
+    </svg>
+  );
+}
+
+function TileIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3"  width="7" height="7" rx="1" />
+      <rect x="14" y="3" width="7" height="7" rx="1" />
+      <rect x="3" y="14" width="7" height="7" rx="1" />
+      <rect x="14" y="14" width="7" height="7" rx="1" />
     </svg>
   );
 }

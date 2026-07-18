@@ -45,6 +45,7 @@ export interface IpcContract {
   'files:rename':    { request: { projectId: number; from: string; to: string };            response: { ok: true } };
   'files:delete':    { request: { projectId: number; relPath: string };                     response: { ok: true } };
   'files:reveal':    { request: { projectId: number; relPath: string };                     response: { ok: true } };
+  'files:peek':      { request: { projectId: number; relPath: string; maxLines?: number };  response: { relPath: string; found: boolean; kind: 'text' | 'binary'; head: string; sizeBytes: number; totalLines: number | null } };
   'search:project':  { request: { projectId: number; query: string; caseSensitive?: boolean; regex?: boolean; maxFiles?: number; maxMatchesPerFile?: number }; response: { matches: Array<{ relPath: string; line: number; col: number; preview: string }>; filesScanned: number; truncated: boolean } };
 
   // Git — surfaced for the sidebar + status bar; read-only.
@@ -57,6 +58,7 @@ export interface IpcContract {
   'windows:popout-shell':      { request: { projectId: number; shellIndex: number }; response: { windowId: number } };
   'windows:return-shell':      { request: { projectId: number; shellIndex: number }; response: { ok: true } };
   'windows:list-popped':       { request: undefined;                                    response: { popped: Array<{ projectId: number; shellIndex: number }> } };
+  'windows:tile-all':          { request: undefined;                                    response: { arranged: number } };
 
   // native theme sync (light / dark / system)
   'app:set-native-theme': { request: { source: 'system' | 'light' | 'dark' }; response: { ok: true } };

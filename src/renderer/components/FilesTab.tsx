@@ -53,12 +53,15 @@ function extOf(name: string): string {
 export function FilesTab({
   projectId,
   openRelPath,
+  openLine,
   onOpenRelPathConsumed,
 }: {
   projectId: number;
   openRelPath?: string | null;
+  openLine?: number | null;
   onOpenRelPathConsumed?: () => void;
 }) {
+  const [pendingLine, setPendingLine] = useState<number | null>(null);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [dir, setDir] = useState<string | undefined>(undefined);
   const [openFiles, setOpenFiles] = useState<OpenFile[]>([]);
@@ -173,11 +176,14 @@ export function FilesTab({
     return () => el.removeEventListener('keydown', onKey);
   }, [activePath, saveFile]);
 
-  // React to Cmd+P file-finder pick — open the relative path directly.
+  // React to a Cmd+P / Cmd+Shift+F / hover-preview pick — open the relative
+  // path directly and, if a line was passed, note it so the preview can
+  // scroll there once the file loads.
   useEffect(() => {
     if (!openRelPath) return;
+    setPendingLine(openLine ?? null);
     void openPath(openRelPath).finally(() => onOpenRelPathConsumed?.());
-  }, [openRelPath, openPath, onOpenRelPathConsumed]);
+  }, [openRelPath, openLine, openPath, onOpenRelPathConsumed]);
 
   return (
     <div ref={rootRef} tabIndex={-1} className="h-full flex min-h-0 focus:outline-none">
@@ -222,6 +228,8 @@ export function FilesTab({
           {!error && activeFile && (
             <FilePreview
               file={activeFile}
+              scrollToLine={pendingLine}
+              onScrolled={() => setPendingLine(null)}
               onChange={(v) => updateBuffer(activeFile.relPath, v)}
               onToggleEdit={() => setEditing(activeFile.relPath, !activeFile.editing)}
               onSave={() => saveFile(activeFile.relPath)}
@@ -511,9 +519,11 @@ function FileTreePane({
 }
 
 function FilePreview({
-  file, onChange, onToggleEdit, onSave, dirty,
+  file, scrollToLine, onScrolled, onChange, onToggleEdit, onSave, dirty,
 }: {
   file: OpenFile;
+  scrollToLine: number | null;
+  onScrolled: () => void;
   onChange: (v: string) => void;
   onToggleEdit: () => void;
   onSave: () => void;
@@ -579,7 +589,7 @@ function FilePreview({
           <div className="p-4 text-sm text-[--text-muted]">Image preview is a Phase 2 feature.</div>
         )}
         {file.kind === 'text' && editing && (
-          <EditorWithLineNumbers value={file.buffer} onChange={onChange} />
+          <EditorWithLineNumbers value={file.buffer} onChange={onChange} scrollToLine={scrollToLine} onScrolled={onScrolled} lang={isMd ? 'markdown' : EXT_TO_LANG[ext] ?? ''} />
         )}
         {file.kind === 'text' && !editing && isMd && (
           <div
@@ -589,19 +599,81 @@ function FilePreview({
           />
         )}
         {file.kind === 'text' && !editing && !isMd && (
-          <SyntaxHighlightedPre content={file.buffer} lang={EXT_TO_LANG[ext] ?? ''} />
+          <SyntaxHighlightedPre content={file.buffer} lang={EXT_TO_LANG[ext] ?? ''} scrollToLine={scrollToLine} onScrolled={onScrolled} />
         )}
       </div>
     </div>
   );
 }
 
-/** Textarea with a synced left-hand gutter of line numbers. */
-function EditorWithLineNumbers({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+/**
+ * Textarea with a synced left-hand gutter of line numbers AND a highlighted
+ * <pre> underlay so syntax colors stay on while editing. The textarea sits
+ * transparently on top and forwards keystrokes; both share identical font
+ * metrics so glyphs align pixel-perfect.
+ */
+function EditorWithLineNumbers({
+  value, onChange, scrollToLine, onScrolled, lang,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  scrollToLine: number | null;
+  onScrolled: () => void;
+  lang: string;
+}) {
   const gutterRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
+  const preRef = useRef<HTMLPreElement>(null);
   const lineCount = useMemo(() => (value.match(/\n/g)?.length ?? 0) + 1, [value]);
-  const gutterWidth = 12 + String(lineCount).length * 8; // digit width ~8px at 12px mono
+  const gutterWidth = 12 + String(lineCount).length * 8;
+
+  const highlighted = useMemo(() => {
+    // <pre> collapses trailing whitespace; a zero-width sentinel keeps the
+    // last line rendered so alignment holds when the file ends with \n.
+    const text = value.endsWith('\n') ? value + ' ' : value;
+    try {
+      if (lang && hljs.getLanguage(lang)) return hljs.highlight(text, { language: lang, ignoreIllegals: true }).value;
+      if (text.length < 200_000) return hljs.highlightAuto(text).value;    // skip auto-detect on huge files
+      return escapeHtml(text);
+    } catch { return escapeHtml(text); }
+  }, [value, lang]);
+
+  // Scroll the textarea to a target line and select the whole line so the
+  // caret is visible where the user expects.
+  useEffect(() => {
+    if (scrollToLine == null) return;
+    const el = textRef.current;
+    if (!el) return;
+    const line = Math.max(1, scrollToLine);
+    let idx = 0;
+    let count = 1;
+    while (count < line) {
+      const nl = value.indexOf('\n', idx);
+      if (nl === -1) break;
+      idx = nl + 1;
+      count++;
+    }
+    const lineEnd = value.indexOf('\n', idx);
+    const end = lineEnd === -1 ? value.length : lineEnd;
+    el.focus();
+    el.setSelectionRange(idx, end);
+    const lineHeight = 24;
+    const target = Math.max(0, (line - 4) * lineHeight);
+    el.scrollTop = target;
+    if (preRef.current) preRef.current.scrollTop = target;
+    if (gutterRef.current) gutterRef.current.scrollTop = target;
+    onScrolled();
+  }, [scrollToLine, value, onScrolled]);
+
+  function onScroll(e: React.UIEvent<HTMLTextAreaElement>) {
+    const target = e.target as HTMLTextAreaElement;
+    if (preRef.current) {
+      preRef.current.scrollTop = target.scrollTop;
+      preRef.current.scrollLeft = target.scrollLeft;
+    }
+    if (gutterRef.current) gutterRef.current.scrollTop = target.scrollTop;
+  }
+
   return (
     <div className="w-full h-full flex bg-transparent" data-testid="file-editor">
       <div
@@ -614,30 +686,55 @@ function EditorWithLineNumbers({ value, onChange }: { value: string; onChange: (
           <div key={i}>{i + 1}</div>
         ))}
       </div>
-      <textarea
-        ref={textRef}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onScroll={(e) => {
-          if (gutterRef.current) gutterRef.current.scrollTop = (e.target as HTMLTextAreaElement).scrollTop;
-        }}
-        spellCheck={false}
-        wrap="off"
-        className="flex-1 min-w-0 bg-transparent px-3 pt-4 pb-4 text-[12px] leading-6 font-mono outline-none resize-none border-0 whitespace-pre overflow-auto"
-      />
+      <div className="relative flex-1 min-w-0">
+        <pre
+          ref={preRef}
+          aria-hidden
+          className="absolute inset-0 m-0 px-3 pt-4 pb-4 text-[12px] leading-6 font-mono whitespace-pre overflow-hidden pointer-events-none"
+        >
+          <code className={`hljs language-${lang || 'plaintext'}`} dangerouslySetInnerHTML={{ __html: highlighted }} />
+        </pre>
+        <textarea
+          ref={textRef}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onScroll={onScroll}
+          spellCheck={false}
+          wrap="off"
+          className="absolute inset-0 bg-transparent px-3 pt-4 pb-4 text-[12px] leading-6 font-mono outline-none resize-none border-0 whitespace-pre overflow-auto text-transparent caret-[--text] selection:bg-[color:var(--accent)]/40"
+        />
+      </div>
     </div>
   );
 }
 
-function SyntaxHighlightedPre({ content, lang }: { content: string; lang: string }) {
+function SyntaxHighlightedPre({
+  content, lang, scrollToLine, onScrolled,
+}: {
+  content: string;
+  lang: string;
+  scrollToLine: number | null;
+  onScrolled: () => void;
+}) {
+  const preRef = useRef<HTMLPreElement>(null);
   const html = useMemo(() => {
     try {
       if (lang && hljs.getLanguage(lang)) return hljs.highlight(content, { language: lang, ignoreIllegals: true }).value;
       return hljs.highlightAuto(content).value;
     } catch { return escapeHtml(content); }
   }, [content, lang]);
+
+  useEffect(() => {
+    if (scrollToLine == null) return;
+    const el = preRef.current;
+    if (!el) return;
+    const lineHeight = 20; // 12px * 1.65 line-height ≈ 20
+    el.scrollTop = Math.max(0, (scrollToLine - 4) * lineHeight);
+    onScrolled();
+  }, [scrollToLine, content, onScrolled]);
+
   return (
-    <pre className="p-4 text-[12px] leading-5 font-mono whitespace-pre overflow-auto">
+    <pre ref={preRef} className="p-4 text-[12px] leading-5 font-mono whitespace-pre overflow-auto h-full">
       <code className={`hljs language-${lang || 'plaintext'}`} dangerouslySetInnerHTML={{ __html: html }} />
     </pre>
   );

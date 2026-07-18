@@ -17,6 +17,7 @@ export interface WindowHooks {
   createPopoutWindow: (projectId: number, shellIndex: number) => Promise<number>;
   returnPopoutWindow: (projectId: number, shellIndex: number) => boolean;
   listPopped: () => Array<{ projectId: number; shellIndex: number }>;
+  tileAll: () => number;
 }
 
 const handlers: { [C in IpcChannelName]: Handler<C> } = {
@@ -197,6 +198,9 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'windows:list-popped': async () => {
     throw new Error('windows:list-popped requires WindowHooks — see registerIpc');
   },
+  'windows:tile-all': async () => {
+    throw new Error('windows:tile-all requires WindowHooks — see registerIpc');
+  },
 
   'app:set-native-theme': async (_s, { source }) => {
     nativeTheme.themeSource = source;
@@ -300,6 +304,47 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     if (!existsSync(abs)) return { ok: true as const };
     rmSync(abs, { recursive: true, force: true });
     return { ok: true as const };
+  },
+
+  'files:peek':   async (s, { projectId, relPath, maxLines = 40 }) => {
+    const cur = s.projects.get(projectId);
+    if (!cur) throw new Error(`no project ${projectId}`);
+
+    // Roots to try, in priority order:
+    //   1. the current project
+    //   2. absolute path as-is
+    //   3. every other visible project (so Claude output referencing a
+    //      sibling project still previews)
+    const roots: string[] = [resolve(cur.path)];
+    const others = s.projects.list().filter((p) => p.id !== projectId).map((p) => resolve(p.path));
+    for (const o of others) if (!roots.includes(o)) roots.push(o);
+
+    // Build candidate absolute paths for each root plus the raw path.
+    const candidates: Array<{ abs: string; root: string }> = [];
+    candidates.push({ abs: resolve(relPath), root: '' });                 // absolute as-is
+    for (const r of roots) candidates.push({ abs: resolve(r, relPath), root: r });
+
+    for (const { abs, root } of candidates) {
+      if (root && !abs.startsWith(root)) continue;
+      try {
+        const st = statSync(abs);
+        if (st.isDirectory()) continue;
+        const displayRel = root ? relative(root, abs) : abs;
+        if (st.size > 2_000_000) {
+          return { relPath: displayRel, found: true, kind: 'text' as const, head: `File too large (${st.size} bytes).`, sizeBytes: st.size, totalLines: null };
+        }
+        const buf = readFileSync(abs);
+        const scan = buf.subarray(0, Math.min(4096, buf.length));
+        if (scan.includes(0)) {
+          return { relPath: displayRel, found: true, kind: 'binary' as const, head: '', sizeBytes: st.size, totalLines: null };
+        }
+        const text = buf.toString('utf8');
+        const lines = text.split(/\r?\n/);
+        const head = lines.slice(0, maxLines).join('\n');
+        return { relPath: displayRel, found: true, kind: 'text' as const, head, sizeBytes: st.size, totalLines: lines.length };
+      } catch { /* try next candidate */ }
+    }
+    return { relPath, found: false, kind: 'text' as const, head: '', sizeBytes: 0, totalLines: null };
   },
 
   'files:reveal': async (s, { projectId, relPath }) => {
@@ -432,7 +477,7 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
     });
   }
 
-  const WINDOW_CHANNELS = new Set<IpcChannelName>(['windows:popout-shell', 'windows:return-shell', 'windows:list-popped']);
+  const WINDOW_CHANNELS = new Set<IpcChannelName>(['windows:popout-shell', 'windows:return-shell', 'windows:list-popped', 'windows:tile-all']);
 
   for (const channel of Object.keys(handlers) as IpcChannelName[]) {
     if (WINDOW_CHANNELS.has(channel)) continue; // wired below
@@ -457,5 +502,9 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
   ipcMain.handle('windows:list-popped', async () => {
     if (!windowHooks) return { popped: [] };
     return { popped: windowHooks.listPopped() };
+  });
+  ipcMain.handle('windows:tile-all', async () => {
+    if (!windowHooks) return { arranged: 0 };
+    return { arranged: windowHooks.tileAll() };
   });
 }

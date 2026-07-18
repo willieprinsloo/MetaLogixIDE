@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, screen, shell } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { buildServices } from './services';
@@ -119,6 +119,36 @@ export function listPopped(): Array<{ projectId: number; shellIndex: number }> {
   return poppedList();
 }
 
+/**
+ * Reveal + tile every one of OUR windows on the primary display. If
+ * there's more than one window, arranges them into a near-square grid
+ * with a small gap. Restores any minimised windows.
+ */
+export function tileAllOurWindows(): number {
+  const wins = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed());
+  if (wins.length === 0) return 0;
+  const display = screen.getPrimaryDisplay().workArea;
+  const gap = 10;
+  const cols = Math.ceil(Math.sqrt(wins.length));
+  const rows = Math.ceil(wins.length / cols);
+  const cellW = Math.floor((display.width  - gap * (cols + 1)) / cols);
+  const cellH = Math.floor((display.height - gap * (rows + 1)) / rows);
+  wins.forEach((w, i) => {
+    const c = i % cols;
+    const r = Math.floor(i / cols);
+    if (w.isMinimized()) w.restore();
+    w.setBounds({
+      x: display.x + gap + c * (cellW + gap),
+      y: display.y + gap + r * (cellH + gap),
+      width:  cellW,
+      height: cellH,
+    }, true);
+    w.show();
+    w.focus();
+  });
+  return wins.length;
+}
+
 function broadcast(channel: string, payload: unknown): void {
   for (const w of BrowserWindow.getAllWindows()) {
     if (!w.isDestroyed()) w.webContents.send(channel, payload);
@@ -132,6 +162,7 @@ app.whenReady().then(async () => {
     createPopoutWindow: async (projectId, shellIndex) => (await createPopoutWindow(projectId, shellIndex)).id,
     returnPopoutWindow: (projectId, shellIndex) => returnPopoutWindow(projectId, shellIndex),
     listPopped: () => listPopped(),
+    tileAll: () => tileAllOurWindows(),
   });
   Menu.setApplicationMenu(buildAppMenu(mainWindow));
 });
