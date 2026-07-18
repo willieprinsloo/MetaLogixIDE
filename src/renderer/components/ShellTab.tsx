@@ -19,6 +19,8 @@ export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIn
       fontFamily: 'ui-monospace, SFMono-Regular, monospace',
       fontSize: 13,
       theme: { background: '#0d1117' },
+      // allowProposedApi is required for Unicode11Addon and screenReaderMode.
+      allowProposedApi: true,
       // screenReaderMode enables the .xterm-accessibility DOM layer which
       // mirrors terminal output as text, required for E2E assertions.
       screenReaderMode: true,
