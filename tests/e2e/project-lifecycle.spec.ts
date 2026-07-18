@@ -16,6 +16,7 @@ test('full lifecycle: add root → discover → launch shell → echo', async ()
     env: {
       ...process.env,
       HOME: isolatedHome,               // isolate SQLite path
+      METAIDE_TEST_MODE: '1',
       METAIDE_DEFAULT_LAUNCH_FIRST:      JSON.stringify({ argv: ['node', mockClaude],              env: {} }),
       METAIDE_DEFAULT_LAUNCH_SUBSEQUENT: JSON.stringify({ argv: ['node', mockClaude, '--continue'],env: {} }),
     },

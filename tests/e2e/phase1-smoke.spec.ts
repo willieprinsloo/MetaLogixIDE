@@ -38,6 +38,7 @@ test('Phase 1 smoke: multi-root, switcher, shell, alive panel, files tab', async
     env: {
       ...process.env,
       HOME: isolatedHome,
+      METAIDE_TEST_MODE: '1',
       METAIDE_DEFAULT_LAUNCH_FIRST:      JSON.stringify({ argv: ['node', mockClaude],               env: {} }),
       METAIDE_DEFAULT_LAUNCH_SUBSEQUENT: JSON.stringify({ argv: ['node', mockClaude, '--continue'], env: {} }),
     },
@@ -114,10 +115,10 @@ test('Phase 1 smoke: multi-root, switcher, shell, alive panel, files tab', async
   await expect(alivePanel).toBeVisible({ timeout: 3000 });
 
   // Should list the alpha shell (1 entry)
-  const aliveRows = win.locator('div[class*="border-b border-neutral-800"] .text-sm').filter({ hasNotText: 'Alive shells' });
+  const aliveRows = win.locator('[data-testid="alive-shell-row"]');
   await expect(aliveRows.first()).toBeVisible({ timeout: 3000 });
   // At least 1 project name visible in the panel
-  const panelText = await win.locator('.fixed.right-0').innerText();
+  const panelText = await win.locator('[data-testid="alive-shells-panel"]').innerText();
   expect(panelText).toContain('alpha');
 
   // ── 9. Close panel, open second project (beta) ────────────────────────────
@@ -135,7 +136,7 @@ test('Phase 1 smoke: multi-root, switcher, shell, alive panel, files tab', async
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, shiftKey: true, bubbles: true, cancelable: true }));
   });
   await expect(win.getByText('Alive shells', { exact: true })).toBeVisible({ timeout: 3000 });
-  const aliveItems = win.locator('.fixed.right-0').locator('div.border-b.border-neutral-800').filter({ hasText: /last active/ });
+  const aliveItems = win.locator('[data-testid="alive-shell-row"]');
   await expect(aliveItems).toHaveCount(2, { timeout: 5000 });
 
   // ── 11. Switch to Files tab ───────────────────────────────────────────────

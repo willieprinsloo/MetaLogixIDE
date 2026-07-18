@@ -13,9 +13,7 @@ type SendEvent = <E extends IpcEventName>(channel: E, payload: IpcEvents[E]) => 
 
 const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'dialogs:pick-directory': async () => {
-    // In E2E test environments (indicated by METAIDE_DEFAULT_LAUNCH_FIRST),
-    // skip the native dialog so the renderer's window.prompt fallback is used.
-    if (process.env.METAIDE_DEFAULT_LAUNCH_FIRST) {
+    if (process.env.METAIDE_TEST_MODE === '1') {
       return { path: null };
     }
     const result = await dialog.showOpenDialog({ properties: ['openDirectory'] });
