@@ -16,7 +16,12 @@ export class SettingsRepo {
 
   seedDefaults(): void {
     const ins = this.db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
-    for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
+    const override = process.env.METAIDE_DEFAULT_LAUNCH_FIRST;
+    const overrideSub = process.env.METAIDE_DEFAULT_LAUNCH_SUBSEQUENT;
+    const effective: SettingsMap = { ...DEFAULT_SETTINGS };
+    if (override)    effective['default_launch_cmd.first']      = JSON.parse(override) as SettingsMap['default_launch_cmd.first'];
+    if (overrideSub) effective['default_launch_cmd.subsequent'] = JSON.parse(overrideSub) as SettingsMap['default_launch_cmd.subsequent'];
+    for (const [k, v] of Object.entries(effective)) {
       ins.run(k, JSON.stringify(v));
     }
   }
