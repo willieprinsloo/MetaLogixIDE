@@ -4,7 +4,7 @@ import { parseArgv } from '@shared/parse-argv';
 import { api } from '@renderer/api';
 import { useTheme, type ThemeMode } from '@renderer/hooks/useTheme';
 
-type Section = 'general' | 'roots' | 'launch';
+type Section = 'general' | 'roots' | 'launch' | 'metaproject';
 
 export function Settings({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [section, setSection] = useState<Section>('general');
@@ -39,6 +39,7 @@ export function Settings({ open, onClose }: { open: boolean; onClose: () => void
             <SectionButton active={section === 'general'} onClick={() => setSection('general')}>General</SectionButton>
             <SectionButton active={section === 'roots'}   onClick={() => setSection('roots')}>Root directories</SectionButton>
             <SectionButton active={section === 'launch'}  onClick={() => setSection('launch')}>Launch commands</SectionButton>
+            <SectionButton active={section === 'metaproject'} onClick={() => setSection('metaproject')}>Metaproject</SectionButton>
             <div className="mt-auto text-[10px] text-[--text-muted] px-2 pt-3">
               MetaLogix IDE · Phase 1
             </div>
@@ -47,6 +48,7 @@ export function Settings({ open, onClose }: { open: boolean; onClose: () => void
             {section === 'general' && <GeneralPanel />}
             {section === 'roots'   && <RootsPanel />}
             {section === 'launch'  && <LaunchPanel />}
+            {section === 'metaproject' && <MetaprojectPanel />}
           </div>
         </div>
 
@@ -266,6 +268,57 @@ function LaunchEditor({ label, value, onChange }: { label: string; value: Launch
         placeholder='e.g. claude --dangerously-skip-permissions'
       />
       <div className="text-[11px] text-[--text-muted]">argv: <span className="font-mono">{JSON.stringify(value.argv)}</span></div>
+    </div>
+  );
+}
+
+/* ─────────────────────────── Metaproject ─────────────────────────── */
+
+function MetaprojectPanel() {
+  const [url, setUrl] = useState('');
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    (async () => {
+      try {
+        const { value } = await api.invoke('settings:get', { key: 'metaproject_base_url' });
+        setUrl(typeof value === 'string' ? value : '');
+      } finally {
+        setLoaded(true);
+      }
+    })();
+  }, []);
+
+  async function save() {
+    const normalized = url.trim().replace(/\/$/, '');
+    await api.invoke('settings:set', { key: 'metaproject_base_url', value: normalized });
+    setUrl(normalized);
+  }
+
+  return (
+    <div className="space-y-6">
+      <Header
+        title="Metaproject"
+        subtitle="Optional. When set, projects with a .metaproject.yaml linking a project_id get a Board button that opens the board in your browser."
+      />
+      <Field label="Base URL" hint="e.g. https://metaproject.internal — used to build /board/{project_id} links.">
+        <div className="flex gap-2">
+          <input
+            type="url"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            onBlur={save}
+            onKeyDown={(e) => { if (e.key === 'Enter') { void save(); (e.target as HTMLInputElement).blur(); } }}
+            placeholder="https://metaproject.internal"
+            className="flex-1 bg-[--panel-strong] text-[--text] border border-[--border] rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[--accent]/60"
+            data-testid="metaproject-base-url"
+          />
+        </div>
+      </Field>
+      <div className="text-xs text-[--text-muted] leading-relaxed">
+        Add <code className="font-mono">project_id: PROJ-42</code> to a project&rsquo;s <code className="font-mono">.metaproject.yaml</code>
+        &nbsp;and the sidebar will show a Board button linked to it. Live chat and ticket sync land in a later phase.
+        {!loaded && <div className="mt-2 opacity-60">Loading…</div>}
+      </div>
     </div>
   );
 }

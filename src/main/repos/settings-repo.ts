@@ -9,6 +9,7 @@ export const DEFAULT_SETTINGS: SettingsMap = {
   'scrollback_lines':              10000,
   'max_watched_paths':             500,
   'theme':                         'dark',
+  'metaproject_base_url':          '',
 };
 
 export class SettingsRepo {

@@ -5,7 +5,7 @@ import type { IpcChannelName, IpcRequest, IpcResponse, IpcEventName, IpcEvents }
 import { discoverProjects } from '@main/domain/discovery';
 import { resolveLaunch } from '@main/domain/launch';
 import { chooseEvictee } from '@main/pty/keep-alive';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, renameSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, relative, resolve } from 'node:path';
 
@@ -35,7 +35,18 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     const root = s.roots.add(path);
     s.watcher.watch(path);
     for (const disc of discoverProjects(path, s.settings.get('scan_depth'))) {
-      s.projects.upsert(root.id, disc.path, disc.name);
+      const p = s.projects.upsert(root.id, disc.path, disc.name);
+      if (disc.metaprojectProjectId || disc.metaprojectBoardUrl) {
+        s.projects.updateConfig(p.id, {
+          linkedMetaprojectProjectId: disc.metaprojectProjectId ?? p.config.linkedMetaprojectProjectId ?? null,
+          // Store board_url alongside — used by the Board button.
+          notes: p.config.notes,
+        });
+        // Persist metaproject_project_id on the row too.
+        if (disc.metaprojectProjectId) {
+          s.projects.updateConfig(p.id, { linkedMetaprojectProjectId: disc.metaprojectProjectId });
+        }
+      }
     }
     return { root };
   },
@@ -45,7 +56,10 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     if (!root) return { discovered: 0 };
     let n = 0;
     for (const disc of discoverProjects(root.path, s.settings.get('scan_depth'))) {
-      s.projects.upsert(root.id, disc.path, disc.name); n++;
+      const p = s.projects.upsert(root.id, disc.path, disc.name); n++;
+      if (disc.metaprojectProjectId) {
+        s.projects.updateConfig(p.id, { linkedMetaprojectProjectId: disc.metaprojectProjectId });
+      }
     }
     return { discovered: n };
   },
@@ -237,6 +251,20 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     }
     walk(root);
     return { files, total, truncated };
+  },
+
+  'files:write':  async (s, { projectId, relPath, content }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    const abs = resolve(p.path, relPath);
+    if (!abs.startsWith(resolve(p.path))) throw new Error('path escapes project root');
+    // Atomic write via a sibling temp file then rename — protects against
+    // partial writes if the process dies mid-flush.
+    const tmp = `${abs}.metaide-tmp-${process.pid}-${Date.now()}`;
+    writeFileSync(tmp, content, 'utf8');
+    renameSync(tmp, abs);
+    const st = statSync(abs);
+    return { ok: true as const, sizeBytes: st.size };
   },
 
   'files:read':   async (s, { projectId, relPath }) => {

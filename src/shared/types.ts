@@ -63,4 +63,5 @@ export type SettingsMap = {
   'scrollback_lines':              number;
   'max_watched_paths':             number;
   'theme':                         'dark' | 'light' | 'system';
+  'metaproject_base_url':          string;
 };

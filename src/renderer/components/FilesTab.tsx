@@ -1,11 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import MarkdownIt from 'markdown-it';
 import { api } from '@renderer/api';
 import { ResizeHandle } from './ResizeHandle';
 import { usePersistedNumber } from '@renderer/hooks/usePersistedNumber';
+import { toast } from '@renderer/hooks/useToasts';
 
 interface Entry { name: string; isDir: boolean; relPath: string; }
-interface OpenFile { relPath: string; content: string; kind: 'text' | 'binary' }
+interface OpenFile {
+  relPath: string;
+  content: string;                 // last-saved content
+  buffer: string;                  // in-flight edits (dirty when != content)
+  kind: 'text' | 'binary';
+  editing: boolean;
+}
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: false, typographer: true });
 
@@ -28,9 +35,15 @@ export function FilesTab({
 }) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [dir, setDir] = useState<string | undefined>(undefined);
-  const [openFile, setOpenFile] = useState<OpenFile | null>(null);
+  const [openFiles, setOpenFiles] = useState<OpenFile[]>([]);
+  const [activePath, setActivePath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [treeWidth, setTreeWidth] = usePersistedNumber('metaide.filesTreeWidth', 256, 160, 500);
+
+  const activeFile = useMemo(
+    () => openFiles.find((f) => f.relPath === activePath) ?? null,
+    [openFiles, activePath],
+  );
 
   const loadDir = useCallback(async (relPath?: string) => {
     setError(null);
@@ -41,39 +54,94 @@ export function FilesTab({
     } catch (e) { setError(String(e)); }
   }, [projectId]);
 
-  const openEntry = useCallback(async (e: Entry) => {
-    if (e.isDir) { void loadDir(e.relPath); return; }
+  const openPath = useCallback(async (relPath: string) => {
     setError(null);
+    if (openFiles.some((f) => f.relPath === relPath)) { setActivePath(relPath); return; }
     try {
-      const { content, kind } = await api.invoke('files:read', { projectId, relPath: e.relPath });
-      setOpenFile({ relPath: e.relPath, content, kind });
+      const { content, kind } = await api.invoke('files:read', { projectId, relPath });
+      setOpenFiles((prev) => [...prev, { relPath, content, buffer: content, kind, editing: false }]);
+      setActivePath(relPath);
     } catch (err) { setError(String(err)); }
-  }, [projectId, loadDir]);
+  }, [projectId, openFiles]);
 
-  useEffect(() => { void loadDir(undefined); setOpenFile(null); }, [loadDir]);
+  const updateBuffer = useCallback((relPath: string, buffer: string) => {
+    setOpenFiles((prev) => prev.map((f) => (f.relPath === relPath ? { ...f, buffer } : f)));
+  }, []);
+
+  const setEditing = useCallback((relPath: string, editing: boolean) => {
+    setOpenFiles((prev) => prev.map((f) => (f.relPath === relPath ? { ...f, editing } : f)));
+  }, []);
+
+  const saveFile = useCallback(async (relPath: string) => {
+    const cur = openFiles.find((f) => f.relPath === relPath);
+    if (!cur || cur.kind !== 'text') return;
+    if (cur.buffer === cur.content) return; // clean
+    try {
+      await api.invoke('files:write', { projectId, relPath, content: cur.buffer });
+      setOpenFiles((prev) => prev.map((f) => (f.relPath === relPath ? { ...f, content: cur.buffer } : f)));
+      toast(`Saved ${relPath.split('/').pop()}`, { kind: 'success', timeoutMs: 1500 });
+    } catch (err) {
+      toast('Save failed', { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') });
+    }
+  }, [openFiles, projectId]);
+
+  const openEntry = useCallback((e: Entry) => {
+    if (e.isDir) { void loadDir(e.relPath); return; }
+    void openPath(e.relPath);
+  }, [loadDir, openPath]);
+
+  const closeFile = useCallback((relPath: string) => {
+    setOpenFiles((prev) => {
+      const target = prev.find((f) => f.relPath === relPath);
+      if (target && target.buffer !== target.content) {
+        const ok = window.confirm(`Discard unsaved changes to ${relPath}?`);
+        if (!ok) return prev;
+      }
+      const next = prev.filter((f) => f.relPath !== relPath);
+      // If the active file is closing, promote the previous tab (or none).
+      setActivePath((curActive) => {
+        if (curActive !== relPath) return curActive;
+        if (next.length === 0) return null;
+        const closingIdx = prev.findIndex((f) => f.relPath === relPath);
+        const nextIdx = Math.max(0, closingIdx - 1);
+        const promoted = next[Math.min(nextIdx, next.length - 1)];
+        return promoted ? promoted.relPath : null;
+      });
+      return next;
+    });
+  }, []);
+
+  // Reset when project switches.
+  useEffect(() => { void loadDir(undefined); setOpenFiles([]); setActivePath(null); }, [loadDir]);
+
+  // ⌘S to save the active file.
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key === 's' && activePath) {
+        e.preventDefault();
+        void saveFile(activePath);
+      }
+    };
+    el.addEventListener('keydown', onKey);
+    return () => el.removeEventListener('keydown', onKey);
+  }, [activePath, saveFile]);
 
   // React to Cmd+P file-finder pick — open the relative path directly.
   useEffect(() => {
     if (!openRelPath) return;
-    (async () => {
-      try {
-        const { content, kind } = await api.invoke('files:read', { projectId, relPath: openRelPath });
-        setOpenFile({ relPath: openRelPath, content, kind });
-        setError(null);
-      } catch (err) {
-        setError(String(err));
-      } finally {
-        onOpenRelPathConsumed?.();
-      }
-    })();
-  }, [openRelPath, projectId, onOpenRelPathConsumed]);
+    void openPath(openRelPath).finally(() => onOpenRelPathConsumed?.());
+  }, [openRelPath, openPath, onOpenRelPathConsumed]);
 
   return (
-    <div className="h-full flex min-h-0">
+    <div ref={rootRef} tabIndex={-1} className="h-full flex min-h-0 focus:outline-none">
       <FileTreePane
         entries={entries}
         dir={dir}
-        openFileRelPath={openFile?.relPath ?? null}
+        openFileRelPath={activePath}
         onGoUp={() => loadDir(undefined)}
         onOpen={openEntry}
         width={treeWidth}
@@ -86,18 +154,98 @@ export function FilesTab({
         max={500}
         side="left"
       />
-      <div className="flex-1 min-h-0 border-l border-[--border] bg-[--panel]/40">
-        {error && (
-          <div className="p-4 text-sm text-[--danger]">{error}</div>
+      <div className="flex-1 min-h-0 flex flex-col border-l border-[--border] bg-[--panel]/40">
+        {openFiles.length > 0 && (
+          <FileTabBar
+            openFiles={openFiles}
+            activePath={activePath}
+            onActivate={setActivePath}
+            onClose={closeFile}
+          />
         )}
-        {!error && !openFile && (
-          <div className="h-full flex items-center justify-center p-8 text-center text-sm text-[--text-muted]">
-            Pick a file on the left to preview it.
-          </div>
-        )}
-        {!error && openFile && <FilePreview file={openFile} />}
+        <div className="flex-1 min-h-0">
+          {error && <div className="p-4 text-sm text-[--danger]">{error}</div>}
+          {!error && !activeFile && (
+            <div className="h-full flex items-center justify-center p-8 text-center text-sm text-[--text-muted]">
+              Pick a file on the left to preview it. <br />
+              <span className="opacity-70">⌘P finds a file by name across the project.</span>
+            </div>
+          )}
+          {!error && activeFile && (
+            <FilePreview
+              file={activeFile}
+              onChange={(v) => updateBuffer(activeFile.relPath, v)}
+              onToggleEdit={() => setEditing(activeFile.relPath, !activeFile.editing)}
+              onSave={() => saveFile(activeFile.relPath)}
+              dirty={activeFile.buffer !== activeFile.content}
+            />
+          )}
+        </div>
       </div>
     </div>
+  );
+}
+
+function FileTabBar({
+  openFiles, activePath, onActivate, onClose,
+}: {
+  openFiles: OpenFile[];
+  activePath: string | null;
+  onActivate: (relPath: string) => void;
+  onClose: (relPath: string) => void;
+}) {
+  return (
+    <div
+      role="tablist"
+      data-testid="file-tabbar"
+      className="flex items-center overflow-x-auto border-b border-[--border] bg-[--panel]/60 shrink-0"
+    >
+      {openFiles.map((f) => {
+        const active = f.relPath === activePath;
+        const name = f.relPath.split('/').pop() ?? f.relPath;
+        const dirty = f.buffer !== f.content;
+        return (
+          <div
+            key={f.relPath}
+            role="tab"
+            aria-selected={active}
+            data-testid="file-tab"
+            className={`group flex items-center gap-1.5 pl-2.5 pr-1 py-1 text-[12px] border-r border-[--border] cursor-pointer shrink-0 ${
+              active
+                ? 'bg-[--panel-strong] text-[--text]'
+                : 'text-[--text-muted] hover:text-[--text] hover:bg-[--panel-strong]/60'
+            }`}
+            onClick={() => onActivate(f.relPath)}
+            onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); onClose(f.relPath); } }}
+            title={dirty ? `${f.relPath} — unsaved changes` : f.relPath}
+          >
+            <FileIcon isDir={false} name={name} />
+            <span className="truncate max-w-[160px]">{name}</span>
+            <button
+              onClick={(e) => { e.stopPropagation(); onClose(f.relPath); }}
+              className={`w-4 h-4 flex items-center justify-center rounded transition ${
+                active
+                  ? 'text-[--text-muted] hover:text-[--danger] hover:bg-[--panel]'
+                  : 'text-[--text-muted] opacity-0 group-hover:opacity-100 hover:text-[--danger]'
+              }`}
+              title="Close tab"
+              aria-label={`Close ${name}`}
+            >
+              {dirty ? <span className="w-1.5 h-1.5 rounded-full bg-[--text]" aria-hidden /> : <TabXIcon />}
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function TabXIcon() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
   );
 }
 
@@ -144,11 +292,21 @@ function FileTreePane({
   );
 }
 
-function FilePreview({ file }: { file: OpenFile }) {
+function FilePreview({
+  file, onChange, onToggleEdit, onSave, dirty,
+}: {
+  file: OpenFile;
+  onChange: (v: string) => void;
+  onToggleEdit: () => void;
+  onSave: () => void;
+  dirty: boolean;
+}) {
   const ext = extOf(file.relPath);
   const isMd = MD_EXT.has(ext);
   const isImg = IMG_EXT.has(ext);
-  const html = useMemo(() => (isMd ? md.render(file.content) : ''), [file.content, isMd]);
+  const editable = file.kind === 'text';
+  const editing = file.editing && editable;
+  const html = useMemo(() => (isMd ? md.render(file.buffer) : ''), [file.buffer, isMd]);
 
   // Intercept any <a> click inside the rendered Markdown and route it
   // through app:open-external so real URLs open in the OS browser instead
@@ -166,26 +324,61 @@ function FilePreview({ file }: { file: OpenFile }) {
 
   return (
     <div className="h-full flex flex-col min-h-0" data-testid="file-preview">
-      <div className="px-3 py-1.5 border-b border-[--border] text-[11px] text-[--text-muted] font-mono flex items-center gap-1 overflow-hidden">
-        <Breadcrumbs relPath={file.relPath} />
+      <div className="px-3 py-1.5 border-b border-[--border] text-[11px] text-[--text-muted] font-mono flex items-center gap-2 overflow-hidden">
+        <div className="flex-1 flex items-center gap-1 overflow-hidden">
+          <Breadcrumbs relPath={file.relPath} />
+          {dirty && <span className="text-[10px] text-[--accent] ml-1" title="Unsaved changes">●</span>}
+        </div>
+        {editable && (
+          <>
+            <button
+              onClick={onToggleEdit}
+              className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]"
+              title={editing ? 'Switch to preview' : 'Edit (⌘S to save)'}
+              data-testid="file-edit-toggle"
+            >
+              {editing ? (isMd ? 'Preview' : 'View') : 'Edit'}
+            </button>
+            <button
+              onClick={onSave}
+              disabled={!dirty}
+              className={`text-[11px] px-2 py-0.5 rounded ${
+                dirty ? 'bg-[color:var(--accent)] text-white hover:brightness-110' : 'bg-[--panel] text-[--text-muted] cursor-not-allowed'
+              }`}
+              title="Save (⌘S)"
+              data-testid="file-save"
+            >
+              Save
+            </button>
+          </>
+        )}
       </div>
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto min-h-0">
         {file.kind === 'binary' && !isImg && (
           <div className="p-6 text-sm text-[--text-muted]">Binary file — no preview.</div>
         )}
         {file.kind === 'binary' && isImg && (
           <div className="p-4 text-sm text-[--text-muted]">Image preview is a Phase 2 feature.</div>
         )}
-        {file.kind === 'text' && isMd && (
+        {file.kind === 'text' && editing && (
+          <textarea
+            data-testid="file-editor"
+            value={file.buffer}
+            onChange={(e) => onChange(e.target.value)}
+            spellCheck={false}
+            className="w-full h-full bg-transparent p-4 text-[13px] leading-6 font-mono outline-none resize-none border-0"
+          />
+        )}
+        {file.kind === 'text' && !editing && isMd && (
           <div
             className="markdown p-6 max-w-3xl mx-auto"
             onClick={onPreviewClick}
             dangerouslySetInnerHTML={{ __html: html }}
           />
         )}
-        {file.kind === 'text' && !isMd && (
+        {file.kind === 'text' && !editing && !isMd && (
           <pre className="p-4 text-[12px] leading-5 font-mono whitespace-pre overflow-auto">
-            {file.content}
+            {file.buffer}
           </pre>
         )}
       </div>

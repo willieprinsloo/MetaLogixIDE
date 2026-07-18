@@ -227,6 +227,19 @@ function RowXIcon() {
   );
 }
 
+const ROOT_COLLAPSED_KEY = 'metaide.rootsCollapsed';
+function readCollapsed(): Set<number> {
+  try {
+    const raw = localStorage.getItem(ROOT_COLLAPSED_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw) as number[];
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch { return new Set(); }
+}
+function writeCollapsed(set: Set<number>): void {
+  localStorage.setItem(ROOT_COLLAPSED_KEY, JSON.stringify([...set]));
+}
+
 function RootBlock({
   root,
   projects,
@@ -240,15 +253,27 @@ function RootBlock({
   aliveIds: Set<number>;
   onSelect: (p: Project) => void;
 }) {
-  const [open, setOpen] = useState(true);
+  const [collapsed, setCollapsedState] = useState<Set<number>>(readCollapsed);
+  const open = !collapsed.has(root.id);
+  function toggle() {
+    setCollapsedState((prev) => {
+      const next = new Set(prev);
+      if (next.has(root.id)) next.delete(root.id);
+      else next.add(root.id);
+      writeCollapsed(next);
+      return next;
+    });
+  }
   const aliveInRoot = projects.filter((p) => aliveIds.has(p.id)).length;
   return (
     <div>
       <button
-        onClick={() => setOpen(!open)}
+        onClick={toggle}
+        aria-expanded={open}
+        data-testid="root-toggle"
         className="w-full text-left px-3 py-1 text-xs text-[--text-muted] hover:text-[--text] flex items-center gap-1"
       >
-        <span className="inline-block w-3">{open ? '▾' : '▸'}</span>
+        <span className="inline-block w-3 transition-transform" style={{ transform: open ? 'none' : 'rotate(-90deg)' }}>▾</span>
         <span className="truncate flex-1" title={root.path}>{shortenPath(root.path)}</span>
         <span className="text-[10px] opacity-70">
           {aliveInRoot > 0 ? `${aliveInRoot}/${projects.length}` : projects.length}

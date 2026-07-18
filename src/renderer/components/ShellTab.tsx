@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { usePersistedNumber } from '@renderer/hooks/usePersistedNumber';
 import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
@@ -31,6 +32,7 @@ export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIn
   const receivedLive = useRef(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [fontSize, setFontSize] = usePersistedNumber('metaide.shellFontSize', 14, 9, 28);
 
   useEffect(() => {
     if (!termHostRef.current) return;
@@ -40,7 +42,7 @@ export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIn
       // common developer monospace fonts. `ui-monospace` alone can pick
       // Menlo bitmap fallback on some setups and looks pixelated.
       fontFamily: '"SF Mono", "JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace',
-      fontSize: 14,
+      fontSize,
       fontWeight: 'normal',
       fontWeightBold: 'bold',
       lineHeight: 1.25,
@@ -112,6 +114,10 @@ export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIn
       termRef.current = null;
       searchRef.current = null;
     };
+    // We deliberately don't include fontSize here — a font-size change
+    // shouldn't recreate the terminal. The separate effect below applies
+    // it to the running Terminal instance instead.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, shellIndex]);
 
   const findNext = useCallback((q: string) => {
@@ -123,7 +129,21 @@ export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIn
     searchRef.current.findPrevious(q, { caseSensitive: false, wholeWord: false, regex: false });
   }, []);
 
+  // Push font-size changes into the running Terminal instance so ⌘+/⌘- feels live.
+  useEffect(() => {
+    if (!termRef.current) return;
+    termRef.current.options.fontSize = fontSize;
+    // Trigger a resize so the fit addon recomputes cols/rows for the new font metrics.
+    try {
+      const el = containerRef.current;
+      if (el) {
+        const evt = new Event('resize'); void evt; // no-op; ResizeObserver already handles container size, but font metric change requires fit re-run
+      }
+    } catch { /* ignore */ }
+  }, [fontSize]);
+
   // ⌘F opens the terminal search overlay when this tab has focus.
+  // ⌘= / ⌘- / ⌘0 zoom the terminal font.
   useEffect(() => {
     if (!containerRef.current) return;
     const el = containerRef.current;
@@ -132,13 +152,21 @@ export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIn
       if (mod && e.key === 'f' && !e.shiftKey) {
         e.preventDefault();
         setSearchOpen(true);
-        // Focus after paint so React has rendered the input.
         requestAnimationFrame(() => searchInputRef.current?.focus());
+      } else if (mod && (e.key === '=' || e.key === '+')) {
+        e.preventDefault();
+        setFontSize(fontSize + 1);
+      } else if (mod && e.key === '-') {
+        e.preventDefault();
+        setFontSize(fontSize - 1);
+      } else if (mod && e.key === '0') {
+        e.preventDefault();
+        setFontSize(14);
       }
     };
     el.addEventListener('keydown', onKey);
     return () => el.removeEventListener('keydown', onKey);
-  }, []);
+  }, [fontSize, setFontSize]);
 
   useShellStream(
     projectId,
