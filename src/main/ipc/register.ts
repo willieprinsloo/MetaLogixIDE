@@ -5,8 +5,8 @@ import type { IpcChannelName, IpcRequest, IpcResponse, IpcEventName, IpcEvents }
 import { discoverProjects } from '@main/domain/discovery';
 import { resolveLaunch } from '@main/domain/launch';
 import { chooseEvictee } from '@main/pty/keep-alive';
-import { readdirSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
 
 type Handler<C extends IpcChannelName> = (services: Services, req: IpcRequest<C>) => Promise<IpcResponse<C>>;
 type SendEvent = <E extends IpcEventName>(channel: E, payload: IpcEvents[E]) => void;
@@ -120,6 +120,23 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     });
     entries.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1));
     return { entries };
+  },
+
+  'files:read':   async (s, { projectId, relPath }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    // Prevent path traversal — resolved path must stay within project root.
+    const abs = resolve(p.path, relPath);
+    if (!abs.startsWith(resolve(p.path))) throw new Error('path escapes project root');
+    const st = statSync(abs);
+    if (st.isDirectory()) throw new Error(`${relPath} is a directory`);
+    if (st.size > 2_000_000) return { content: `File too large (${st.size} bytes) — preview capped at 2 MB.`, kind: 'text' as const, sizeBytes: st.size };
+    const buf = readFileSync(abs);
+    // Heuristic binary check: NUL byte in first 8KB.
+    const scan = buf.subarray(0, Math.min(8192, buf.length));
+    const isBinary = scan.includes(0);
+    if (isBinary) return { content: '', kind: 'binary' as const, sizeBytes: st.size };
+    return { content: buf.toString('utf8'), kind: 'text' as const, sizeBytes: st.size };
   },
 };
 

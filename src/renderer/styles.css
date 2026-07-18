@@ -95,6 +95,26 @@ html, body {
   border-radius: 4px;
 }
 
+/* Rendered Markdown preview */
+.markdown { color: var(--text); line-height: 1.65; font-size: 14px; }
+.markdown h1 { font-size: 1.7em; font-weight: 700; margin: 0.6em 0 0.3em; }
+.markdown h2 { font-size: 1.35em; font-weight: 700; margin: 0.8em 0 0.3em; }
+.markdown h3 { font-size: 1.15em; font-weight: 600; margin: 0.8em 0 0.3em; }
+.markdown h4, .markdown h5, .markdown h6 { font-weight: 600; margin: 0.8em 0 0.3em; }
+.markdown p  { margin: 0.6em 0; }
+.markdown a  { color: var(--accent); text-decoration: underline; text-decoration-color: color-mix(in oklab, var(--accent) 40%, transparent); }
+.markdown ul, .markdown ol { margin: 0.4em 0 0.4em 1.4em; }
+.markdown li { margin: 0.15em 0; }
+.markdown code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.9em; background: var(--panel-strong); padding: 0.1em 0.4em; border-radius: 4px; border: 1px solid var(--border); }
+.markdown pre { background: var(--panel-strong); border: 1px solid var(--border); border-radius: 8px; padding: 0.8em 1em; overflow-x: auto; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; line-height: 1.55; }
+.markdown pre code { background: transparent; border: 0; padding: 0; }
+.markdown blockquote { border-left: 3px solid var(--accent); padding: 0.2em 0.8em; color: var(--text-muted); margin: 0.6em 0; }
+.markdown table { border-collapse: collapse; margin: 0.6em 0; font-size: 0.95em; }
+.markdown th, .markdown td { border: 1px solid var(--border); padding: 0.4em 0.7em; }
+.markdown th { background: var(--panel); text-align: left; }
+.markdown hr { border: 0; border-top: 1px solid var(--border); margin: 1em 0; }
+.markdown img { max-width: 100%; border-radius: 6px; }
+
 /* Keyboard hint chip */
 kbd {
   display: inline-block;
