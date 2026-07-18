@@ -147,16 +147,46 @@ export function Sidebar({ selectedProjectId, onSelect, onNewProject, width }: Pr
   );
 }
 
+const SECTION_COLLAPSED_KEY = 'metaide.sectionsCollapsed';
+function readCollapsedSections(): Set<string> {
+  try {
+    const raw = localStorage.getItem(SECTION_COLLAPSED_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw) as string[];
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch { return new Set(); }
+}
+function writeCollapsedSections(set: Set<string>): void {
+  localStorage.setItem(SECTION_COLLAPSED_KEY, JSON.stringify([...set]));
+}
+
 function Section({
   title, testId, accent = false, children,
 }: { title: string; testId: string; accent?: boolean; children: React.ReactNode }) {
+  const [collapsedSet, setCollapsedSet] = useState<Set<string>>(readCollapsedSections);
+  const collapsed = collapsedSet.has(title);
+  function toggle() {
+    setCollapsedSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(title)) next.delete(title);
+      else next.add(title);
+      writeCollapsedSections(next);
+      return next;
+    });
+  }
   return (
     <div className="mb-2" data-testid={testId}>
-      <div className="px-3 pt-2 pb-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wider font-semibold text-[--text]">
+      <button
+        onClick={toggle}
+        aria-expanded={!collapsed}
+        data-testid={`${testId}-toggle`}
+        className="w-full px-3 pt-2 pb-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wider font-semibold text-[--text] hover:text-[--text] hover:bg-[--panel]/60"
+      >
+        <span className="inline-block w-3 transition-transform text-[--text-muted]" style={{ transform: collapsed ? 'rotate(-90deg)' : 'none' }}>▾</span>
         {accent && <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 live-dot" />}
         <span className={accent ? '' : 'text-[--text-muted]'}>{title}</span>
-      </div>
-      {children}
+      </button>
+      {!collapsed && children}
     </div>
   );
 }
