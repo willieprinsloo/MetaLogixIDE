@@ -23,6 +23,7 @@ export interface IpcContract {
   'shells:write':       { request: { projectId: number; shellIndex: number; data: string }; response: { ok: true } };
   'shells:alive-list':  { request: undefined;                                   response: { shells: AliveShellSummary[] } };
   'shells:pin':         { request: { projectId: number; shellIndex: number; pinned: boolean }; response: { ok: true } };
+  'shells:snapshot':    { request: { projectId: number; shellIndex: number };   response: { output: string; alive: boolean } };
 
   // settings
   'settings:get': { request: { key: keyof SettingsMap };                        response: { value: SettingsMap[keyof SettingsMap] } };

@@ -164,6 +164,11 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     return { shells: alive };
   },
   'shells:pin':   async (s, { projectId, shellIndex, pinned }) => { s.shells.setPinned(projectId, shellIndex, pinned); return { ok: true } as const; },
+  'shells:snapshot': async (s, { projectId, shellIndex }) => {
+    const alive = s.ptyManager?.isAlive(projectId, shellIndex) ?? false;
+    const output = s.ptyManager?.getScrollback(projectId, shellIndex) ?? '';
+    return { output, alive };
+  },
 
   'settings:get': async (s, { key }) => ({ value: s.settings.get(key) }),
   'settings:set': async (s, { key, value }) => { s.settings.set(key, value as never); return { ok: true } as const; },

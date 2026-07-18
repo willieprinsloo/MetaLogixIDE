@@ -10,11 +10,14 @@ interface Entry {
   startedAt: number;
   earlyBuffer: string;   // captured output within the first 3s
   bufferOpen: boolean;
+  /** Rolling scrollback used by new viewports to replay recent output on mount. */
+  scrollback: string;
 }
 
 const key = (p: number, s: number) => `${p}:${s}`;
 const EARLY_BUFFER_MS = 3000;
 const EARLY_BUFFER_CAP = 32 * 1024;
+const SCROLLBACK_CAP = 256 * 1024;   // 256 KiB rolling
 
 export class PtyManager extends EventEmitter {
   private entries = new Map<string, Entry>();
@@ -33,11 +36,17 @@ export class PtyManager extends EventEmitter {
     const entry: Entry = {
       projectId, shellIndex, pty, pid: pty.pid, cols, rows,
       startedAt: Date.now(), earlyBuffer: '', bufferOpen: true,
+      scrollback: '',
     };
     this.entries.set(k, entry);
     pty.onData((data: string) => {
       if (entry.bufferOpen && entry.earlyBuffer.length < EARLY_BUFFER_CAP) {
         entry.earlyBuffer += data;
+      }
+      // Keep rolling scrollback so late-attaching viewports can replay.
+      entry.scrollback += data;
+      if (entry.scrollback.length > SCROLLBACK_CAP) {
+        entry.scrollback = entry.scrollback.slice(entry.scrollback.length - SCROLLBACK_CAP);
       }
       this.emit('data', { projectId, shellIndex, data });
     });
@@ -53,6 +62,11 @@ export class PtyManager extends EventEmitter {
 
   getEarlyBuffer(projectId: number, shellIndex: number): string {
     return this.entries.get(key(projectId, shellIndex))?.earlyBuffer ?? '';
+  }
+
+  /** Rolling scrollback (most recent ≤256 KiB). Empty if the shell isn't alive. */
+  getScrollback(projectId: number, shellIndex: number): string {
+    return this.entries.get(key(projectId, shellIndex))?.scrollback ?? '';
   }
 
   write(projectId: number, shellIndex: number, data: string): void {

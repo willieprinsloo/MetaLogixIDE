@@ -57,6 +57,26 @@ describe('PtyManager earlyBuffer', () => {
     const mgr = new PtyManager();
     expect(mgr.getEarlyBuffer(999, 0)).toBe('');
   });
+
+  it('scrollback accumulates and is queryable', async () => {
+    const mgr = new PtyManager();
+    await mgr.spawn(201, 0, launch());
+    await waitForOutput(mgr, 201, 'mock-claude ready');
+    expect(mgr.getScrollback(201, 0)).toContain('mock-claude ready');
+    mgr.write(201, 0, 'first\n');
+    await waitForOutput(mgr, 201, 'echo: first');
+    mgr.write(201, 0, 'second\n');
+    await waitForOutput(mgr, 201, 'echo: second');
+    const sb = mgr.getScrollback(201, 0);
+    expect(sb).toContain('echo: first');
+    expect(sb).toContain('echo: second');
+    await mgr.kill(201, 0);
+  });
+
+  it('getScrollback is empty for unknown shells', () => {
+    const mgr = new PtyManager();
+    expect(mgr.getScrollback(999, 0)).toBe('');
+  });
 });
 
 describe('--continue fallback detection', () => {

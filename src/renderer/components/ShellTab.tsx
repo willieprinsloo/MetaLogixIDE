@@ -28,6 +28,7 @@ export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIn
   const termRef = useRef<Terminal | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const receivedLive = useRef(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -84,6 +85,19 @@ export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIn
       requestAnimationFrame(syncSize);
     });
 
+    // Replay any existing scrollback from the PTY so late-attaching viewports
+    // (a pop-out window, tab switch back, second monitor) don't see an empty
+    // terminal while the shell is idle. If a live event has already arrived
+    // by the time the snapshot resolves, skip the replay to avoid an
+    // out-of-order splice of old content after fresh output.
+    receivedLive.current = false;
+    (async () => {
+      try {
+        const { output } = await api.invoke('shells:snapshot', { projectId, shellIndex });
+        if (output && termRef.current === term && !receivedLive.current) term.write(output);
+      } catch { /* ignore — snapshot is best-effort */ }
+    })();
+
     const ro = new ResizeObserver(syncSize);
     if (containerRef.current) ro.observe(containerRef.current);
 
@@ -129,7 +143,7 @@ export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIn
   useShellStream(
     projectId,
     shellIndex,
-    (data) => termRef.current?.write(data),
+    (data) => { receivedLive.current = true; termRef.current?.write(data); },
     () => { termRef.current?.write('\r\n[shell exited]\r\n'); },
   );
 
