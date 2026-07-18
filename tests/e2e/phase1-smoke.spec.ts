@@ -57,7 +57,7 @@ test('Phase 1 smoke: multi-root, switcher, shell, alive panel, files tab', async
   await win.evaluate((path: string) => {
     (window as { prompt: (msg?: string) => string }).prompt = () => path;
   }, rootA);
-  await win.getByRole('button', { name: '+ Add root' }).click();
+  await win.getByRole('button', { name: '+ Root' }).click();
   await expect(win.getByRole('button', { name: 'alpha', exact: true })).toBeVisible({ timeout: 5000 });
   await expect(win.getByRole('button', { name: 'beta',  exact: true })).toBeVisible({ timeout: 5000 });
 
@@ -65,7 +65,7 @@ test('Phase 1 smoke: multi-root, switcher, shell, alive panel, files tab', async
   await win.evaluate((path: string) => {
     (window as { prompt: (msg?: string) => string }).prompt = () => path;
   }, rootB);
-  await win.getByRole('button', { name: '+ Add root' }).click();
+  await win.getByRole('button', { name: '+ Root' }).click();
   await expect(win.getByRole('button', { name: 'gamma', exact: true })).toBeVisible({ timeout: 5000 });
   await expect(win.getByRole('button', { name: 'delta', exact: true })).toBeVisible({ timeout: 5000 });
 

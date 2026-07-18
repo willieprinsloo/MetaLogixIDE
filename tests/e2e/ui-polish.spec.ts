@@ -25,7 +25,7 @@ test('UI polish: sidebar toggle, in-use section, live indicator, popout window',
 
   // Add root and pick project
   await win.evaluate((path: string) => { (window as { prompt: (msg?: string) => string }).prompt = () => path; }, demoRoot);
-  await win.getByRole('button', { name: '+ Add root' }).click();
+  await win.getByRole('button', { name: '+ Root' }).click();
   const projRow = win.locator('[data-testid="project-row"]', { hasText: 'polished' }).first();
   await expect(projRow).toBeVisible({ timeout: 5000 });
   await projRow.click();
@@ -40,9 +40,9 @@ test('UI polish: sidebar toggle, in-use section, live indicator, popout window',
   await expect(inUseSection.locator('[data-testid="project-row"][data-alive="1"]', { hasText: 'polished' })).toBeVisible();
 
   // Sidebar toggle hides then shows the sidebar
-  await win.getByTestId('toggle-sidebar').click();
+  await win.getByTestId('ab-toggle-sidebar').click();
   await expect(win.locator('aside')).toHaveCount(0, { timeout: 2000 });
-  await win.getByTestId('toggle-sidebar').click();
+  await win.getByTestId('ab-toggle-sidebar').click();
   await expect(win.locator('aside')).toBeVisible({ timeout: 2000 });
 
   // Popout the shell into a new window

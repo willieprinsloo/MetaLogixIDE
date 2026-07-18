@@ -166,8 +166,8 @@ function FilePreview({ file }: { file: OpenFile }) {
 
   return (
     <div className="h-full flex flex-col min-h-0" data-testid="file-preview">
-      <div className="px-3 py-1.5 border-b border-[--border] text-[11px] text-[--text-muted] font-mono truncate">
-        {file.relPath}
+      <div className="px-3 py-1.5 border-b border-[--border] text-[11px] text-[--text-muted] font-mono flex items-center gap-1 overflow-hidden">
+        <Breadcrumbs relPath={file.relPath} />
       </div>
       <div className="flex-1 overflow-auto">
         {file.kind === 'binary' && !isImg && (
@@ -190,6 +190,23 @@ function FilePreview({ file }: { file: OpenFile }) {
         )}
       </div>
     </div>
+  );
+}
+
+function Breadcrumbs({ relPath }: { relPath: string }) {
+  const parts = relPath.split('/');
+  return (
+    <>
+      {parts.map((p, i) => {
+        const last = i === parts.length - 1;
+        return (
+          <span key={i} className="flex items-center gap-1 truncate">
+            {i > 0 && <span className="opacity-60">›</span>}
+            <span className={last ? 'text-[--text]' : ''}>{p}</span>
+          </span>
+        );
+      })}
+    </>
   );
 }
 

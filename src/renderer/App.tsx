@@ -9,6 +9,7 @@ import { Settings } from './components/Settings';
 import { ResizeHandle } from './components/ResizeHandle';
 import { FileFinder } from './components/FileFinder';
 import { NewProjectDialog } from './components/NewProjectDialog';
+import { ActivityBar, type ActivityView } from './components/ActivityBar';
 import { useRoots } from './hooks/useRoots';
 import type { Project } from '@shared/types';
 import { api } from './api';
@@ -49,6 +50,7 @@ function MainApp() {
   const [openInFiles, setOpenInFiles] = useState<string | null>(null);
   const { mode: themeMode, effective: effectiveTheme, cycle: cycleTheme } = useTheme();
   const { roots } = useRoots();
+  const [activeView, setActiveView] = useState<ActivityView>('projects');
 
   const refreshAlive = useCallback(async () => {
     const { shells } = await api.invoke('shells:alive-list', undefined as never);
@@ -99,16 +101,13 @@ function MainApp() {
   return (
     <div className="h-screen w-screen flex flex-col bg-transparent">
       {/* Native-feeling drag region for hidden-inset title bar */}
-      <div className="drag h-10 flex items-center pl-[76px] pr-3 shrink-0 bg-[--panel]/70 backdrop-blur-xl border-b border-[--border]">
-        <button
-          onClick={() => setSidebarOpen((v) => !v)}
-          className="no-drag text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel-strong]"
-          title={sidebarOpen ? 'Hide sidebar (Cmd+B)' : 'Show sidebar (Cmd+B)'}
-          data-testid="toggle-sidebar"
-        >
-          <SidebarIcon />
-        </button>
-        <span className="text-xs opacity-70 ml-2 font-medium">MetaLogix IDE</span>
+      <div className="drag h-9 flex items-center pl-[76px] pr-2 shrink-0 bg-[--panel]/70 backdrop-blur-xl border-b border-[--border]">
+        <span className="text-xs opacity-70 ml-1 font-medium">MetaLogix IDE</span>
+        {selected && (
+          <span className="text-[11px] text-[--text-muted] ml-3 truncate max-w-[360px]" title={selected.path}>
+            <span className="opacity-60">▸ </span>{selected.name}
+          </span>
+        )}
         <div className="ml-auto flex items-center gap-1 no-drag">
           <button
             onClick={cycleTheme}
@@ -119,18 +118,21 @@ function MainApp() {
           >
             <ThemeIcon mode={themeMode} effective={effectiveTheme} />
           </button>
-          <button
-            onClick={() => setSettingsOpen(true)}
-            className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel-strong]"
-            title="Settings (⌘,)"
-            data-testid="settings-open"
-          >
-            <SettingsIcon />
-          </button>
         </div>
       </div>
 
       <div className="flex-1 flex min-h-0">
+        <ActivityBar
+          active={activeView}
+          onSelect={(v) => {
+            setActiveView(v);
+            if (v === 'alive') setAlivePanelOpen(true);
+            if (v === 'settings') setSettingsOpen(true);
+            if (v === 'projects' && !sidebarOpen) setSidebarOpen(true);
+          }}
+          onToggleSidebar={() => setSidebarOpen((s) => !s)}
+          sidebarOpen={sidebarOpen}
+        />
         {sidebarOpen && (
           <>
             <Sidebar
@@ -256,24 +258,6 @@ function EmptyState() {
         </div>
       </div>
     </div>
-  );
-}
-
-function SettingsIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
-    </svg>
-  );
-}
-
-function SidebarIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="3" width="18" height="18" rx="2" />
-      <line x1="9" y1="3" x2="9" y2="21" />
-    </svg>
   );
 }
 
