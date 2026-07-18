@@ -159,10 +159,14 @@ function MainApp() {
         <ActivityBar
           active={activeView}
           onSelect={(v) => {
+            if (v === 'alive') {
+              // Toggle when already active — closing the panel returns to Projects.
+              if (activeView === 'alive' && alivePanelOpen) { setAlivePanelOpen(false); setActiveView('projects'); return; }
+              setActiveView('alive'); setAlivePanelOpen(true); return;
+            }
+            if (v === 'settings') { setSettingsOpen(true); return; } // don't latch activeView on settings
+            if (v === 'projects') { setActiveView('projects'); if (!sidebarOpen) setSidebarOpen(true); return; }
             setActiveView(v);
-            if (v === 'alive') setAlivePanelOpen(true);
-            if (v === 'settings') setSettingsOpen(true);
-            if (v === 'projects' && !sidebarOpen) setSidebarOpen(true);
           }}
           onToggleSidebar={() => setSidebarOpen((s) => !s)}
           sidebarOpen={sidebarOpen}
@@ -234,7 +238,10 @@ function MainApp() {
 
       <StatusBar project={selected} aliveCount={aliveCount} />
       <ProjectSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} onPick={pick} />
-      <AliveShellsPanel open={alivePanelOpen} onClose={() => setAlivePanelOpen(false)} />
+      <AliveShellsPanel
+        open={alivePanelOpen}
+        onClose={() => { setAlivePanelOpen(false); if (activeView === 'alive') setActiveView('projects'); }}
+      />
       <Settings open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <FileFinder
         open={finderOpen && selected != null}

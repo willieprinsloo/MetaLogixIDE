@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRoots } from '@renderer/hooks/useRoots';
 import { useProjects } from '@renderer/hooks/useProjects';
 import { useRecents } from '@renderer/hooks/useRecents';
@@ -20,11 +20,26 @@ export function Sidebar({ selectedProjectId, onSelect, onNewProject, width }: Pr
   const { aliveIds } = useAliveShellIds();
   const [filter, setFilter] = useState('');
 
-  // In-use projects: those with an alive shell. Sort by recency.
+  // Stable order for the "In use" section: each project keeps the seq
+  // number it was first observed alive with. Clicking a row updates
+  // last_opened_at (which reshuffles the underlying projects list), but
+  // the seq map is not touched, so the visible order stays put. When
+  // a shell exits, its seq is dropped; if it comes back later, it gets
+  // a fresh (higher) seq and lands at the bottom.
+  const inUseSeq = useRef<Map<number, number>>(new Map());
+  const inUseNextSeq = useRef(1);
+  useEffect(() => {
+    const map = inUseSeq.current;
+    for (const id of aliveIds) if (!map.has(id)) map.set(id, inUseNextSeq.current++);
+    for (const id of [...map.keys()]) if (!aliveIds.has(id)) map.delete(id);
+  }, [aliveIds]);
+
   const inUse = useMemo(() => {
+    const seq = inUseSeq.current;
     const list = projects.filter((p) => aliveIds.has(p.id));
-    if (filter) return list.filter((p) => p.name.toLowerCase().includes(filter.toLowerCase()));
-    return list;
+    const sorted = list.slice().sort((a, b) => (seq.get(a.id) ?? 0) - (seq.get(b.id) ?? 0));
+    if (filter) return sorted.filter((p) => p.name.toLowerCase().includes(filter.toLowerCase()));
+    return sorted;
   }, [projects, aliveIds, filter]);
 
   // Recents excluding the ones already shown in "In use".
