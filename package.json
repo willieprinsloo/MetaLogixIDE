@@ -14,7 +14,8 @@
     "format": "prettier --write .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "mock-claude": "node scripts/mock-claude.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^11.0.0",
