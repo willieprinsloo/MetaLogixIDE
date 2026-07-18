@@ -7,6 +7,7 @@ import { resolveLaunch } from '@main/domain/launch';
 import { chooseEvictee } from '@main/pty/keep-alive';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, renameSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { parseGitStatus } from '@shared/parse-git-status';
 import { join, relative, resolve } from 'node:path';
 
 type Handler<C extends IpcChannelName> = (services: Services, req: IpcRequest<C>) => Promise<IpcResponse<C>>;
@@ -309,6 +310,21 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     if (!existsSync(abs)) throw new Error(`no such file: ${relPath}`);
     shell.showItemInFolder(abs);
     return { ok: true as const };
+  },
+
+  'git:status': async (s, { projectId }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    if (!existsSync(join(p.path, '.git'))) {
+      return { isRepo: false, branch: null, ahead: 0, behind: 0, files: {}, dirty: false };
+    }
+    // porcelain=v1 + --branch gives a stable machine-readable format with header.
+    const r = spawnSync('git', ['-C', p.path, 'status', '--porcelain=v1', '--branch', '--untracked-files=all'], { encoding: 'utf8', timeout: 5000 });
+    if (r.status !== 0) {
+      return { isRepo: true, branch: null, ahead: 0, behind: 0, files: {}, dirty: false };
+    }
+    const parsed = parseGitStatus(r.stdout);
+    return { isRepo: true, ...parsed, dirty: Object.keys(parsed.files).length > 0 };
   },
 
   'search:project': async (s, { projectId, query, caseSensitive = false, regex = false, maxFiles = 3000, maxMatchesPerFile = 20 }) => {

@@ -6,7 +6,9 @@ import { api } from '@renderer/api';
 import { ResizeHandle } from './ResizeHandle';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 import { usePersistedNumber } from '@renderer/hooks/usePersistedNumber';
+import { useGitStatus } from '@renderer/hooks/useGitStatus';
 import { toast } from '@renderer/hooks/useToasts';
+import type { GitFileStatus } from '@shared/ipc-contract';
 
 interface Entry { name: string; isDir: boolean; relPath: string; }
 interface OpenFile {
@@ -63,6 +65,7 @@ export function FilesTab({
   const [activePath, setActivePath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [treeWidth, setTreeWidth] = usePersistedNumber('metaide.filesTreeWidth', 256, 160, 500);
+  const { status: gitStatus } = useGitStatus(projectId);
 
   const activeFile = useMemo(
     () => openFiles.find((f) => f.relPath === activePath) ?? null,
@@ -167,6 +170,7 @@ export function FilesTab({
         entries={entries}
         dir={dir}
         openFileRelPath={activePath}
+        gitFiles={gitStatus.files}
         onGoUp={() => loadDir(undefined)}
         onOpen={openEntry}
         onRefresh={() => loadDir(dir)}
@@ -266,6 +270,41 @@ function FileTabBar({
   );
 }
 
+const GIT_LABEL: Record<GitFileStatus, string> = {
+  M: 'Modified',
+  A: 'Added',
+  D: 'Deleted',
+  R: 'Renamed',
+  U: 'Conflict',
+  '?': 'Untracked',
+  '!': 'Ignored',
+};
+
+const GIT_PRIORITY: Record<GitFileStatus, number> = {
+  U: 6, '?': 5, M: 4, A: 3, D: 2, R: 1, '!': 0,
+};
+
+function gitTextClass(s: GitFileStatus): string {
+  if (s === 'U')  return 'text-[--danger]';
+  if (s === '?')  return 'text-emerald-400';
+  if (s === 'M')  return 'text-amber-400';
+  if (s === 'A')  return 'text-emerald-400';
+  if (s === 'D')  return 'text-rose-400';
+  if (s === 'R')  return 'text-[--accent]';
+  return 'text-[--text-muted]';
+}
+
+/** For directories, aggregate the highest-priority child status. */
+function childStatus(files: Record<string, GitFileStatus>, dirRelPath: string): GitFileStatus | null {
+  const prefix = `${dirRelPath}/`;
+  let best: GitFileStatus | null = null;
+  for (const [p, s] of Object.entries(files)) {
+    if (!p.startsWith(prefix)) continue;
+    if (!best || GIT_PRIORITY[s] > GIT_PRIORITY[best]) best = s;
+  }
+  return best;
+}
+
 function TabXIcon() {
   return (
     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -276,12 +315,13 @@ function TabXIcon() {
 }
 
 function FileTreePane({
-  projectId, entries, dir, openFileRelPath, onGoUp, onOpen, onRefresh, width,
+  projectId, entries, dir, openFileRelPath, gitFiles, onGoUp, onOpen, onRefresh, width,
 }: {
   projectId: number;
   entries: Entry[];
   dir: string | undefined;
   openFileRelPath: string | null;
+  gitFiles: Record<string, GitFileStatus>;
   onGoUp: () => void;
   onOpen: (e: Entry) => void;
   onRefresh: () => void;
@@ -389,21 +429,34 @@ function FileTreePane({
         </button>
       )}
       <ul>
-        {entries.map((e) => (
-          <li key={e.relPath}>
-            <button
-              onClick={() => onOpen(e)}
-              onContextMenu={(ev) => rowMenu(ev, e)}
-              data-testid="file-entry"
-              className={`w-full flex items-center gap-2 text-left px-2 py-1 rounded-md ${
-                openFileRelPath === e.relPath ? 'bg-[color:var(--accent)] text-white' : 'hover:bg-[--panel-strong]'
-              }`}
-            >
-              <FileIcon isDir={e.isDir} name={e.name} />
-              <span className="truncate">{e.name}</span>
-            </button>
-          </li>
-        ))}
+        {entries.map((e) => {
+          const status = e.isDir ? childStatus(gitFiles, e.relPath) : gitFiles[e.relPath] ?? null;
+          const selected = openFileRelPath === e.relPath;
+          return (
+            <li key={e.relPath}>
+              <button
+                onClick={() => onOpen(e)}
+                onContextMenu={(ev) => rowMenu(ev, e)}
+                data-testid="file-entry"
+                className={`w-full flex items-center gap-2 text-left px-2 py-1 rounded-md ${
+                  selected ? 'bg-[color:var(--accent)] text-white' : 'hover:bg-[--panel-strong]'
+                }`}
+              >
+                <FileIcon isDir={e.isDir} name={e.name} />
+                <span className={`truncate flex-1 ${status && !selected ? gitTextClass(status) : ''}`}>{e.name}</span>
+                {status && (
+                  <span
+                    className={`text-[10px] font-mono ${selected ? 'text-white/80' : gitTextClass(status)}`}
+                    title={GIT_LABEL[status]}
+                    data-testid="git-badge"
+                  >
+                    {status}
+                  </span>
+                )}
+              </button>
+            </li>
+          );
+        })}
       </ul>
       {menu && (
         <ContextMenu

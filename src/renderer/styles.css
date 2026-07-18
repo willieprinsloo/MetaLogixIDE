@@ -5,9 +5,9 @@
 /* ── Dark palette ── */
 :root, :root[data-theme="dark"] {
   --bg: transparent;
-  --panel: rgba(20, 22, 26, 0.55);
-  --panel-strong: rgba(20, 22, 26, 0.82);
-  --border: rgba(255, 255, 255, 0.09);
+  --panel: rgba(9, 11, 15, 0.72);
+  --panel-strong: rgba(6, 8, 12, 0.92);
+  --border: rgba(255, 255, 255, 0.08);
   --text: #e6edf3;
   --text-muted: #8b949e;
   --accent: #3b82f6;

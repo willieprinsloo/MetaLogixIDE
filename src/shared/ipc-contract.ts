@@ -1,5 +1,12 @@
 import type { Project, Root, AliveShellSummary, SettingsMap } from './types';
 
+/**
+ * Single-character git status codes we bubble up. The two-position
+ * porcelain code (staged/unstaged) is collapsed to the most relevant:
+ * conflict > untracked > modified > added > deleted > renamed > ignored.
+ */
+export type GitFileStatus = 'M' | 'A' | 'D' | 'R' | 'U' | '?' | '!';
+
 export interface IpcContract {
   // roots
   'roots:list':    { request: undefined;                  response: { roots: Root[] } };
@@ -39,6 +46,9 @@ export interface IpcContract {
   'files:delete':    { request: { projectId: number; relPath: string };                     response: { ok: true } };
   'files:reveal':    { request: { projectId: number; relPath: string };                     response: { ok: true } };
   'search:project':  { request: { projectId: number; query: string; caseSensitive?: boolean; regex?: boolean; maxFiles?: number; maxMatchesPerFile?: number }; response: { matches: Array<{ relPath: string; line: number; col: number; preview: string }>; filesScanned: number; truncated: boolean } };
+
+  // Git — surfaced for the sidebar + status bar; read-only.
+  'git:status':      { request: { projectId: number }; response: { isRepo: boolean; branch: string | null; ahead: number; behind: number; files: Record<string, GitFileStatus>; dirty: boolean } };
 
   // dialogs
   'dialogs:pick-directory': { request: undefined; response: { path: string | null } };
