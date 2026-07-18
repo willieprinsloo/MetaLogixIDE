@@ -122,11 +122,13 @@ export function listPopped(): Array<{ projectId: number; shellIndex: number }> {
 }
 
 /**
- * Reveal + tile every one of OUR windows on the primary display. Prefers
- * a chatbot-style row of tall side-by-side columns (III), which is what
- * you want when the windows are shells. Falls back to a two-row grid if
- * a single column would end up narrower than MIN_W. Restores minimised
- * windows first.
+ * Reveal + tile every one of OUR windows on the primary display in a
+ * chatbot-style row of tall portrait columns (III). Each column's width
+ * is capped at half its height so windows never look like squat
+ * banners — they stay in a comfortable portrait shape. Falls back to
+ * two rows only if a single row would make columns narrower than
+ * MIN_W. The whole arrangement is centred on the display so it doesn't
+ * hug either edge.
  */
 export function tileAllOurWindows(): number {
   const wins = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed());
@@ -136,27 +138,39 @@ export function tileAllOurWindows(): number {
   const MIN_W = 380;
   const n = wins.length;
 
-  const singleRowCellW = Math.floor((display.width - gap * (n + 1)) / n);
-  let cols: number;
-  let rows: number;
-  if (singleRowCellW >= MIN_W) {
-    cols = n; rows = 1;
-  } else {
-    // Two rows keeps the columns tall enough to feel like the III layout
-    // while giving each window enough width to be usable.
+  // Single-row attempt.
+  let cols = n;
+  let rows = 1;
+  let cellH = display.height - gap * 2;
+  let cellW = Math.min(
+    Math.floor(cellH / 2),                                 // portrait cap
+    Math.floor((display.width - gap * (cols + 1)) / cols), // natural spread
+  );
+
+  // If single row would leave each column too narrow, fall back to two.
+  if (cellW < MIN_W) {
     rows = 2;
     cols = Math.ceil(n / rows);
+    cellH = Math.floor((display.height - gap * (rows + 1)) / rows);
+    cellW = Math.min(
+      Math.floor(cellH / 2),
+      Math.floor((display.width - gap * (cols + 1)) / cols),
+    );
   }
-  const cellW = Math.floor((display.width  - gap * (cols + 1)) / cols);
-  const cellH = Math.floor((display.height - gap * (rows + 1)) / rows);
+
+  // Centre the arrangement in the work area — no edge-to-edge stretch.
+  const totalW = cols * cellW + (cols + 1) * gap;
+  const totalH = rows * cellH + (rows + 1) * gap;
+  const xOffset = display.x + Math.max(0, Math.floor((display.width  - totalW) / 2));
+  const yOffset = display.y + Math.max(0, Math.floor((display.height - totalH) / 2));
 
   wins.forEach((w, i) => {
     const c = i % cols;
     const r = Math.floor(i / cols);
     if (w.isMinimized()) w.restore();
     w.setBounds({
-      x: display.x + gap + c * (cellW + gap),
-      y: display.y + gap + r * (cellH + gap),
+      x: xOffset + gap + c * (cellW + gap),
+      y: yOffset + gap + r * (cellH + gap),
       width:  cellW,
       height: cellH,
     }, true);
