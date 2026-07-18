@@ -1,0 +1,9 @@
+node_modules/
+out/
+dist/
+.DS_Store
+*.log
+.metaide/
+coverage/
+playwright-report/
+test-results/
