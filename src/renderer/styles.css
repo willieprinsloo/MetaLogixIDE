@@ -1,4 +1,41 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-html, body, #root { height: 100%; margin: 0; background: #0d1117; color: #e6edf3; font-family: system-ui, sans-serif; }
+
+:root {
+  --bg: transparent;
+  --panel: rgba(20, 22, 26, 0.6);
+  --panel-strong: rgba(20, 22, 26, 0.85);
+  --border: rgba(255, 255, 255, 0.08);
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #3b82f6;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+#root {
+  height: 100%;
+  background: var(--panel-strong);
+}
+
+.font-mono, .font-mono * {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* Webkit app region utilities for drag regions */
+.drag {
+  -webkit-app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}

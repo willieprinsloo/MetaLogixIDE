@@ -25,8 +25,8 @@ export function Sidebar({ selectedProjectId, onSelect }: Props) {
   }, [projects, filter]);
 
   async function addRoot() {
-    // Use OS-native folder picker via IPC event (not in Phase 1's minimal contract — prompt via window.prompt for MVP).
-    const path = window.prompt('Root directory path (absolute):');
+    const picked = await api.invoke('dialogs:pick-directory', undefined as never);
+    const path = picked.path ?? window.prompt('Root directory path (absolute):');
     if (!path) return;
     await api.invoke('roots:add', { path });
     await refreshRoots();
@@ -34,15 +34,15 @@ export function Sidebar({ selectedProjectId, onSelect }: Props) {
   }
 
   return (
-    <aside className="w-72 h-full border-r border-neutral-800 flex flex-col">
-      <div className="p-2 border-b border-neutral-800">
+    <aside className="w-72 h-full border-r border-[--border] flex flex-col">
+      <div className="p-2 border-b border-[--border]">
         <input
           value={filter}
           onChange={e => setFilter(e.target.value)}
           placeholder="Filter…"
-          className="w-full bg-neutral-900 text-sm px-2 py-1 rounded"
+          className="w-full bg-[--panel] text-sm px-2 py-1 rounded-md"
         />
-        <button onClick={addRoot} className="mt-2 w-full text-xs bg-blue-600 hover:bg-blue-500 rounded py-1">
+        <button onClick={addRoot} className="mt-2 w-full text-xs bg-[--accent] hover:opacity-90 rounded-md py-1">
           + Add root
         </button>
       </div>
@@ -59,14 +59,14 @@ function RootBlock({ root, projects, selectedProjectId, onSelect }: { root: Root
   const [open, setOpen] = useState(true);
   return (
     <div>
-      <button onClick={() => setOpen(!open)} className="w-full text-left px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-900">
+      <button onClick={() => setOpen(!open)} className="w-full text-left px-2 py-1 text-xs text-[--text-muted] hover:bg-[--panel]">
         {open ? '▾' : '▸'} {root.path} ({projects.length})
       </button>
       {open && projects.map(p => (
         <button
           key={p.id}
           onClick={() => onSelect(p)}
-          className={`w-full text-left px-4 py-1 text-sm ${selectedProjectId === p.id ? 'bg-blue-700' : 'hover:bg-neutral-900'}`}
+          className={`w-full text-left px-4 py-1 text-sm ${selectedProjectId === p.id ? 'bg-[--accent]' : 'hover:bg-[--panel]'}`}
         >
           {p.name}
         </button>

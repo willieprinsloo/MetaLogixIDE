@@ -41,17 +41,24 @@ export function App() {
 
   return (
     <div className="h-screen flex flex-col">
-      <div className="flex-1 flex">
+      {/* Native-feeling drag region for hidden-inset title bar */}
+      <div className="drag h-10 flex items-center pl-[72px] pr-3 border-b border-[--border] shrink-0">
+        <span className="text-xs opacity-70">metaIDE</span>
+        <div className="ml-auto flex items-center gap-2 no-drag">
+          {/* future: right-side controls */}
+        </div>
+      </div>
+      <div className="flex-1 flex min-h-0">
         <Sidebar selectedProjectId={selected?.id ?? null} onSelect={pick} />
-        <main className="flex-1 flex flex-col">
-          <div className="flex border-b border-neutral-800 text-xs">
-            <button onClick={() => setMainTab('shell')} className={`px-3 py-1 ${mainTab === 'shell' ? 'bg-neutral-800' : ''}`}>Shell</button>
-            <button onClick={() => setMainTab('files')} className={`px-3 py-1 ${mainTab === 'files' ? 'bg-neutral-800' : ''}`}>Files</button>
+        <main className="flex-1 flex flex-col min-h-0">
+          <div className="flex border-b border-[--border] text-xs shrink-0">
+            <button onClick={() => setMainTab('shell')} className={`px-3 py-1 ${mainTab === 'shell' ? 'bg-[--panel]' : ''}`}>Shell</button>
+            <button onClick={() => setMainTab('files')} className={`px-3 py-1 ${mainTab === 'files' ? 'bg-[--panel]' : ''}`}>Files</button>
           </div>
-          <div className="flex-1 relative">
+          <div className="flex-1 relative min-h-0">
             {selected ? (
               mainTab === 'shell' ? <ShellTab projectId={selected.id} shellIndex={0} /> : <FilesTab projectId={selected.id} />
-            ) : <div className="p-4 text-neutral-500">Select a project</div>}
+            ) : <div className="p-4 text-[--text-muted]">Select a project</div>}
           </div>
         </main>
       </div>

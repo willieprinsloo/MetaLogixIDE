@@ -16,9 +16,9 @@ export function FilesTab({ projectId }: { projectId: number }) {
   useEffect(() => { void load(undefined); }, [load]);
 
   return (
-    <div className="p-3 h-full overflow-y-auto">
-      <div className="text-xs text-neutral-500 mb-2">{path ?? '/'}</div>
-      {path && <button onClick={() => load(undefined)} className="text-xs mb-2 text-blue-400">← root</button>}
+    <div className="p-3 h-full overflow-y-auto font-mono">
+      <div className="text-xs text-[--text-muted] mb-2">{path ?? '/'}</div>
+      {path && <button onClick={() => load(undefined)} className="text-xs mb-2 text-[--accent]">← root</button>}
       <ul className="text-sm">
         {entries.map(e => (
           <li key={e.relPath}>
