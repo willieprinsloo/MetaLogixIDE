@@ -228,6 +228,9 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'metaproject:login': async (s, { username, password }) => {
     const baseUrl = s.settings.get('metaproject_base_url') || 'https://projects.metalogix.solutions';
     const info = await s.metaproject.login({ baseUrl, username, password });
+    // Remember the username (never the password) so the sign-in card can
+    // pre-fill it next time.
+    try { s.settings.set('metaproject_last_username', username); } catch { /* non-fatal */ }
     s.metaproject.connectSocket();
     return info;
   },
@@ -240,8 +243,8 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'metaproject:list-channels': async (s, { projectId }) => ({
     channels: await s.metaproject.listChannels(projectId),
   }),
-  'metaproject:list-messages': async (s, { channelId, limit }) => ({
-    messages: await s.metaproject.listMessages(channelId, limit),
+  'metaproject:list-messages': async (s, { channelId, limit, projectId }) => ({
+    messages: await s.metaproject.listMessages(channelId, limit, projectId),
   }),
   'metaproject:join-channel':  async (s, { channelId }) => { s.metaproject.joinChannel(channelId);  return { ok: true } as const; },
   'metaproject:send-message':  async (s, { channelId, message, parentMessageId }) => {

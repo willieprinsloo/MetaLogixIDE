@@ -58,14 +58,16 @@ export class MetaprojectClient {
     // saved a bare host. fetch() only accepts fully qualified URLs.
     const trimmed = cfg.baseUrl.trim().replace(/\/+$/, '');
     this.base = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-    const res = await fetch(`${this.base}/login`, {
+    const res = await fetch(`${this.base}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify({ username: cfg.username, password: cfg.password }),
       redirect: 'manual',
     });
-    // Flask returns a session cookie on success. On redirect (302) it's
-    // still there — capture regardless of status.
+    // Flask returns a session cookie on success. On a 302 redirect (the
+    // normal happy path — Flask sends the browser to the dashboard) the
+    // Set-Cookie header is still present. Failed logins return 200 with
+    // the login HTML and no fresh session cookie.
     const setCookie = res.headers.get('set-cookie') ?? '';
     const sessionMatch = /(?:^|;\s*|,\s*)(session=[^;,\s]+)/i.exec(setCookie);
     if (!sessionMatch) {
@@ -73,15 +75,15 @@ export class MetaprojectClient {
       try {
         const body = await res.json() as { message?: string };
         if (body?.message) msg = body.message;
-      } catch { /* not JSON */ }
+      } catch { /* HTML response — leave the default message */ }
       throw new Error(msg);
     }
     this.cookie = sessionMatch[1]!;
-
-    // Verify + fetch user info via a cheap authenticated call.
-    const me = await this.get<{ id: number; username: string; name?: string }>('/api/me');
-    this.userName = me.name ?? me.username;
-    return { userId: me.id, userName: this.userName };
+    // No JSON /me endpoint exists on this deployment; use the submitted
+    // credential as the display name until a real one arrives (chat
+    // messages carry user_name populated by the socket handler).
+    this.userName = cfg.username;
+    return { userId: 0, userName: this.userName };
   }
 
   disconnect(): void {
@@ -119,18 +121,33 @@ export class MetaprojectClient {
   // ────────────────────────── REST surface ──────────────────────────
 
   async listChannels(projectId: number): Promise<Channel[]> {
-    // web_chat blueprint is mounted at /api/web-chat/ per the routes file.
-    const raw = await this.get<{ channels?: Channel[] } | Channel[]>(
-      `/api/web-chat/channels/?project_id=${projectId}`,
+    // Per app/routes/web_chat.py: the per-project blueprint is mounted at
+    // /api/projects/<int:project_id>/chat and its GET /channels/ returns
+    // the channel list. Responses use the standard {success, data} envelope.
+    const raw = await this.get<{ success?: boolean; data?: { channels?: Channel[] } | Channel[] } | Channel[]>(
+      `/api/projects/${projectId}/chat/channels/`,
     );
-    return Array.isArray(raw) ? raw : raw.channels ?? [];
+    const list = Array.isArray(raw) ? raw
+      : Array.isArray(raw?.data) ? raw.data
+      : raw?.data?.channels
+      ?? (raw as { channels?: Channel[] })?.channels
+      ?? [];
+    return list;
   }
 
-  async listMessages(channelId: number, limit = 50): Promise<ChatMessage[]> {
-    const raw = await this.get<{ messages?: ChatMessage[] } | ChatMessage[]>(
-      `/api/web-chat/channels/${channelId}/messages/?limit=${limit}`,
-    );
-    return Array.isArray(raw) ? raw : raw.messages ?? [];
+  async listMessages(channelId: number, limit = 50, projectId?: number): Promise<ChatMessage[]> {
+    // Messages live under the per-project blueprint too; if we know the
+    // project_id use that path, otherwise fall back to the workspace bp.
+    const path = projectId != null
+      ? `/api/projects/${projectId}/chat/channels/${channelId}/messages/?limit=${limit}`
+      : `/api/chat/channels/${channelId}/messages/?limit=${limit}`;
+    const raw = await this.get<{ success?: boolean; data?: { messages?: ChatMessage[] } | ChatMessage[] } | ChatMessage[]>(path);
+    const list = Array.isArray(raw) ? raw
+      : Array.isArray(raw?.data) ? raw.data
+      : raw?.data?.messages
+      ?? (raw as { messages?: ChatMessage[] })?.messages
+      ?? [];
+    return list;
   }
 
   // ────────────────────────── Socket surface ─────────────────────────

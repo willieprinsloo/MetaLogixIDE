@@ -74,7 +74,7 @@ export interface IpcContract {
   'metaproject:status':         { request: undefined; response: { loggedIn: boolean; connected: boolean; userName: string | null } };
   'metaproject:logout':         { request: undefined; response: { ok: true } };
   'metaproject:list-channels':  { request: { projectId: number }; response: { channels: Array<{ id: number; project_id: number; name: string; is_private: boolean }> } };
-  'metaproject:list-messages':  { request: { channelId: number; limit?: number }; response: { messages: Array<{ id: number; channel_id: number; user_id: number; user_name?: string; message: string; created_at: string; parent_message_id: number | null }> } };
+  'metaproject:list-messages':  { request: { channelId: number; limit?: number; projectId?: number }; response: { messages: Array<{ id: number; channel_id: number; user_id: number; user_name?: string; message: string; created_at: string; parent_message_id: number | null }> } };
   'metaproject:join-channel':   { request: { channelId: number }; response: { ok: true } };
   'metaproject:send-message':   { request: { channelId: number; message: string; parentMessageId?: number | null }; response: { ok: true } };
   'metaproject:mark-read':      { request: { channelId: number; lastMessageId: number }; response: { ok: true } };

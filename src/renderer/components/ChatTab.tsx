@@ -67,14 +67,14 @@ export function ChatTab({ projectId, metaprojectProjectId }: Props) {
     setError(null);
     (async () => {
       try {
-        const { messages } = await api.invoke('metaproject:list-messages', { channelId: activeChannel.id, limit: 50 });
+        const { messages } = await api.invoke('metaproject:list-messages', { channelId: activeChannel.id, limit: 50, projectId: numericMpId ?? undefined });
         setMessages(messages);
         await api.invoke('metaproject:join-channel', { channelId: activeChannel.id });
       } catch (e) {
         setError(String(e).replace(/^Error:\s*/, ''));
       }
     })();
-  }, [activeChannel]);
+  }, [activeChannel, numericMpId]);
 
   // Subscribe to server events. Fan out to per-channel + notification logic.
   useEffect(() => {
@@ -194,6 +194,17 @@ function LoginCard({ onLoggedIn }: { onLoggedIn: () => void }) {
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // Pre-fill the last-used username so the user doesn't retype it every
+  // launch. Password is never persisted.
+  useEffect(() => {
+    (async () => {
+      try {
+        const { value } = await api.invoke('settings:get', { key: 'metaproject_last_username' });
+        if (typeof value === 'string' && value) setUsername(value);
+      } catch { /* fine */ }
+    })();
+  }, []);
   async function submit() {
     setBusy(true); setErr(null);
     try {
