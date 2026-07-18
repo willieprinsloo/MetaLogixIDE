@@ -9,9 +9,12 @@
   },
   "main": "out/main/index.js",
   "scripts": {
+    "predev": "electron-rebuild -f -w better-sqlite3 -w node-pty",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite preview",
+    "rebuild:electron": "electron-rebuild -f -w better-sqlite3 -w node-pty",
+    "rebuild:node": "npm rebuild better-sqlite3 node-pty",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "lint": "eslint . --ext .ts,.tsx",
     "format": "prettier --write .",
