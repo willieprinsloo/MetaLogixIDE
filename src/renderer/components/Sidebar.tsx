@@ -148,7 +148,7 @@ function ProjectRow({
       data-testid="project-row"
       data-alive={alive ? '1' : '0'}
       className={`group w-full flex items-center gap-2 pr-3 py-1 text-sm rounded-md mx-1 transition ${
-        selected ? 'bg-[--accent]/90 text-white' : 'hover:bg-[--panel-strong]'
+        selected ? 'bg-[color:var(--accent)] text-white' : 'hover:bg-[--panel-strong]'
       }`}
       style={{ paddingLeft: indent }}
     >

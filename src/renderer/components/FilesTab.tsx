@@ -94,7 +94,7 @@ function FileTreePane({
               onClick={() => onOpen(e)}
               data-testid="file-entry"
               className={`w-full flex items-center gap-2 text-left px-2 py-1 rounded-md ${
-                openFileRelPath === e.relPath ? 'bg-[--accent]/90 text-white' : 'hover:bg-[--panel-strong]'
+                openFileRelPath === e.relPath ? 'bg-[color:var(--accent)] text-white' : 'hover:bg-[--panel-strong]'
               }`}
             >
               <FileIcon isDir={e.isDir} name={e.name} />

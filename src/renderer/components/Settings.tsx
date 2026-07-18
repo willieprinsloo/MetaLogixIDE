@@ -79,7 +79,7 @@ function SectionButton({ active, onClick, children }: { active: boolean; onClick
     <button
       onClick={onClick}
       className={`w-full text-left px-2 py-1.5 rounded-md text-sm ${
-        active ? 'bg-[--accent]/90 text-white' : 'hover:bg-[--panel-strong] text-[--text]'
+        active ? 'bg-[color:var(--accent)] text-white' : 'hover:bg-[--panel-strong] text-[--text]'
       }`}
     >
       {children}
