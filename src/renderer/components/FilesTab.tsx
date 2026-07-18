@@ -52,7 +52,7 @@ export function FilesTab({ projectId }: { projectId: number }) {
       />
       <div className="flex-1 min-h-0 border-l border-[--border] bg-[--panel]/40">
         {error && (
-          <div className="p-4 text-sm text-red-400">{error}</div>
+          <div className="p-4 text-sm text-[--danger]">{error}</div>
         )}
         {!error && !openFile && (
           <div className="h-full flex items-center justify-center p-8 text-center text-sm text-[--text-muted]">
@@ -147,9 +147,9 @@ function FileIcon({ isDir, name }: { isDir: boolean; name: string }) {
     );
   }
   const ext = extOf(name);
-  const color = MD_EXT.has(ext)   ? 'text-blue-400'
-              : IMG_EXT.has(ext)  ? 'text-pink-400'
-              : ['ts','tsx','js','jsx','py','go','rs'].includes(ext) ? 'text-emerald-400'
+  const color = MD_EXT.has(ext)   ? 'text-[--icon-md]'
+              : IMG_EXT.has(ext)  ? 'text-[--icon-img]'
+              : ['ts','tsx','js','jsx','py','go','rs'].includes(ext) ? 'text-[--icon-code]'
               : 'text-[--text-muted]';
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`shrink-0 ${color}`}>

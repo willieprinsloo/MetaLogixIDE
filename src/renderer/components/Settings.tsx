@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { LaunchCmd, Root, SettingsMap } from '@shared/types';
+import { parseArgv } from '@shared/parse-argv';
 import { api } from '@renderer/api';
 import { useTheme, type ThemeMode } from '@renderer/hooks/useTheme';
 
@@ -9,34 +10,67 @@ export function Settings({ open, onClose }: { open: boolean; onClose: () => void
   const [section, setSection] = useState<Section>('general');
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      onClick={onClose}
+      data-testid="settings-modal"
+    >
       <div
-        className="bg-[--panel-strong] w-[720px] max-w-[92vw] h-[560px] max-h-[92vh] rounded-xl shadow-2xl border border-[--border] overflow-hidden flex"
+        className="relative bg-[--panel-strong] w-[760px] max-w-[92vw] h-[600px] max-h-[92vh] rounded-xl shadow-2xl border border-[--border] overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        <nav className="w-44 shrink-0 border-r border-[--border] bg-[--panel]/60 p-3 flex flex-col gap-1">
-          <div className="text-[10px] uppercase tracking-wider text-[--text-muted] px-2 pb-1">Settings</div>
-          <SectionButton active={section === 'general'} onClick={() => setSection('general')}>General</SectionButton>
-          <SectionButton active={section === 'roots'}   onClick={() => setSection('roots')}>Root directories</SectionButton>
-          <SectionButton active={section === 'launch'}  onClick={() => setSection('launch')}>Launch commands</SectionButton>
-          <div className="mt-auto text-[10px] text-[--text-muted] px-2 pt-3">
-            MetaLogix IDE · Phase 1
-          </div>
-        </nav>
-        <div className="flex-1 min-h-0 overflow-y-auto p-6">
-          {section === 'general' && <GeneralPanel />}
-          {section === 'roots'   && <RootsPanel />}
-          {section === 'launch'  && <LaunchPanel />}
+        {/* Header */}
+        <div className="drag h-11 flex items-center justify-between border-b border-[--border] pl-4 pr-2 shrink-0 bg-[--panel]/60">
+          <span className="text-sm font-semibold">Settings</span>
+          <button
+            onClick={onClose}
+            className="no-drag text-[--text-muted] hover:text-[--text] w-8 h-8 flex items-center justify-center rounded-md hover:bg-[--panel-strong]"
+            title="Close (Esc)"
+            data-testid="settings-close"
+            aria-label="Close settings"
+          >
+            <CloseIcon />
+          </button>
         </div>
-        <button
-          onClick={onClose}
-          className="absolute top-3 right-3 text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded"
-          title="Close (Esc)"
-        >
-          ✕
-        </button>
+
+        {/* Body: nav + panel */}
+        <div className="flex-1 min-h-0 flex">
+          <nav className="w-48 shrink-0 border-r border-[--border] bg-[--panel]/40 p-3 flex flex-col gap-1">
+            <SectionButton active={section === 'general'} onClick={() => setSection('general')}>General</SectionButton>
+            <SectionButton active={section === 'roots'}   onClick={() => setSection('roots')}>Root directories</SectionButton>
+            <SectionButton active={section === 'launch'}  onClick={() => setSection('launch')}>Launch commands</SectionButton>
+            <div className="mt-auto text-[10px] text-[--text-muted] px-2 pt-3">
+              MetaLogix IDE · Phase 1
+            </div>
+          </nav>
+          <div className="flex-1 min-h-0 overflow-y-auto p-6">
+            {section === 'general' && <GeneralPanel />}
+            {section === 'roots'   && <RootsPanel />}
+            {section === 'launch'  && <LaunchPanel />}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="h-12 flex items-center justify-end gap-2 border-t border-[--border] px-4 bg-[--panel]/60">
+          <button
+            onClick={onClose}
+            className="text-sm px-4 py-1.5 bg-[--accent] hover:brightness-110 text-white rounded-md"
+            data-testid="settings-done"
+          >
+            Done
+          </button>
+        </div>
       </div>
     </div>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
   );
 }
 
@@ -159,7 +193,7 @@ function RootsPanel() {
           <li key={r.id} className="flex items-center gap-2 border border-[--border] rounded-md px-3 py-2 bg-[--panel]/60">
             <span className="flex-1 text-sm truncate font-mono" title={r.path}>{r.path}</span>
             <button onClick={() => rescan(r.id)} className="text-xs text-[--text-muted] hover:text-[--text] px-2 py-1 rounded hover:bg-[--panel-strong]">Rescan</button>
-            <button onClick={() => remove(r.id)} className="text-xs text-red-400 hover:text-red-300 px-2 py-1 rounded hover:bg-[--panel-strong]">Remove</button>
+            <button onClick={() => remove(r.id)} className="text-xs text-[--danger] hover:brightness-110 px-2 py-1 rounded hover:bg-[--panel-strong]">Remove</button>
           </li>
         ))}
       </ul>
@@ -269,29 +303,8 @@ function NumberInput({ value, min, max, step = 1, onChange }: { value: number | 
         const n = Number(e.target.value);
         if (Number.isFinite(n)) onChange(Math.max(min, Math.min(max, n)));
       }}
-      className="w-32 bg-[--panel]/70 border border-[--border] rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-[--accent]/60"
+      className="w-32 bg-[--panel-strong] text-[--text] border border-[--border] rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-[--accent]/60"
     />
   );
 }
 
-/* Tiny argv parser: splits on whitespace, respects "double" and 'single' quotes. */
-function parseArgv(input: string): string[] {
-  const out: string[] = [];
-  let cur = '';
-  let quote: '"' | "'" | null = null;
-  for (let i = 0; i < input.length; i++) {
-    const ch = input[i]!;
-    if (quote) {
-      if (ch === quote) quote = null;
-      else cur += ch;
-    } else if (ch === '"' || ch === "'") {
-      quote = ch;
-    } else if (ch === ' ' || ch === '\t') {
-      if (cur) { out.push(cur); cur = ''; }
-    } else {
-      cur += ch;
-    }
-  }
-  if (cur) out.push(cur);
-  return out;
-}

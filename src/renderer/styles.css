@@ -14,6 +14,12 @@
   --term-fg: #e6edf3;
   --term-cursor: #e6edf3;
   --term-selection: rgba(255, 255, 255, 0.20);
+  /* Semantic icon colors that stay visible on both palettes */
+  --icon-md:    #60a5fa; /* markdown = blue */
+  --icon-img:   #f472b6; /* image    = pink */
+  --icon-code:  #34d399; /* code     = emerald */
+  --icon-mute:  #8b949e;
+  --danger:     #f87171;
 }
 
 /* ── Light palette (explicit) ── */
@@ -27,6 +33,11 @@
   --term-fg: #111418;
   --term-cursor: #111418;
   --term-selection: rgba(0, 0, 0, 0.15);
+  --icon-md:    #2563eb;
+  --icon-img:   #db2777;
+  --icon-code:  #059669;
+  --icon-mute:  #4b5563;
+  --danger:     #dc2626;
 }
 
 /* ── System-follow: only applies when no explicit data-theme is set ── */
@@ -41,7 +52,19 @@
     --term-fg: #111418;
     --term-cursor: #111418;
     --term-selection: rgba(0, 0, 0, 0.15);
+    --icon-md:    #2563eb;
+    --icon-img:   #db2777;
+    --icon-code:  #059669;
+    --icon-mute:  #4b5563;
+    --danger:     #dc2626;
   }
+}
+
+/* Explicit text selection colors so no OS default falls through as
+   white-on-white or a hard-to-read blend. */
+::selection {
+  background: color-mix(in oklab, var(--accent) 60%, transparent);
+  color: var(--text);
 }
 
 html, body {
@@ -52,6 +75,27 @@ html, body {
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+/* Tell the browser (Chromium/Electron) which UA color scheme to use for
+   native form controls (number spinners, select popups, scrollbars).
+   Without this, inputs render with the OS's opposite palette and text
+   looks grayed-out. */
+:root[data-theme="dark"] { color-scheme: dark; }
+:root[data-theme="light"] { color-scheme: light; }
+:root:not([data-theme]) { color-scheme: light dark; }
+
+/* Explicit form-control colors — never leave to browser defaults. */
+input, textarea, select, button {
+  color: inherit;
+  font: inherit;
+}
+input[type="number"] {
+  color: var(--text);
+}
+input::placeholder, textarea::placeholder {
+  color: var(--text-muted);
+  opacity: 1; /* Firefox drops it below 1 by default */
 }
 
 /* Keep xterm's canvas rendered at native device pixels. transform/filter

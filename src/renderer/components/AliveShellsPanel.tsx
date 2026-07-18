@@ -26,7 +26,7 @@ export function AliveShellsPanel({ open, onClose }: { open: boolean; onClose: ()
               <button onClick={async () => { await api.invoke('shells:pin', { projectId: r.projectId, shellIndex: r.shellIndex, pinned: !r.pinned }); await refresh(); }} className="text-xs px-2 py-0.5 bg-[--panel] rounded-md">
                 {r.pinned ? 'Unpin' : 'Pin'}
               </button>
-              <button onClick={async () => { await api.invoke('shells:kill', { projectId: r.projectId, shellIndex: r.shellIndex }); await refresh(); }} className="text-xs px-2 py-0.5 bg-red-800 rounded-md">
+              <button onClick={async () => { await api.invoke('shells:kill', { projectId: r.projectId, shellIndex: r.shellIndex }); await refresh(); }} className="text-xs px-2 py-0.5 bg-[--danger]/80 text-white rounded-md hover:brightness-110">
                 Close
               </button>
             </div>
