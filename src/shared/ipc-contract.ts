@@ -34,6 +34,10 @@ export interface IpcContract {
   'files:read':      { request: { projectId: number; relPath: string };                     response: { content: string; kind: 'text' | 'binary'; sizeBytes: number } };
   'files:list-all':  { request: { projectId: number; limit?: number; filter?: string };     response: { files: Array<{ relPath: string; name: string }>; total: number; truncated: boolean } };
   'files:write':     { request: { projectId: number; relPath: string; content: string };    response: { ok: true; sizeBytes: number } };
+  'files:mkdir':     { request: { projectId: number; relPath: string };                     response: { ok: true } };
+  'files:rename':    { request: { projectId: number; from: string; to: string };            response: { ok: true } };
+  'files:delete':    { request: { projectId: number; relPath: string };                     response: { ok: true } };
+  'files:reveal':    { request: { projectId: number; relPath: string };                     response: { ok: true } };
 
   // dialogs
   'dialogs:pick-directory': { request: undefined; response: { path: string | null } };

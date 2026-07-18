@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import MarkdownIt from 'markdown-it';
+import hljs from 'highlight.js/lib/common';
+import 'highlight.js/styles/github-dark.css';
 import { api } from '@renderer/api';
 import { ResizeHandle } from './ResizeHandle';
+import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 import { usePersistedNumber } from '@renderer/hooks/usePersistedNumber';
 import { toast } from '@renderer/hooks/useToasts';
 
@@ -14,7 +17,28 @@ interface OpenFile {
   editing: boolean;
 }
 
-const md = new MarkdownIt({ html: false, linkify: true, breaks: false, typographer: true });
+const md = new MarkdownIt({
+  html: false,
+  linkify: true,
+  breaks: false,
+  typographer: true,
+  highlight: (str: string, lang: string) => {
+    if (lang && hljs.getLanguage(lang)) {
+      try { return hljs.highlight(str, { language: lang, ignoreIllegals: true }).value; } catch { /* fall through */ }
+    }
+    try { return hljs.highlightAuto(str).value; } catch { return ''; }
+  },
+});
+
+const EXT_TO_LANG: Record<string, string> = {
+  ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript',
+  py: 'python', rb: 'ruby', go: 'go', rs: 'rust', java: 'java', kt: 'kotlin',
+  c: 'c', h: 'c', cpp: 'cpp', hpp: 'cpp', cs: 'csharp', swift: 'swift',
+  sh: 'bash', bash: 'bash', zsh: 'bash',
+  json: 'json', jsonc: 'json', yaml: 'yaml', yml: 'yaml', toml: 'ini',
+  html: 'xml', xml: 'xml', css: 'css', scss: 'scss',
+  sql: 'sql', dockerfile: 'dockerfile',
+};
 
 const MD_EXT   = new Set(['md', 'markdown', 'mdx']);
 const IMG_EXT  = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp']);
@@ -139,11 +163,13 @@ export function FilesTab({
   return (
     <div ref={rootRef} tabIndex={-1} className="h-full flex min-h-0 focus:outline-none">
       <FileTreePane
+        projectId={projectId}
         entries={entries}
         dir={dir}
         openFileRelPath={activePath}
         onGoUp={() => loadDir(undefined)}
         onOpen={openEntry}
+        onRefresh={() => loadDir(dir)}
         width={treeWidth}
       />
       <ResizeHandle
@@ -250,17 +276,107 @@ function TabXIcon() {
 }
 
 function FileTreePane({
-  entries, dir, openFileRelPath, onGoUp, onOpen, width,
+  projectId, entries, dir, openFileRelPath, onGoUp, onOpen, onRefresh, width,
 }: {
+  projectId: number;
   entries: Entry[];
   dir: string | undefined;
   openFileRelPath: string | null;
   onGoUp: () => void;
   onOpen: (e: Entry) => void;
+  onRefresh: () => void;
   width: number;
 }) {
+  const [menu, setMenu] = useState<{ x: number; y: number; entry: Entry | null } | null>(null);
+
+  const closeMenu = useCallback(() => setMenu(null), []);
+  const bgMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY, entry: null });
+  }, []);
+  const rowMenu = useCallback((e: React.MouseEvent, entry: Entry) => {
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY, entry });
+  }, []);
+
+  async function newFile() {
+    const name = window.prompt('New file name:', 'untitled.md');
+    if (!name) return;
+    const relPath = dir ? `${dir}/${name}` : name;
+    try {
+      await api.invoke('files:write', { projectId, relPath, content: '' });
+      onRefresh();
+    } catch (e) { toast('Failed to create file', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
+  }
+  async function newFolder() {
+    const name = window.prompt('New folder name:');
+    if (!name) return;
+    const relPath = dir ? `${dir}/${name}` : name;
+    try {
+      await api.invoke('files:mkdir', { projectId, relPath });
+      onRefresh();
+    } catch (e) { toast('Failed to create folder', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
+  }
+  async function renameEntry(entry: Entry) {
+    const parts = entry.relPath.split('/');
+    const oldName = parts.pop() ?? '';
+    const parent = parts.join('/');
+    const next = window.prompt(`Rename ${oldName} to:`, oldName);
+    if (!next || next === oldName) return;
+    const to = parent ? `${parent}/${next}` : next;
+    try {
+      await api.invoke('files:rename', { projectId, from: entry.relPath, to });
+      onRefresh();
+    } catch (e) { toast('Rename failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
+  }
+  async function deleteEntry(entry: Entry) {
+    const kind = entry.isDir ? 'folder' : 'file';
+    if (!window.confirm(`Delete ${kind} ${entry.name}? This cannot be undone.`)) return;
+    try {
+      await api.invoke('files:delete', { projectId, relPath: entry.relPath });
+      onRefresh();
+    } catch (e) { toast('Delete failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
+  }
+  async function reveal(entry: Entry) {
+    try { await api.invoke('files:reveal', { projectId, relPath: entry.relPath }); }
+    catch (e) { toast('Reveal failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
+  }
+
+  const rowItems = (entry: Entry): ContextMenuItem[] => [
+    ...(entry.isDir
+      ? [
+          { label: 'New File…',   onClick: async () => {
+            const name = window.prompt('New file name:', 'untitled.md');
+            if (!name) return;
+            try {
+              await api.invoke('files:write', { projectId, relPath: `${entry.relPath}/${name}`, content: '' });
+              onRefresh();
+            } catch (e) { toast('Failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
+          } },
+          { label: 'New Folder…', onClick: async () => {
+            const name = window.prompt('New folder name:');
+            if (!name) return;
+            try {
+              await api.invoke('files:mkdir', { projectId, relPath: `${entry.relPath}/${name}` });
+              onRefresh();
+            } catch (e) { toast('Failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
+          }, separatorAfter: true },
+        ]
+      : []),
+    { label: 'Rename…',            onClick: () => renameEntry(entry) },
+    { label: 'Reveal in Finder',   onClick: () => reveal(entry) },
+    { label: 'Copy path',          onClick: () => { void navigator.clipboard.writeText(entry.relPath); toast('Path copied', { kind: 'success', timeoutMs: 1200 }); }, separatorAfter: true },
+    { label: 'Delete',             onClick: () => deleteEntry(entry), danger: true },
+  ];
+
+  const bgItems: ContextMenuItem[] = [
+    { label: 'New File…',   onClick: newFile },
+    { label: 'New Folder…', onClick: newFolder, separatorAfter: true },
+    { label: 'Refresh',     onClick: onRefresh },
+  ];
+
   return (
-    <div className="shrink-0 overflow-y-auto py-2 px-1 text-sm" style={{ width }}>
+    <div className="shrink-0 overflow-y-auto py-2 px-1 text-sm" style={{ width }} onContextMenu={bgMenu}>
       <div className="px-2 py-1 text-[11px] text-[--text-muted] font-mono truncate" title={dir ?? '/'}>
         {dir ?? '/'}
       </div>
@@ -277,6 +393,7 @@ function FileTreePane({
           <li key={e.relPath}>
             <button
               onClick={() => onOpen(e)}
+              onContextMenu={(ev) => rowMenu(ev, e)}
               data-testid="file-entry"
               className={`w-full flex items-center gap-2 text-left px-2 py-1 rounded-md ${
                 openFileRelPath === e.relPath ? 'bg-[color:var(--accent)] text-white' : 'hover:bg-[--panel-strong]'
@@ -288,6 +405,14 @@ function FileTreePane({
           </li>
         ))}
       </ul>
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menu.entry ? rowItems(menu.entry) : bgItems}
+          onClose={closeMenu}
+        />
+      )}
     </div>
   );
 }
@@ -377,13 +502,35 @@ function FilePreview({
           />
         )}
         {file.kind === 'text' && !editing && !isMd && (
-          <pre className="p-4 text-[12px] leading-5 font-mono whitespace-pre overflow-auto">
-            {file.buffer}
-          </pre>
+          <SyntaxHighlightedPre content={file.buffer} lang={EXT_TO_LANG[ext] ?? ''} />
         )}
       </div>
     </div>
   );
+}
+
+function SyntaxHighlightedPre({ content, lang }: { content: string; lang: string }) {
+  const html = useMemo(() => {
+    try {
+      if (lang && hljs.getLanguage(lang)) return hljs.highlight(content, { language: lang, ignoreIllegals: true }).value;
+      return hljs.highlightAuto(content).value;
+    } catch { return escapeHtml(content); }
+  }, [content, lang]);
+  return (
+    <pre className="p-4 text-[12px] leading-5 font-mono whitespace-pre overflow-auto">
+      <code className={`hljs language-${lang || 'plaintext'}`} dangerouslySetInnerHTML={{ __html: html }} />
+    </pre>
+  );
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => (
+    c === '&' ? '&amp;' :
+    c === '<' ? '&lt;' :
+    c === '>' ? '&gt;' :
+    c === '"' ? '&quot;' :
+    '&#39;'
+  ));
 }
 
 function Breadcrumbs({ relPath }: { relPath: string }) {

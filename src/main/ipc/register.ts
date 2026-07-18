@@ -5,7 +5,7 @@ import type { IpcChannelName, IpcRequest, IpcResponse, IpcEventName, IpcEvents }
 import { discoverProjects } from '@main/domain/discovery';
 import { resolveLaunch } from '@main/domain/launch';
 import { chooseEvictee } from '@main/pty/keep-alive';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, renameSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, relative, resolve } from 'node:path';
 
@@ -265,6 +265,50 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     renameSync(tmp, abs);
     const st = statSync(abs);
     return { ok: true as const, sizeBytes: st.size };
+  },
+
+  'files:mkdir':  async (s, { projectId, relPath }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    const abs = resolve(p.path, relPath);
+    if (!abs.startsWith(resolve(p.path))) throw new Error('path escapes project root');
+    if (existsSync(abs)) throw new Error(`already exists: ${relPath}`);
+    mkdirSync(abs, { recursive: true });
+    return { ok: true as const };
+  },
+
+  'files:rename': async (s, { projectId, from, to }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    const root = resolve(p.path);
+    const src = resolve(root, from);
+    const dst = resolve(root, to);
+    if (!src.startsWith(root) || !dst.startsWith(root)) throw new Error('path escapes project root');
+    if (!existsSync(src)) throw new Error(`no such file: ${from}`);
+    if (existsSync(dst)) throw new Error(`target exists: ${to}`);
+    renameSync(src, dst);
+    return { ok: true as const };
+  },
+
+  'files:delete': async (s, { projectId, relPath }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    const abs = resolve(p.path, relPath);
+    if (!abs.startsWith(resolve(p.path))) throw new Error('path escapes project root');
+    if (abs === resolve(p.path)) throw new Error('refusing to delete project root');
+    if (!existsSync(abs)) return { ok: true as const };
+    rmSync(abs, { recursive: true, force: true });
+    return { ok: true as const };
+  },
+
+  'files:reveal': async (s, { projectId, relPath }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    const abs = resolve(p.path, relPath);
+    if (!abs.startsWith(resolve(p.path))) throw new Error('path escapes project root');
+    if (!existsSync(abs)) throw new Error(`no such file: ${relPath}`);
+    shell.showItemInFolder(abs);
+    return { ok: true as const };
   },
 
   'files:read':   async (s, { projectId, relPath }) => {
