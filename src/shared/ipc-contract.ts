@@ -38,6 +38,7 @@ export interface IpcContract {
   'files:rename':    { request: { projectId: number; from: string; to: string };            response: { ok: true } };
   'files:delete':    { request: { projectId: number; relPath: string };                     response: { ok: true } };
   'files:reveal':    { request: { projectId: number; relPath: string };                     response: { ok: true } };
+  'search:project':  { request: { projectId: number; query: string; caseSensitive?: boolean; regex?: boolean; maxFiles?: number; maxMatchesPerFile?: number }; response: { matches: Array<{ relPath: string; line: number; col: number; preview: string }>; filesScanned: number; truncated: boolean } };
 
   // dialogs
   'dialogs:pick-directory': { request: undefined; response: { path: string | null } };

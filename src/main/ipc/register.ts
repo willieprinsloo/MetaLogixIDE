@@ -311,6 +311,65 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     return { ok: true as const };
   },
 
+  'search:project': async (s, { projectId, query, caseSensitive = false, regex = false, maxFiles = 3000, maxMatchesPerFile = 20 }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    if (!query || query.length < 2) return { matches: [], filesScanned: 0, truncated: false };
+    const root = resolve(p.path);
+    const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', 'out', '.next', '.cache', 'target', '__pycache__', '.venv', 'venv', '.pnpm-store']);
+    const matches: Array<{ relPath: string; line: number; col: number; preview: string }> = [];
+    let filesScanned = 0;
+    let truncated = false;
+
+    let pattern: RegExp;
+    try {
+      pattern = regex
+        ? new RegExp(query, caseSensitive ? 'g' : 'gi')
+        : new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), caseSensitive ? 'g' : 'gi');
+    } catch (e) { throw new Error(`invalid regex: ${String(e).replace(/^Error:\s*/, '')}`); }
+
+    function walk(dir: string) {
+      if (truncated || filesScanned >= maxFiles) { truncated = true; return; }
+      let names: string[];
+      try { names = readdirSync(dir); } catch { return; }
+      for (const name of names) {
+        if (truncated) return;
+        if (name.startsWith('.') && name !== '.metaproject.yaml') continue;
+        if (IGNORE.has(name)) continue;
+        const full = join(dir, name);
+        let isDir = false;
+        try { isDir = statSync(full).isDirectory(); } catch { continue; }
+        if (isDir) { walk(full); continue; }
+        filesScanned++;
+        if (filesScanned > maxFiles) { truncated = true; return; }
+        let buf: Buffer;
+        try { buf = readFileSync(full); } catch { continue; }
+        if (buf.length > 1_000_000) continue;                       // skip files > 1 MB
+        const scan = buf.subarray(0, Math.min(4096, buf.length));
+        if (scan.includes(0)) continue;                             // binary
+        const text = buf.toString('utf8');
+        const relPath = relative(root, full);
+        let perFile = 0;
+        // Reset lastIndex each line so we can find multiple matches per line.
+        const lines = text.split(/\r?\n/);
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i]!;
+          pattern.lastIndex = 0;
+          let m: RegExpExecArray | null;
+          while ((m = pattern.exec(line))) {
+            if (perFile >= maxMatchesPerFile) break;
+            matches.push({ relPath, line: i + 1, col: m.index + 1, preview: line.slice(0, 400) });
+            perFile++;
+            if (m.index === pattern.lastIndex) pattern.lastIndex++; // guard against empty matches
+          }
+          if (perFile >= maxMatchesPerFile) break;
+        }
+      }
+    }
+    walk(root);
+    return { matches, filesScanned, truncated };
+  },
+
   'files:read':   async (s, { projectId, relPath }) => {
     const p = s.projects.get(projectId);
     if (!p) throw new Error(`no project ${projectId}`);

@@ -10,6 +10,7 @@ import { FileFinder } from './components/FileFinder';
 import { NewProjectDialog } from './components/NewProjectDialog';
 import { ActivityBar, type ActivityView } from './components/ActivityBar';
 import { CommandPalette, type Command } from './components/CommandPalette';
+import { ProjectSearch } from './components/ProjectSearch';
 import { ToastStack } from './components/ToastStack';
 import { toast } from './hooks/useToasts';
 import { useRoots } from './hooks/useRoots';
@@ -52,6 +53,7 @@ function MainApp() {
   const [openInFiles, setOpenInFiles] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const { mode: themeMode, effective: effectiveTheme, cycle: cycleTheme, setMode: setThemeMode } = useTheme();
   const { roots } = useRoots();
   const { isPopped } = usePoppedShells();
@@ -60,6 +62,7 @@ function MainApp() {
   const commands = useMemo<Command[]>(() => [
     { id: 'nav.projects',    category: 'Go',       title: 'Open project switcher',           hint: '⌘K',   run: () => setSwitcherOpen(true) },
     { id: 'nav.find-file',   category: 'Go',       title: 'Find file in project',            hint: '⌘P',   run: () => setFinderOpen(true) },
+    { id: 'nav.find-in-project', category: 'Go',   title: 'Find in project…',                hint: '⌘⇧F',  run: () => setSearchOpen(true) },
     { id: 'view.sidebar',    category: 'View',     title: sidebarOpen ? 'Hide sidebar' : 'Show sidebar', hint: '⌘B', run: () => setSidebarOpen((v) => !v) },
     { id: 'view.shell',      category: 'View',     title: 'Switch to Shell tab',                           run: () => setMainTab('shell') },
     { id: 'view.files',      category: 'View',     title: 'Switch to Files tab',                           run: () => setMainTab('files') },
@@ -98,8 +101,9 @@ function MainApp() {
       if (mod && e.key === 'p' && !e.shiftKey)           { e.preventDefault(); setFinderOpen(true); }
       if (mod && e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); setNewProjectOpen(true); }
       if (mod && e.shiftKey && e.key.toLowerCase() === 'p') { e.preventDefault(); setPaletteOpen(true); }
+      if (mod && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); setSearchOpen(true); }
       if (mod && e.key === '/')                          { e.preventDefault(); setHelpOpen((v) => !v); }
-      if (e.key === 'Escape')                            { setSettingsOpen(false); setFinderOpen(false); setNewProjectOpen(false); setPaletteOpen(false); setHelpOpen(false); }
+      if (e.key === 'Escape')                            { setSettingsOpen(false); setFinderOpen(false); setNewProjectOpen(false); setPaletteOpen(false); setHelpOpen(false); setSearchOpen(false); }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -269,6 +273,15 @@ function MainApp() {
       />
       <ToastStack />
       <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <ProjectSearch
+        open={searchOpen && selected != null}
+        projectId={selected?.id ?? null}
+        onClose={() => setSearchOpen(false)}
+        onOpenMatch={(relPath) => {
+          setMainTab('files');
+          setOpenInFiles(relPath);
+        }}
+      />
     </div>
   );
 }
@@ -302,7 +315,7 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
 }
 
 const SHORTCUT_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
-  { title: 'Go',       items: [['⌘K', 'Project switcher'], ['⌘P', 'Find file in project']] },
+  { title: 'Go',       items: [['⌘K', 'Project switcher'], ['⌘P', 'Find file in project'], ['⌘⇧F', 'Find in project']] },
   { title: 'Views',    items: [['⌘B', 'Toggle sidebar'], ['⌘,', 'Settings'], ['⌘/', 'This cheat sheet']] },
   { title: 'Palette',  items: [['⌘⇧P', 'Command palette'], ['⌘⇧N', 'New project']] },
   { title: 'Shell',    items: [['⌘F', 'Find in terminal'], ['⌘=', 'Zoom in'], ['⌘-', 'Zoom out'], ['⌘0', 'Reset zoom']] },
