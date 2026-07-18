@@ -20,6 +20,25 @@
   --icon-code:  #34d399; /* code     = emerald */
   --icon-mute:  #8b949e;
   --danger:     #f87171;
+  /* Highlight.js token colors — dark (GitHub-ish) */
+  --hljs-comment:  #7d8590;
+  --hljs-keyword:  #ff7b72;
+  --hljs-string:   #a5d6ff;
+  --hljs-number:   #79c0ff;
+  --hljs-function: #d2a8ff;
+  --hljs-title:    #d2a8ff;
+  --hljs-variable: #ffa657;
+  --hljs-attr:     #79c0ff;
+  --hljs-tag:      #7ee787;
+  --hljs-name:     #7ee787;
+  --hljs-type:     #ffa657;
+  --hljs-literal:  #79c0ff;
+  --hljs-meta:     #7d8590;
+  --hljs-symbol:   #79c0ff;
+  --hljs-doctag:   #ff7b72;
+  --hljs-selector: #7ee787;
+  --hljs-emphasis: #e6edf3;
+  --hljs-strong:   #e6edf3;
 }
 
 /* ── Light palette (explicit) ── */
@@ -38,6 +57,25 @@
   --icon-code:  #059669;
   --icon-mute:  #4b5563;
   --danger:     #dc2626;
+  /* Highlight.js token colors — light */
+  --hljs-comment:  #6a737d;
+  --hljs-keyword:  #d73a49;
+  --hljs-string:   #032f62;
+  --hljs-number:   #005cc5;
+  --hljs-function: #6f42c1;
+  --hljs-title:    #6f42c1;
+  --hljs-variable: #e36209;
+  --hljs-attr:     #005cc5;
+  --hljs-tag:      #22863a;
+  --hljs-name:     #22863a;
+  --hljs-type:     #e36209;
+  --hljs-literal:  #005cc5;
+  --hljs-meta:     #6a737d;
+  --hljs-symbol:   #005cc5;
+  --hljs-doctag:   #d73a49;
+  --hljs-selector: #22863a;
+  --hljs-emphasis: #24292e;
+  --hljs-strong:   #24292e;
 }
 
 /* ── System-follow: only applies when no explicit data-theme is set ── */
@@ -57,8 +95,48 @@
     --icon-code:  #059669;
     --icon-mute:  #4b5563;
     --danger:     #dc2626;
+    --hljs-comment:  #6a737d;
+    --hljs-keyword:  #d73a49;
+    --hljs-string:   #032f62;
+    --hljs-number:   #005cc5;
+    --hljs-function: #6f42c1;
+    --hljs-title:    #6f42c1;
+    --hljs-variable: #e36209;
+    --hljs-attr:     #005cc5;
+    --hljs-tag:      #22863a;
+    --hljs-name:     #22863a;
+    --hljs-type:     #e36209;
+    --hljs-literal:  #005cc5;
+    --hljs-meta:     #6a737d;
+    --hljs-symbol:   #005cc5;
+    --hljs-doctag:   #d73a49;
+    --hljs-selector: #22863a;
+    --hljs-emphasis: #24292e;
+    --hljs-strong:   #24292e;
   }
 }
+
+/* ── Highlight.js class → CSS var mapping (theme-aware) ── */
+.hljs                                  { color: var(--text); background: transparent; }
+.hljs-comment, .hljs-quote             { color: var(--hljs-comment); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag,
+.hljs-subst                            { color: var(--hljs-keyword); font-weight: 600; }
+.hljs-number, .hljs-literal            { color: var(--hljs-number); }
+.hljs-string, .hljs-doctag, .hljs-regexp{ color: var(--hljs-string); }
+.hljs-title, .hljs-section,
+.hljs-selector-id                      { color: var(--hljs-title); font-weight: 600; }
+.hljs-title.function_,
+.hljs-title.class_                     { color: var(--hljs-function); }
+.hljs-tag, .hljs-name,
+.hljs-selector-class                   { color: var(--hljs-tag); }
+.hljs-attr, .hljs-attribute            { color: var(--hljs-attr); }
+.hljs-variable, .hljs-template-variable{ color: var(--hljs-variable); }
+.hljs-type, .hljs-symbol               { color: var(--hljs-type); }
+.hljs-meta                             { color: var(--hljs-meta); }
+.hljs-built_in                         { color: var(--hljs-function); }
+.hljs-emphasis                         { color: var(--hljs-emphasis); font-style: italic; }
+.hljs-strong                           { color: var(--hljs-strong); font-weight: 700; }
+.hljs-link                             { color: var(--accent); text-decoration: underline; }
 
 /* Explicit text selection colors so no OS default falls through as
    white-on-white or a hard-to-read blend. */

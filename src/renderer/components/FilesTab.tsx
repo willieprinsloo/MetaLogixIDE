@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js/lib/common';
-import 'highlight.js/styles/github-dark.css';
 import { api } from '@renderer/api';
 import { ResizeHandle } from './ResizeHandle';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
@@ -28,7 +27,7 @@ const md = new MarkdownIt({
     if (lang && hljs.getLanguage(lang)) {
       try { return hljs.highlight(str, { language: lang, ignoreIllegals: true }).value; } catch { /* fall through */ }
     }
-    try { return hljs.highlightAuto(str).value; } catch { return ''; }
+    return ''; // skip auto-detection — much slower than knowing the fence lang
   },
 });
 
@@ -627,16 +626,21 @@ function EditorWithLineNumbers({
   const lineCount = useMemo(() => (value.match(/\n/g)?.length ?? 0) + 1, [value]);
   const gutterWidth = 12 + String(lineCount).length * 8;
 
+  // Defer highlighting until after typing settles. React's built-in
+  // useDeferredValue keeps the textarea responsive because it lets React
+  // paint the raw text FIRST, then rebuild the highlighted overlay in a
+  // low-priority pass. Also skip auto-detection entirely — it's O(files
+  // × languages) and pointless when we know the extension.
+  const deferredValue = useDeferredValue(value);
   const highlighted = useMemo(() => {
     // <pre> collapses trailing whitespace; a zero-width sentinel keeps the
     // last line rendered so alignment holds when the file ends with \n.
-    const text = value.endsWith('\n') ? value + ' ' : value;
+    const text = deferredValue.endsWith('\n') ? deferredValue + ' ' : deferredValue;
     try {
       if (lang && hljs.getLanguage(lang)) return hljs.highlight(text, { language: lang, ignoreIllegals: true }).value;
-      if (text.length < 200_000) return hljs.highlightAuto(text).value;    // skip auto-detect on huge files
       return escapeHtml(text);
     } catch { return escapeHtml(text); }
-  }, [value, lang]);
+  }, [deferredValue, lang]);
 
   // Scroll the textarea to a target line and select the whole line so the
   // caret is visible where the user expects.
@@ -717,12 +721,13 @@ function SyntaxHighlightedPre({
   onScrolled: () => void;
 }) {
   const preRef = useRef<HTMLPreElement>(null);
+  const deferred = useDeferredValue(content);
   const html = useMemo(() => {
     try {
-      if (lang && hljs.getLanguage(lang)) return hljs.highlight(content, { language: lang, ignoreIllegals: true }).value;
-      return hljs.highlightAuto(content).value;
-    } catch { return escapeHtml(content); }
-  }, [content, lang]);
+      if (lang && hljs.getLanguage(lang)) return hljs.highlight(deferred, { language: lang, ignoreIllegals: true }).value;
+      return escapeHtml(deferred);
+    } catch { return escapeHtml(deferred); }
+  }, [deferred, lang]);
 
   useEffect(() => {
     if (scrollToLine == null) return;
