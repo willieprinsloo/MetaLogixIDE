@@ -100,10 +100,17 @@ export async function createPopoutWindow(projectId: number, shellIndex: number):
   applyPersistedOpacity(win);
   if (process.env.ELECTRON_RENDERER_URL) await win.loadURL(`${process.env.ELECTRON_RENDERER_URL}?${query}`);
   else await win.loadFile(join(__dirname, '../renderer/index.html'), { search: `?${query}` });
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => {
+    win.show();
+    // Once the new window has real dimensions, re-tile everything so
+    // the group stays balanced automatically.
+    tileAllOurWindows();
+  });
   win.on('closed', () => {
     popoutWindows.delete(key);
     broadcastPopoutChanged();
+    // Fill the vacated slot with the remaining windows.
+    tileAllOurWindows();
   });
   popoutWindows.set(key, win);
   broadcastPopoutChanged();
