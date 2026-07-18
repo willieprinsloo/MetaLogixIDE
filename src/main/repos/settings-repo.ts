@@ -9,7 +9,7 @@ export const DEFAULT_SETTINGS: SettingsMap = {
   'scrollback_lines':              10000,
   'max_watched_paths':             500,
   'theme':                         'dark',
-  'metaproject_base_url':          '',
+  'metaproject_base_url':          'https://projects.metalogix.solutions',
 };
 
 export class SettingsRepo {
@@ -25,6 +25,12 @@ export class SettingsRepo {
     for (const [k, v] of Object.entries(effective)) {
       ins.run(k, JSON.stringify(v));
     }
+    // One-shot: upgrade an empty metaproject_base_url (from a prior default)
+    // to the new default. Users who have already set their own URL are left
+    // untouched.
+    this.db.prepare(
+      `UPDATE settings SET value = ? WHERE key = 'metaproject_base_url' AND value = ?`,
+    ).run(JSON.stringify(DEFAULT_SETTINGS['metaproject_base_url']), JSON.stringify(''));
   }
 
   get<K extends keyof SettingsMap>(key: K): SettingsMap[K] {

@@ -300,7 +300,7 @@ function MetaprojectPanel() {
         title="Metaproject"
         subtitle="Optional. When set, projects with a .metaproject.yaml linking a project_id get a Board button that opens the board in your browser."
       />
-      <Field label="Base URL" hint="e.g. https://metaproject.internal — used to build /board/{project_id} links.">
+      <Field label="Base URL" hint="Used to build /board/{project_id} links. Default: https://projects.metalogix.solutions.">
         <div className="flex gap-2">
           <input
             type="url"
@@ -308,7 +308,7 @@ function MetaprojectPanel() {
             onChange={(e) => setUrl(e.target.value)}
             onBlur={save}
             onKeyDown={(e) => { if (e.key === 'Enter') { void save(); (e.target as HTMLInputElement).blur(); } }}
-            placeholder="https://metaproject.internal"
+            placeholder="https://projects.metalogix.solutions"
             className="flex-1 bg-[--panel-strong] text-[--text] border border-[--border] rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[--accent]/60"
             data-testid="metaproject-base-url"
           />
