@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import MarkdownIt from 'markdown-it';
 import { api } from '@renderer/api';
+import { ResizeHandle } from './ResizeHandle';
+import { usePersistedNumber } from '@renderer/hooks/usePersistedNumber';
 
 interface Entry { name: string; isDir: boolean; relPath: string; }
 interface OpenFile { relPath: string; content: string; kind: 'text' | 'binary' }
@@ -15,11 +17,20 @@ function extOf(name: string): string {
   return i === -1 ? '' : name.slice(i + 1).toLowerCase();
 }
 
-export function FilesTab({ projectId }: { projectId: number }) {
+export function FilesTab({
+  projectId,
+  openRelPath,
+  onOpenRelPathConsumed,
+}: {
+  projectId: number;
+  openRelPath?: string | null;
+  onOpenRelPathConsumed?: () => void;
+}) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [dir, setDir] = useState<string | undefined>(undefined);
   const [openFile, setOpenFile] = useState<OpenFile | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [treeWidth, setTreeWidth] = usePersistedNumber('metaide.filesTreeWidth', 256, 160, 500);
 
   const loadDir = useCallback(async (relPath?: string) => {
     setError(null);
@@ -41,6 +52,22 @@ export function FilesTab({ projectId }: { projectId: number }) {
 
   useEffect(() => { void loadDir(undefined); setOpenFile(null); }, [loadDir]);
 
+  // React to Cmd+P file-finder pick — open the relative path directly.
+  useEffect(() => {
+    if (!openRelPath) return;
+    (async () => {
+      try {
+        const { content, kind } = await api.invoke('files:read', { projectId, relPath: openRelPath });
+        setOpenFile({ relPath: openRelPath, content, kind });
+        setError(null);
+      } catch (err) {
+        setError(String(err));
+      } finally {
+        onOpenRelPathConsumed?.();
+      }
+    })();
+  }, [openRelPath, projectId, onOpenRelPathConsumed]);
+
   return (
     <div className="h-full flex min-h-0">
       <FileTreePane
@@ -49,6 +76,15 @@ export function FilesTab({ projectId }: { projectId: number }) {
         openFileRelPath={openFile?.relPath ?? null}
         onGoUp={() => loadDir(undefined)}
         onOpen={openEntry}
+        width={treeWidth}
+      />
+      <ResizeHandle
+        value={treeWidth}
+        onChange={setTreeWidth}
+        onReset={() => setTreeWidth(256)}
+        min={160}
+        max={500}
+        side="left"
       />
       <div className="flex-1 min-h-0 border-l border-[--border] bg-[--panel]/40">
         {error && (
@@ -66,16 +102,17 @@ export function FilesTab({ projectId }: { projectId: number }) {
 }
 
 function FileTreePane({
-  entries, dir, openFileRelPath, onGoUp, onOpen,
+  entries, dir, openFileRelPath, onGoUp, onOpen, width,
 }: {
   entries: Entry[];
   dir: string | undefined;
   openFileRelPath: string | null;
   onGoUp: () => void;
   onOpen: (e: Entry) => void;
+  width: number;
 }) {
   return (
-    <div className="w-64 shrink-0 overflow-y-auto py-2 px-1 text-sm">
+    <div className="shrink-0 overflow-y-auto py-2 px-1 text-sm" style={{ width }}>
       <div className="px-2 py-1 text-[11px] text-[--text-muted] font-mono truncate" title={dir ?? '/'}>
         {dir ?? '/'}
       </div>
@@ -113,6 +150,20 @@ function FilePreview({ file }: { file: OpenFile }) {
   const isImg = IMG_EXT.has(ext);
   const html = useMemo(() => (isMd ? md.render(file.content) : ''), [file.content, isMd]);
 
+  // Intercept any <a> click inside the rendered Markdown and route it
+  // through app:open-external so real URLs open in the OS browser instead
+  // of navigating the renderer window (which would blow up sandboxing).
+  function onPreviewClick(e: React.MouseEvent<HTMLDivElement>) {
+    const target = (e.target as HTMLElement).closest('a');
+    if (!target) return;
+    const href = target.getAttribute('href');
+    if (!href) return;
+    e.preventDefault();
+    if (/^(https?|mailto|file):/i.test(href)) {
+      void api.invoke('app:open-external', { url: href }).catch((err) => console.error(err));
+    }
+  }
+
   return (
     <div className="h-full flex flex-col min-h-0" data-testid="file-preview">
       <div className="px-3 py-1.5 border-b border-[--border] text-[11px] text-[--text-muted] font-mono truncate">
@@ -126,7 +177,11 @@ function FilePreview({ file }: { file: OpenFile }) {
           <div className="p-4 text-sm text-[--text-muted]">Image preview is a Phase 2 feature.</div>
         )}
         {file.kind === 'text' && isMd && (
-          <div className="markdown p-6 max-w-3xl mx-auto" dangerouslySetInnerHTML={{ __html: html }} />
+          <div
+            className="markdown p-6 max-w-3xl mx-auto"
+            onClick={onPreviewClick}
+            dangerouslySetInnerHTML={{ __html: html }}
+          />
         )}
         {file.kind === 'text' && !isMd && (
           <pre className="p-4 text-[12px] leading-5 font-mono whitespace-pre overflow-auto">

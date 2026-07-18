@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { buildServices } from './services';
@@ -31,6 +31,25 @@ function darwinChrome(): Partial<Electron.BrowserWindowConstructorOptions> {
     : {};
 }
 
+function wireExternalLinks(win: BrowserWindow): void {
+  // Any window.open / target=_blank / Ctrl+click routes to the OS browser
+  // instead of spawning a new BrowserWindow inside metaIDE.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^(https?|mailto|file):/i.test(url)) {
+      void shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+  // Block in-place navigation from clicks on external anchor tags.
+  win.webContents.on('will-navigate', (e, url) => {
+    const isInternal = url.startsWith('file://') && url.includes('/out/renderer/');
+    const isDevServer = !!process.env.ELECTRON_RENDERER_URL && url.startsWith(process.env.ELECTRON_RENDERER_URL);
+    if (isInternal || isDevServer) return;
+    e.preventDefault();
+    if (/^(https?|mailto|file):/i.test(url)) void shell.openExternal(url);
+  });
+}
+
 async function createMainWindow(): Promise<BrowserWindow> {
   const win = new BrowserWindow({
     width: 1400,
@@ -41,6 +60,7 @@ async function createMainWindow(): Promise<BrowserWindow> {
     webPreferences: baseWebPreferences(),
   });
   win.once('ready-to-show', () => win.show());
+  wireExternalLinks(win);
   if (process.env.ELECTRON_RENDERER_URL) await win.loadURL(process.env.ELECTRON_RENDERER_URL);
   else await win.loadFile(join(__dirname, '../renderer/index.html'));
   return win;
@@ -62,6 +82,7 @@ export async function createPopoutWindow(projectId: number, shellIndex: number):
     webPreferences: baseWebPreferences(),
   });
   const query = `popout=1&projectId=${projectId}&shellIndex=${shellIndex}`;
+  wireExternalLinks(win);
   if (process.env.ELECTRON_RENDERER_URL) await win.loadURL(`${process.env.ELECTRON_RENDERER_URL}?${query}`);
   else await win.loadFile(join(__dirname, '../renderer/index.html'), { search: `?${query}` });
   win.once('ready-to-show', () => win.show());

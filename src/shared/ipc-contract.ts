@@ -28,8 +28,9 @@ export interface IpcContract {
   'settings:set': { request: { key: keyof SettingsMap; value: SettingsMap[keyof SettingsMap] }; response: { ok: true } };
 
   // files (read-only)
-  'files:tree':  { request: { projectId: number; relPath?: string };            response: { entries: Array<{ name: string; isDir: boolean; relPath: string }> } };
-  'files:read':  { request: { projectId: number; relPath: string };             response: { content: string; kind: 'text' | 'binary'; sizeBytes: number } };
+  'files:tree':      { request: { projectId: number; relPath?: string };                    response: { entries: Array<{ name: string; isDir: boolean; relPath: string }> } };
+  'files:read':      { request: { projectId: number; relPath: string };                     response: { content: string; kind: 'text' | 'binary'; sizeBytes: number } };
+  'files:list-all':  { request: { projectId: number; limit?: number; filter?: string };     response: { files: Array<{ relPath: string; name: string }>; total: number; truncated: boolean } };
 
   // dialogs
   'dialogs:pick-directory': { request: undefined; response: { path: string | null } };
@@ -39,6 +40,9 @@ export interface IpcContract {
 
   // native theme sync (light / dark / system)
   'app:set-native-theme': { request: { source: 'system' | 'light' | 'dark' }; response: { ok: true } };
+
+  // open a URL in the OS default browser (or the file:// path in Finder / xdg-open)
+  'app:open-external': { request: { url: string }; response: { ok: true } };
 
   // health / dev
   'app:ping':    { request: undefined; response: 'pong' };

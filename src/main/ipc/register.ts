@@ -1,5 +1,5 @@
 import type { IpcMain } from 'electron';
-import { dialog, nativeTheme } from 'electron';
+import { dialog, nativeTheme, shell } from 'electron';
 import type { Services } from '@main/services';
 import type { IpcChannelName, IpcRequest, IpcResponse, IpcEventName, IpcEvents } from '@shared/ipc-contract';
 import { discoverProjects } from '@main/domain/discovery';
@@ -146,6 +146,14 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     return { ok: true } as const;
   },
 
+  'app:open-external': async (_s, { url }) => {
+    // Only allow http(s), mailto:, and file: URLs. Everything else is
+    // rejected to prevent renderer-driven shell.openExternal abuse.
+    if (!/^(https?|mailto|file):/i.test(url)) throw new Error('unsupported URL scheme');
+    await shell.openExternal(url);
+    return { ok: true } as const;
+  },
+
   'files:tree':   async (s, { projectId, relPath }) => {
     const p = s.projects.get(projectId);
     if (!p) throw new Error(`no project ${projectId}`);
@@ -157,6 +165,36 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     });
     entries.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1));
     return { entries };
+  },
+
+  'files:list-all': async (s, { projectId, limit = 5000, filter }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    const root = resolve(p.path);
+    const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', 'out', '.next', '.cache', 'target', '__pycache__', '.venv', 'venv', '.pnpm-store']);
+    const filterLc = filter?.toLowerCase();
+    const files: Array<{ relPath: string; name: string }> = [];
+    let total = 0;
+    let truncated = false;
+    function walk(dir: string) {
+      if (truncated) return;
+      let names: string[];
+      try { names = readdirSync(dir); } catch { return; }
+      for (const name of names) {
+        if (name.startsWith('.') && name !== '.metaproject.yaml') continue;
+        if (IGNORE.has(name)) continue;
+        const full = join(dir, name);
+        let isDir = false;
+        try { isDir = statSync(full).isDirectory(); } catch { continue; }
+        if (isDir) { walk(full); continue; }
+        total++;
+        if (filterLc && !name.toLowerCase().includes(filterLc)) continue;
+        if (files.length >= limit) { truncated = true; return; }
+        files.push({ relPath: relative(root, full), name });
+      }
+    }
+    walk(root);
+    return { files, total, truncated };
   },
 
   'files:read':   async (s, { projectId, relPath }) => {

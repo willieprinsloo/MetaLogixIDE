@@ -57,7 +57,9 @@ export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIn
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
     term.unicode.activeVersion = '11';
-    term.loadAddon(new WebLinksAddon());
+    term.loadAddon(new WebLinksAddon((_ev: MouseEvent, url: string) => {
+      void api.invoke('app:open-external', { url }).catch((e) => console.error(e));
+    }));
     term.loadAddon(new SearchAddon());
 
     term.open(termHostRef.current);

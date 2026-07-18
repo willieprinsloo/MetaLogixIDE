@@ -9,9 +9,10 @@ import { api } from '@renderer/api';
 interface Props {
   selectedProjectId: number | null;
   onSelect: (p: Project) => void;
+  width?: number;
 }
 
-export function Sidebar({ selectedProjectId, onSelect }: Props) {
+export function Sidebar({ selectedProjectId, onSelect, width }: Props) {
   const { roots, refresh: refreshRoots } = useRoots();
   const { projects, refresh: refreshProjects } = useProjects();
   const { recents } = useRecents(10);
@@ -53,7 +54,10 @@ export function Sidebar({ selectedProjectId, onSelect }: Props) {
   }
 
   return (
-    <aside className="w-72 h-full bg-[--panel] border-r border-[--border] flex flex-col backdrop-blur-md">
+    <aside
+      className="h-full bg-[--panel] border-r border-[--border] flex flex-col backdrop-blur-md shrink-0"
+      style={{ width: width ?? 288 }}
+    >
       <div className="p-3 border-b border-[--border] space-y-2">
         <input
           value={filter}

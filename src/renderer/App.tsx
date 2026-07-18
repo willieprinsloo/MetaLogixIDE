@@ -6,9 +6,12 @@ import { ShellTab } from './components/ShellTab';
 import { FilesTab } from './components/FilesTab';
 import { AliveShellsPanel } from './components/AliveShellsPanel';
 import { Settings } from './components/Settings';
+import { ResizeHandle } from './components/ResizeHandle';
+import { FileFinder } from './components/FileFinder';
 import type { Project } from '@shared/types';
 import { api } from './api';
 import { useTheme, type ThemeMode } from './hooks/useTheme';
+import { usePersistedNumber } from './hooks/usePersistedNumber';
 
 interface PopoutInfo {
   projectId: number;
@@ -37,7 +40,10 @@ function MainApp() {
   const [aliveCount, setAliveCount] = useState(0);
   const [mainTab, setMainTab] = useState<'shell' | 'files'>('shell');
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarWidth, setSidebarWidth] = usePersistedNumber('metaide.sidebarWidth', 288, 200, 560);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [finderOpen, setFinderOpen] = useState(false);
+  const [openInFiles, setOpenInFiles] = useState<string | null>(null);
   const { mode: themeMode, effective: effectiveTheme, cycle: cycleTheme } = useTheme();
 
   const refreshAlive = useCallback(async () => {
@@ -59,7 +65,8 @@ function MainApp() {
       if (mod && e.key === '\\')                         { e.preventDefault(); setSidebarOpen((v) => !v); }
       if (mod && e.key === 'b' && !e.shiftKey && !e.altKey) { e.preventDefault(); setSidebarOpen((v) => !v); }
       if (mod && e.key === ',')                          { e.preventDefault(); setSettingsOpen(true); }
-      if (e.key === 'Escape')                            { setSettingsOpen(false); }
+      if (mod && e.key === 'p' && !e.shiftKey)           { e.preventDefault(); setFinderOpen(true); }
+      if (e.key === 'Escape')                            { setSettingsOpen(false); setFinderOpen(false); }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -120,7 +127,17 @@ function MainApp() {
 
       <div className="flex-1 flex min-h-0">
         {sidebarOpen && (
-          <Sidebar selectedProjectId={selected?.id ?? null} onSelect={pick} />
+          <>
+            <Sidebar selectedProjectId={selected?.id ?? null} onSelect={pick} width={sidebarWidth} />
+            <ResizeHandle
+              value={sidebarWidth}
+              onChange={setSidebarWidth}
+              onReset={() => setSidebarWidth(288)}
+              min={200}
+              max={560}
+              side="left"
+            />
+          </>
         )}
         <main className="flex-1 flex flex-col min-h-0 bg-[--panel-strong]/40">
           <div className="flex items-stretch border-b border-[--border] text-xs shrink-0 bg-[--panel]/60">
@@ -157,7 +174,11 @@ function MainApp() {
             {selected ? (
               mainTab === 'shell'
                 ? <ShellTab projectId={selected.id} shellIndex={0} />
-                : <FilesTab projectId={selected.id} />
+                : <FilesTab
+                    projectId={selected.id}
+                    openRelPath={openInFiles}
+                    onOpenRelPathConsumed={() => setOpenInFiles(null)}
+                  />
             ) : <EmptyState />}
           </div>
         </main>
@@ -167,6 +188,15 @@ function MainApp() {
       <ProjectSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} onPick={pick} />
       <AliveShellsPanel open={alivePanelOpen} onClose={() => setAlivePanelOpen(false)} />
       <Settings open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <FileFinder
+        open={finderOpen && selected != null}
+        projectId={selected?.id ?? null}
+        onClose={() => setFinderOpen(false)}
+        onPick={(relPath) => {
+          setMainTab('files');
+          setOpenInFiles(relPath);
+        }}
+      />
     </div>
   );
 }
