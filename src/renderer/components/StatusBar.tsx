@@ -8,6 +8,11 @@ export function StatusBar({ project, aliveCount }: { project: Project | null; al
         {project ? project.name : 'no project'}
       </span>
       <span>alive shells: {aliveCount}</span>
+      <span className="ml-auto flex items-center gap-3 opacity-70">
+        <span className="flex items-center gap-1"><kbd>⌘K</kbd> switch</span>
+        <span className="flex items-center gap-1"><kbd>⌘B</kbd> sidebar</span>
+        <span className="flex items-center gap-1"><kbd>⌘⇧A</kbd> shells</span>
+      </span>
     </div>
   );
 }

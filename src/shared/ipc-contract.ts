@@ -36,6 +36,9 @@ export interface IpcContract {
   // windows
   'windows:popout-shell': { request: { projectId: number; shellIndex: number }; response: { windowId: number } };
 
+  // native theme sync (light / dark / system)
+  'app:set-native-theme': { request: { source: 'system' | 'light' | 'dark' }; response: { ok: true } };
+
   // health / dev
   'app:ping':    { request: undefined; response: 'pong' };
 }

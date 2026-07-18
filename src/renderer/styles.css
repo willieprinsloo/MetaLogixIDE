@@ -2,14 +2,46 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
+/* ── Dark palette ── */
+:root, :root[data-theme="dark"] {
   --bg: transparent;
-  --panel: rgba(20, 22, 26, 0.6);
-  --panel-strong: rgba(20, 22, 26, 0.85);
-  --border: rgba(255, 255, 255, 0.08);
+  --panel: rgba(20, 22, 26, 0.55);
+  --panel-strong: rgba(20, 22, 26, 0.82);
+  --border: rgba(255, 255, 255, 0.09);
   --text: #e6edf3;
   --text-muted: #8b949e;
   --accent: #3b82f6;
+  --term-fg: #e6edf3;
+  --term-cursor: #e6edf3;
+  --term-selection: rgba(255, 255, 255, 0.20);
+}
+
+/* ── Light palette (explicit) ── */
+:root[data-theme="light"] {
+  --panel: rgba(255, 255, 255, 0.55);
+  --panel-strong: rgba(245, 246, 249, 0.85);
+  --border: rgba(0, 0, 0, 0.10);
+  --text: #1a1d24;
+  --text-muted: #57606a;
+  --accent: #2563eb;
+  --term-fg: #1a1d24;
+  --term-cursor: #1a1d24;
+  --term-selection: rgba(0, 0, 0, 0.15);
+}
+
+/* ── System-follow: only applies when no explicit data-theme is set ── */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --panel: rgba(255, 255, 255, 0.55);
+    --panel-strong: rgba(245, 246, 249, 0.85);
+    --border: rgba(0, 0, 0, 0.10);
+    --text: #1a1d24;
+    --text-muted: #57606a;
+    --accent: #2563eb;
+    --term-fg: #1a1d24;
+    --term-cursor: #1a1d24;
+    --term-selection: rgba(0, 0, 0, 0.15);
+  }
 }
 
 html, body {
@@ -48,4 +80,30 @@ html, body {
 
 .no-drag {
   -webkit-app-region: no-drag;
+}
+
+/* Subtle in-app scrollbar: overlay-style, doesn't steal layout width. */
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.25); border-radius: 4px; }
+*::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.4); }
+
+/* Focus ring — visible only on keyboard focus, not on click. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+/* Keyboard hint chip */
+kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 1px 0 var(--border);
 }

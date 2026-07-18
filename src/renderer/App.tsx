@@ -7,6 +7,7 @@ import { FilesTab } from './components/FilesTab';
 import { AliveShellsPanel } from './components/AliveShellsPanel';
 import type { Project } from '@shared/types';
 import { api } from './api';
+import { useTheme, type ThemeMode } from './hooks/useTheme';
 
 interface PopoutInfo {
   projectId: number;
@@ -35,6 +36,7 @@ function MainApp() {
   const [aliveCount, setAliveCount] = useState(0);
   const [mainTab, setMainTab] = useState<'shell' | 'files'>('shell');
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const { mode: themeMode, effective: effectiveTheme, cycle: cycleTheme } = useTheme();
 
   const refreshAlive = useCallback(async () => {
     const { shells } = await api.invoke('shells:alive-list', undefined as never);
@@ -85,6 +87,15 @@ function MainApp() {
         </button>
         <span className="text-xs opacity-70 ml-2 font-medium">metaIDE</span>
         <div className="ml-auto flex items-center gap-1 no-drag">
+          <button
+            onClick={cycleTheme}
+            className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel-strong]"
+            title={`Theme: ${themeMode}${themeMode === 'system' ? ` (following OS — currently ${effectiveTheme})` : ''}. Click to cycle.`}
+            data-testid="theme-toggle"
+            data-theme-mode={themeMode}
+          >
+            <ThemeIcon mode={themeMode} effective={effectiveTheme} />
+          </button>
           {selected && (
             <>
               <button
@@ -185,6 +196,32 @@ function PopoutIcon() {
       <path d="M15 3h6v6" />
       <path d="M10 14L21 3" />
       <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+    </svg>
+  );
+}
+
+function ThemeIcon({ mode, effective }: { mode: ThemeMode; effective: 'light' | 'dark' }) {
+  // system → half moon over sun (auto), light → sun, dark → moon
+  if (mode === 'system') {
+    return (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" opacity={effective === 'dark' ? 0.4 : 1} />
+        <path d="M12 8a4 4 0 0 0 0 8" fill="currentColor" opacity={effective === 'dark' ? 1 : 0} />
+      </svg>
+    );
+  }
+  if (mode === 'light') {
+    return (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
     </svg>
   );
 }

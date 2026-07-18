@@ -1,5 +1,5 @@
 import type { IpcMain } from 'electron';
-import { dialog } from 'electron';
+import { dialog, nativeTheme } from 'electron';
 import type { Services } from '@main/services';
 import type { IpcChannelName, IpcRequest, IpcResponse, IpcEventName, IpcEvents } from '@shared/ipc-contract';
 import { discoverProjects } from '@main/domain/discovery';
@@ -102,6 +102,11 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
 
   'windows:popout-shell': async () => {
     throw new Error('windows:popout-shell requires WindowHooks — see registerIpc');
+  },
+
+  'app:set-native-theme': async (_s, { source }) => {
+    nativeTheme.themeSource = source;
+    return { ok: true } as const;
   },
 
   'files:tree':   async (s, { projectId, relPath }) => {

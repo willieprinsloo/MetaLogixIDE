@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Terminal } from '@xterm/xterm';
+import { Terminal, type ITheme } from '@xterm/xterm';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -7,6 +7,20 @@ import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
 import { api } from '@renderer/api';
 import { useShellStream } from '@renderer/hooks/useShellStream';
+
+function readVar(name: string, fallback: string): string {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+}
+
+function buildTheme(): ITheme {
+  return {
+    background: 'rgba(0,0,0,0)',                    // let vibrancy show through
+    foreground: readVar('--term-fg',        '#e6edf3'),
+    cursor:     readVar('--term-cursor',    '#e6edf3'),
+    selectionBackground: readVar('--term-selection', 'rgba(255,255,255,0.2)'),
+  };
+}
 
 export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIndex: number }) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -16,13 +30,10 @@ export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIn
     if (!hostRef.current) return;
     const term = new Terminal({
       scrollback: 10000,
-      fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
       fontSize: 13,
-      theme: { background: 'rgba(0,0,0,0)' },
-      // allowProposedApi is required for Unicode11Addon and screenReaderMode.
+      theme: buildTheme(),
       allowProposedApi: true,
-      // screenReaderMode enables the .xterm-accessibility DOM layer which
-      // mirrors terminal output as text, required for E2E assertions.
       screenReaderMode: true,
     });
     try { term.loadAddon(new WebglAddon()); } catch { /* fallback to canvas */ }
@@ -50,7 +61,17 @@ export function ShellTab({ projectId, shellIndex }: { projectId: number; shellIn
     });
     ro.observe(hostRef.current);
 
-    return () => { ro.disconnect(); term.dispose(); termRef.current = null; };
+    // Re-apply theme when the system color scheme changes.
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const onScheme = () => { term.options.theme = buildTheme(); };
+    media.addEventListener('change', onScheme);
+
+    return () => {
+      ro.disconnect();
+      media.removeEventListener('change', onScheme);
+      term.dispose();
+      termRef.current = null;
+    };
   }, [projectId, shellIndex]);
 
   useShellStream(

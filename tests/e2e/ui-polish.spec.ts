@@ -61,6 +61,20 @@ test('UI polish: sidebar toggle, in-use section, live indicator, popout window',
   // both main and popout attach to the same PTY. Wait for it in the popout.
   await expect(popout.locator('.xterm-accessibility')).toContainText('echo: popout', { timeout: 10000 });
 
+  // Theme toggle: cycle system → light → dark → system, verify data-theme.
+  const themeBtn = win.getByTestId('theme-toggle');
+  // Initial persisted may be system (fresh localStorage) — normalize.
+  await win.evaluate(() => {
+    localStorage.setItem('metaide.theme', 'system');
+    document.documentElement.removeAttribute('data-theme');
+  });
+  await themeBtn.click(); // system → light
+  await expect(win.locator('html')).toHaveAttribute('data-theme', 'light', { timeout: 2000 });
+  await themeBtn.click(); // light → dark
+  await expect(win.locator('html')).toHaveAttribute('data-theme', 'dark', { timeout: 2000 });
+  await themeBtn.click(); // dark → system (attribute removed)
+  await expect(win.locator('html')).not.toHaveAttribute('data-theme', /.+/, { timeout: 2000 });
+
   await app.close();
   rmSync(isolatedHome, { recursive: true, force: true });
   rmSync(demoRoot, { recursive: true, force: true });
