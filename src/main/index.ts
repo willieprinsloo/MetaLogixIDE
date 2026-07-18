@@ -120,19 +120,34 @@ export function listPopped(): Array<{ projectId: number; shellIndex: number }> {
 }
 
 /**
- * Reveal + tile every one of OUR windows on the primary display. If
- * there's more than one window, arranges them into a near-square grid
- * with a small gap. Restores any minimised windows.
+ * Reveal + tile every one of OUR windows on the primary display. Prefers
+ * a chatbot-style row of tall side-by-side columns (III), which is what
+ * you want when the windows are shells. Falls back to a two-row grid if
+ * a single column would end up narrower than MIN_W. Restores minimised
+ * windows first.
  */
 export function tileAllOurWindows(): number {
   const wins = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed());
   if (wins.length === 0) return 0;
   const display = screen.getPrimaryDisplay().workArea;
   const gap = 10;
-  const cols = Math.ceil(Math.sqrt(wins.length));
-  const rows = Math.ceil(wins.length / cols);
+  const MIN_W = 380;
+  const n = wins.length;
+
+  const singleRowCellW = Math.floor((display.width - gap * (n + 1)) / n);
+  let cols: number;
+  let rows: number;
+  if (singleRowCellW >= MIN_W) {
+    cols = n; rows = 1;
+  } else {
+    // Two rows keeps the columns tall enough to feel like the III layout
+    // while giving each window enough width to be usable.
+    rows = 2;
+    cols = Math.ceil(n / rows);
+  }
   const cellW = Math.floor((display.width  - gap * (cols + 1)) / cols);
   const cellH = Math.floor((display.height - gap * (rows + 1)) / rows);
+
   wins.forEach((w, i) => {
     const c = i % cols;
     const r = Math.floor(i / cols);
