@@ -142,24 +142,56 @@ function ProjectRow({
   onSelect: (p: Project) => void;
   indent?: number;
 }) {
+  async function unload(e: React.MouseEvent) {
+    e.stopPropagation();
+    try { await api.invoke('shells:kill', { projectId: project.id, shellIndex: 0 }); }
+    catch (err) { console.error(err); }
+  }
   return (
-    <button
-      onClick={() => onSelect(project)}
-      data-testid="project-row"
-      data-alive={alive ? '1' : '0'}
-      className={`group w-full flex items-center gap-2 pr-3 py-1 text-sm rounded-md mx-1 transition ${
+    <div
+      className={`group w-full flex items-center gap-2 pr-1 py-1 text-sm rounded-md mx-1 transition ${
         selected ? 'bg-[color:var(--accent)] text-white' : 'hover:bg-[--panel-strong]'
       }`}
-      style={{ paddingLeft: indent }}
     >
-      <span
-        aria-hidden
-        className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
-          alive ? 'bg-green-500 live-dot' : selected ? 'bg-white/70' : 'bg-transparent border border-[--border]'
-        }`}
-      />
-      <span className="truncate">{project.name}</span>
-    </button>
+      <button
+        onClick={() => onSelect(project)}
+        data-testid="project-row"
+        data-alive={alive ? '1' : '0'}
+        className="flex-1 min-w-0 flex items-center gap-2 text-left"
+        style={{ paddingLeft: indent }}
+      >
+        <span
+          aria-hidden
+          className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
+            alive ? 'bg-green-500 live-dot' : selected ? 'bg-white/70' : 'bg-transparent border border-[--border]'
+          }`}
+        />
+        <span className="truncate">{project.name}</span>
+      </button>
+      {alive && (
+        <button
+          onClick={unload}
+          data-testid="row-unload"
+          className={`w-4 h-4 flex items-center justify-center rounded transition ${
+            selected
+              ? 'text-white/80 hover:text-white hover:bg-white/15 opacity-100'
+              : 'text-[--text-muted] hover:text-[--danger] hover:bg-[--panel] opacity-0 group-hover:opacity-100 focus:opacity-100'
+          }`}
+          title="Unload session (close shell)"
+        >
+          <RowXIcon />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function RowXIcon() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
   );
 }
 

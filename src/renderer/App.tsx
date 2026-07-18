@@ -77,6 +77,13 @@ function MainApp() {
     catch (e) { console.error(e); }
   }
 
+  async function unloadCurrent() {
+    if (!selected) return;
+    try {
+      await api.invoke('shells:kill', { projectId: selected.id, shellIndex: 0 });
+    } catch (e) { console.error(e); }
+  }
+
   return (
     <div className="h-screen w-screen flex flex-col bg-transparent">
       {/* Native-feeling drag region for hidden-inset title bar */}
@@ -119,12 +126,20 @@ function MainApp() {
           <div className="flex items-stretch border-b border-[--border] text-xs shrink-0 bg-[--panel]/60">
             <TabButton active={mainTab === 'shell'} onClick={() => setMainTab('shell')}>Shell</TabButton>
             <TabButton active={mainTab === 'files'} onClick={() => setMainTab('files')}>Files</TabButton>
-            <div className="ml-auto flex items-center gap-2 pr-2">
+            <div className="ml-auto flex items-center gap-1.5 pr-2">
               {selected && (
                 <>
-                  <span className="flex items-center gap-1.5 text-[--text] px-2 py-0.5 rounded-md bg-[--panel-strong]/70 text-[11px] max-w-[280px] truncate" title={selected.path}>
+                  <span className="flex items-center gap-1.5 text-[--text] pl-2 pr-1 py-0.5 rounded-md bg-[--panel-strong] border border-[--border] text-[11px] max-w-[280px]" title={selected.path}>
                     <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 live-dot" />
                     <span className="truncate font-medium">{selected.name}</span>
+                    <button
+                      onClick={unloadCurrent}
+                      className="ml-1 text-[--text-muted] hover:text-[--danger] hover:bg-[--panel]/60 w-4 h-4 flex items-center justify-center rounded"
+                      title="Unload session (close shell)"
+                      data-testid="unload-current"
+                    >
+                      <XIcon />
+                    </button>
                   </span>
                   <button
                     onClick={popoutCurrent}
@@ -211,6 +226,15 @@ function SidebarIcon() {
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3" y="3" width="18" height="18" rx="2" />
       <line x1="9" y1="3" x2="9" y2="21" />
+    </svg>
+  );
+}
+
+function XIcon() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
     </svg>
   );
 }
