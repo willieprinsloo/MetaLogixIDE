@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ProjectSwitcher } from './components/ProjectSwitcher';
 import { StatusBar } from './components/StatusBar';
+import { ShellTab } from './components/ShellTab';
 import type { Project } from '@shared/types';
 import { api } from './api';
 
@@ -37,8 +38,8 @@ export function App() {
     <div className="h-screen flex flex-col">
       <div className="flex-1 flex">
         <Sidebar selectedProjectId={selected?.id ?? null} onSelect={pick} />
-        <main className="flex-1 p-4">
-          {selected ? <div className="text-lg">{selected.name}</div> : <div className="text-neutral-500">Select a project</div>}
+        <main className="flex-1 relative">
+          {selected ? <ShellTab projectId={selected.id} shellIndex={0} /> : <div className="p-4 text-neutral-500">Select a project</div>}
         </main>
       </div>
       <StatusBar project={selected} aliveCount={aliveCount} />

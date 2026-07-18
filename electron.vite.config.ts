@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react';
 import { resolve } from 'node:path';
 
 export default defineConfig({
-  main:     { build: { rollupOptions: { external: ['better-sqlite3', 'node-pty', 'keytar', 'chokidar'] } }, resolve: { alias: { '@main': resolve('src/main') } } },
+  main:     { build: { rollupOptions: { external: ['better-sqlite3', 'node-pty', 'keytar', 'chokidar'] } }, resolve: { alias: { '@main': resolve('src/main'), '@shared': resolve('src/shared') } } },
   preload:  {
     build: {
       rollupOptions: {
