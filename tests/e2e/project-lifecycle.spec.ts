@@ -24,7 +24,7 @@ test('full lifecycle: add root → discover → launch shell → echo', async ()
   await win.waitForLoadState('domcontentloaded');
 
   // Add root — the prompt() dialog is intercepted.
-  await win.evaluate((path: string) => { (window as any).prompt = () => path; }, demoRoot);
+  await win.evaluate((path: string) => { (window as { prompt: (msg?: string) => string }).prompt = () => path; }, demoRoot);
   await win.getByRole('button', { name: '+ Add root' }).click();
 
   // Wait for demo to appear (exact match avoids matching the root path button).

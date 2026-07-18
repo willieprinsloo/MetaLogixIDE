@@ -13,8 +13,8 @@ function fakeIpcMain(): IpcMain & { handlers: Map<string, (e: unknown, req: unkn
 describe('registerIpc', () => {
   it('registers every declared channel', async () => {
     const ipc = fakeIpcMain();
-    const services = {} as any; // handlers are not invoked in this test
-    registerIpc(ipc as any, services, () => {});
+    const services = {} as unknown as Parameters<typeof registerIpc>[1]; // handlers are not invoked in this test
+    registerIpc(ipc as unknown as IpcMain, services, () => {});
     const expected = [
       'roots:list', 'roots:add', 'roots:remove', 'roots:rescan',
       'projects:list', 'projects:open', 'projects:pin', 'projects:hide',

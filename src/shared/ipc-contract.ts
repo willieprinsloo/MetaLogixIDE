@@ -1,14 +1,14 @@
-import type { Project, Root, AliveShellSummary, SettingsMap, LaunchCmd } from './types';
+import type { Project, Root, AliveShellSummary, SettingsMap } from './types';
 
 export interface IpcContract {
   // roots
-  'roots:list':    { request: void;                       response: { roots: Root[] } };
+  'roots:list':    { request: undefined;                  response: { roots: Root[] } };
   'roots:add':     { request: { path: string };           response: { root: Root } };
   'roots:remove':  { request: { id: number };             response: { ok: true } };
   'roots:rescan':  { request: { id: number };             response: { discovered: number } };
 
   // projects
-  'projects:list':          { request: void;                                    response: { projects: Project[] } };
+  'projects:list':          { request: undefined;                               response: { projects: Project[] } };
   'projects:open':          { request: { id: number };                          response: { project: Project } };
   'projects:pin':           { request: { id: number; pinned: boolean };         response: { ok: true } };
   'projects:hide':          { request: { id: number; hidden: boolean };         response: { ok: true } };
@@ -20,7 +20,7 @@ export interface IpcContract {
   'shells:kill':        { request: { projectId: number; shellIndex: number };   response: { ok: true } };
   'shells:resize':      { request: { projectId: number; shellIndex: number; cols: number; rows: number }; response: { ok: true } };
   'shells:write':       { request: { projectId: number; shellIndex: number; data: string }; response: { ok: true } };
-  'shells:alive-list':  { request: void;                                        response: { shells: AliveShellSummary[] } };
+  'shells:alive-list':  { request: undefined;                                   response: { shells: AliveShellSummary[] } };
   'shells:pin':         { request: { projectId: number; shellIndex: number; pinned: boolean }; response: { ok: true } };
 
   // settings
@@ -31,7 +31,7 @@ export interface IpcContract {
   'files:tree':  { request: { projectId: number; relPath?: string };            response: { entries: Array<{ name: string; isDir: boolean; relPath: string }> } };
 
   // health / dev
-  'app:ping':    { request: void; response: 'pong' };
+  'app:ping':    { request: undefined; response: 'pong' };
 }
 
 export type IpcChannelName = keyof IpcContract;

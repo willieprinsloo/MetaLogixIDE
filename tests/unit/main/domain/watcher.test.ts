@@ -1,21 +1,8 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { RootWatcher } from '@main/domain/watcher';
 import { mkdtempSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
-function fakeChokidar() {
-  const listeners: Record<string, Array<(p: string) => void>> = {};
-  const closed: string[] = [];
-  return {
-    watch: vi.fn((_paths: string[]) => ({
-      on(evt: string, cb: (p: string) => void) { (listeners[evt] ??= []).push(cb); return this; },
-      close: vi.fn(async () => { closed.push('w'); }),
-    })),
-    listeners,
-    closed,
-  };
-}
 
 describe('RootWatcher', () => {
   it('respects cap and skips new roots beyond it', async () => {

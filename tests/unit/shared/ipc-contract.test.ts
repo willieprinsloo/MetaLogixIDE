@@ -9,7 +9,7 @@ describe('IpcContract', () => {
   it('contains projects:list channel with expected response', () => {
     type ListReq = IpcContract['projects:list']['request'];
     type ListRes = IpcContract['projects:list']['response'];
-    expectTypeOf<ListReq>().toEqualTypeOf<void>();
+    expectTypeOf<ListReq>().toEqualTypeOf<undefined>();
     expectTypeOf<ListRes>().toMatchTypeOf<{ projects: unknown[] }>();
   });
 });

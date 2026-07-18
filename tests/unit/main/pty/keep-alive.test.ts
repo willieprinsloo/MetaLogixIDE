@@ -21,9 +21,8 @@ describe('chooseEvictee', () => {
   });
 
   it('marks LRU as busy if activity within 60s', () => {
-    const shells = [s(1, '2026-07-18 11:59:30'), s(2, '2026-07-18 11:00:00')];
     // shells sorted by last_active_at: proj 2 is older → LRU is 2, not busy → 'lru'.
-    // Now flip: proj 1 is older.
+    // Now flip: proj 1 is older — both busy.
     const shells2 = [s(1, '2026-07-18 11:59:30'), s(2, '2026-07-18 11:59:45')];
     const r = chooseEvictee(shells2, 2, 3, now);
     expect(r.reason).toBe('lru-busy'); // both busy; oldest still LRU but busy

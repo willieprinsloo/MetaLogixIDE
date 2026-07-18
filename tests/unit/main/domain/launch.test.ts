@@ -12,7 +12,7 @@ function project(overrides: Partial<Project> = {}): Project {
   };
 }
 
-const fakeSettings = { get: (k: keyof typeof DEFAULT_SETTINGS) => DEFAULT_SETTINGS[k] } as any;
+const fakeSettings = { get: (k: keyof typeof DEFAULT_SETTINGS) => DEFAULT_SETTINGS[k] } as unknown as import('@main/repos/settings-repo').SettingsRepo;
 
 describe('resolveLaunch', () => {
   it('uses first variant when project has never launched', () => {

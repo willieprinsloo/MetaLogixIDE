@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { openDb } from '@main/db/connection';
 import { runMigrations } from '@main/db/migrator';
 import { RootsRepo } from '@main/repos/roots-repo';
