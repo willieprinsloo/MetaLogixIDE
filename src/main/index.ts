@@ -74,6 +74,7 @@ async function createMainWindow(): Promise<BrowserWindow> {
   });
   win.once('ready-to-show', () => win.show());
   wireExternalLinks(win);
+  applyPersistedOpacity(win);
   if (process.env.ELECTRON_RENDERER_URL) await win.loadURL(process.env.ELECTRON_RENDERER_URL);
   else await win.loadFile(join(__dirname, '../renderer/index.html'));
   return win;
@@ -96,6 +97,7 @@ export async function createPopoutWindow(projectId: number, shellIndex: number):
   });
   const query = `popout=1&projectId=${projectId}&shellIndex=${shellIndex}`;
   wireExternalLinks(win);
+  applyPersistedOpacity(win);
   if (process.env.ELECTRON_RENDERER_URL) await win.loadURL(`${process.env.ELECTRON_RENDERER_URL}?${query}`);
   else await win.loadFile(join(__dirname, '../renderer/index.html'), { search: `?${query}` });
   win.once('ready-to-show', () => win.show());
@@ -170,8 +172,15 @@ function broadcast(channel: string, payload: unknown): void {
   }
 }
 
+let persistedOpacity = 1.0;
+export function applyPersistedOpacity(win: BrowserWindow): void {
+  win.setOpacity(persistedOpacity);
+}
+
 app.whenReady().then(async () => {
   const services = buildServices({ migrationsDir: resolve(app.getAppPath(), 'migrations') });
+  // Load persisted opacity so it's applied to the first window right away.
+  try { persistedOpacity = Math.max(30, Math.min(100, services.settings.get('window_opacity'))) / 100; } catch { /* keep 1.0 */ }
   mainWindow = await createMainWindow();
   registerIpc(ipcMain, services, broadcast, {
     createPopoutWindow: async (projectId, shellIndex) => (await createPopoutWindow(projectId, shellIndex)).id,

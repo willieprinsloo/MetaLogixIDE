@@ -66,6 +66,9 @@ export interface IpcContract {
   // open a URL in the OS default browser (or the file:// path in Finder / xdg-open)
   'app:open-external': { request: { url: string }; response: { ok: true } };
 
+  /** Set every open window's opacity. percent: 30..100. */
+  'app:set-window-opacity': { request: { percent: number }; response: { ok: true } };
+
   // health / dev
   'app:ping':    { request: undefined; response: 'pong' };
 }

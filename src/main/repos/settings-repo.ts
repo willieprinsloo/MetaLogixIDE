@@ -10,6 +10,7 @@ export const DEFAULT_SETTINGS: SettingsMap = {
   'max_watched_paths':             500,
   'theme':                         'dark',
   'metaproject_base_url':          'https://projects.metalogix.solutions',
+  'window_opacity':                100,
 };
 
 export class SettingsRepo {

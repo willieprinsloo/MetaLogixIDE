@@ -1,5 +1,5 @@
 import type { IpcMain } from 'electron';
-import { dialog, nativeTheme, shell } from 'electron';
+import { dialog, nativeTheme, shell, BrowserWindow } from 'electron';
 import type { Services } from '@main/services';
 import type { IpcChannelName, IpcRequest, IpcResponse, IpcEventName, IpcEvents } from '@shared/ipc-contract';
 import { discoverProjects } from '@main/domain/discovery';
@@ -212,6 +212,15 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     // rejected to prevent renderer-driven shell.openExternal abuse.
     if (!/^(https?|mailto|file):/i.test(url)) throw new Error('unsupported URL scheme');
     await shell.openExternal(url);
+    return { ok: true } as const;
+  },
+
+  'app:set-window-opacity': async (s, { percent }) => {
+    const clamped = Math.max(30, Math.min(100, Math.round(percent)));
+    s.settings.set('window_opacity', clamped);
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) w.setOpacity(clamped / 100);
+    }
     return { ok: true } as const;
   },
 

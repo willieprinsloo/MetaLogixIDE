@@ -64,4 +64,6 @@ export type SettingsMap = {
   'max_watched_paths':             number;
   'theme':                         'dark' | 'light' | 'system';
   'metaproject_base_url':          string;
+  /** 30..100 — percentage. 100 = fully opaque, applied to every window. */
+  'window_opacity':                number;
 };
