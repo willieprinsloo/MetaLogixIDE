@@ -3,11 +3,13 @@ import { api } from '@renderer/api';
 import { toast } from '@renderer/hooks/useToasts';
 
 interface Channel { id: number; project_id: number; name: string; is_private: boolean }
+interface MsgUser { id: number; username: string; display_name?: string; avatar_url?: string | null }
 interface Msg {
   id: number;
   channel_id: number;
   user_id: number;
   user_name?: string;
+  user?: MsgUser;
   message: string;
   created_at: string;
   parent_message_id: number | null;
@@ -32,12 +34,14 @@ export function ChatTab({ projectId, metaprojectProjectId }: Props) {
     return Number.isFinite(n) ? n : null;
   }, [metaprojectProjectId]);
 
-  const [status, setStatus] = useState<{ loggedIn: boolean; connected: boolean; userName: string | null } | null>(null);
+  const [status, setStatus] = useState<{ loggedIn: boolean; connected: boolean; userName: string | null; userId: number | null } | null>(null);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [activeChannel, setActiveChannel] = useState<Channel | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [composer, setComposer] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [loadingChannels, setLoadingChannels] = useState(false);
+  const [loadingMessages, setLoadingMessages] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
 
   const refreshStatus = useCallback(async () => {
@@ -50,6 +54,7 @@ export function ChatTab({ projectId, metaprojectProjectId }: Props) {
   // Load channels once we're logged in AND have a project id to look up.
   useEffect(() => {
     if (!status?.loggedIn || numericMpId == null) return;
+    setLoadingChannels(true);
     (async () => {
       try {
         const { channels } = await api.invoke('metaproject:list-channels', { projectId: numericMpId });
@@ -57,6 +62,8 @@ export function ChatTab({ projectId, metaprojectProjectId }: Props) {
         if (channels.length > 0 && !activeChannel) setActiveChannel(channels[0]!);
       } catch (e) {
         setError(String(e).replace(/^Error:\s*/, ''));
+      } finally {
+        setLoadingChannels(false);
       }
     })();
   }, [status?.loggedIn, numericMpId, activeChannel]);
@@ -65,6 +72,7 @@ export function ChatTab({ projectId, metaprojectProjectId }: Props) {
   useEffect(() => {
     if (!activeChannel) { setMessages([]); return; }
     setError(null);
+    setLoadingMessages(true);
     (async () => {
       try {
         const { messages } = await api.invoke('metaproject:list-messages', { channelId: activeChannel.id, limit: 50, projectId: numericMpId ?? undefined });
@@ -72,6 +80,8 @@ export function ChatTab({ projectId, metaprojectProjectId }: Props) {
         await api.invoke('metaproject:join-channel', { channelId: activeChannel.id });
       } catch (e) {
         setError(String(e).replace(/^Error:\s*/, ''));
+      } finally {
+        setLoadingMessages(false);
       }
     })();
   }, [activeChannel, numericMpId]);
@@ -81,6 +91,11 @@ export function ChatTab({ projectId, metaprojectProjectId }: Props) {
     const off = api.on('metaproject:event', ({ event, payload }) => {
       if (event === 'connect')             void refreshStatus();
       if (event === 'disconnect')          void refreshStatus();
+      if (event === 'connect_error') {
+        const p = payload as { message?: string } | string | undefined;
+        const msg = typeof p === 'string' ? p : (p?.message ?? 'connect failed');
+        setError(`Live chat offline: ${msg}`);
+      }
       if (event === 'channel_message' && activeChannel) {
         const p = payload as { channel_id: number; message: Msg };
         if (p.channel_id !== activeChannel.id) return;
@@ -114,7 +129,14 @@ export function ChatTab({ projectId, metaprojectProjectId }: Props) {
     }
   }
 
-  if (!status) return <div className="p-6 text-sm text-[--text-muted]">Loading chat…</div>;
+  if (!status) {
+    return (
+      <div className="h-full flex items-center justify-center gap-2 text-sm text-[--text-muted]">
+        <span className="mp-spinner" aria-hidden />
+        <span>Loading chat…</span>
+      </div>
+    );
+  }
 
   if (!status.loggedIn) {
     return <LoginCard onLoggedIn={refreshStatus} />;
@@ -133,7 +155,13 @@ export function ChatTab({ projectId, metaprojectProjectId }: Props) {
     <div className="h-full flex min-h-0">
       <aside className="w-52 shrink-0 overflow-y-auto border-r border-[--border] py-2 px-1 text-sm bg-[--panel]/40">
         <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-[--text-muted] font-semibold">Channels</div>
-        {channels.length === 0 && <div className="px-3 py-2 text-[--text-muted]">No channels yet.</div>}
+        {loadingChannels && channels.length === 0 && (
+          <div className="px-3 py-2 text-[--text-muted] flex items-center gap-2">
+            <span className="mp-spinner" aria-hidden />
+            <span>Loading…</span>
+          </div>
+        )}
+        {!loadingChannels && channels.length === 0 && <div className="px-3 py-2 text-[--text-muted]">No channels yet.</div>}
         {channels.map((c) => (
           <button
             key={c.id}
@@ -158,12 +186,16 @@ export function ChatTab({ projectId, metaprojectProjectId }: Props) {
           <span className="opacity-60">·</span>
           <span className="font-mono">{activeChannel ? `#${activeChannel.name}` : 'no channel'}</span>
         </div>
-        <div ref={listRef} className="flex-1 overflow-y-auto p-3 space-y-1">
-          {error && <div className="text-sm text-[--danger]">{error}</div>}
-          {messages.map((m) => (
-            <MessageRow key={m.id} m={m} me={status.userName} />
-          ))}
-          {messages.length === 0 && !error && (
+        <div ref={listRef} className="flex-1 overflow-y-auto py-2 bg-[--chat-surface]">
+          {error && <div className="mx-3 mb-2 px-3 py-1.5 rounded-md text-xs bg-[--danger]/10 text-[--danger] border border-[--danger]/30">{error}</div>}
+          {loadingMessages && messages.length === 0 && !error && (
+            <div className="flex items-center justify-center gap-2 text-[--text-muted] text-sm p-6">
+              <span className="mp-spinner" aria-hidden />
+              <span>Loading messages…</span>
+            </div>
+          )}
+          <MessageList messages={messages} myUserId={status.userId} />
+          {!loadingMessages && messages.length === 0 && !error && (
             <div className="text-center text-[--text-muted] text-sm p-6">
               {activeChannel ? 'No messages yet — say hi.' : 'Pick a channel on the left.'}
             </div>
@@ -192,28 +224,56 @@ export function ChatTab({ projectId, metaprojectProjectId }: Props) {
 function LoginCard({ onLoggedIn }: { onLoggedIn: () => void }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [remember, setRemember] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const autoTried = useRef(false);
 
-  // Pre-fill the last-used username so the user doesn't retype it every
-  // launch. Password is never persisted.
+  // On mount: pre-fill the last-used username, and if the OS keychain has a
+  // saved password for it, silently attempt an auto-sign-in. If auto-login
+  // fails (server down, password rotated), we surface the reason and let
+  // the user type a fresh password — the checkbox stays on so a corrected
+  // login refreshes the saved credential.
   useEffect(() => {
+    if (autoTried.current) return;
+    autoTried.current = true;
     (async () => {
       try {
-        const { value } = await api.invoke('settings:get', { key: 'metaproject_last_username' });
-        if (typeof value === 'string' && value) setUsername(value);
-      } catch { /* fine */ }
+        const { username: u, hasPassword } = await api.invoke('metaproject:credentials-load', undefined as never);
+        if (u) setUsername(u);
+        if (u && hasPassword) {
+          setBusy(true);
+          const res = await api.invoke('metaproject:auto-login', undefined as never);
+          if (res.ok) {
+            toast(`Signed in to metaproject as ${res.userName ?? u}`, { kind: 'success' });
+            onLoggedIn();
+          } else if (res.reason && !res.reason.startsWith('no-saved')) {
+            setErr(res.reason);
+          }
+          setBusy(false);
+        }
+      } catch { /* fine — show manual login */ }
     })();
+    // onLoggedIn is stable from parent; refs prevent re-runs
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
   async function submit() {
     setBusy(true); setErr(null);
     try {
-      const { userName } = await api.invoke('metaproject:login', { username, password });
+      const { userName } = await api.invoke('metaproject:login', { username, password, remember });
       toast(`Signed in to metaproject as ${userName}`, { kind: 'success' });
       onLoggedIn();
     } catch (e) {
       setErr(String(e).replace(/^Error:\s*/, ''));
     } finally { setBusy(false); }
+  }
+  async function forget() {
+    try {
+      await api.invoke('metaproject:credentials-clear', undefined as never);
+      setPassword('');
+      toast('Forgot saved metaproject password', { kind: 'info' });
+    } catch { /* fine */ }
   }
   return (
     <div className="h-full flex items-center justify-center p-6">
@@ -237,35 +297,141 @@ function LoginCard({ onLoggedIn }: { onLoggedIn: () => void }) {
           className="w-full bg-[--panel] border border-[--border] rounded-md px-3 py-2 text-sm"
           data-testid="mp-login-password"
         />
+        <label className="flex items-center gap-2 text-xs text-[--text-muted] select-none cursor-pointer">
+          <input
+            type="checkbox"
+            checked={remember}
+            onChange={(e) => setRemember(e.target.checked)}
+            className="accent-[color:var(--accent)]"
+            data-testid="mp-login-remember"
+          />
+          <span>Remember me on this Mac (uses Keychain)</span>
+        </label>
         {err && <div className="text-xs text-[--danger]">{err}</div>}
         <button
           onClick={submit}
           disabled={busy || !username || !password}
-          className="w-full bg-[color:var(--accent)] text-white rounded-md py-2 text-sm hover:brightness-110 disabled:opacity-50"
+          className="w-full bg-[color:var(--accent)] text-white rounded-md py-2 text-sm hover:brightness-110 disabled:opacity-50 flex items-center justify-center gap-2"
           data-testid="mp-login-submit"
         >
-          {busy ? 'Signing in…' : 'Sign in'}
+          {busy && <span className="mp-spinner" aria-hidden />}
+          <span>{busy ? 'Signing in…' : 'Sign in'}</span>
+        </button>
+        <button
+          onClick={forget}
+          className="w-full text-[10px] text-[--text-muted] hover:text-[--text] py-1"
+          type="button"
+        >
+          Forget saved password
         </button>
       </div>
     </div>
   );
 }
 
-function MessageRow({ m, me }: { m: Msg; me: string | null }) {
-  const t = new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const mine = me && (m.user_name === me);
+/**
+ * Slack-style message list.
+ *
+ *  - Groups consecutive messages from the same author when < 5 min apart:
+ *    the follow-up rows drop the avatar / name / timestamp so the eye
+ *    tracks a single voice.
+ *  - Inserts a sticky-ish date divider ("Today", "Yesterday", dd MMM)
+ *    whenever the local calendar day changes.
+ *  - Chooses a stable HSL colour per user_id so avatars visually cluster
+ *    without needing avatar URLs (which the API may not return).
+ */
+function MessageList({ messages, myUserId }: { messages: Msg[]; myUserId: number | null }) {
+  const rows: React.ReactNode[] = [];
+  let prev: Msg | null = null;
+  let lastDay = '';
+  for (const m of messages) {
+    const dt = new Date(m.created_at);
+    const day = dt.toDateString();
+    if (day !== lastDay) {
+      rows.push(<DateDivider key={`d-${day}-${m.id}`} date={dt} />);
+      lastDay = day;
+      prev = null;
+    }
+    const sameAuthorClose = prev
+      && prev.user_id === m.user_id
+      && (dt.getTime() - new Date(prev.created_at).getTime()) < 5 * 60 * 1000;
+    rows.push(<MessageRow key={m.id} m={m} grouped={!!sameAuthorClose} mine={myUserId != null && m.user_id === myUserId} />);
+    prev = m;
+  }
+  return <div className="space-y-0.5">{rows}</div>;
+}
+
+function DateDivider({ date }: { date: Date }) {
+  const today = new Date();
+  const label = (() => {
+    if (date.toDateString() === today.toDateString()) return 'Today';
+    const y = new Date(today); y.setDate(y.getDate() - 1);
+    if (date.toDateString() === y.toDateString()) return 'Yesterday';
+    return date.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+  })();
   return (
-    <div className={`flex flex-col ${mine ? 'items-end' : 'items-start'}`}>
-      <div className="text-[10px] text-[--text-muted] flex gap-1.5">
-        <span className="font-medium text-[--text]">{m.user_name ?? `user #${m.user_id}`}</span>
-        <span>{t}</span>
+    <div className="flex items-center gap-2 px-4 py-2">
+      <div className="flex-1 h-px bg-[--border]" />
+      <span className="text-[10px] uppercase tracking-wider text-[--text-muted] font-semibold">{label}</span>
+      <div className="flex-1 h-px bg-[--border]" />
+    </div>
+  );
+}
+
+function authorLabel(m: Msg): string {
+  return m.user?.display_name || m.user?.username || m.user_name || `user #${m.user_id}`;
+}
+
+function userColor(id: number): string {
+  const hue = (id * 47) % 360;
+  return `hsl(${hue}, 55%, 55%)`;
+}
+
+function MessageRow({ m, grouped, mine }: { m: Msg; grouped: boolean; mine: boolean }) {
+  const dt = new Date(m.created_at);
+  const t = dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const name = authorLabel(m);
+  const color = userColor(m.user_id);
+  return (
+    <div className={`group flex gap-2.5 px-4 ${grouped ? 'py-0.5' : 'pt-2 pb-0.5'} hover:bg-[--chat-row-hover] rounded-sm`}>
+      {/* Avatar column — real avatar on lead row, timestamp on grouped rows. */}
+      <div className="w-8 shrink-0 flex justify-center">
+        {grouped ? (
+          <span className="opacity-0 group-hover:opacity-60 text-[9px] text-[--text-muted] mt-1 font-mono">{t}</span>
+        ) : (
+          <div
+            className="w-8 h-8 rounded-md flex items-center justify-center text-xs font-semibold text-white shadow-sm"
+            style={{ background: color }}
+            title={name}
+          >
+            {name.slice(0, 1).toUpperCase()}
+          </div>
+        )}
       </div>
-      <div className={`text-sm max-w-[70%] whitespace-pre-wrap break-words rounded-md px-2 py-1 mt-0.5 ${
-        mine ? 'bg-[color:var(--accent)]/80 text-white' : 'bg-[--panel-strong]'
-      }`}>
-        {m.message}
+      <div className="min-w-0 flex-1">
+        {!grouped && (
+          <div className="flex items-baseline gap-2 leading-none">
+            <span className="text-[13px] font-semibold" style={{ color: mine ? 'var(--accent)' : undefined }}>{name}</span>
+            <span className="text-[10px] text-[--text-muted] font-mono">{t}</span>
+          </div>
+        )}
+        <div className="text-[13px] leading-snug whitespace-pre-wrap break-words">{renderMessage(m.message)}</div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Lightweight @mention highlighter. Marks `@handle` fragments so mentions
+ * stand out even without a proper markdown pipeline. Everything else is
+ * rendered as plain text (no HTML injection).
+ */
+function renderMessage(text: string): React.ReactNode {
+  const parts = text.split(/(@[A-Za-z0-9._-]+)/g);
+  return parts.map((p, i) =>
+    p.startsWith('@')
+      ? <span key={i} className="rounded px-1 bg-[color:var(--accent)]/20 text-[color:var(--accent)] font-medium">{p}</span>
+      : <span key={i}>{p}</span>,
   );
 }
 

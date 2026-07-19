@@ -25,6 +25,30 @@ export interface IpcContract {
 
   // shells
   'shells:launch':      { request: { projectId: number };                       response: { shellIndex: number } };
+  // Spawn a plain login shell (user's $SHELL, or /bin/zsh) at the project's
+  // cwd. Auto-picks the next unused shellIndex. Used by the "New Terminal"
+  // button and the ⌘T shortcut for ad-hoc shells alongside the Claude one.
+  'shells:launch-plain': { request: { projectId: number };                       response: { shellIndex: number } };
+  // Spawn a named CLI profile (Claude, Llama, custom, …) at the project's cwd.
+  // Passing `argv` inline lets the user try a one-off command; when `save`
+  // is true, the (name, argv) pair is persisted to the project's cliProfiles.
+  'shells:launch-cli':   {
+    request: {
+      projectId: number;
+      profileName?: string;
+      argv?: string[];
+      env?: Record<string, string>;
+      save?: boolean;
+    };
+    response: { shellIndex: number };
+  };
+  // Project-level CLI profile management. Lists resolve project overrides
+  // ∪ global defaults so the renderer sees one flat, deduplicated list.
+  'shells:cli-profiles-list': {
+    request: { projectId: number };
+    response: { profiles: Array<{ name: string; argv: string[]; env?: Record<string, string>; icon?: string; scope: 'project' | 'global' }> };
+  };
+  'shells:cli-profiles-remove': { request: { projectId: number; name: string }; response: { ok: true } };
   'shells:kill':        { request: { projectId: number; shellIndex: number };   response: { ok: true } };
   'shells:resize':      { request: { projectId: number; shellIndex: number; cols: number; rows: number }; response: { ok: true } };
   'shells:write':       { request: { projectId: number; shellIndex: number; data: string }; response: { ok: true } };
@@ -70,11 +94,16 @@ export interface IpcContract {
   'app:set-window-opacity': { request: { percent: number }; response: { ok: true } };
 
   /* ─── metaproject chat (Flask-SocketIO backed) ─── */
-  'metaproject:login':          { request: { username: string; password: string }; response: { userId: number; userName: string } };
-  'metaproject:status':         { request: undefined; response: { loggedIn: boolean; connected: boolean; userName: string | null } };
+  'metaproject:login':          { request: { username: string; password: string; remember?: boolean }; response: { userId: number; userName: string } };
+  // Credentials persisted in the OS keychain (Keychain on macOS, libsecret on
+  // Linux, Credential Vault on Windows). Never round-trip through the renderer.
+  'metaproject:credentials-load':  { request: undefined; response: { username: string | null; hasPassword: boolean } };
+  'metaproject:credentials-clear': { request: undefined; response: { ok: true } };
+  'metaproject:auto-login':        { request: undefined; response: { ok: boolean; userName?: string; reason?: string } };
+  'metaproject:status':         { request: undefined; response: { loggedIn: boolean; connected: boolean; userName: string | null; userId: number | null } };
   'metaproject:logout':         { request: undefined; response: { ok: true } };
   'metaproject:list-channels':  { request: { projectId: number }; response: { channels: Array<{ id: number; project_id: number; name: string; is_private: boolean }> } };
-  'metaproject:list-messages':  { request: { channelId: number; limit?: number; projectId?: number }; response: { messages: Array<{ id: number; channel_id: number; user_id: number; user_name?: string; message: string; created_at: string; parent_message_id: number | null }> } };
+  'metaproject:list-messages':  { request: { channelId: number; limit?: number; projectId?: number }; response: { messages: Array<{ id: number; channel_id: number; user_id: number; user_name?: string; user?: { id: number; username: string; display_name?: string; avatar_url?: string | null }; message: string; created_at: string; parent_message_id: number | null }> } };
   'metaproject:join-channel':   { request: { channelId: number }; response: { ok: true } };
   'metaproject:send-message':   { request: { channelId: number; message: string; parentMessageId?: number | null }; response: { ok: true } };
   'metaproject:mark-read':      { request: { channelId: number; lastMessageId: number }; response: { ok: true } };

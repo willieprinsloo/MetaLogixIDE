@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ProjectSwitcher } from './components/ProjectSwitcher';
 import { StatusBar } from './components/StatusBar';
@@ -20,6 +20,8 @@ import { api } from './api';
 import { useTheme, type ThemeMode } from './hooks/useTheme';
 import { usePersistedNumber } from './hooks/usePersistedNumber';
 import { usePoppedShells } from './hooks/usePoppedShells';
+import { useProjectShells } from './hooks/useProjectShells';
+import { Tooltip } from './components/Tooltip';
 
 interface PopoutInfo {
   projectId: number;
@@ -43,9 +45,20 @@ export function App() {
 
 function MainApp() {
   const [selected, setSelected] = useState<Project | null>(null);
+  // Keep a live ref of `selected` so the shortcut handler (bound once in a
+  // useEffect with an empty dep list) always reads the current project.
+  const selectedRef = useRef<Project | null>(null);
+  useEffect(() => { selectedRef.current = selected; }, [selected]);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [aliveCount, setAliveCount] = useState(0);
   const [mainTab, setMainTab] = useState<'shell' | 'files' | 'chat'>('shell');
+  // Which shellIndex is currently visible in the Shell tab. Default 0 (the
+  // Claude/primary shell); ad-hoc terminals opened as tabs bump this to
+  // their fresh index so the user immediately sees the new shell.
+  const [activeShellIndex, setActiveShellIndex] = useState<number>(0);
+  const allProjectShells = useProjectShells(selected?.id ?? null);
+  // Reset active shell when switching projects.
+  useEffect(() => { setActiveShellIndex(0); }, [selected?.id]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = usePersistedNumber('metaide.sidebarWidth', 288, 200, 560);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -58,6 +71,24 @@ function MainApp() {
   const { mode: themeMode, effective: effectiveTheme, cycle: cycleTheme, setMode: setThemeMode } = useTheme();
   const { roots } = useRoots();
   const { isPopped } = usePoppedShells();
+  // Once a NON-primary shell (idx > 0) is popped out into its own window,
+  // hide it from the tab strip — the window is now its home. Closing the
+  // window returns the shell to the tab strip. Killing from the strip
+  // shouldn't be possible while it's popped, which prevents the "click X
+  // and lose the popout" surprise. shellIndex 0 (Claude) keeps its tab
+  // slot with a "running in another window" placeholder + Bring back.
+  const projectShells = useMemo(
+    () => allProjectShells.filter((s) => s.shellIndex === 0 || !isPopped(s.projectId, s.shellIndex)),
+    [allProjectShells, isPopped],
+  );
+  // If the currently-active shell just got popped out, drop focus back to
+  // the primary tab so the user doesn't stare at a placeholder.
+  useEffect(() => {
+    if (!selected) return;
+    if (activeShellIndex !== 0 && isPopped(selected.id, activeShellIndex)) {
+      setActiveShellIndex(0);
+    }
+  }, [selected, activeShellIndex, isPopped]);
   const [activeView, setActiveView] = useState<ActivityView>('projects');
 
   const commands = useMemo<Command[]>(() => [
@@ -104,6 +135,27 @@ function MainApp() {
       if (mod && e.shiftKey && e.key.toLowerCase() === 'p') { e.preventDefault(); setPaletteOpen(true); }
       if (mod && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); setSearchOpen(true); }
       if (mod && e.key === '/')                          { e.preventDefault(); setHelpOpen((v) => !v); }
+      if (mod && e.key.toLowerCase() === 't') {
+        e.preventDefault();
+        const p = selectedRef.current;
+        if (!p) return;
+        (async () => {
+          try {
+            const { shellIndex } = await api.invoke('shells:launch-plain', { projectId: p.id });
+            if (e.shiftKey) {
+              // ⌘⇧T → new window
+              await api.invoke('windows:popout-shell', { projectId: p.id, shellIndex });
+              toast(`New terminal in ${p.name}`, { kind: 'info' });
+            } else {
+              // ⌘T → new tab in the main window
+              setMainTab('shell');
+              setActiveShellIndex(shellIndex);
+            }
+          } catch (err) {
+            toast('Failed to open terminal', { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') });
+          }
+        })();
+      }
       if (e.key === 'Escape')                            { setSettingsOpen(false); setFinderOpen(false); setNewProjectOpen(false); setPaletteOpen(false); setHelpOpen(false); setSearchOpen(false); }
     }
     window.addEventListener('keydown', onKey);
@@ -124,11 +176,84 @@ function MainApp() {
   async function popoutCurrent() {
     if (!selected) return;
     try {
-      await api.invoke('windows:popout-shell', { projectId: selected.id, shellIndex: 0 });
+      // Pop out whichever shell tab is currently visible — not always the
+      // primary. Matches the mental model "click popout to move THIS shell
+      // to its own window".
+      await api.invoke('windows:popout-shell', { projectId: selected.id, shellIndex: activeShellIndex });
       toast(`Popped out ${selected.name}`, { kind: 'info', detail: 'The shell now runs in its own window. Click "Bring back" to return it here.' });
     } catch (e) {
       toast('Failed to pop out shell', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
       console.error(e);
+    }
+  }
+
+  /** Spawn an ad-hoc plain shell in the project's cwd as an inline tab. */
+  async function newPlainShellAsTab() {
+    if (!selected) return;
+    try {
+      const { shellIndex } = await api.invoke('shells:launch-plain', { projectId: selected.id });
+      setMainTab('shell');
+      setActiveShellIndex(shellIndex);
+    } catch (e) {
+      toast('Failed to open terminal', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+      console.error(e);
+    }
+  }
+
+  /** Spawn a named CLI profile (Claude, Llama, custom…). */
+  async function launchCliProfile(profileName: string, mode: 'tab' | 'window') {
+    if (!selected) return;
+    try {
+      const { shellIndex } = await api.invoke('shells:launch-cli', { projectId: selected.id, profileName });
+      if (mode === 'window') {
+        await api.invoke('windows:popout-shell', { projectId: selected.id, shellIndex });
+        toast(`${profileName} in ${selected.name}`, { kind: 'info' });
+      } else {
+        setMainTab('shell');
+        setActiveShellIndex(shellIndex);
+      }
+    } catch (e) {
+      toast(`Failed to launch ${profileName}`, { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+    }
+  }
+
+  /** Run a one-off custom command, optionally saving it as a project profile. */
+  async function launchCustomCli(name: string, cmdLine: string, save: boolean, mode: 'tab' | 'window') {
+    if (!selected) return;
+    // Very small argv splitter: whitespace + double-quoted groups. Not a
+    // shell — we don't do variable expansion or piping. Users who need that
+    // can invoke `bash -lc "..."` explicitly.
+    const argv: string[] = [];
+    const re = /"([^"]*)"|(\S+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(cmdLine)) !== null) argv.push(m[1] ?? m[2] ?? '');
+    if (argv.length === 0) throw new Error('empty command');
+    try {
+      const { shellIndex } = await api.invoke('shells:launch-cli', {
+        projectId: selected.id,
+        profileName: name || undefined,
+        argv,
+        save,
+      });
+      if (mode === 'window') {
+        await api.invoke('windows:popout-shell', { projectId: selected.id, shellIndex });
+        toast(`${name || argv[0]} in ${selected.name}`, { kind: 'info' });
+      } else {
+        setMainTab('shell');
+        setActiveShellIndex(shellIndex);
+      }
+    } catch (e) {
+      toast('Failed to launch CLI', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+    }
+  }
+
+  async function killShell(shellIndex: number) {
+    if (!selected) return;
+    try {
+      await api.invoke('shells:kill', { projectId: selected.id, shellIndex });
+      if (activeShellIndex === shellIndex) setActiveShellIndex(0);
+    } catch (e) {
+      toast('Failed to close terminal', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
     }
   }
 
@@ -234,26 +359,40 @@ function MainApp() {
                     </button>
                   </span>
                   <MetaprojectBoardButton project={selected} />
-                  <button
-                    onClick={popoutCurrent}
-                    className="text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel-strong]"
-                    title="Pop shell into its own window"
-                    data-testid="popout-shell"
-                  >
-                    <PopoutIcon />
-                  </button>
+                  <Tooltip label="Pop the active shell into its own window">
+                    <button
+                      onClick={popoutCurrent}
+                      className="text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel-strong]"
+                      data-testid="popout-shell"
+                    >
+                      <PopoutIcon />
+                    </button>
+                  </Tooltip>
                 </>
               )}
             </div>
           </div>
-          <div className="flex-1 relative min-h-0">
+          <div className="flex-1 relative min-h-0 flex flex-col">
+            {selected && mainTab === 'shell' && (
+              <ShellTabsBar
+                projectId={selected.id}
+                shells={projectShells}
+                active={activeShellIndex}
+                onSelect={setActiveShellIndex}
+                onClose={killShell}
+                onLaunchProfile={(name) => void launchCliProfile(name, 'tab')}
+                onLaunchPlainTab={newPlainShellAsTab}
+                onLaunchCustom={(name, cmdLine, save) => void launchCustomCli(name, cmdLine, save, 'tab')}
+              />
+            )}
             {selected ? (
               mainTab === 'shell'
-                ? (isPopped(selected.id, 0)
-                    ? <PoppedPlaceholder projectId={selected.id} shellIndex={0} name={selected.name} />
+                ? (isPopped(selected.id, activeShellIndex)
+                    ? <PoppedPlaceholder projectId={selected.id} shellIndex={activeShellIndex} name={selected.name} />
                     : <ShellTab
+                        key={`${selected.id}:${activeShellIndex}`}
                         projectId={selected.id}
-                        shellIndex={0}
+                        shellIndex={activeShellIndex}
                         onOpenFile={(relPath, line) => {
                           setMainTab('files');
                           setOpenInFiles({ relPath, line });
@@ -425,6 +564,257 @@ function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () => void }
   );
 }
 
+interface CliProfileEntry {
+  name: string;
+  argv: string[];
+  env?: Record<string, string>;
+  icon?: string;
+  scope: 'project' | 'global';
+}
+
+function NewShellMenu({
+  projectId,
+  onLaunchProfile,
+  onLaunchPlainTab,
+  onLaunchCustom,
+  onClose,
+}: {
+  projectId: number;
+  onLaunchProfile: (name: string) => void;
+  onLaunchPlainTab: () => void;
+  onLaunchCustom: (name: string, cmdLine: string, save: boolean) => void;
+  onClose: () => void;
+}) {
+  const [profiles, setProfiles] = useState<CliProfileEntry[]>([]);
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customName, setCustomName] = useState('');
+  const [customCmd, setCustomCmd] = useState('');
+  const [customSave, setCustomSave] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { profiles } = await api.invoke('shells:cli-profiles-list', { projectId });
+        setProfiles(profiles);
+      } catch { /* ignore */ }
+    })();
+  }, [projectId]);
+
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      const t = e.target as HTMLElement | null;
+      if (t && t.closest('[data-new-shell-menu="1"]')) return;
+      onClose();
+    }
+    function onEsc(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onEsc);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onEsc);
+    };
+  }, [onClose]);
+
+  async function removeProfile(name: string) {
+    try {
+      await api.invoke('shells:cli-profiles-remove', { projectId, name });
+      setProfiles(prev => prev.filter(p => p.name !== name));
+    } catch { /* ignore */ }
+  }
+
+  if (customOpen) {
+    return (
+      <div
+        data-new-shell-menu="1"
+        className="absolute top-full right-0 mt-1 z-40 w-80 rounded-md border border-[--border] bg-[--panel-strong] shadow-xl overflow-hidden p-3 space-y-2 text-xs"
+      >
+        <div className="font-semibold text-sm">Run a custom command</div>
+        <input
+          value={customName}
+          onChange={(e) => setCustomName(e.target.value)}
+          placeholder="Name (optional, e.g. Llama)"
+          className="w-full bg-[--panel] border border-[--border] rounded px-2 py-1 outline-none focus:ring-1 focus:ring-[--accent]/60"
+          autoFocus
+        />
+        <input
+          value={customCmd}
+          onChange={(e) => setCustomCmd(e.target.value)}
+          placeholder='Command, e.g. `llama chat --model llama3`'
+          className="w-full bg-[--panel] border border-[--border] rounded px-2 py-1 font-mono outline-none focus:ring-1 focus:ring-[--accent]/60"
+        />
+        <label className="flex items-center gap-2 text-[--text-muted]">
+          <input type="checkbox" checked={customSave} onChange={(e) => setCustomSave(e.target.checked)} className="accent-[color:var(--accent)]" />
+          <span>Save to this project&apos;s CLI list</span>
+        </label>
+        <div className="flex gap-2">
+          <button
+            className="flex-1 px-2 py-1.5 rounded bg-[color:var(--accent)] text-white hover:brightness-110 disabled:opacity-40"
+            disabled={!customCmd.trim()}
+            onClick={() => onLaunchCustom(customName.trim(), customCmd.trim(), customSave && !!customName.trim())}
+          >
+            Run
+          </button>
+          <button className="px-3 py-1.5 rounded border border-[--border] hover:bg-[--panel] text-[--text-muted]" onClick={() => setCustomOpen(false)}>Back</button>
+        </div>
+        <div className="text-[10px] text-[--text-muted]">
+          Adds this as a new tab. To move it to a separate window afterwards, click the popout icon in the top bar.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      data-new-shell-menu="1"
+      className="absolute top-full right-0 mt-1 z-40 w-72 rounded-md border border-[--border] bg-[--panel-strong] shadow-xl overflow-hidden"
+    >
+      <div className="px-3 py-2 border-b border-[--border]">
+        <div className="text-[10px] uppercase tracking-wider text-[--text-muted] font-semibold">
+          Add a shell
+        </div>
+        <div className="text-[10px] text-[--text-muted] mt-0.5">
+          Opens as a new tab. Use the popout icon to move it to its own window.
+        </div>
+      </div>
+      {profiles.length === 0 && (
+        <div className="px-3 py-4 text-xs text-[--text-muted] text-center">
+          No CLIs configured yet. Add one below.
+        </div>
+      )}
+      {profiles.map((p) => (
+        <div key={p.name} className="group flex items-stretch hover:bg-[--panel]">
+          <button
+            className="flex-1 text-left px-3 py-2 text-xs flex items-center gap-2"
+            onClick={() => onLaunchProfile(p.name)}
+            title={p.argv.join(' ')}
+          >
+            <span className="w-5 text-center text-base leading-none">{p.icon ?? '▸'}</span>
+            <span className="flex-1 truncate font-medium">{p.name}</span>
+            {p.scope === 'project' && <span className="text-[9px] uppercase text-[--text-muted] px-1 py-0.5 rounded bg-[--panel] border border-[--border]">saved</span>}
+          </button>
+          {p.scope === 'project' && (
+            <button
+              className="px-2 opacity-0 group-hover:opacity-60 hover:opacity-100 hover:text-[--danger] flex items-center"
+              onClick={() => removeProfile(p.name)}
+              title="Remove from this project"
+            >
+              <XIcon />
+            </button>
+          )}
+        </div>
+      ))}
+      <div className="border-t border-[--border]">
+        <button
+          onClick={() => setCustomOpen(true)}
+          className="w-full text-left px-3 py-2 text-xs hover:bg-[--panel] flex items-center gap-2 text-[--text-muted] hover:text-[--text]"
+        >
+          <span className="w-5 text-center text-base leading-none">＋</span>
+          <span>Add a custom command…</span>
+        </button>
+      </div>
+      <div className="border-t border-[--border]">
+        <button
+          onClick={onLaunchPlainTab}
+          className="w-full text-left px-3 py-2 text-xs hover:bg-[--panel] flex items-center justify-between"
+          title="Opens your login shell ($SHELL) at the project's directory"
+        >
+          <span className="flex items-center gap-2">
+            <span className="w-5 text-center text-base leading-none">⌨️</span>
+            <span>Terminal</span>
+          </span>
+          <span className="opacity-60 font-mono">⌘T</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+interface ShellTabsBarItem {
+  projectId: number;
+  shellIndex: number;
+  pinned: boolean;
+  startedAt: string | null;
+  lastActiveAt: string | null;
+  launchName: string;
+}
+
+function ShellTabsBar({
+  projectId, shells, active, onSelect, onClose,
+  onLaunchProfile, onLaunchPlainTab, onLaunchCustom,
+}: {
+  projectId: number;
+  shells: ShellTabsBarItem[];
+  active: number;
+  onSelect: (idx: number) => void;
+  onClose: (idx: number) => void;
+  onLaunchProfile: (name: string) => void;
+  onLaunchPlainTab: () => void;
+  onLaunchCustom: (name: string, cmdLine: string, save: boolean) => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  return (
+    <div className="flex items-center gap-1 px-2 py-1 border-b border-[--border] bg-[--panel]/40 text-xs shrink-0 overflow-visible">
+      <div className="flex items-center gap-1 flex-1 overflow-x-auto">
+        {shells.map((s) => {
+          // Show the name of the running CLI (e.g. "Claude", "Llama", "Terminal").
+          // When the same CLI runs twice, disambiguate with a #N suffix.
+          const dupes = shells.filter(x => x.launchName === s.launchName);
+          const suffix = dupes.length > 1 ? ` ${dupes.indexOf(s) + 1}` : '';
+          const label = `${s.launchName}${suffix}`;
+          const isActive = s.shellIndex === active;
+          return (
+            <div
+              key={s.shellIndex}
+              className={`group flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-md cursor-pointer whitespace-nowrap
+                ${isActive ? 'bg-[--panel-strong] border border-[--border]' : 'hover:bg-[--panel-strong]/60 border border-transparent'}`}
+              onClick={() => onSelect(s.shellIndex)}
+            >
+              <span className={`inline-block w-1.5 h-1.5 rounded-full ${isActive ? 'bg-green-500 live-dot' : 'bg-[--text-muted]'}`} />
+              <span className={`${isActive ? 'text-[--text] font-medium' : 'text-[--text-muted]'}`}>{label}</span>
+              {s.shellIndex !== 0 && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onClose(s.shellIndex); }}
+                  className="ml-0.5 opacity-0 group-hover:opacity-70 hover:opacity-100 hover:text-[--danger] w-4 h-4 flex items-center justify-center rounded"
+                  title={`Close ${label}`}
+                >
+                  <XIcon />
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {/* Add button lives at the RIGHT END of the tab strip. Click opens a
+          menu of CLIs; the selected one is added as another tab. To put it
+          in its own window instead, use the popout icon in the top toolbar
+          (it moves the currently-active tab out). */}
+      <div className="relative shrink-0">
+        <Tooltip label="Add a shell" shortcut="⌘T">
+          <button
+            onClick={() => setMenuOpen((v) => !v)}
+            className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel-strong]"
+            data-testid="tabbar-new-shell"
+          >
+            <PlusIcon />
+          </button>
+        </Tooltip>
+        {menuOpen && (
+          <NewShellMenu
+            projectId={projectId}
+            onLaunchProfile={(name) => { setMenuOpen(false); onLaunchProfile(name); }}
+            onLaunchPlainTab={() => { setMenuOpen(false); onLaunchPlainTab(); }}
+            onLaunchCustom={(name, cmdLine, save) => {
+              setMenuOpen(false);
+              onLaunchCustom(name, cmdLine, save);
+            }}
+            onClose={() => setMenuOpen(false)}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
 function PoppedPlaceholder({ projectId, shellIndex, name }: { projectId: number; shellIndex: number; name: string }) {
   return (
     <div className="h-full flex items-center justify-center p-8 text-center">
@@ -461,6 +851,15 @@ function XIcon() {
     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
       <line x1="18" y1="6" x2="6" y2="18" />
       <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="12" y1="5" x2="12" y2="19" />
+      <line x1="5" y1="12" x2="19" y2="12" />
     </svg>
   );
 }

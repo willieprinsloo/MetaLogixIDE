@@ -12,6 +12,12 @@ export const DEFAULT_SETTINGS: SettingsMap = {
   'metaproject_base_url':          'https://projects.metalogix.solutions',
   'metaproject_last_username':     '',
   'window_opacity':                100,
+  // Seeded named CLIs the "+ new shell" menu shows out of the box. The bare
+  // "Terminal" (login $SHELL) is offered by the menu itself as a separate
+  // row — don't duplicate it here.
+  'default_cli_profiles': [
+    { name: 'Claude',       argv: ['claude', '--dangerously-skip-permissions'], icon: '🤖' },
+  ],
 };
 
 export class SettingsRepo {

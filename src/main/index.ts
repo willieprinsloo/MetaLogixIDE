@@ -1,11 +1,51 @@
 import { app, BrowserWindow, ipcMain, Menu, screen, shell } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { buildServices } from './services';
 import { registerIpc } from './ipc/register';
 import { buildAppMenu } from './menu';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// macOS: when the app launches from Finder / Dock, PATH is the pared-down
+// GUI default (`/usr/bin:/bin:/usr/sbin:/sbin`). That's missing Homebrew,
+// nvm, cargo, and every npm-global install location — so `claude`, `git`,
+// `pnpm`, etc. spawn as "command not found" and the PTY exits immediately
+// with the dreaded `[shell exited]`. Prepend the well-known user paths so
+// spawned shells inherit a workable PATH. Order matters: user-scoped
+// installers first, then Homebrew, then system.
+function augmentPathForGuiLaunch(): void {
+  if (process.platform !== 'darwin') return;
+  const home = homedir();
+  const candidates = [
+    `${home}/.local/bin`,
+    `${home}/.cargo/bin`,
+    `${home}/.volta/bin`,
+    `${home}/.npm-global/bin`,
+    `${home}/.nvm/current/bin`,
+    `${home}/.bun/bin`,
+    '/opt/homebrew/bin',
+    '/opt/homebrew/sbin',
+    '/usr/local/bin',
+    '/usr/local/sbin',
+  ];
+  const existing = (process.env.PATH ?? '').split(':').filter(Boolean);
+  const seen = new Set(existing);
+  const extras: string[] = [];
+  for (const p of candidates) {
+    if (existsSync(p) && !seen.has(p)) {
+      extras.push(p);
+      seen.add(p);
+    }
+  }
+  process.env.PATH = [...extras, ...existing].join(':');
+  if (extras.length > 0) {
+    console.log('[metaide] PATH augmented for GUI launch: prepended', extras.join(':'));
+  }
+}
+augmentPathForGuiLaunch();
 
 let mainWindow: BrowserWindow | null = null;
 const popoutWindows = new Map<string, BrowserWindow>(); // key = `${projectId}:${shellIndex}`

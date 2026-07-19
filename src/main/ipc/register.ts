@@ -3,6 +3,7 @@ import { dialog, nativeTheme, shell, BrowserWindow } from 'electron';
 import type { Services } from '@main/services';
 import type { IpcChannelName, IpcRequest, IpcResponse, IpcEventName, IpcEvents } from '@shared/ipc-contract';
 import { discoverProjects } from '@main/domain/discovery';
+import { parseMetaproject } from '@shared/parse-metaproject';
 import { resolveLaunch } from '@main/domain/launch';
 import { chooseEvictee } from '@main/pty/keep-alive';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, renameSync } from 'node:fs';
@@ -12,6 +13,26 @@ import { join, relative, resolve } from 'node:path';
 
 type Handler<C extends IpcChannelName> = (services: Services, req: IpcRequest<C>) => Promise<IpcResponse<C>>;
 type SendEvent = <E extends IpcEventName>(channel: E, payload: IpcEvents[E]) => void;
+
+// Keychain service name for the metaproject credential. One row per (service,
+// account) pair, keyed by username so a user could theoretically sign into
+// multiple accounts by switching the last-used username in settings.
+const KEYTAR_SERVICE = 'metaIDE.metaproject';
+
+/**
+ * Merges project-scoped CLI profiles with the global defaults, deduping by
+ * name (project entries win). Empty project arrays fall all the way through
+ * to the global list, so users on a brand-new project still see Claude.
+ */
+function mergedCliProfiles(
+  projectProfiles: Array<{ name: string; argv: string[]; env?: Record<string, string>; icon?: string }> | null,
+  globalProfiles: Array<{ name: string; argv: string[]; env?: Record<string, string>; icon?: string }>,
+): Array<{ name: string; argv: string[]; env?: Record<string, string>; icon?: string }> {
+  const list = projectProfiles ?? [];
+  if (list.length === 0) return globalProfiles;
+  const names = new Set(list.map(p => p.name));
+  return [...list, ...globalProfiles.filter(p => !names.has(p.name))];
+}
 
 export interface WindowHooks {
   createPopoutWindow: (projectId: number, shellIndex: number) => Promise<number>;
@@ -70,6 +91,17 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'projects:open':    async (s, { id }) => {
     const p = s.projects.get(id);
     if (!p) throw new Error(`no project ${id}`);
+    // Re-read .metaproject.yaml on open so edits to project_id take effect
+    // without requiring the user to trigger a full root rescan.
+    const yamlPath = join(p.path, '.metaproject.yaml');
+    if (existsSync(yamlPath)) {
+      try {
+        const link = parseMetaproject(readFileSync(yamlPath, 'utf8'));
+        if (link.projectId && link.projectId !== p.config.linkedMetaprojectProjectId) {
+          s.projects.updateConfig(id, { linkedMetaprojectProjectId: link.projectId });
+        }
+      } catch { /* leave existing link untouched */ }
+    }
     s.projects.markLastOpened(id, new Date());
     return { project: s.projects.get(id)! };
   },
@@ -165,6 +197,104 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     void fallbackApplied; // future: return this to renderer as a toast reason
     return { shellIndex: 0 };
   },
+  'shells:launch-plain': async (s, { projectId }) => {
+    const project = s.projects.get(projectId);
+    if (!project) throw new Error(`no project ${projectId}`);
+    // Pick the smallest unused shellIndex for this project. shellIndex 0 is
+    // typically the Claude shell; ad-hoc terminals get 1, 2, …
+    const used = new Set(s.shells.list().filter(r => r.projectId === projectId).map(r => r.shellIndex));
+    let idx = 0;
+    while (used.has(idx)) idx++;
+    // Respect the alive cap the same way the primary launch does.
+    const cap = s.settings.get('keep_alive_cap');
+    const alive = s.shells.list();
+    if (alive.length >= cap) {
+      const decision = chooseEvictee(alive, cap, projectId, new Date());
+      if (decision.evictee) {
+        await s.ptyManager.kill(decision.evictee.projectId, decision.evictee.shellIndex);
+        s.shells.remove(decision.evictee.projectId, decision.evictee.shellIndex);
+      } else if (decision.reason === 'all-pinned') {
+        throw new Error('all shells are pinned — unpin one or raise cap');
+      }
+    }
+    const shellBin = process.env.SHELL || '/bin/zsh';
+    const launch = { argv: [shellBin, '-l'] as string[], cwd: project.path, env: {}, variant: 'first' as const };
+    await s.ptyManager.spawn(projectId, idx, launch);
+    const now = new Date();
+    const nowIso = `${now.getUTCFullYear()}-${String(now.getUTCMonth()+1).padStart(2,'0')}-${String(now.getUTCDate()).padStart(2,'0')} ${String(now.getUTCHours()).padStart(2,'0')}:${String(now.getUTCMinutes()).padStart(2,'0')}:${String(now.getUTCSeconds()).padStart(2,'0')}`;
+    s.shells.upsert({ projectId, shellIndex: idx, model: null, launchArgv: launch.argv, startedAt: nowIso, lastActiveAt: nowIso, pinned: false });
+    return { shellIndex: idx };
+  },
+  'shells:launch-cli': async (s, { projectId, profileName, argv, env, save }) => {
+    const project = s.projects.get(projectId);
+    if (!project) throw new Error(`no project ${projectId}`);
+    // Resolve the argv: explicit inline wins, otherwise look up the profile
+    // (project overrides > global defaults) by name.
+    let resolvedArgv = argv;
+    let resolvedEnv = env ?? {};
+    let resolvedName = profileName;
+    if (!resolvedArgv || resolvedArgv.length === 0) {
+      if (!profileName) throw new Error('either profileName or argv is required');
+      const merged = mergedCliProfiles(project.config.cliProfiles ?? null, s.settings.get('default_cli_profiles'));
+      const match = merged.find(p => p.name === profileName);
+      if (!match) throw new Error(`no CLI profile named "${profileName}"`);
+      resolvedArgv = match.argv;
+      resolvedEnv = { ...(match.env ?? {}), ...resolvedEnv };
+    }
+    // Expand a leading $SHELL sentinel so profiles can portably reference
+    // the user's login shell without hard-coding /bin/zsh.
+    if (resolvedArgv[0] === '$SHELL') {
+      resolvedArgv = [process.env.SHELL || '/bin/zsh', ...resolvedArgv.slice(1)];
+    }
+    // Persist as a project profile if the caller asked. Dedupe by name.
+    if (save && resolvedName && argv && argv.length > 0) {
+      const existing = project.config.cliProfiles ?? [];
+      const withoutDupe = existing.filter(p => p.name !== resolvedName);
+      const next = [...withoutDupe, { name: resolvedName, argv, env: env && Object.keys(env).length ? env : undefined }];
+      s.projects.updateConfig(projectId, { cliProfiles: next });
+    }
+    // Same alive-cap + shell-slot logic as launch-plain.
+    const used = new Set(s.shells.list().filter(r => r.projectId === projectId).map(r => r.shellIndex));
+    let idx = 0;
+    while (used.has(idx)) idx++;
+    const cap = s.settings.get('keep_alive_cap');
+    const alive = s.shells.list();
+    if (alive.length >= cap) {
+      const decision = chooseEvictee(alive, cap, projectId, new Date());
+      if (decision.evictee) {
+        await s.ptyManager.kill(decision.evictee.projectId, decision.evictee.shellIndex);
+        s.shells.remove(decision.evictee.projectId, decision.evictee.shellIndex);
+      } else if (decision.reason === 'all-pinned') {
+        throw new Error('all shells are pinned — unpin one or raise cap');
+      }
+    }
+    const launch = { argv: resolvedArgv, cwd: project.path, env: resolvedEnv, variant: 'first' as const };
+    await s.ptyManager.spawn(projectId, idx, launch);
+    const now = new Date();
+    const nowIso = `${now.getUTCFullYear()}-${String(now.getUTCMonth()+1).padStart(2,'0')}-${String(now.getUTCDate()).padStart(2,'0')} ${String(now.getUTCHours()).padStart(2,'0')}:${String(now.getUTCMinutes()).padStart(2,'0')}:${String(now.getUTCSeconds()).padStart(2,'0')}`;
+    s.shells.upsert({ projectId, shellIndex: idx, model: null, launchArgv: launch.argv, startedAt: nowIso, lastActiveAt: nowIso, pinned: false });
+    return { shellIndex: idx };
+  },
+  'shells:cli-profiles-list': async (s, { projectId }) => {
+    const project = s.projects.get(projectId);
+    if (!project) throw new Error(`no project ${projectId}`);
+    const projectProfiles = project.config.cliProfiles ?? [];
+    const globalProfiles = s.settings.get('default_cli_profiles');
+    // Project overrides shadow same-name globals.
+    const projectNames = new Set(projectProfiles.map(p => p.name));
+    const flat = [
+      ...projectProfiles.map(p => ({ ...p, scope: 'project' as const })),
+      ...globalProfiles.filter(p => !projectNames.has(p.name)).map(p => ({ ...p, scope: 'global' as const })),
+    ];
+    return { profiles: flat };
+  },
+  'shells:cli-profiles-remove': async (s, { projectId, name }) => {
+    const project = s.projects.get(projectId);
+    if (!project) throw new Error(`no project ${projectId}`);
+    const remaining = (project.config.cliProfiles ?? []).filter(p => p.name !== name);
+    s.projects.updateConfig(projectId, { cliProfiles: remaining });
+    return { ok: true } as const;
+  },
   'shells:kill':   async (s, { projectId, shellIndex }) => { await s.ptyManager.kill(projectId, shellIndex); s.shells.remove(projectId, shellIndex); return { ok: true } as const; },
   'shells:resize': async (s, { projectId, shellIndex, cols, rows }) => { s.ptyManager.resize(projectId, shellIndex, cols, rows); return { ok: true } as const; },
   'shells:write':  async (s, { projectId, shellIndex, data }) => { s.ptyManager.write(projectId, shellIndex, data); s.shells.touch(projectId, shellIndex, new Date()); return { ok: true } as const; },
@@ -225,19 +355,73 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
   },
 
   /* ─── metaproject chat ─── */
-  'metaproject:login': async (s, { username, password }) => {
+  'metaproject:login': async (s, { username, password, remember }) => {
     const baseUrl = s.settings.get('metaproject_base_url') || 'https://projects.metalogix.solutions';
     const info = await s.metaproject.login({ baseUrl, username, password });
-    // Remember the username (never the password) so the sign-in card can
-    // pre-fill it next time.
+    // Remember the username (never the password in settings) so the sign-in
+    // card can pre-fill it next time.
     try { s.settings.set('metaproject_last_username', username); } catch { /* non-fatal */ }
+    // When the user opted in, store the password in the OS keychain. Keytar
+    // uses macOS Keychain / libsecret / Windows Credential Vault under the
+    // hood — the plaintext never touches disk in userland.
+    if (remember) {
+      try {
+        const keytar = await import('keytar');
+        await keytar.setPassword(KEYTAR_SERVICE, username, password);
+      } catch (err) {
+        console.warn('[metaproject] failed to persist credential', err);
+      }
+    }
     s.metaproject.connectSocket();
     return info;
+  },
+  'metaproject:credentials-load': async (s) => {
+    const username = s.settings.get('metaproject_last_username') || null;
+    if (!username) return { username: null, hasPassword: false };
+    try {
+      const keytar = await import('keytar');
+      const pw = await keytar.getPassword(KEYTAR_SERVICE, username);
+      return { username, hasPassword: !!pw };
+    } catch {
+      return { username, hasPassword: false };
+    }
+  },
+  'metaproject:credentials-clear': async (s) => {
+    const username = s.settings.get('metaproject_last_username') || null;
+    if (username) {
+      try {
+        const keytar = await import('keytar');
+        await keytar.deletePassword(KEYTAR_SERVICE, username);
+      } catch { /* non-fatal */ }
+    }
+    return { ok: true } as const;
+  },
+  'metaproject:auto-login': async (s) => {
+    if (s.metaproject.isLoggedIn()) return { ok: true, userName: s.metaproject.currentUserName() ?? undefined };
+    const username = s.settings.get('metaproject_last_username') || null;
+    if (!username) return { ok: false, reason: 'no-saved-username' };
+    let password: string | null = null;
+    try {
+      const keytar = await import('keytar');
+      password = await keytar.getPassword(KEYTAR_SERVICE, username);
+    } catch (err) {
+      return { ok: false, reason: `keychain-error: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    if (!password) return { ok: false, reason: 'no-saved-password' };
+    const baseUrl = s.settings.get('metaproject_base_url') || 'https://projects.metalogix.solutions';
+    try {
+      const info = await s.metaproject.login({ baseUrl, username, password });
+      s.metaproject.connectSocket();
+      return { ok: true, userName: info.userName };
+    } catch (err) {
+      return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+    }
   },
   'metaproject:status': async (s) => ({
     loggedIn: s.metaproject.isLoggedIn(),
     connected: s.metaproject.isConnected(),
     userName: s.metaproject.currentUserName(),
+    userId: s.metaproject.currentUserId(),
   }),
   'metaproject:logout': async (s) => { s.metaproject.disconnect(); return { ok: true } as const; },
   'metaproject:list-channels': async (s, { projectId }) => ({
@@ -499,6 +683,9 @@ const CHANNEL_EMITS: Partial<Record<IpcChannelName, IpcEventName[]>> = {
   'projects:hide':  ['projects:changed'],
   'projects:create':['projects:changed'],
   'shells:launch':  ['alive-shells:changed', 'projects:changed'],
+  'shells:launch-plain': ['alive-shells:changed'],
+  'shells:launch-cli':   ['alive-shells:changed', 'projects:changed'],
+  'shells:cli-profiles-remove': ['projects:changed'],
   'shells:kill':    ['alive-shells:changed'],
   'shells:pin':     ['alive-shells:changed'],
 };
