@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@renderer/api';
 import { toast } from '@renderer/hooks/useToasts';
 
-interface Channel { id: number; project_id: number; name: string; is_private: boolean }
+interface Channel { id: number; project_id: number | null; name: string; is_private: boolean }
+interface MpProject { id: number; name: string; identifier?: string | null }
 interface MsgUser { id: number; username: string; display_name?: string; avatar_url?: string | null }
 interface Msg {
   id: number;
@@ -58,22 +59,35 @@ export function ChatTab({ projectId, metaprojectProjectId, compact = false }: Pr
 
   useEffect(() => { void refreshStatus(); }, [refreshStatus]);
 
-  // Load channels once we're logged in AND have a project id to look up.
+  // Load channels once we're logged in. Uses the workspace-scoped endpoint
+  // so the sidebar shows EVERY channel the user is in across every project
+  // — regardless of whether the currently-selected local project has a
+  // metaproject link. When the local project IS linked, prefer opening a
+  // channel from that project first so the initial view feels contextual.
+  const [refreshCounter, setRefreshCounter] = useState(0);
   useEffect(() => {
-    if (!status?.loggedIn || numericMpId == null) return;
+    if (!status?.loggedIn) return;
     setLoadingChannels(true);
     (async () => {
       try {
-        const { channels } = await api.invoke('metaproject:list-channels', { projectId: numericMpId });
+        const { channels } = await api.invoke('metaproject:list-all-channels', { scope: 'all' });
         setChannels(channels);
-        if (channels.length > 0 && !activeChannel) setActiveChannel(channels[0]!);
+        if (channels.length > 0 && !activeChannel) {
+          // Prefer a channel matching the selected project's metaproject id;
+          // fall back to the first global channel, then anything.
+          const preferred =
+            (numericMpId != null && channels.find((c) => c.project_id === numericMpId)) ||
+            channels.find((c) => c.project_id == null) ||
+            channels[0];
+          if (preferred) setActiveChannel(preferred);
+        }
       } catch (e) {
         setError(String(e).replace(/^Error:\s*/, ''));
       } finally {
         setLoadingChannels(false);
       }
     })();
-  }, [status?.loggedIn, numericMpId, activeChannel]);
+  }, [status?.loggedIn, numericMpId, activeChannel, refreshCounter]);
 
   // Whenever the active channel changes: load history + join room.
   useEffect(() => {
@@ -82,7 +96,17 @@ export function ChatTab({ projectId, metaprojectProjectId, compact = false }: Pr
     setLoadingMessages(true);
     (async () => {
       try {
-        const { messages } = await api.invoke('metaproject:list-messages', { channelId: activeChannel.id, limit: 50, projectId: numericMpId ?? undefined });
+        // The server's messages endpoint always requires a project_id in the
+        // path. For a project-scoped channel use its own project_id; for a
+        // global channel, borrow the current local project's link, and if
+        // that's not set either, borrow any project_id off another channel
+        // in the user's list (resolve_channel accepts any org-mate).
+        const anyProjectId = activeChannel.project_id
+          ?? numericMpId
+          ?? channels.find((c) => c.project_id != null)?.project_id
+          ?? undefined;
+        if (anyProjectId == null) throw new Error('cannot fetch messages: no accessible project_id for this channel');
+        const { messages } = await api.invoke('metaproject:list-messages', { channelId: activeChannel.id, limit: 50, projectId: anyProjectId });
         setMessages(messages);
         await api.invoke('metaproject:join-channel', { channelId: activeChannel.id });
       } catch (e) {
@@ -159,17 +183,21 @@ export function ChatTab({ projectId, metaprojectProjectId, compact = false }: Pr
     return <LoginCard onLoggedIn={refreshStatus} />;
   }
 
-  if (numericMpId == null) {
-    return (
-      <div className="p-6 text-sm text-[--text-muted] space-y-2">
-        <div>This project has no metaproject link.</div>
-        <div>Add <code className="font-mono">project_id: PROJ-42</code> (or a bare integer) to <code className="font-mono">.metaproject.yaml</code> to enable chat.</div>
-      </div>
-    );
-  }
+  // Only shown when the SELECTED local project isn't linked to a metaproject
+  // project. Chat still works below (global + other-project channels), but a
+  // banner at the top lets the user link this project or create a new one so
+  // the sidebar's "This project" section starts appearing.
+  const linkBanner = numericMpId == null ? (
+    <LinkOrCreateBanner
+      localProjectId={projectId}
+      onLinked={() => setRefreshCounter((n) => n + 1)}
+    />
+  ) : null;
 
   return (
-    <div className={`h-full min-h-0 ${compact ? 'flex flex-col' : 'flex'}`}>
+    <div className="h-full flex flex-col min-h-0">
+      {linkBanner}
+      <div className={`flex-1 min-h-0 ${compact ? 'flex flex-col' : 'flex'}`}>
       {!compact && (
         <aside className="w-52 shrink-0 overflow-y-auto border-r border-[--border] py-2 px-1 text-sm bg-[--panel]/40">
           <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-[--text-muted] font-semibold">Channels</div>
@@ -180,18 +208,22 @@ export function ChatTab({ projectId, metaprojectProjectId, compact = false }: Pr
             </div>
           )}
           {!loadingChannels && channels.length === 0 && <div className="px-3 py-2 text-[--text-muted]">No channels yet.</div>}
-          {channels.map((c) => (
-            <button
-              key={c.id}
-              onClick={() => setActiveChannel(c)}
-              className={`w-full text-left px-3 py-1 rounded-md flex items-center gap-1.5 mx-1 ${
-                activeChannel?.id === c.id ? 'bg-[color:var(--accent)] text-white' : 'hover:bg-[--panel-strong]'
-              }`}
-            >
-              <span className="opacity-70">{c.is_private ? '🔒' : '#'}</span>
-              <span className="truncate">{c.name}</span>
-            </button>
-          ))}
+          {(() => {
+            const grouped = groupChannels(channels, numericMpId);
+            return (
+              <>
+                {grouped.thisProject.length > 0 && (
+                  <ChannelGroup label="This project" channels={grouped.thisProject} activeId={activeChannel?.id ?? null} onPick={setActiveChannel} />
+                )}
+                {grouped.global.length > 0 && (
+                  <ChannelGroup label="Global" channels={grouped.global} activeId={activeChannel?.id ?? null} onPick={setActiveChannel} />
+                )}
+                {grouped.other.length > 0 && (
+                  <ChannelGroup label="Other projects" channels={grouped.other} activeId={activeChannel?.id ?? null} onPick={setActiveChannel} />
+                )}
+              </>
+            );
+          })()}
         </aside>
       )}
       {compact && (
@@ -207,11 +239,34 @@ export function ChatTab({ projectId, metaprojectProjectId, compact = false }: Pr
           >
             {loadingChannels && channels.length === 0 && <option>Loading…</option>}
             {!loadingChannels && channels.length === 0 && <option>No channels</option>}
-            {channels.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.is_private ? '🔒 ' : '# '}{c.name}
-              </option>
-            ))}
+            {(() => {
+              const grouped = groupChannels(channels, numericMpId);
+              return (
+                <>
+                  {grouped.thisProject.length > 0 && (
+                    <optgroup label="This project">
+                      {grouped.thisProject.map((c) => (
+                        <option key={c.id} value={c.id}>{c.is_private ? '🔒 ' : '# '}{c.name}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {grouped.global.length > 0 && (
+                    <optgroup label="Global">
+                      {grouped.global.map((c) => (
+                        <option key={c.id} value={c.id}>{c.is_private ? '🔒 ' : '🌐 '}{c.name}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {grouped.other.length > 0 && (
+                    <optgroup label="Other projects">
+                      {grouped.other.map((c) => (
+                        <option key={c.id} value={c.id}>{c.is_private ? '🔒 ' : '# '}{c.name} — proj {c.project_id}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                </>
+              );
+            })()}
           </select>
         </div>
       )}
@@ -255,8 +310,165 @@ export function ChatTab({ projectId, metaprojectProjectId, compact = false }: Pr
           />
         </div>
       </div>
-      {/* Preserve unused parameter to avoid lint noise. */}
-      <input type="hidden" value={projectId} readOnly />
+        {/* Preserve unused parameter to avoid lint noise. */}
+        <input type="hidden" value={projectId} readOnly />
+      </div>
+    </div>
+  );
+}
+
+/** Partition channels into the three groups the sidebar renders. */
+function groupChannels(channels: Channel[], currentMpId: number | null): { thisProject: Channel[]; global: Channel[]; other: Channel[] } {
+  const thisProject: Channel[] = [];
+  const global: Channel[] = [];
+  const other: Channel[] = [];
+  for (const c of channels) {
+    if (c.project_id == null) global.push(c);
+    else if (currentMpId != null && c.project_id === currentMpId) thisProject.push(c);
+    else other.push(c);
+  }
+  return { thisProject, global, other };
+}
+
+function ChannelGroup({ label, channels, activeId, onPick }: {
+  label: string;
+  channels: Channel[];
+  activeId: number | null;
+  onPick: (c: Channel) => void;
+}) {
+  return (
+    <div className="mt-2">
+      <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-[--text-muted] font-semibold">{label}</div>
+      {channels.map((c) => (
+        <button
+          key={c.id}
+          onClick={() => onPick(c)}
+          className={`w-full text-left px-3 py-1 rounded-md flex items-center gap-1.5 mx-1 ${
+            activeId === c.id ? 'bg-[color:var(--accent)] text-white' : 'hover:bg-[--panel-strong]'
+          }`}
+        >
+          <span className="opacity-70">{c.is_private ? '🔒' : c.project_id == null ? '🌐' : '#'}</span>
+          <span className="truncate">{c.name}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function LinkOrCreateBanner({ localProjectId, onLinked }: { localProjectId: number; onLinked: () => void }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [projects, setProjects] = useState<MpProject[]>([]);
+  const [newName, setNewName] = useState('');
+
+  async function openPicker() {
+    setBusy(true);
+    try {
+      const { projects } = await api.invoke('metaproject:list-projects', undefined as never);
+      setProjects(projects);
+      setPickerOpen(true);
+    } catch (e) {
+      toast('Failed to list projects', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+    } finally { setBusy(false); }
+  }
+
+  async function linkTo(mpId: number) {
+    setBusy(true);
+    try {
+      await api.invoke('metaproject:link-local-project', { projectId: localProjectId, metaprojectProjectId: mpId });
+      toast('Linked to metaproject', { kind: 'success' });
+      setPickerOpen(false);
+      onLinked();
+    } catch (e) {
+      toast('Link failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+    } finally { setBusy(false); }
+  }
+
+  async function createAndLink() {
+    const name = newName.trim();
+    if (!name) return;
+    setBusy(true);
+    try {
+      const { project } = await api.invoke('metaproject:create-project', { name });
+      await api.invoke('metaproject:link-local-project', { projectId: localProjectId, metaprojectProjectId: project.id });
+      toast(`Created and linked "${name}"`, { kind: 'success' });
+      setCreating(false);
+      setNewName('');
+      onLinked();
+    } catch (e) {
+      toast('Create failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="shrink-0 border-b border-[--border] bg-[color:var(--accent)]/8 text-xs">
+      {!pickerOpen && !creating && (
+        <div className="px-3 py-2 flex items-center gap-2">
+          <span className="flex-1 text-[--text-muted]">
+            This project isn&apos;t linked to a metaproject yet — chat below still works, but there&apos;s no per-project room to post in.
+          </span>
+          <button
+            onClick={openPicker}
+            disabled={busy}
+            className="text-[color:var(--accent)] hover:brightness-110 font-medium"
+          >
+            Link existing…
+          </button>
+          <span className="text-[--text-muted]">·</span>
+          <button
+            onClick={() => setCreating(true)}
+            className="text-[color:var(--accent)] hover:brightness-110 font-medium"
+          >
+            Create new
+          </button>
+        </div>
+      )}
+      {pickerOpen && (
+        <div className="px-3 py-2 space-y-2 max-h-48 overflow-y-auto">
+          <div className="flex items-center gap-2">
+            <div className="font-semibold flex-1">Pick a metaproject project</div>
+            <button className="text-[--text-muted] hover:text-[--text]" onClick={() => setPickerOpen(false)}>Cancel</button>
+          </div>
+          {projects.length === 0 && <div className="text-[--text-muted]">No projects available.</div>}
+          <div className="grid grid-cols-1 gap-1">
+            {projects.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => void linkTo(p.id)}
+                disabled={busy}
+                className="text-left px-2 py-1.5 rounded-md bg-[--panel-strong] hover:brightness-110 flex items-center gap-2"
+              >
+                <span className="flex-1 truncate">{p.name}</span>
+                {p.identifier && <span className="text-[10px] font-mono text-[--text-muted]">{p.identifier}</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {creating && (
+        <div className="px-3 py-2 space-y-2">
+          <div className="flex items-center gap-2">
+            <div className="font-semibold flex-1">Create a new metaproject</div>
+            <button className="text-[--text-muted] hover:text-[--text]" onClick={() => { setCreating(false); setNewName(''); }}>Cancel</button>
+          </div>
+          <input
+            value={newName}
+            autoFocus
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && newName.trim()) void createAndLink(); }}
+            placeholder="Project name"
+            className="w-full bg-[--panel] border border-[--border] rounded-md px-2 py-1 outline-none focus:ring-1 focus:ring-[--accent]/60"
+          />
+          <button
+            onClick={createAndLink}
+            disabled={busy || !newName.trim()}
+            className="w-full bg-[color:var(--accent)] text-white rounded-md py-1.5 hover:brightness-110 disabled:opacity-50"
+          >
+            {busy ? 'Creating…' : 'Create + link'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

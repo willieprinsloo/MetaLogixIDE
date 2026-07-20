@@ -179,12 +179,55 @@ export class MetaprojectClient {
     return list;
   }
 
+  /**
+   * Workspace-scoped channel list — the endpoint that lets one client show
+   * every room the user is in without walking projects one at a time.
+   *   scope='all'      → global (org-wide) + every project the user can see
+   *   scope='global'   → only org-wide channels
+   *   scope=<number>   → global + that specific project
+   * Endpoint: GET /api/chat/channels/?scope=<scope>
+   * (app/routes/web_chat.py:748, app/services/chat_service.py:1426)
+   */
+  async listAllChannels(scope: 'all' | 'global' | number = 'all'): Promise<Channel[]> {
+    const s = typeof scope === 'number' ? String(scope) : scope;
+    const raw = await this.get<{ success?: boolean; channels?: Channel[] } | Channel[]>(
+      `/api/chat/channels/?scope=${encodeURIComponent(s)}`,
+    );
+    return Array.isArray(raw) ? raw : (raw?.channels ?? []);
+  }
+
+  /** GET /api/projects — every project the current user can access. */
+  async listMetaprojectProjects(): Promise<Array<{ id: number; name: string; identifier?: string | null }>> {
+    const raw = await this.get<{ success?: boolean; projects?: Array<{ id: number; name: string; identifier?: string | null }> }>(
+      `/api/projects`,
+    );
+    return raw?.projects ?? [];
+  }
+
+  /** POST /api/projects — create a new metaproject project for the current org. */
+  async createMetaprojectProject(input: { name: string; description?: string; projectType?: 'kanban' | 'sprint' | 'dcad' }): Promise<{ id: number; name: string; identifier?: string | null }> {
+    const raw = await this.post<{ success?: boolean; project?: { id: number; name: string; identifier?: string | null } }>(
+      `/api/projects`,
+      { name: input.name, description: input.description ?? '', project_type: input.projectType ?? 'kanban' },
+    );
+    if (!raw?.project) throw new Error('create project: unexpected response shape');
+    return raw.project;
+  }
+
   async listMessages(channelId: number, limit = 50, projectId?: number): Promise<ChatMessage[]> {
-    // Messages live under the per-project blueprint too; if we know the
-    // project_id use that path, otherwise fall back to the workspace bp.
-    const path = projectId != null
-      ? `/api/projects/${projectId}/chat/channels/${channelId}/messages/?limit=${limit}`
-      : `/api/chat/channels/${channelId}/messages/?limit=${limit}`;
+    // Messages ALWAYS live under a per-project route on the server —
+    // `/api/projects/<pid>/chat/channels/<cid>/messages/`. `resolve_channel`
+    // (services/chat_service.py:161) accepts any project_id in the same org
+    // for a global channel, so the caller can pass any project id they can
+    // access when the channel itself has no project_id. There is no
+    // workspace `/api/chat/channels/<cid>/messages/` endpoint — a fallback
+    // there 404s. Required argument therefore, but kept optional in the
+    // signature to preserve the callsite shape; we throw a helpful error
+    // instead of hitting a URL that doesn't exist.
+    if (projectId == null) {
+      throw new Error(`listMessages needs a projectId (channel ${channelId}) — the server has no workspace-scoped messages endpoint`);
+    }
+    const path = `/api/projects/${projectId}/chat/channels/${channelId}/messages/?limit=${limit}`;
     const raw = await this.get<{ success?: boolean; data?: { messages?: ChatMessage[] } | ChatMessage[] } | ChatMessage[]>(path);
     const list = Array.isArray(raw) ? raw
       : Array.isArray(raw?.data) ? raw.data

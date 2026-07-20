@@ -427,6 +427,39 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'metaproject:list-channels': async (s, { projectId }) => ({
     channels: await s.metaproject.listChannels(projectId),
   }),
+  'metaproject:list-all-channels': async (s, { scope }) => ({
+    channels: await s.metaproject.listAllChannels(scope),
+  }),
+  'metaproject:list-projects': async (s) => ({
+    projects: await s.metaproject.listMetaprojectProjects(),
+  }),
+  'metaproject:create-project': async (s, { name, description, projectType }) => ({
+    project: await s.metaproject.createMetaprojectProject({ name, description, projectType }),
+  }),
+  'metaproject:link-local-project': async (s, { projectId, metaprojectProjectId }) => {
+    const project = s.projects.get(projectId);
+    if (!project) throw new Error(`no project ${projectId}`);
+    const yamlPath = join(project.path, '.metaproject.yaml');
+    // Upsert `project_id:` in the yaml. Preserves any other keys the user
+    // added (identifier, epics, spec_dir, branch_pattern, …).
+    let current = '';
+    try { current = readFileSync(yamlPath, 'utf8'); } catch { /* fresh file */ }
+    const idLine = `project_id: ${metaprojectProjectId}`;
+    let next: string;
+    if (/^project_id:.*$/m.test(current)) {
+      next = current.replace(/^project_id:.*$/m, idLine);
+    } else if (current.trim()) {
+      next = `${idLine}\n${current}`.replace(/\n{3,}/g, '\n\n');
+    } else {
+      // Sensible starter yaml so the user has something to edit later.
+      next = `${idLine}\nname: ${project.name}\n`;
+    }
+    writeFileSync(yamlPath, next);
+    // Reflect the change immediately in the projects repo (mirrors what
+    // `projects:open` does when it re-reads the yaml on next open).
+    s.projects.updateConfig(projectId, { linkedMetaprojectProjectId: String(metaprojectProjectId) });
+    return { ok: true } as const;
+  },
   'metaproject:list-messages': async (s, { channelId, limit, projectId }) => ({
     messages: await s.metaproject.listMessages(channelId, limit, projectId),
   }),
@@ -690,6 +723,7 @@ const CHANNEL_EMITS: Partial<Record<IpcChannelName, IpcEventName[]>> = {
   'projects:pin':   ['projects:changed'],
   'projects:hide':  ['projects:changed'],
   'projects:create':['projects:changed'],
+  'metaproject:link-local-project': ['projects:changed'],
   'shells:launch':  ['alive-shells:changed', 'projects:changed'],
   'shells:launch-plain': ['alive-shells:changed'],
   'shells:launch-cli':   ['alive-shells:changed', 'projects:changed'],

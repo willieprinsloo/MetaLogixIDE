@@ -37,7 +37,15 @@ export function ShellTab({
   const termRef = useRef<Terminal | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const receivedLive = useRef(false);
+  // Ordering guard for the "snapshot vs live" race on remount. Live PTY
+  // data can arrive between term.open() and the snapshot HTTP round-trip
+  // resolving; if we wrote it straight to xterm and then also wrote the
+  // snapshot, we'd get a splice like [live delta][full scrollback again].
+  // Instead we buffer live in `pendingLive` until the snapshot lands,
+  // then flush the buffer. `snapshotReady` flips to true after either
+  // path completes so live writes go direct from then on.
+  const snapshotReady = useRef(false);
+  const pendingLive = useRef('');
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [fontSize, setFontSize] = usePersistedNumber('metaide.shellFontSize', 14, 9, 28);
@@ -130,15 +138,21 @@ export function ShellTab({
 
     // Replay any existing scrollback from the PTY so late-attaching viewports
     // (a pop-out window, tab switch back, second monitor) don't see an empty
-    // terminal while the shell is idle. If a live event has already arrived
-    // by the time the snapshot resolves, skip the replay to avoid an
-    // out-of-order splice of old content after fresh output.
-    receivedLive.current = false;
+    // terminal while the shell is idle. Live data that arrives DURING the
+    // snapshot fetch is buffered and flushed after — see `snapshotReady`.
+    snapshotReady.current = false;
+    pendingLive.current = '';
     (async () => {
       try {
         const { output } = await api.invoke('shells:snapshot', { projectId, shellIndex });
-        if (output && termRef.current === term && !receivedLive.current) term.write(output);
+        if (termRef.current !== term) return; // component unmounted / re-mounted
+        if (output) term.write(output);
+        if (pendingLive.current) term.write(pendingLive.current);
       } catch { /* ignore — snapshot is best-effort */ }
+      finally {
+        snapshotReady.current = true;
+        pendingLive.current = '';
+      }
     })();
 
     const ro = new ResizeObserver(syncSize);
@@ -213,7 +227,10 @@ export function ShellTab({
   useShellStream(
     projectId,
     shellIndex,
-    (data) => { receivedLive.current = true; termRef.current?.write(data); },
+    (data) => {
+      if (snapshotReady.current) termRef.current?.write(data);
+      else pendingLive.current += data;
+    },
     () => { termRef.current?.write('\r\n[shell exited]\r\n'); },
   );
 

@@ -103,6 +103,24 @@ export interface IpcContract {
   'metaproject:status':         { request: undefined; response: { loggedIn: boolean; connected: boolean; userName: string | null; userId: number | null } };
   'metaproject:logout':         { request: undefined; response: { ok: true } };
   'metaproject:list-channels':  { request: { projectId: number }; response: { channels: Array<{ id: number; project_id: number; name: string; is_private: boolean }> } };
+  /**
+   * Workspace-scoped channel list. `scope` is either 'all' (every channel the
+   * user can see across every project + globals), 'global' (org-wide only),
+   * or a project_id number (that project + globals).
+   */
+  'metaproject:list-all-channels': { request: { scope: 'all' | 'global' | number }; response: { channels: Array<{ id: number; project_id: number | null; name: string; is_private: boolean }> } };
+  /** Lists metaproject projects the current user can access — used by the "link project" picker. */
+  'metaproject:list-projects':     { request: undefined; response: { projects: Array<{ id: number; name: string; identifier?: string | null }> } };
+  /** Creates a new metaproject project (kanban by default). */
+  'metaproject:create-project':    { request: { name: string; description?: string; projectType?: 'kanban' | 'sprint' | 'dcad' }; response: { project: { id: number; name: string; identifier?: string | null } } };
+  /**
+   * Sets `project_id: <n>` in the local project's `.metaproject.yaml`. Creates
+   * the file with sensible defaults if it doesn't exist, or does a regex
+   * upsert on the `project_id` line otherwise. Also refreshes the projects
+   * repo so Project.config.linkedMetaprojectProjectId reflects the change
+   * without needing a full root rescan.
+   */
+  'metaproject:link-local-project': { request: { projectId: number; metaprojectProjectId: number }; response: { ok: true } };
   'metaproject:list-messages':  { request: { channelId: number; limit?: number; projectId?: number }; response: { messages: Array<{ id: number; channel_id: number; user_id: number; user_name?: string; user?: { id: number; username: string; display_name?: string; avatar_url?: string | null }; message: string; created_at: string; parent_message_id: number | null }> } };
   'metaproject:join-channel':   { request: { channelId: number }; response: { ok: true } };
   'metaproject:send-message':   { request: { channelId: number; message: string; parentMessageId?: number | null }; response: { ok: true } };
