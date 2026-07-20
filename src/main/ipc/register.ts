@@ -439,6 +439,14 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     s.metaproject.markRead(channelId, lastMessageId);
     return { ok: true } as const;
   },
+  'metaproject:edit-message':  async (s, { channelId, messageId, message }) => {
+    s.metaproject.editChannelMessage(channelId, messageId, message);
+    return { ok: true } as const;
+  },
+  'metaproject:delete-message': async (s, { channelId, messageId }) => {
+    s.metaproject.deleteChannelMessage(channelId, messageId);
+    return { ok: true } as const;
+  },
 
   'files:tree':   async (s, { projectId, relPath }) => {
     const p = s.projects.get(projectId);

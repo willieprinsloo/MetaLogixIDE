@@ -143,6 +143,7 @@ export function Sidebar({ selectedProjectId, onSelect, onNewProject, width }: Pr
           ))}
         </Section>
       </div>
+
     </aside>
   );
 }

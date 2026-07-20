@@ -484,6 +484,15 @@ function FileTreePane({
               <button
                 onClick={() => onOpen(e)}
                 onContextMenu={(ev) => rowMenu(ev, e)}
+                draggable={!e.isDir}
+                onDragStart={(ev) => {
+                  // Let users drag a file straight into a shell to paste its
+                  // path. text/plain wins over uri-list because Chromium's
+                  // URI-list handling in Electron does surprising things
+                  // (e.g. tries to navigate the whole webview).
+                  ev.dataTransfer.effectAllowed = 'copy';
+                  ev.dataTransfer.setData('text/plain', e.relPath);
+                }}
                 data-testid="file-entry"
                 className={`w-full flex items-center gap-2 text-left px-2 py-1 rounded-md ${
                   selected ? 'bg-[color:var(--accent)] text-white' : 'hover:bg-[--panel-strong]'

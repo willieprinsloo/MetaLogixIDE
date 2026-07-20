@@ -275,6 +275,19 @@ export class MetaprojectClient {
   markRead(channelId: number, lastMessageId: number): void {
     this.socket?.emit('mark_channel_read', { channel_id: channelId, last_message_id: lastMessageId });
   }
+  editChannelMessage(channelId: number, messageId: number, message: string): void {
+    this.socket?.emit('edit_channel_message', {
+      channel_id: channelId,
+      message_id: messageId,
+      message,
+    });
+  }
+  deleteChannelMessage(channelId: number, messageId: number): void {
+    this.socket?.emit('delete_channel_message', {
+      channel_id: channelId,
+      message_id: messageId,
+    });
+  }
 }
 
 // ────────────────────────── Cookie / CSRF helpers ──────────────────────────

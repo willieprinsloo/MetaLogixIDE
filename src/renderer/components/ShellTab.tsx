@@ -42,6 +42,7 @@ export function ShellTab({
   const [searchQuery, setSearchQuery] = useState('');
   const [fontSize, setFontSize] = usePersistedNumber('metaide.shellFontSize', 14, 9, 28);
   const [hover, setHover] = useState<HoverPreviewState | null>(null);
+  const [dropActive, setDropActive] = useState(false);
   const onOpenFileRef = useRef<typeof onOpenFile>(onOpenFile);
   onOpenFileRef.current = onOpenFile;
 
@@ -223,9 +224,46 @@ export function ShellTab({
       ref={containerRef}
       data-testid="shell-tab"
       tabIndex={-1}
+      onDragOver={(e) => {
+        // Terminal accepts BOTH OS file drops (from Finder) AND intra-app
+        // drags from the Files tree (which set text/plain to the relPath).
+        // Without preventDefault the webview would try to navigate to
+        // file://<dropped-path> — that's the "error" the user was seeing.
+        const types = e.dataTransfer?.types;
+        if (types?.includes('Files') || types?.includes('text/plain')) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'copy';
+          setDropActive(true);
+        }
+      }}
+      onDragLeave={() => setDropActive(false)}
+      onDrop={(e) => {
+        setDropActive(false);
+        const dt = e.dataTransfer;
+        if (!dt) return;
+        let paths: string[] = [];
+        if (dt.files?.length) {
+          paths = Array.from(dt.files).map((f) => api.pathForFile(f)).filter((p) => !!p);
+        }
+        if (paths.length === 0) {
+          const text = dt.getData('text/plain');
+          if (text) paths = [text];
+        }
+        if (paths.length === 0) return;
+        e.preventDefault();
+        // Single-quote each path so the CLI receives it verbatim, and escape
+        // any embedded single-quote via the standard `'"'"'` gymnastics.
+        const quoted = paths.map((p) => `'${p.replace(/'/g, "'\\''")}'`).join(' ');
+        void api.invoke('shells:write', { projectId, shellIndex, data: quoted });
+      }}
       className="relative w-full h-full px-3 pt-2 pb-3 bg-transparent focus:outline-none"
     >
       <div ref={termHostRef} className="w-full h-full" />
+      {dropActive && (
+        <div className="absolute inset-2 pointer-events-none rounded-md border-2 border-dashed border-[color:var(--accent)] bg-[color:var(--accent)]/10 flex items-center justify-center text-xs text-[--text] font-medium">
+          Drop to paste path
+        </div>
+      )}
       {searchOpen && (
         <div
           className="absolute top-2 right-3 z-10 flex items-center gap-1 bg-[--panel-strong] border border-[--border] rounded-md shadow-lg px-1.5 py-1"

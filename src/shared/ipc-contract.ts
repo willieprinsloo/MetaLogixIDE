@@ -107,6 +107,8 @@ export interface IpcContract {
   'metaproject:join-channel':   { request: { channelId: number }; response: { ok: true } };
   'metaproject:send-message':   { request: { channelId: number; message: string; parentMessageId?: number | null }; response: { ok: true } };
   'metaproject:mark-read':      { request: { channelId: number; lastMessageId: number }; response: { ok: true } };
+  'metaproject:edit-message':   { request: { channelId: number; messageId: number; message: string }; response: { ok: true } };
+  'metaproject:delete-message': { request: { channelId: number; messageId: number }; response: { ok: true } };
 
   // health / dev
   'app:ping':    { request: undefined; response: 'pong' };

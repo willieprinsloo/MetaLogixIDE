@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img">
+  <title>metaIDE</title>
+  <!-- Background: MetaLogix blue → deep navy gradient with a subtle
+       diagonal highlight so the icon reads as glossy at any size. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="0.55" stop-color="#1e3a8a"/>
+      <stop offset="1" stop-color="#0b1a3a"/>
+    </linearGradient>
+    <linearGradient id="highlight" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.28"/>
+      <stop offset="0.35" stop-color="#ffffff" stop-opacity="0.03"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="innerGlow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="8"/>
+    </filter>
+  </defs>
+
+  <!-- Rounded-square base (macOS-style ~22% corner radius). -->
+  <rect x="52" y="52" width="920" height="920" rx="204" ry="204" fill="url(#bg)"/>
+  <rect x="52" y="52" width="920" height="920" rx="204" ry="204" fill="url(#highlight)"/>
+
+  <!-- Nested "meta" motif: a translucent square rotated behind the main
+       glyph so the icon reads as layered / meta-repositories at a glance. -->
+  <g opacity="0.20">
+    <rect x="240" y="240" width="544" height="544" rx="88" ry="88"
+          fill="none" stroke="#e0ecff" stroke-width="10"/>
+    <rect x="320" y="320" width="384" height="384" rx="60" ry="60"
+          fill="none" stroke="#e0ecff" stroke-width="10"/>
+  </g>
+
+  <!-- Terminal chevron + block cursor. The `>` reads as a shell prompt at
+       every size, and the block ▮ next to it says "live shell / caret",
+       tying the icon to the app's Claude-shell-first identity. -->
+  <g transform="translate(238 336)" fill="#ffffff">
+    <path d="M 0 40
+             L 60 40
+             L 240 200
+             L 60 360
+             L 0 360
+             L 180 200
+             Z"/>
+    <rect x="316" y="112" width="72" height="176" rx="10" ry="10"/>
+  </g>
+
+  <!-- Signature "metaIDE" wordmark tag on the bottom edge. Faint enough
+       to disappear at 16 px (SVG's proportional stroke does the work). -->
+  <text x="512" y="892" text-anchor="middle"
+        font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+        font-weight="700" font-size="76"
+        fill="#ffffff" fill-opacity="0.55" letter-spacing="6">
+    metaIDE
+  </text>
+</svg>

@@ -1,15 +1,17 @@
 import type { ReactNode } from 'react';
 
-export type ActivityView = 'projects' | 'settings';
+export type ActivityView = 'projects' | 'chat' | 'settings';
 
 interface Props {
   active: ActivityView;
   onSelect: (v: ActivityView) => void;
   onToggleSidebar: () => void;
   sidebarOpen: boolean;
+  /** Unread chat count, rendered as a badge on the Chat icon. */
+  chatUnread?: number;
 }
 
-export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen }: Props) {
+export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, chatUnread }: Props) {
   return (
     <nav
       className="w-11 shrink-0 h-full border-r border-[--border] bg-[--panel]/40 backdrop-blur-md flex flex-col items-center py-1 gap-0.5"
@@ -31,6 +33,15 @@ export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen }: 
         data-testid="ab-projects"
       >
         <ProjectsIcon />
+      </ABButton>
+      <ABButton
+        label={chatUnread ? `Chat — ${chatUnread} unread` : 'Chat'}
+        active={active === 'chat'}
+        onClick={() => onSelect('chat')}
+        data-testid="ab-chat"
+        badge={active === 'chat' ? 0 : chatUnread}
+      >
+        <ChatIcon />
       </ABButton>
 
       <div className="mt-auto flex flex-col items-center gap-0.5">
@@ -91,6 +102,14 @@ function SidebarIcon({ open }: { open: boolean }) {
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3" y="3" width="18" height="18" rx="2" />
       <line x1={open ? '9' : '9'} y1="3" x2="9" y2="21" />
+    </svg>
+  );
+}
+
+function ChatIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
     </svg>
   );
 }

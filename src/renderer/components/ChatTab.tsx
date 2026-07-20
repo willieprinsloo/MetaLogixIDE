@@ -13,11 +13,18 @@ interface Msg {
   message: string;
   created_at: string;
   parent_message_id: number | null;
+  /** Locally-set flag when the server broadcasts channel_message_deleted. */
+  deleted?: boolean;
 }
 
 interface Props {
   projectId: number;
   metaprojectProjectId: string | null;
+  /**
+   * Renders a channel dropdown at the top instead of a horizontal channels
+   * sidebar, so the whole component fits inside the ~400 px side rail.
+   */
+  compact?: boolean;
 }
 
 /**
@@ -27,7 +34,7 @@ interface Props {
  *   2. Otherwise: list channels for the project, pick the first, load
  *      recent messages, subscribe to `channel_message` for incoming.
  */
-export function ChatTab({ projectId, metaprojectProjectId }: Props) {
+export function ChatTab({ projectId, metaprojectProjectId, compact = false }: Props) {
   const numericMpId = useMemo(() => {
     if (!metaprojectProjectId) return null;
     const n = Number(metaprojectProjectId.replace(/^[A-Za-z]+-/, ''));
@@ -103,6 +110,16 @@ export function ChatTab({ projectId, metaprojectProjectId }: Props) {
         // OS notification on @mention or when window unfocused.
         maybeNotify(p.message, status?.userName ?? null);
       }
+      if (event === 'channel_message_edited' && activeChannel) {
+        const p = payload as { channel_id: number; message: Msg };
+        if (p.channel_id !== activeChannel.id) return;
+        setMessages((prev) => prev.map((m) => (m.id === p.message.id ? { ...m, ...p.message } : m)));
+      }
+      if (event === 'channel_message_deleted' && activeChannel) {
+        const p = payload as { channel_id: number; message_id: number };
+        if (p.channel_id !== activeChannel.id) return;
+        setMessages((prev) => prev.map((m) => (m.id === p.message_id ? { ...m, message: '[message deleted]', deleted: true } : m)));
+      }
       if (event === 'chat_error') {
         const p = payload as { error?: string };
         toast('Chat error', { kind: 'error', detail: p?.error ?? 'unknown' });
@@ -152,29 +169,52 @@ export function ChatTab({ projectId, metaprojectProjectId }: Props) {
   }
 
   return (
-    <div className="h-full flex min-h-0">
-      <aside className="w-52 shrink-0 overflow-y-auto border-r border-[--border] py-2 px-1 text-sm bg-[--panel]/40">
-        <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-[--text-muted] font-semibold">Channels</div>
-        {loadingChannels && channels.length === 0 && (
-          <div className="px-3 py-2 text-[--text-muted] flex items-center gap-2">
-            <span className="mp-spinner" aria-hidden />
-            <span>Loading…</span>
-          </div>
-        )}
-        {!loadingChannels && channels.length === 0 && <div className="px-3 py-2 text-[--text-muted]">No channels yet.</div>}
-        {channels.map((c) => (
-          <button
-            key={c.id}
-            onClick={() => setActiveChannel(c)}
-            className={`w-full text-left px-3 py-1 rounded-md flex items-center gap-1.5 mx-1 ${
-              activeChannel?.id === c.id ? 'bg-[color:var(--accent)] text-white' : 'hover:bg-[--panel-strong]'
-            }`}
+    <div className={`h-full min-h-0 ${compact ? 'flex flex-col' : 'flex'}`}>
+      {!compact && (
+        <aside className="w-52 shrink-0 overflow-y-auto border-r border-[--border] py-2 px-1 text-sm bg-[--panel]/40">
+          <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-[--text-muted] font-semibold">Channels</div>
+          {loadingChannels && channels.length === 0 && (
+            <div className="px-3 py-2 text-[--text-muted] flex items-center gap-2">
+              <span className="mp-spinner" aria-hidden />
+              <span>Loading…</span>
+            </div>
+          )}
+          {!loadingChannels && channels.length === 0 && <div className="px-3 py-2 text-[--text-muted]">No channels yet.</div>}
+          {channels.map((c) => (
+            <button
+              key={c.id}
+              onClick={() => setActiveChannel(c)}
+              className={`w-full text-left px-3 py-1 rounded-md flex items-center gap-1.5 mx-1 ${
+                activeChannel?.id === c.id ? 'bg-[color:var(--accent)] text-white' : 'hover:bg-[--panel-strong]'
+              }`}
+            >
+              <span className="opacity-70">{c.is_private ? '🔒' : '#'}</span>
+              <span className="truncate">{c.name}</span>
+            </button>
+          ))}
+        </aside>
+      )}
+      {compact && (
+        <div className="px-3 py-2 border-b border-[--border] bg-[--panel]/40 shrink-0 flex items-center gap-2">
+          <select
+            value={activeChannel?.id ?? ''}
+            onChange={(e) => {
+              const c = channels.find((ch) => ch.id === Number(e.target.value));
+              if (c) setActiveChannel(c);
+            }}
+            disabled={channels.length === 0 || loadingChannels}
+            className="flex-1 bg-[--panel-strong] border border-[--border] rounded-md px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-[--accent]/60"
           >
-            <span className="opacity-70">{c.is_private ? '🔒' : '#'}</span>
-            <span className="truncate">{c.name}</span>
-          </button>
-        ))}
-      </aside>
+            {loadingChannels && channels.length === 0 && <option>Loading…</option>}
+            {!loadingChannels && channels.length === 0 && <option>No channels</option>}
+            {channels.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.is_private ? '🔒 ' : '# '}{c.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       <div className="flex-1 flex flex-col min-h-0">
         <div className="px-3 py-1.5 border-b border-[--border] text-[11px] text-[--text-muted] flex items-center gap-2">
           <span className="flex items-center gap-1">
@@ -194,10 +234,10 @@ export function ChatTab({ projectId, metaprojectProjectId }: Props) {
               <span>Loading messages…</span>
             </div>
           )}
-          <MessageList messages={messages} myUserId={status.userId} />
+          <MessageList messages={messages} myUserId={status.userId} channelId={activeChannel?.id ?? null} />
           {!loadingMessages && messages.length === 0 && !error && (
             <div className="text-center text-[--text-muted] text-sm p-6">
-              {activeChannel ? 'No messages yet — say hi.' : 'Pick a channel on the left.'}
+              {activeChannel ? 'No messages yet — say hi.' : (compact ? 'Pick a channel above.' : 'Pick a channel on the left.')}
             </div>
           )}
         </div>
@@ -340,7 +380,7 @@ function LoginCard({ onLoggedIn }: { onLoggedIn: () => void }) {
  *  - Chooses a stable HSL colour per user_id so avatars visually cluster
  *    without needing avatar URLs (which the API may not return).
  */
-function MessageList({ messages, myUserId }: { messages: Msg[]; myUserId: number | null }) {
+function MessageList({ messages, myUserId, channelId }: { messages: Msg[]; myUserId: number | null; channelId: number | null }) {
   const rows: React.ReactNode[] = [];
   let prev: Msg | null = null;
   let lastDay = '';
@@ -355,7 +395,7 @@ function MessageList({ messages, myUserId }: { messages: Msg[]; myUserId: number
     const sameAuthorClose = prev
       && prev.user_id === m.user_id
       && (dt.getTime() - new Date(prev.created_at).getTime()) < 5 * 60 * 1000;
-    rows.push(<MessageRow key={m.id} m={m} grouped={!!sameAuthorClose} mine={myUserId != null && m.user_id === myUserId} />);
+    rows.push(<MessageRow key={m.id} m={m} grouped={!!sameAuthorClose} mine={myUserId != null && m.user_id === myUserId} channelId={channelId} />);
     prev = m;
   }
   return <div className="space-y-0.5">{rows}</div>;
@@ -387,20 +427,47 @@ function userColor(id: number): string {
   return `hsl(${hue}, 55%, 55%)`;
 }
 
-function MessageRow({ m, grouped, mine }: { m: Msg; grouped: boolean; mine: boolean }) {
+function MessageRow({ m, grouped, mine, channelId }: { m: Msg; grouped: boolean; mine: boolean; channelId: number | null }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(m.message);
+  useEffect(() => { setDraft(m.message); }, [m.message]);
   const dt = new Date(m.created_at);
   const t = dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const name = authorLabel(m);
   const color = userColor(m.user_id);
+
+  async function saveEdit() {
+    const next = draft.trim();
+    if (!next || next === m.message || channelId == null) { setEditing(false); return; }
+    try {
+      await api.invoke('metaproject:edit-message', { channelId, messageId: m.id, message: next });
+      setEditing(false);
+      // Server broadcasts channel_message_edited; the parent state updates
+      // via that path, so no optimistic write here.
+    } catch (e) {
+      toast('Edit failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+    }
+  }
+  async function del() {
+    if (channelId == null) return;
+    if (!window.confirm('Delete this message?')) return;
+    try {
+      await api.invoke('metaproject:delete-message', { channelId, messageId: m.id });
+    } catch (e) {
+      toast('Delete failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+    }
+  }
+
+  const canEditOrDelete = mine && !m.deleted && !editing;
   return (
-    <div className={`group flex gap-2.5 px-4 ${grouped ? 'py-0.5' : 'pt-2 pb-0.5'} hover:bg-[--chat-row-hover] rounded-sm`}>
+    <div className={`group flex gap-2.5 px-4 ${grouped ? 'py-0.5' : 'pt-2 pb-0.5'} hover:bg-[--chat-row-hover] rounded-sm relative`}>
       {/* Avatar column — real avatar on lead row, timestamp on grouped rows. */}
       <div className="w-8 shrink-0 flex justify-center">
         {grouped ? (
           <span className="opacity-0 group-hover:opacity-60 text-[9px] text-[--text-muted] mt-1 font-mono">{t}</span>
         ) : (
           <div
-            className="w-8 h-8 rounded-md flex items-center justify-center text-xs font-semibold text-white shadow-sm"
+            className="w-8 h-8 rounded-md flex items-center justify-center text-xs font-semibold text-white"
             style={{ background: color }}
             title={name}
           >
@@ -415,8 +482,57 @@ function MessageRow({ m, grouped, mine }: { m: Msg; grouped: boolean; mine: bool
             <span className="text-[10px] text-[--text-muted] font-mono">{t}</span>
           </div>
         )}
-        <div className="text-[13px] leading-snug whitespace-pre-wrap break-words">{renderMessage(m.message)}</div>
+        {editing ? (
+          <div className="mt-1">
+            <textarea
+              value={draft}
+              autoFocus
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void saveEdit(); }
+                else if (e.key === 'Escape') { setEditing(false); setDraft(m.message); }
+              }}
+              rows={2}
+              className="w-full resize-none bg-[--panel-strong] border border-[--border] rounded-md px-2 py-1 text-[13px] outline-none focus:ring-1 focus:ring-[--accent]/60"
+            />
+            <div className="flex items-center gap-2 mt-1 text-[10px] text-[--text-muted]">
+              <span>⌘/Enter to save · Esc to cancel</span>
+              <button className="ml-auto text-[color:var(--accent)] hover:brightness-110" onClick={() => void saveEdit()}>Save</button>
+              <button className="text-[--text-muted] hover:text-[--text]" onClick={() => { setEditing(false); setDraft(m.message); }}>Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <div className={`text-[13px] leading-snug whitespace-pre-wrap break-words ${m.deleted ? 'italic text-[--text-muted]' : ''}`}>
+            {renderMessage(m.message)}
+          </div>
+        )}
       </div>
+      {canEditOrDelete && (
+        <div className="absolute top-1 right-3 opacity-0 group-hover:opacity-100 flex items-center gap-0.5 bg-[--panel-strong] border border-[--border] rounded-md px-1 py-0.5">
+          <button
+            onClick={() => setEditing(true)}
+            title="Edit"
+            className="w-5 h-5 flex items-center justify-center rounded text-[--text-muted] hover:text-[--text] hover:bg-[--panel]"
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 20h9" />
+              <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4z" />
+            </svg>
+          </button>
+          <button
+            onClick={del}
+            title="Delete"
+            className="w-5 h-5 flex items-center justify-center rounded text-[--text-muted] hover:text-[--danger] hover:bg-[--panel]"
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+              <path d="M10 11v6M14 11v6" />
+              <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" />
+            </svg>
+          </button>
+        </div>
+      )}
     </div>
   );
 }

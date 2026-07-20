@@ -19,6 +19,7 @@ import type { Project } from '@shared/types';
 import { api } from './api';
 import { useTheme, type ThemeMode } from './hooks/useTheme';
 import { usePersistedNumber } from './hooks/usePersistedNumber';
+import { usePersistedState } from './hooks/usePersistedState';
 import { usePoppedShells } from './hooks/usePoppedShells';
 import { useProjectShells } from './hooks/useProjectShells';
 import { Tooltip } from './components/Tooltip';
@@ -26,6 +27,13 @@ import { Tooltip } from './components/Tooltip';
 interface PopoutInfo {
   projectId: number;
   shellIndex: number;
+}
+
+/** UI state persisted per project. See MainApp for the load/save wiring. */
+interface ProjectUiState {
+  activeShellIndex: number;
+  rightShellIndex: number | null;
+  splitRatio: number;
 }
 
 function readPopout(): PopoutInfo | null {
@@ -51,16 +59,76 @@ function MainApp() {
   useEffect(() => { selectedRef.current = selected; }, [selected]);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [aliveCount, setAliveCount] = useState(0);
-  const [mainTab, setMainTab] = useState<'shell' | 'files' | 'chat'>('shell');
+  const [mainTab, setMainTab] = usePersistedState<'shell' | 'files'>(
+    'metaide.mainTab',
+    'shell',
+    (v): v is 'shell' | 'files' => v === 'shell' || v === 'files',
+  );
+  // Unread chat count for the sidebar badge. Increments on every incoming
+  // metaproject `channel_message` that arrives while the user isn't looking
+  // at the chat pane. Clears the moment they switch to chat. Persists in
+  // localStorage so a badge that hasn't been acknowledged survives an app
+  // restart — you won't lose track of unread pings between sessions.
+  const [chatUnread, setChatUnread] = usePersistedState<number>(
+    'metaide.chatUnread',
+    0,
+    (v): v is number => typeof v === 'number' && Number.isFinite(v),
+  );
+  const [activeView, setActiveView] = usePersistedState<ActivityView>(
+    'metaide.activeView',
+    'projects',
+    (v): v is ActivityView => v === 'projects' || v === 'chat' || v === 'settings',
+  );
+  // Live-ref of the active view so the metaproject subscriber can decide
+  // whether to bump the badge without re-subscribing on every switch.
+  const activeViewRef = useRef<ActivityView>('projects');
+  useEffect(() => { activeViewRef.current = activeView; }, [activeView]);
+  useEffect(() => {
+    const off = api.on('metaproject:event', ({ event }) => {
+      if (event === 'channel_message' && activeViewRef.current !== 'chat') {
+        setChatUnread((n) => n + 1);
+      }
+    });
+    return () => { off(); };
+  }, []);
+  // Clear unread the instant the chat panel opens.
+  useEffect(() => { if (activeView === 'chat') setChatUnread(0); }, [activeView]);
   // Which shellIndex is currently visible in the Shell tab. Default 0 (the
   // Claude/primary shell); ad-hoc terminals opened as tabs bump this to
   // their fresh index so the user immediately sees the new shell.
-  const [activeShellIndex, setActiveShellIndex] = useState<number>(0);
+  // Per-project UI state: which tab is active, whether the split view is
+  // open, and how the divider sits. Persisted as one JSON blob keyed by
+  // project id so reopening a project restores its layout.
+  const [projectStates, setProjectStates] = usePersistedState<Record<string, ProjectUiState>>(
+    'metaide.projectStates',
+    {},
+    (v): v is Record<string, ProjectUiState> => typeof v === 'object' && v !== null && !Array.isArray(v),
+  );
+  const projectKey = selected?.id != null ? String(selected.id) : null;
+  const projectState = projectKey ? projectStates[projectKey] : undefined;
+  const activeShellIndex = projectState?.activeShellIndex ?? 0;
+  const rightShellIndex = projectState?.rightShellIndex ?? null;
+  const splitRatio = projectState?.splitRatio ?? 0.5;
+  const patchProjectState = useCallback((patch: Partial<ProjectUiState>) => {
+    if (!projectKey) return;
+    setProjectStates((prev) => ({
+      ...prev,
+      [projectKey]: { activeShellIndex: 0, rightShellIndex: null, splitRatio: 0.5, ...prev[projectKey], ...patch },
+    }));
+  }, [projectKey, setProjectStates]);
+  const setActiveShellIndex = useCallback((idx: number) => patchProjectState({ activeShellIndex: idx }), [patchProjectState]);
+  const setRightShellIndex = useCallback((idx: number | null) => patchProjectState({ rightShellIndex: idx }), [patchProjectState]);
+  const setSplitRatio = useCallback((r: number) => patchProjectState({ splitRatio: r }), [patchProjectState]);
   const allProjectShells = useProjectShells(selected?.id ?? null);
-  // Reset active shell when switching projects.
-  useEffect(() => { setActiveShellIndex(0); }, [selected?.id]);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = usePersistedState<boolean>(
+    'metaide.sidebarOpen',
+    true,
+    (v): v is boolean => typeof v === 'boolean',
+  );
   const [sidebarWidth, setSidebarWidth] = usePersistedNumber('metaide.sidebarWidth', 288, 200, 560);
+  // Chat panel gets its own persisted width so the wider chat view doesn't
+  // resize the projects list back to a tiny column when the user flips modes.
+  const [chatPanelWidth, setChatPanelWidth] = usePersistedNumber('metaide.chatPanelWidth', 400, 300, 640);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [finderOpen, setFinderOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -89,7 +157,6 @@ function MainApp() {
       setActiveShellIndex(0);
     }
   }, [selected, activeShellIndex, isPopped]);
-  const [activeView, setActiveView] = useState<ActivityView>('projects');
 
   const commands = useMemo<Command[]>(() => [
     { id: 'nav.projects',    category: 'Go',       title: 'Open project switcher',           hint: '⌘K',   run: () => setSwitcherOpen(true) },
@@ -160,6 +227,31 @@ function MainApp() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // Keep the OS window title in sync with the current project so it reads
+  // "lawreader — MetaLogix IDE" in Mission Control, Dock previews, and every
+  // window-manager surface. Electron picks up document.title changes and
+  // pushes them straight to the BrowserWindow's native title.
+  useEffect(() => {
+    document.title = selected ? `${selected.name} — MetaLogix IDE` : 'MetaLogix IDE';
+  }, [selected]);
+
+  // Global drag/drop guard. Chromium's default behaviour on a file drop is
+  // to navigate the whole webview to `file://<dropped-path>` — which flashes
+  // an error page and unmounts the app. We swallow drops that don't hit a
+  // component that opted in (ShellTab handles its own drop event).
+  useEffect(() => {
+    const swallow = (e: DragEvent) => {
+      if (!e.dataTransfer?.types?.includes('Files')) return;
+      e.preventDefault();
+    };
+    window.addEventListener('dragover', swallow);
+    window.addEventListener('drop', swallow);
+    return () => {
+      window.removeEventListener('dragover', swallow);
+      window.removeEventListener('drop', swallow);
+    };
   }, []);
 
   async function pick(p: Project) {
@@ -252,9 +344,31 @@ function MainApp() {
     try {
       await api.invoke('shells:kill', { projectId: selected.id, shellIndex });
       if (activeShellIndex === shellIndex) setActiveShellIndex(0);
+      if (rightShellIndex === shellIndex) setRightShellIndex(null);
     } catch (e) {
       toast('Failed to close terminal', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
     }
+  }
+
+  /** Open a side-by-side split — spawns a fresh plain shell as the right pane. */
+  async function openSplit() {
+    if (!selected || rightShellIndex != null) return;
+    try {
+      const { shellIndex } = await api.invoke('shells:launch-plain', { projectId: selected.id });
+      setRightShellIndex(shellIndex);
+      setSplitRatio(0.5);
+    } catch (e) {
+      toast('Failed to open split', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+    }
+  }
+
+  /** Close the split. Kills the right pane's shell (it was auto-spawned for the split). */
+  async function closeSplit() {
+    if (!selected || rightShellIndex == null) return;
+    const idx = rightShellIndex;
+    setRightShellIndex(null);
+    try { await api.invoke('shells:kill', { projectId: selected.id, shellIndex: idx }); }
+    catch { /* fine — the shell may already be gone */ }
   }
 
   async function unloadCurrent() {
@@ -314,26 +428,44 @@ function MainApp() {
           active={activeView}
           onSelect={(v) => {
             if (v === 'settings') { setSettingsOpen(true); return; }
-            if (v === 'projects') { setActiveView('projects'); if (!sidebarOpen) setSidebarOpen(true); return; }
+            if (v === 'chat' || v === 'projects') {
+              setActiveView(v);
+              if (!sidebarOpen) setSidebarOpen(true);
+              return;
+            }
             setActiveView(v);
           }}
           onToggleSidebar={() => setSidebarOpen((s) => !s)}
           sidebarOpen={sidebarOpen}
+          chatUnread={chatUnread}
         />
         {sidebarOpen && (
           <>
-            <Sidebar
-              selectedProjectId={selected?.id ?? null}
-              onSelect={pick}
-              onNewProject={() => setNewProjectOpen(true)}
-              width={sidebarWidth}
-            />
+            {activeView === 'chat' ? (
+              <div
+                className="h-full bg-[--panel] border-r border-[--border] flex flex-col backdrop-blur-md shrink-0"
+                style={{ width: chatPanelWidth }}
+              >
+                <ChatTab
+                  projectId={selected?.id ?? 0}
+                  metaprojectProjectId={selected ? (selected.config.linkedMetaprojectProjectId ?? selected.metaprojectProjectId ?? null) : null}
+                  compact
+                />
+              </div>
+            ) : (
+              <Sidebar
+                selectedProjectId={selected?.id ?? null}
+                onSelect={pick}
+                onNewProject={() => setNewProjectOpen(true)}
+                width={sidebarWidth}
+              />
+            )}
             <ResizeHandle
-              value={sidebarWidth}
-              onChange={setSidebarWidth}
-              onReset={() => setSidebarWidth(288)}
-              min={200}
-              max={560}
+              value={activeView === 'chat' ? chatPanelWidth : sidebarWidth}
+              onChange={activeView === 'chat' ? setChatPanelWidth : setSidebarWidth}
+              onReset={() => activeView === 'chat' ? setChatPanelWidth(400) : setSidebarWidth(288)}
+              min={activeView === 'chat' ? 300 : 200}
+              max={activeView === 'chat' ? 640 : 560}
               side="left"
             />
           </>
@@ -342,7 +474,6 @@ function MainApp() {
           <div className="flex items-stretch border-b border-[--border] text-xs shrink-0 bg-[--panel]/60">
             <TabButton active={mainTab === 'shell'} onClick={() => setMainTab('shell')}>Shell</TabButton>
             <TabButton active={mainTab === 'files'} onClick={() => setMainTab('files')}>Files</TabButton>
-            <TabButton active={mainTab === 'chat'}  onClick={() => setMainTab('chat')}>Chat</TabButton>
             <div className="ml-auto flex items-center gap-1.5 pr-2">
               {selected && (
                 <>
@@ -383,31 +514,44 @@ function MainApp() {
                 onLaunchProfile={(name) => void launchCliProfile(name, 'tab')}
                 onLaunchPlainTab={newPlainShellAsTab}
                 onLaunchCustom={(name, cmdLine, save) => void launchCustomCli(name, cmdLine, save, 'tab')}
+                splitOn={rightShellIndex != null}
+                onToggleSplit={() => (rightShellIndex != null ? void closeSplit() : void openSplit())}
               />
             )}
             {selected ? (
               mainTab === 'shell'
-                ? (isPopped(selected.id, activeShellIndex)
-                    ? <PoppedPlaceholder projectId={selected.id} shellIndex={activeShellIndex} name={selected.name} />
-                    : <ShellTab
-                        key={`${selected.id}:${activeShellIndex}`}
+                ? (rightShellIndex != null
+                    ? <ShellSplit
                         projectId={selected.id}
-                        shellIndex={activeShellIndex}
+                        projectName={selected.name}
+                        leftIndex={activeShellIndex}
+                        rightIndex={rightShellIndex}
+                        ratio={splitRatio}
+                        onRatioChange={setSplitRatio}
+                        isPoppedLeft={isPopped(selected.id, activeShellIndex)}
+                        isPoppedRight={isPopped(selected.id, rightShellIndex)}
+                        onCloseSplit={closeSplit}
                         onOpenFile={(relPath, line) => {
                           setMainTab('files');
                           setOpenInFiles({ relPath, line });
                         }}
-                      />)
-                : mainTab === 'files'
-                ? <FilesTab
+                      />
+                    : (isPopped(selected.id, activeShellIndex)
+                        ? <PoppedPlaceholder projectId={selected.id} shellIndex={activeShellIndex} name={selected.name} />
+                        : <ShellTab
+                            key={`${selected.id}:${activeShellIndex}`}
+                            projectId={selected.id}
+                            shellIndex={activeShellIndex}
+                            onOpenFile={(relPath, line) => {
+                              setMainTab('files');
+                              setOpenInFiles({ relPath, line });
+                            }}
+                          />))
+                : <FilesTab
                     projectId={selected.id}
                     openRelPath={openInFiles?.relPath ?? null}
                     openLine={openInFiles?.line ?? null}
                     onOpenRelPathConsumed={() => setOpenInFiles(null)}
-                  />
-                : <ChatTab
-                    projectId={selected.id}
-                    metaprojectProjectId={selected.config.linkedMetaprojectProjectId ?? selected.metaprojectProjectId ?? null}
                   />
             ) : <EmptyState />}
           </div>
@@ -456,10 +600,40 @@ function MainApp() {
 function PopoutShell({ projectId, shellIndex }: PopoutInfo) {
   const [tab, setTab] = useState<'shell' | 'files'>('shell');
   const [openInFiles, setOpenInFiles] = useState<{ relPath: string; line: number | null } | null>(null);
+  const [projectName, setProjectName] = useState<string>('');
+  useEffect(() => {
+    (async () => {
+      try {
+        const { project } = await api.invoke('projects:open', { id: projectId });
+        setProjectName(project.name);
+      } catch { /* fall back to id-only title */ }
+    })();
+  }, [projectId]);
+  // Popout window title always includes the project so users can tell
+  // stacked popouts apart. Falls back to a generic label until the
+  // project fetch resolves.
+  useEffect(() => {
+    document.title = projectName
+      ? `${projectName} — Shell ${shellIndex} — MetaLogix IDE`
+      : `MetaLogix IDE · shell`;
+  }, [projectName, shellIndex]);
   return (
     <div className="h-screen w-screen flex flex-col bg-transparent">
-      <div className="drag h-9 flex items-center pl-[76px] pr-2 shrink-0 bg-[--panel]/70 backdrop-blur-xl border-b border-[--border]">
-        <span className="text-xs opacity-70 font-medium">MetaLogix IDE · shell</span>
+      <div className="drag h-9 flex items-center gap-2 pl-[76px] pr-3 shrink-0 bg-[--panel]/70 backdrop-blur-xl border-b border-[--border] min-w-0">
+        {/* Prominent project name — the whole reason a user pops shells out
+            is to run several projects side by side, so the label needs to
+            read at a glance even in a narrow window. Trailing subtitle is
+            shortened + hidden first when space runs out. */}
+        <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 live-dot shrink-0" aria-hidden />
+        <span className="text-sm font-semibold text-[--text] truncate min-w-0" title={projectName}>
+          {projectName || 'MetaLogix IDE'}
+        </span>
+        <span className="text-[10px] uppercase tracking-wider text-[--text-muted] font-semibold shrink-0">
+          Shell {shellIndex}
+        </span>
+        <span className="ml-auto text-[10px] text-[--text-muted] opacity-60 truncate hidden sm:inline">
+          MetaLogix IDE
+        </span>
       </div>
       <div className="flex items-stretch border-b border-[--border] text-xs shrink-0 bg-[--panel]/60">
         <button
@@ -741,6 +915,7 @@ interface ShellTabsBarItem {
 function ShellTabsBar({
   projectId, shells, active, onSelect, onClose,
   onLaunchProfile, onLaunchPlainTab, onLaunchCustom,
+  splitOn, onToggleSplit,
 }: {
   projectId: number;
   shells: ShellTabsBarItem[];
@@ -750,6 +925,9 @@ function ShellTabsBar({
   onLaunchProfile: (name: string) => void;
   onLaunchPlainTab: () => void;
   onLaunchCustom: (name: string, cmdLine: string, save: boolean) => void;
+  /** True when the split view is active — the toggle icon reflects it. */
+  splitOn: boolean;
+  onToggleSplit: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   return (
@@ -784,6 +962,18 @@ function ShellTabsBar({
           );
         })}
       </div>
+      {/* Split-view toggle. Opens a right pane with an auto-spawned plain
+          shell, so the user can watch Claude on the left and run one-off
+          commands on the right without leaving the main window. */}
+      <Tooltip label={splitOn ? 'Close split' : 'Split shell right'}>
+        <button
+          onClick={onToggleSplit}
+          className={`shrink-0 w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel-strong] ${splitOn ? 'text-[color:var(--accent)]' : 'text-[--text-muted] hover:text-[--text]'}`}
+          data-testid="tabbar-split"
+        >
+          <SplitIcon />
+        </button>
+      </Tooltip>
       {/* Add button lives at the RIGHT END of the tab strip. Click opens a
           menu of CLIs; the selected one is added as another tab. To put it
           in its own window instead, use the popout icon in the top toolbar
@@ -815,6 +1005,88 @@ function ShellTabsBar({
   );
 }
 
+function ShellSplit({
+  projectId, projectName,
+  leftIndex, rightIndex,
+  ratio, onRatioChange,
+  isPoppedLeft, isPoppedRight,
+  onCloseSplit, onOpenFile,
+}: {
+  projectId: number;
+  projectName: string;
+  leftIndex: number;
+  rightIndex: number;
+  ratio: number;                       // 0..1, share of horizontal space for LEFT
+  onRatioChange: (r: number) => void;
+  isPoppedLeft: boolean;
+  isPoppedRight: boolean;
+  onCloseSplit: () => void;
+  onOpenFile: (relPath: string, line: number | null) => void;
+}) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [dragging, setDragging] = useState(false);
+  useEffect(() => {
+    if (!dragging) return;
+    function onMove(e: MouseEvent) {
+      const el = wrapRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const r = (e.clientX - rect.left) / rect.width;
+      // Clamp so neither pane collapses.
+      onRatioChange(Math.max(0.15, Math.min(0.85, r)));
+    }
+    function onUp() { setDragging(false); }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [dragging, onRatioChange]);
+
+  const leftPercent = `${(ratio * 100).toFixed(2)}%`;
+  return (
+    <div ref={wrapRef} className="h-full w-full flex min-h-0">
+      <div className="min-h-0 min-w-0 relative" style={{ width: leftPercent }}>
+        {isPoppedLeft
+          ? <PoppedPlaceholder projectId={projectId} shellIndex={leftIndex} name={projectName} />
+          : <ShellTab
+              key={`${projectId}:${leftIndex}:left`}
+              projectId={projectId}
+              shellIndex={leftIndex}
+              onOpenFile={onOpenFile}
+            />
+        }
+      </div>
+      {/* Draggable divider — 4 px hit target, 1 px visible line. */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        onMouseDown={() => setDragging(true)}
+        className={`shrink-0 w-1 cursor-col-resize bg-transparent hover:bg-[color:var(--accent)]/40 border-l border-[--border] ${dragging ? 'bg-[color:var(--accent)]/60' : ''}`}
+      />
+      <div className="flex-1 min-h-0 min-w-0 relative">
+        <button
+          onClick={onCloseSplit}
+          title="Close split (returns to single shell view)"
+          className="absolute top-1 right-1 z-10 w-6 h-6 flex items-center justify-center rounded-md text-[--text-muted] hover:text-[--danger] hover:bg-[--panel-strong]"
+        >
+          <XIcon />
+        </button>
+        {isPoppedRight
+          ? <PoppedPlaceholder projectId={projectId} shellIndex={rightIndex} name={projectName} />
+          : <ShellTab
+              key={`${projectId}:${rightIndex}:right`}
+              projectId={projectId}
+              shellIndex={rightIndex}
+              onOpenFile={onOpenFile}
+            />
+        }
+      </div>
+    </div>
+  );
+}
+
 function PoppedPlaceholder({ projectId, shellIndex, name }: { projectId: number; shellIndex: number; name: string }) {
   return (
     <div className="h-full flex items-center justify-center p-8 text-center">
@@ -834,12 +1106,53 @@ function PoppedPlaceholder({ projectId, shellIndex, name }: { projectId: number;
 }
 
 function EmptyState() {
+  const { roots } = useRoots();
+  // Onboarding: fresh install has no roots yet, so the sidebar shows no
+  // projects and the main pane is blank — new users have nothing to click.
+  // Surface a welcome card that walks them through the very first action.
+  if (roots.length === 0) return <WelcomeOnboarding />;
   return (
     <div className="h-full flex items-center justify-center p-8 text-center">
       <div className="max-w-sm space-y-2">
         <div className="text-sm text-[--text-muted]">No project selected</div>
         <div className="text-xs text-[--text-muted] opacity-70">
           Pick one from the sidebar, or press <kbd className="px-1 py-0.5 rounded bg-[--panel] border border-[--border] text-[10px]">⌘K</kbd> to search.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WelcomeOnboarding() {
+  const { refresh } = useRoots();
+  async function addRoot() {
+    const picked = await api.invoke('dialogs:pick-directory', undefined as never);
+    if (picked.path) {
+      await api.invoke('roots:add', { path: picked.path });
+      void refresh();
+    }
+  }
+  return (
+    <div className="h-full flex items-center justify-center p-10">
+      <div className="max-w-lg w-full space-y-5 text-center">
+        <div className="text-3xl font-semibold">Welcome to MetaLogix IDE</div>
+        <div className="text-sm text-[--text-muted] leading-relaxed">
+          Add the parent folder that holds your projects and MetaLogix IDE
+          will discover them automatically. You&apos;ll get a Claude shell,
+          side-by-side splits, popout windows, and per-project team chat —
+          all keyed off the folders in that root.
+        </div>
+        <div className="flex gap-2 justify-center pt-2">
+          <button
+            onClick={addRoot}
+            className="bg-[color:var(--accent)] text-white text-sm font-medium px-4 py-2 rounded-md hover:brightness-110 shadow-sm"
+            data-testid="welcome-add-root"
+          >
+            + Add a root folder
+          </button>
+        </div>
+        <div className="text-[11px] text-[--text-muted] opacity-70 pt-4">
+          Tip: press <kbd className="px-1 py-0.5 rounded bg-[--panel] border border-[--border] text-[10px]">⌘,</kbd> to open settings and change the default CLI or theme.
         </div>
       </div>
     </div>
@@ -860,6 +1173,15 @@ function PlusIcon() {
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
       <line x1="12" y1="5" x2="12" y2="19" />
       <line x1="5" y1="12" x2="19" y2="12" />
+    </svg>
+  );
+}
+
+function SplitIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <line x1="12" y1="4" x2="12" y2="20" />
     </svg>
   );
 }
