@@ -9,27 +9,25 @@
   },
   "main": "out/main/index.js",
   "scripts": {
-    "predev": "electron-rebuild -f -w better-sqlite3 -w node-pty",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "rebuild:electron": "electron-rebuild -f -w better-sqlite3 -w node-pty",
-    "rebuild:node": "pnpm rebuild better-sqlite3 node-pty",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "lint": "eslint . --ext .ts,.tsx",
     "format": "prettier --write .",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "ELECTRON_RUN_AS_NODE=1 electron node_modules/vitest/vitest.mjs run",
+    "test:watch": "ELECTRON_RUN_AS_NODE=1 electron node_modules/vitest/vitest.mjs",
     "test:e2e": "playwright test",
-    "test:e2e:full": "electron-vite build && electron-rebuild -f -w better-sqlite3 -w node-pty && playwright test && pnpm rebuild better-sqlite3 node-pty",
+    "test:e2e:full": "electron-vite build && playwright test",
     "mock-claude": "node scripts/mock-claude.mjs",
-    "dist:mac": "electron-vite build && electron-builder --mac --arm64 --x64",
-    "dist:mac-arm": "electron-vite build && electron-builder --mac --arm64",
-    "dist:win": "electron-vite build && electron-builder --win --x64",
-    "dist:linux": "electron-vite build && electron-builder --linux --x64",
-    "dist:all": "node scripts/dist-all.mjs",
+    "dist:mac": "electron-vite build && electron-builder --mac --arm64 --x64 && pnpm rebuild:electron",
+    "dist:mac-arm": "electron-vite build && electron-builder --mac --arm64 && pnpm rebuild:electron",
+    "dist:win": "electron-vite build && electron-builder --win --x64 && pnpm rebuild:electron",
+    "dist:linux": "electron-vite build && electron-builder --linux --x64 && pnpm rebuild:electron",
+    "dist:all": "node scripts/dist-all.mjs && pnpm rebuild:electron",
     "gen:icons": "node scripts/gen-icons.mjs",
-    "postinstall": "test -d node_modules/node-pty/prebuilds/darwin-arm64 && chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper || true"
+    "postinstall": "(test -d node_modules/node-pty/prebuilds/darwin-arm64 && chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper || true) && electron-rebuild -f -w better-sqlite3 -w node-pty"
   },
   "build": {
     "appId": "com.metalogix.metaide",
@@ -51,9 +49,21 @@
       "node_modules/keytar/**"
     ],
     "fileAssociations": [
-      { "ext": "md",       "name": "Markdown",           "role": "Editor" },
-      { "ext": "markdown", "name": "Markdown",           "role": "Editor" },
-      { "ext": "py",       "name": "Python Source File", "role": "Editor" }
+      {
+        "ext": "md",
+        "name": "Markdown",
+        "role": "Editor"
+      },
+      {
+        "ext": "markdown",
+        "name": "Markdown",
+        "role": "Editor"
+      },
+      {
+        "ext": "py",
+        "name": "Python Source File",
+        "role": "Editor"
+      }
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
@@ -129,17 +139,21 @@
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-search": "^0.15.0",
+    "@xterm/addon-serialize": "^0.13.0",
     "@xterm/addon-unicode11": "^0.8.0",
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/addon-webgl": "^0.18.0",
+    "@xterm/headless": "^5.5.0",
     "@xterm/xterm": "^5.5.0",
     "better-sqlite3": "^11.0.0",
     "chokidar": "^3.6.0",
     "electron-log": "^5.4.4",
     "fuse.js": "^7.0.0",
     "highlight.js": "^11.11.1",
+    "katex": "0.16.47",
     "keytar": "^7.9.0",
     "markdown-it": "^14.3.0",
+    "mermaid": "11.17.2",
     "node-pty": "^1.0.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",

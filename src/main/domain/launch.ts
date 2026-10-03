@@ -1,6 +1,7 @@
 import type { Project, LaunchCmd, LaunchVariant, CliProfile } from '@shared/types';
 import type { SettingsRepo } from '@main/repos/settings-repo';
 import { interpolateArgv, interpolateEnv } from '@shared/interpolate';
+import { resolveSpawnEnv } from '@main/domain/spawn-env';
 import { basename } from 'node:path';
 
 export interface ResolvedLaunch { argv: string[]; env: Record<string, string>; cwd: string; variant: LaunchVariant }
@@ -17,7 +18,19 @@ export function findCliProfile(project: Project, settings: SettingsRepo, name: s
   return globalHit ?? null;
 }
 
-export function resolveLaunch(project: Project, settings: SettingsRepo, homeDir: string): ResolvedLaunch {
+/**
+ * Resolves the primary launch for a project. Template env values keep their
+ * legacy interpolation (raw project env ⊕ template env, no inherited env);
+ * the project's own variables are layered on top by `resolveSpawnEnv`, and
+ * template argv `${env.NAME}` resolves against that final environment.
+ * `inherited` is the main process env at spawn time.
+ */
+export function resolveLaunch(
+  project: Project,
+  settings: SettingsRepo,
+  homeDir: string,
+  inherited: Readonly<Record<string, string | undefined>>,
+): ResolvedLaunch {
   const variant: LaunchVariant = project.firstLaunchedAt ? 'subsequent' : 'first';
 
   // Resolution order:
@@ -42,16 +55,16 @@ export function resolveLaunch(project: Project, settings: SettingsRepo, homeDir:
     template = settings.get(variant === 'first' ? 'default_launch_cmd.first' : 'default_launch_cmd.subsequent');
   }
 
-  const ctx = {
-    home: homeDir,
-    projectPath: project.path,
-    projectName: basename(project.path),
+  const paths = { home: homeDir, projectPath: project.path, projectName: basename(project.path) };
+  const templateEnv = interpolateEnv(template.env ?? {}, {
+    ...paths,
     env: { ...(project.config.env ?? {}), ...(template.env ?? {}) },
-  };
+  });
+  const { env, lookup } = resolveSpawnEnv({ project, templateEnv, inherited, homeDir });
 
   return {
-    argv: interpolateArgv(template.argv, ctx),
-    env: interpolateEnv({ ...(template.env ?? {}), ...(project.config.env ?? {}) }, ctx),
+    argv: interpolateArgv(template.argv, { ...paths, env: lookup }),
+    env,
     cwd: project.config.cwdOverride ?? project.path,
     variant,
   };

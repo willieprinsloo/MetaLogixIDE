@@ -14,27 +14,44 @@ interface Props {
  * attribute is slow, unstyleable, and often clipped inside our panels).
  *
  * Shows after a short delay on hover; hides immediately on leave / click.
+ * Once one tooltip has been seen, sweeping onto a neighbour within
+ * WARM_MS opens it at once with no animation — the delay has already done
+ * its job of filtering accidental hovers.
  */
+const OPEN_DELAY_MS = 350;
+const WARM_MS = 400;
+let lastHiddenAt = 0;
+let openCount = 0;
+
 export function Tooltip({ label, shortcut, side = 'bottom', children }: Props) {
   const wrapRef = useRef<HTMLSpanElement>(null);
-  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+  const [pos, setPos] = useState<{ x: number; y: number; instant: boolean } | null>(null);
   const timer = useRef<number | null>(null);
 
   useEffect(() => () => { if (timer.current) window.clearTimeout(timer.current); }, []);
 
-  function place() {
+  const open = pos !== null;
+  useEffect(() => {
+    if (!open) return;
+    openCount++;
+    return () => { openCount--; lastHiddenAt = Date.now(); };
+  }, [open]);
+
+  function place(instant: boolean) {
     const el = wrapRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
     setPos({
       x: r.left + r.width / 2,
       y: side === 'bottom' ? r.bottom + 6 : r.top - 6,
+      instant,
     });
   }
 
   function onEnter() {
     if (timer.current) window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(place, 350);
+    if (openCount > 0 || Date.now() - lastHiddenAt < WARM_MS) { place(true); return; }
+    timer.current = window.setTimeout(() => place(false), OPEN_DELAY_MS);
   }
   function onLeave() {
     if (timer.current) window.clearTimeout(timer.current);
@@ -54,10 +71,11 @@ export function Tooltip({ label, shortcut, side = 'bottom', children }: Props) {
       </span>
       {pos && createPortal(
         <div
-          className={`fixed z-[9999] pointer-events-none select-none px-2 py-1 text-[11px] rounded-md
-            bg-[--panel-strong] text-[--text] border border-[--border] shadow-lg
-            ${side === 'bottom' ? '-translate-x-1/2' : '-translate-x-1/2 -translate-y-full'}`}
+          className="tooltip fixed z-[9999] pointer-events-none select-none px-2 py-1 text-[11px] rounded-md
+            bg-[--panel-strong] text-[--text] border border-[--border] shadow-lg"
           style={{ left: pos.x, top: pos.y }}
+          data-side={side}
+          data-instant={pos.instant || undefined}
           role="tooltip"
         >
           <span>{label}</span>

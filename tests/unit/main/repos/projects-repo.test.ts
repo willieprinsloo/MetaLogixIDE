@@ -48,6 +48,22 @@ describe('ProjectsRepo', () => {
     expect(updated.config.model).toBe('opus');
   });
 
+  it('updateConfig replaces the whole env map and keeps other fields (AC4)', () => {
+    const { projects, root } = fresh();
+    const p = projects.upsert(root.id, '/tmp/root/e', 'e');
+    projects.updateConfig(p.id, { env: { A: '1', C: '3' }, notes: 'n' });
+    const updated = projects.updateConfig(p.id, { env: { B: '2' } });
+    expect(updated.config).toStrictEqual({ env: { B: '2' }, notes: 'n' });
+    expect(projects.get(p.id)!.config).toStrictEqual({ env: { B: '2' }, notes: 'n' });
+  });
+
+  it('updateConfig keeps env insertion order across the JSON round-trip (AC2)', () => {
+    const { projects, root } = fresh();
+    const p = projects.upsert(root.id, '/tmp/root/o', 'o');
+    projects.updateConfig(p.id, { env: { Z: '1', A: '2', _M: '3' } });
+    expect(Object.keys(projects.get(p.id)!.config.env!)).toEqual(['Z', 'A', '_M']);
+  });
+
   it('listRecents returns latest N by last_opened_at', () => {
     const { projects, root } = fresh();
     const a = projects.upsert(root.id, '/tmp/root/a', 'a');

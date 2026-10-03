@@ -2,7 +2,9 @@ import Fuse from 'fuse.js';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useProjects } from '@renderer/hooks/useProjects';
 import { useAliveShellIds } from '@renderer/hooks/useAliveShellIds';
+import { useProjectClaudeState } from '@renderer/hooks/useClaudeStates';
 import type { Project } from '@shared/types';
+import { StatusDot } from './StatusDot';
 
 export function ProjectSwitcher({ open, onClose, onPick }: { open: boolean; onClose: () => void; onPick: (p: Project) => void }) {
   const { projects, refresh } = useProjects();
@@ -81,32 +83,16 @@ export function ProjectSwitcher({ open, onClose, onPick }: { open: boolean; onCl
               No projects match <span className="font-mono text-[--text]">&ldquo;{query}&rdquo;</span>
             </li>
           )}
-          {shown.map((p, i) => {
-            const active = i === activeIndex;
-            const alive = aliveIds.has(p.id);
-            return (
-              <li key={p.id}>
-                <button
-                  onClick={() => { onPick(p); onClose(); }}
-                  onMouseEnter={() => setActiveIndex(i)}
-                  className={`w-full flex items-center gap-3 text-left px-3 py-2 mx-1 rounded-md ${
-                    active ? 'bg-[color:var(--accent)] text-white' : 'hover:bg-[--panel]'
-                  }`}
-                >
-                  <span
-                    className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
-                      alive ? 'bg-green-500 live-dot' : 'bg-transparent border border-[--border]'
-                    }`}
-                  />
-                  <span className="flex-1 min-w-0">
-                    <span className="block text-sm truncate">{p.name}</span>
-                    <span className={`block text-xs truncate ${active ? 'text-white/70' : 'text-[--text-muted]'}`}>{p.path}</span>
-                  </span>
-                  {active && <kbd>↩</kbd>}
-                </button>
-              </li>
-            );
-          })}
+          {shown.map((p, i) => (
+            <ProjectSwitcherRow
+              key={p.id}
+              project={p}
+              active={i === activeIndex}
+              alive={aliveIds.has(p.id)}
+              onPick={() => { onPick(p); onClose(); }}
+              onHover={() => setActiveIndex(i)}
+            />
+          ))}
         </ul>
         <div className="px-3 py-2 border-t border-[--border] text-[11px] text-[--text-muted] flex gap-3 justify-end">
           <span className="flex items-center gap-1"><kbd>↑↓</kbd> navigate</span>
@@ -115,6 +101,46 @@ export function ProjectSwitcher({ open, onClose, onPick }: { open: boolean; onCl
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * One palette row. A component of its own (rather than inline in the
+ * `.map()`) so `useProjectClaudeState` has a stable per-project call site.
+ * AC21: the dot gets the white ring on the active row, since the accent
+ * fill it sits on doesn't otherwise clear 3:1 for amber or red.
+ */
+function ProjectSwitcherRow({
+  project, active, alive, onPick, onHover,
+}: {
+  project: Project;
+  active: boolean;
+  alive: boolean;
+  onPick: () => void;
+  onHover: () => void;
+}) {
+  const claudeState = useProjectClaudeState(project.id);
+  return (
+    <li>
+      <button
+        onClick={onPick}
+        onMouseEnter={onHover}
+        className={`w-full flex items-center gap-3 text-left px-3 py-2 mx-1 rounded-md ${
+          active ? 'bg-[color:var(--accent)] text-white' : 'hover:bg-[--panel]'
+        }`}
+      >
+        {alive ? (
+          <StatusDot state={claudeState} ring={active} className="shrink-0" />
+        ) : (
+          <span className="inline-block w-1.5 h-1.5 rounded-full shrink-0 bg-transparent border border-[--border]" />
+        )}
+        <span className="flex-1 min-w-0">
+          <span className="block text-sm truncate">{project.name}</span>
+          <span className={`block text-xs truncate ${active ? 'text-white/70' : 'text-[--text-muted]'}`}>{project.path}</span>
+        </span>
+        {active && <kbd>↩</kbd>}
+      </button>
+    </li>
   );
 }
 

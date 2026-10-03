@@ -9,5 +9,9 @@ export function useRoots(): { roots: Root[]; refresh: () => Promise<void> } {
     setRoots(roots);
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    const off = api.on('projects:changed', () => { void refresh(); });
+    return () => { off(); };
+  }, [refresh]);
   return { roots, refresh };
 }

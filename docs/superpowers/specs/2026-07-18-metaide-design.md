@@ -625,6 +625,38 @@ Supported languages in v1:
 - File drag-drop → same treatment, keeps original filename with a suffix on
   collision.
 
+#### 7.2.1 Diagrams and math in the Files-tab preview
+
+The Files-tab preview renders Mermaid diagrams and LaTeX math. Rendering
+works offline. The renderer Content-Security-Policy does not change.
+
+- **Mermaid.** A fenced code block whose info string starts with `mermaid`
+  (any case) renders as a diagram. The diagram uses the Mermaid `dark` theme
+  when the app theme is dark and the `default` theme when it is light. A theme
+  change re-renders the diagrams. A diagram that sets its own theme in an
+  `%%{init}%%` directive keeps that theme.
+- **Math.** Inline math: `$…$` and `\(…\)`. Display math: `$$…$$`, `\[…\]`,
+  and a fenced code block whose info string starts with `math` (any case).
+- **Dollar rule.** An inline `$` opens math only before a non-space
+  character. It closes only after a non-space character and before a
+  non-digit. Thus `costs $5 and $10` and `echo $HOME` stay text. `\$` is a
+  literal dollar.
+- **Backslash delimiters.** A matched `\(…\)` or `\[…\]` pair renders as
+  math. An unmatched `\(` or `\[` stays literal text.
+- **Code.** Math is never recognised in inline code or in code blocks.
+- **Errors.** An invalid or empty diagram shows `Mermaid error: <message>`
+  with its source, for that block only. An invalid formula shows its source
+  in the error colour, with the message as a tooltip. The rest of the
+  document renders.
+- **Security.** Raw HTML stays disabled. Mermaid runs at the `strict`
+  security level, so `click` directives and HTML in labels do nothing. KaTeX
+  runs untrusted, so `\href`, `\url` and the `\html…` commands make no links.
+  A click on a link inside a diagram never navigates the window.
+- **Edit mode.** The preview is not mounted while the file is in Edit mode.
+  No Markdown, math or diagram rendering occurs then.
+- **Load.** The Mermaid library loads on the first diagram only. A document
+  without diagrams does not load it.
+
 ### 7.3 Editor commands
 
 - `Cmd+S` save (dirty tab dot in title clears).

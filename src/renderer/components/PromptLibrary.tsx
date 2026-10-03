@@ -133,7 +133,7 @@ export function PromptLibrary({ open, onClose, projectId, activeShell, activeShe
           />
           <button
             onClick={() => setEditing({ projectId: projectId, title: '', body: '', tags: [] })}
-            className="text-xs font-medium px-2.5 py-1 rounded-md bg-[color:var(--accent)] text-white hover:brightness-110"
+            className="text-xs font-medium px-2.5 py-1 rounded-md pressable bg-[color:var(--accent)] text-white hover:brightness-110"
           >
             New
           </button>
@@ -182,7 +182,7 @@ export function PromptLibrary({ open, onClose, projectId, activeShell, activeShe
                     <button
                       onClick={() => void paste(p, true)}
                       disabled={!activeShell}
-                      className="text-[10px] px-2 py-1 rounded bg-[color:var(--accent)] text-white hover:brightness-110 disabled:opacity-40"
+                      className="text-[10px] px-2 py-1 rounded pressable bg-[color:var(--accent)] text-white hover:brightness-110 disabled:opacity-40"
                       title="Paste and press Enter"
                     >
                       Send
@@ -282,7 +282,7 @@ function EditForm({
             title, body,
             tags: tags.split(',').map((t) => t.trim()).filter(Boolean),
           })}
-          className="text-xs font-medium px-3 py-1.5 rounded-md bg-[color:var(--accent)] text-white hover:brightness-110"
+          className="text-xs font-medium px-3 py-1.5 rounded-md pressable bg-[color:var(--accent)] text-white hover:brightness-110"
         >
           Save
         </button>

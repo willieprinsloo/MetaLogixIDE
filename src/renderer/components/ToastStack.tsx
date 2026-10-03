@@ -1,4 +1,41 @@
-import { useToasts, type ToastKind } from '@renderer/hooks/useToasts';
+import { useEffect, useRef, useState } from 'react';
+import { useToasts, type Toast, type ToastKind } from '@renderer/hooks/useToasts';
+
+// Matches `.toast[data-leaving]` in styles.css.
+const EXIT_MS = 180;
+
+interface Entry { toast: Toast; leaving: boolean }
+
+/** Keeps dismissed toasts mounted for EXIT_MS, in place, so they can fade out. */
+export function mergeToasts(rendered: Entry[], toasts: Toast[]): Entry[] {
+  const live = new Set(toasts.map((t) => t.id));
+  const known = new Set(rendered.map((e) => e.toast.id));
+  const fresh = toasts.filter((t) => !known.has(t.id)).map((toast) => ({ toast, leaving: false }));
+  const kept = rendered.map((e) => (live.has(e.toast.id) || e.leaving ? e : { ...e, leaving: true }));
+  return [...fresh, ...kept];
+}
+
+function useExitingToasts(toasts: Toast[]): Entry[] {
+  const [rendered, setRendered] = useState<Entry[]>([]);
+  const renderedRef = useRef<Entry[]>([]);
+  const timers = useRef(new Set<number>());
+
+  useEffect(() => {
+    const commit = (next: Entry[]) => { renderedRef.current = next; setRendered(next); };
+    const next = mergeToasts(renderedRef.current, toasts);
+    commit(next);
+    const exiting = new Set(next.filter((e) => e.leaving).map((e) => e.toast.id));
+    if (exiting.size === 0) return;
+    const timer = window.setTimeout(() => {
+      timers.current.delete(timer);
+      commit(renderedRef.current.filter((e) => !exiting.has(e.toast.id)));
+    }, EXIT_MS);
+    timers.current.add(timer);
+  }, [toasts]);
+
+  useEffect(() => () => { for (const t of timers.current) window.clearTimeout(t); }, []);
+  return rendered;
+}
 
 const KIND_STYLES: Record<ToastKind, { border: string; accent: string; stripe: string; Icon: () => JSX.Element }> = {
   info:    { border: 'border-[--border]',       accent: 'text-[color:var(--accent)]', stripe: 'bg-[color:var(--accent)]', Icon: InfoIcon },
@@ -9,18 +46,21 @@ const KIND_STYLES: Record<ToastKind, { border: string; accent: string; stripe: s
 
 export function ToastStack() {
   const { toasts, dismiss } = useToasts();
-  if (toasts.length === 0) return null;
+  const entries = useExitingToasts(toasts);
+  if (entries.length === 0) return null;
   return (
     <div className="pointer-events-none fixed bottom-10 right-4 z-40 flex flex-col-reverse gap-2 max-w-[380px]">
-      {toasts.map((t) => {
+      {entries.map(({ toast: t, leaving }) => {
         const s = KIND_STYLES[t.kind];
         const Icon = s.Icon;
         return (
           <div
             key={t.id}
-            role="status"
-            data-testid="toast"
-            className={`pointer-events-auto relative bg-[--panel-strong] border ${s.border} rounded-md shadow-lg pl-3 pr-2 py-2 flex items-start gap-2 backdrop-blur-md overflow-hidden`}
+            role={leaving ? undefined : 'status'}
+            data-testid={leaving ? 'toast-leaving' : 'toast'}
+            data-leaving={leaving || undefined}
+            aria-hidden={leaving || undefined}
+            className={`toast pointer-events-auto relative bg-[--panel-strong] border ${s.border} rounded-md shadow-lg pl-3 pr-2 py-2 flex items-start gap-2 backdrop-blur-md overflow-hidden`}
           >
             <span className={`absolute left-0 top-0 bottom-0 w-1 ${s.stripe}`} aria-hidden />
             <span className={`${s.accent} shrink-0 mt-0.5`} aria-hidden><Icon /></span>

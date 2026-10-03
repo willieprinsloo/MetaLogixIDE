@@ -9,6 +9,7 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { api } from '@renderer/api';
 import { useShellStream } from '@renderer/hooks/useShellStream';
+import { terminalFocus } from '@renderer/hooks/useWindowTerminalFocus';
 import { detectPaths } from '@shared/detect-paths';
 import { sanitizeTerminalCopy } from '@shared/sanitize-terminal-copy';
 import { HoverPreview, type HoverPreviewState } from './HoverPreview';
@@ -30,11 +31,13 @@ function buildTheme(): ITheme {
 }
 
 export function ShellTab({
-  projectId, shellIndex, onOpenFile,
+  projectId, shellIndex, onOpenFile, primary = false,
 }: {
   projectId: number;
   shellIndex: number;
   onOpenFile?: (relPath: string, line: number | null) => void;
+  /** Left pane or popout terminal: the window-focus fallback when none was used yet. */
+  primary?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termHostRef = useRef<HTMLDivElement>(null);
@@ -58,6 +61,8 @@ export function ShellTab({
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const onOpenFileRef = useRef<typeof onOpenFile>(onOpenFile);
   onOpenFileRef.current = onOpenFile;
+  const primaryRef = useRef(primary);
+  primaryRef.current = primary;
 
   useEffect(() => {
     if (!termHostRef.current) return;
@@ -135,6 +140,12 @@ export function ShellTab({
     termRef.current = term;
     let opened = false;
     let disposed = false;
+    const focusReg = terminalFocus.register({
+      key: { projectId, shellIndex },
+      primary: primaryRef.current,
+      isOpen: () => opened,
+      focus: () => term.focus(),
+    });
 
     // Track the last-fit rows/cols so we can drop no-op resize calls that
     // would otherwise spam the PTY when the container reports the same
@@ -171,14 +182,9 @@ export function ShellTab({
       const output = cachedSnapshot ?? '';
       if (output) {
         term.reset();
-        // Strip a partial-ANSI head that survived main-side truncation.
-        let safe = output;
-        if (safe.startsWith('\x1b') && !/[A-Za-z]/.test(safe.slice(1, 32))) {
-          const nl = safe.indexOf('\n');
-          if (nl > -1 && nl < 2048) safe = safe.slice(nl + 1);
-        }
-        term.write(safe);
-        term.write('\x1b[0m');
+        // Main serializes complete terminal state, so write it verbatim — it
+        // also restores the live SGR state the next PTY bytes continue from.
+        term.write(output);
       }
       if (pendingLive.current) term.write(pendingLive.current);
       snapshotReady.current = true;
@@ -225,6 +231,8 @@ export function ShellTab({
         term.loadAddon(webgl);
       } catch (e) { console.warn('[metaide] webgl renderer unavailable, falling back to DOM', e); }
       opened = true;
+      term.textarea?.addEventListener('focus', () => focusReg.used());
+      focusReg.opened();
       // First fit AFTER open so xterm has an element to measure.
       syncSize();
       // Snapshot may already be back — write it into the correctly-sized
@@ -283,6 +291,7 @@ export function ShellTab({
       themeObserver.disconnect();
       copyHost?.removeEventListener('copy', onCopy);
       linkProviderDisposable.dispose();
+      focusReg.unregister();
       term.dispose();
       termRef.current = null;
       searchRef.current = null;
@@ -397,7 +406,7 @@ export function ShellTab({
         const quoted = paths.map((p) => `'${p.replace(/'/g, "'\\''")}'`).join(' ');
         void api.invoke('shells:write', { projectId, shellIndex, data: quoted });
       }}
-      className="relative w-full h-full px-3 pt-2 pb-3 bg-transparent focus:outline-none"
+      className="relative w-full h-full min-h-0 px-3 pt-2 pb-3 bg-transparent focus:outline-none"
     >
       <div ref={termHostRef} className="w-full h-full" />
       {dropActive && (

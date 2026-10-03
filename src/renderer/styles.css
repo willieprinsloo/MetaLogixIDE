@@ -36,6 +36,13 @@
   --icon-code:  #34d399; /* code     = emerald */
   --icon-mute:  #8b949e;
   --danger:     #f87171;
+  /* Claude status dots (spec claude-status-dots, AC21). Idle stays the
+   * existing green-500 in both themes; busy is amber. The light theme uses
+   * darker busy/blocked shades so they clear 3:1 against the lighter panel
+   * fill. */
+  --claude-idle:    #22c55e; /* green-500 */
+  --claude-busy:    #fbbf24; /* amber-400 */
+  --claude-blocked: #ef4444; /* red-500 */
   /* Highlight.js token colors — dark (GitHub-ish) */
   --hljs-comment:  #7d8590;
   --hljs-keyword:  #ff7b72;
@@ -84,6 +91,9 @@
   --icon-code:  #059669;
   --icon-mute:  #4b5563;
   --danger:     #dc2626;
+  --claude-idle:    #22c55e; /* green-500 */
+  --claude-busy:    #b45309; /* amber-700 */
+  --claude-blocked: #dc2626; /* red-600 */
   /* Highlight.js token colors — light */
   --hljs-comment:  #6a737d;
   --hljs-keyword:  #d73a49;
@@ -129,6 +139,9 @@
     --icon-code:  #059669;
     --icon-mute:  #4b5563;
     --danger:     #dc2626;
+    --claude-idle:    #22c55e;
+    --claude-busy:    #b45309;
+    --claude-blocked: #dc2626;
     --hljs-comment:  #6a737d;
     --hljs-keyword:  #d73a49;
     --hljs-string:   #032f62;
@@ -233,14 +246,123 @@ input::placeholder, textarea::placeholder {
   background: transparent;
 }
 
-/* Subtle pulse for the live-shell indicator dot */
-@keyframes livePulse {
-  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.5); }
-  50%      { opacity: 0.85; box-shadow: 0 0 0 4px rgba(34, 197, 94, 0); }
+/* ── Motion ──
+ * Built-in CSS easings are too soft; these give UI motion a decisive start.
+ * Keyboard-summoned surfaces (palette, finders, switcher, prompt library,
+ * shortcuts help) deliberately do NOT animate — they're opened hundreds of
+ * times a day and any delay reads as lag. */
+:root {
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
 }
 
-.live-dot {
-  animation: livePulse 2s ease-in-out infinite;
+/* Mouse-opened modals: backdrop fades, panel settles in from 96%. Centered
+ * origin on purpose — modals aren't anchored to a trigger. No transform in
+ * the resting state so the panel never becomes a containing block. */
+.modal-backdrop { transition: opacity 200ms var(--ease-out); }
+.modal-panel {
+  transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out);
+}
+@starting-style {
+  .modal-backdrop { opacity: 0; }
+  .modal-panel { opacity: 0; transform: scale(0.96); }
+}
+
+/* Anchored popovers (context menu, hover preview). Origin is set inline to
+ * the cursor so the pop grows out of where the user clicked. Short — these
+ * open tens of times a day. */
+.popover {
+  transition: opacity 120ms var(--ease-out), transform 120ms var(--ease-out);
+}
+@starting-style {
+  .popover { opacity: 0; transform: scale(0.97); }
+}
+
+/* Tooltip: grows from the edge nearest its trigger. `data-instant` skips the
+ * animation when the user is already sweeping across a toolbar. */
+.tooltip {
+  --tooltip-y: 0%;
+  transform: translate(-50%, var(--tooltip-y));
+  transform-origin: top center;
+  transition: opacity 125ms var(--ease-out), transform 125ms var(--ease-out);
+}
+.tooltip[data-side="top"] { --tooltip-y: -100%; transform-origin: bottom center; }
+.tooltip[data-instant] { transition: none; }
+@starting-style {
+  .tooltip { opacity: 0; transform: translate(-50%, var(--tooltip-y)) scale(0.97); }
+}
+
+/* Toasts rise from below the stack; exit is quicker than entry. Transitions
+ * (not keyframes) so a rapid burst of toasts retargets smoothly. */
+.toast {
+  transition: opacity 300ms var(--ease-out), transform 300ms var(--ease-out);
+}
+.toast[data-leaving] {
+  opacity: 0;
+  transform: scale(0.96);
+  transition-duration: 180ms;
+  pointer-events: none;
+}
+@starting-style {
+  .toast { opacity: 0; transform: translateY(100%); }
+}
+
+/* Shell split: the left pane fills the row alone and only takes its ratio
+ * while the right pane (divider + shell) is mounted next to it. */
+.split-left { width: 100%; }
+.split-left:not(:only-child) { width: var(--split-left); }
+
+/* Press feedback for primary actions — confirms the click landed. */
+.pressable {
+  transition-property: color, background-color, border-color, filter, transform;
+  transition-duration: 160ms;
+  transition-timing-function: var(--ease-out);
+}
+.pressable:not(:disabled):active { transform: scale(0.97); }
+
+/* Live-shell indicator: a ring expands off the dot. Animating transform and
+ * opacity on a pseudo-element stays on the compositor, unlike the previous
+ * box-shadow pulse which repainted every dot every frame. */
+@keyframes livePulse {
+  from { transform: scale(1); opacity: 0.6; }
+  to   { transform: scale(2.6); opacity: 0; }
+}
+
+.live-dot { position: relative; }
+.live-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: inherit;
+  animation: livePulse 2s var(--ease-out) infinite;
+  pointer-events: none;
+}
+
+/* Claude status dot (spec claude-status-dots): fill colour carries the
+ * shell/project state, per-theme so busy/blocked clear 3:1 against each
+ * theme's panel fill (AC21). `.live-dot` supplies the pulse; the D1 grey
+ * inactive-tab dot never gets a `data-claude-state` attribute, so it is
+ * unaffected by these rules. */
+.status-dot[data-claude-state="idle"]    { background-color: var(--claude-idle); }
+.status-dot[data-claude-state="busy"]    { background-color: var(--claude-busy); }
+.status-dot[data-claude-state="blocked"] { background-color: var(--claude-blocked); }
+
+/* AC21: on the accent-filled active ProjectSwitcher row, no amber/red fill
+ * reaches 3:1 against the accent, so the dot gets a 1px white ring instead
+ * (white clears 3:1 against both themes' accent). */
+.status-dot-ring {
+  box-shadow: 0 0 0 1px #fff;
+}
+
+/* Reduced motion: keep fades (they aid comprehension), drop movement. */
+@media (prefers-reduced-motion: reduce) {
+  .live-dot::after { animation: none; opacity: 0; }
+  .pressable:not(:disabled):active { transform: none; }
+  @starting-style {
+    .modal-panel, .popover, .toast { transform: none; }
+    .tooltip { transform: translate(-50%, var(--tooltip-y)); }
+  }
+  .toast[data-leaving] { transform: none; }
 }
 
 /* Section-tint helper — the ActivityBar sets `data-view` on each sidebar
@@ -341,6 +463,33 @@ input::placeholder, textarea::placeholder {
 .markdown th { background: var(--panel); text-align: left; }
 .markdown hr { border: 0; border-top: 1px solid var(--border); margin: 1em 0; }
 .markdown img { max-width: 100%; border-radius: 6px; }
+
+/* Mermaid diagrams: centred in the column with code-block rhythm. The source
+ * stays visible until the diagram renders, and alongside an error. */
+.markdown .mermaid-block { position: relative; margin: 0.8em 0; }
+.markdown .mermaid-block[data-mermaid-state="rendered"] > .mermaid-source { display: none; }
+.markdown .mermaid-output { display: flex; justify-content: center; }
+/* !important: mermaid writes a fixed max-width inline on some diagram types. */
+.markdown .mermaid-output svg { max-width: 100% !important; height: auto; }
+/* Text mixed toward --text so it clears 4.5:1 on the code-block surface in both themes. */
+.markdown .mermaid-error {
+  margin-top: 0.5em;
+  padding: 0.8em 1em;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--danger) 8%, var(--panel-strong));
+  color: color-mix(in oklab, var(--danger) 80%, var(--text));
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+/* Math: wide display formulas scroll inside themselves, never the column. */
+.markdown .katex-display { overflow-x: auto; overflow-y: hidden; padding: 0.2em 0; }
+.markdown .math-error { color: color-mix(in oklab, var(--danger) 80%, var(--text)); }
 
 /* Keyboard hint chip */
 kbd {

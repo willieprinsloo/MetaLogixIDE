@@ -3,6 +3,7 @@ import type { IPty } from 'node-pty';
 import { spawn as ptySpawn } from 'node-pty';
 import type { ResolvedLaunch } from '@main/domain/launch';
 import { toSpawnableArgv } from '@main/domain/shell';
+import { ScreenMirror } from './screen-mirror';
 
 interface Entry {
   projectId: number; shellIndex: number;
@@ -11,8 +12,10 @@ interface Entry {
   startedAt: number;
   earlyBuffer: string;   // captured output within the first 3s
   bufferOpen: boolean;
-  /** Rolling scrollback used by new viewports to replay recent output on mount. */
+  /** Rolling raw output (most recent ≤256 KiB), used by scrollback search. Viewports replay `getSnapshot` instead. */
   scrollback: string;
+  /** Headless terminal fed every output byte; the source of `getSnapshot`. */
+  screen: ScreenMirror;
   /**
    * ms epoch when the user last submitted a line (input containing \r). We
    * fire the "command completed" notification only for commands that have
@@ -33,6 +36,8 @@ const EARLY_BUFFER_CAP = 32 * 1024;
 const SCROLLBACK_CAP = 256 * 1024;   // 256 KiB rolling
 const DONE_MIN_MS  = 8_000;   // ignore commands shorter than 8s
 const DONE_IDLE_MS = 1_200;   // no data for 1.2s ⇒ "command is done"
+const DEFAULT_COLS = 100;
+const DEFAULT_ROWS = 30;
 
 /** Regex bank for port-detection. Each match's group 1 is the port number. */
 const PORT_PATTERNS: RegExp[] = [
@@ -45,24 +50,54 @@ const PORT_PATTERNS: RegExp[] = [
 const MIN_PORT = 1024;
 const MAX_PORT = 65535;
 
+/**
+ * Rewrites a launch just before it spawns (the Claude hook injection). Must
+ * return a new object when it changes anything; the caller's launch — the
+ * one persisted to the shells table — is never mutated (AC8).
+ */
+export type SpawnDecorator = (projectId: number, shellIndex: number, launch: ResolvedLaunch) => ResolvedLaunch;
+
+/** Optional collaborators; without a decorator every launch spawns as given. */
+export interface PtyManagerOptions {
+  spawnDecorator?: SpawnDecorator;
+}
+
 export class PtyManager extends EventEmitter {
   private entries = new Map<string, Entry>();
+  /** Last size the viewport asked for, per shell — outlives the PTY so a spawn can honour it. */
+  private requestedSizes = new Map<string, { cols: number; rows: number }>();
+  private readonly spawnDecorator: SpawnDecorator | undefined;
 
-  async spawn(projectId: number, shellIndex: number, launch: ResolvedLaunch, cols = 100, rows = 30): Promise<{ pid: number }> {
+  constructor(opts: PtyManagerOptions = {}) {
+    super();
+    this.spawnDecorator = opts.spawnDecorator;
+  }
+
+  /**
+   * Spawn the PTY for (projectId, shellIndex). Size precedence: explicit
+   * `cols`/`rows`, then the last size passed to `resize` for this shell,
+   * then 100x30. The `spawnDecorator`, when set, rewrites the launch just
+   * before spawning; `launch` itself is never modified.
+   */
+  async spawn(projectId: number, shellIndex: number, launch: ResolvedLaunch, cols?: number, rows?: number): Promise<{ pid: number }> {
     const k = key(projectId, shellIndex);
     if (this.entries.has(k)) throw new Error(`already spawned: ${k}`);
-    const [command, ...args] = toSpawnableArgv(launch.argv);
+    const requested = this.requestedSizes.get(k);
+    cols ??= requested?.cols ?? DEFAULT_COLS;
+    rows ??= requested?.rows ?? DEFAULT_ROWS;
+    const effective = this.spawnDecorator ? this.spawnDecorator(projectId, shellIndex, launch) : launch;
+    const [command, ...args] = toSpawnableArgv(effective.argv);
     if (!command) throw new Error('empty argv');
     const pty = ptySpawn(command, args, {
       name: 'xterm-256color',
       cols, rows,
-      cwd: launch.cwd,
-      env: { ...process.env, ...launch.env } as { [k: string]: string },
+      cwd: effective.cwd,
+      env: { ...process.env, ...effective.env } as { [k: string]: string },
     });
     const entry: Entry = {
       projectId, shellIndex, pty, pid: pty.pid, cols, rows,
       startedAt: Date.now(), earlyBuffer: '', bufferOpen: true,
-      scrollback: '',
+      scrollback: '', screen: new ScreenMirror(cols, rows),
       cmdStartedAt: null, lastDataAt: Date.now(), cmdNotified: false,
       ports: new Set<number>(),
     };
@@ -89,38 +124,15 @@ export class PtyManager extends EventEmitter {
       if (entry.bufferOpen && entry.earlyBuffer.length < EARLY_BUFFER_CAP) {
         entry.earlyBuffer += data;
       }
-      // Keep rolling scrollback so late-attaching viewports can replay. The
-      // raw-slice truncation used to cut mid-escape-sequence (e.g. inside a
-      // `\033[38;5;208m` colour code), and the replayed terminal then
-      // interpreted the leftover fragment as garbage — that's what produced
-      // the red/green splice bug on project-switch. Snap the truncation to
-      // the next newline and drop any partial ESC prefix before the newline
-      // so we always resume from a clean line boundary. See ShellTab's
-      // snapshot flow for the replay side.
-      entry.scrollback += data;
-      if (entry.scrollback.length > SCROLLBACK_CAP) {
-        let cut = entry.scrollback.length - SCROLLBACK_CAP;
-        const nextNl = entry.scrollback.indexOf('\n', cut);
-        // Only advance to the newline if it lands within a reasonable window
-        // (otherwise a single very long line could hold us hostage).
-        if (nextNl > -1 && nextNl - cut < 8192) cut = nextNl + 1;
-        // If we still land inside an ANSI escape (long CSI without any
-        // terminator letter in the next 32 bytes → almost certainly a
-        // fragment), advance to the following newline to skip it entirely.
-        const window = entry.scrollback.slice(cut, cut + 32);
-        if (window.includes('\x1b') && !/[A-Za-z]/.test(window)) {
-          const skipTo = entry.scrollback.indexOf('\n', cut);
-          if (skipTo > -1 && skipTo - cut < 16384) cut = skipTo + 1;
-        }
-        entry.scrollback = entry.scrollback.slice(cut);
-      }
+      entry.scrollback = appendScrollback(entry.scrollback, data);
       this.emit('data', { projectId, shellIndex, data });
+      entry.screen.write(data);
     });
     setTimeout(() => { entry.bufferOpen = false; entry.earlyBuffer = ''; }, EARLY_BUFFER_MS);
     pty.onExit(({ exitCode }: { exitCode: number }) => {
       const captured = entry.earlyBuffer;
       const uptimeMs = Date.now() - entry.startedAt;
-      this.entries.delete(k);
+      this.releaseEntry(k, entry);
       this.emit('exit', { projectId, shellIndex, code: exitCode, uptimeMs, earlyOutput: captured });
     });
     return { pid: pty.pid };
@@ -130,11 +142,26 @@ export class PtyManager extends EventEmitter {
     return this.entries.get(key(projectId, shellIndex))?.earlyBuffer ?? '';
   }
 
-  /** Rolling scrollback (most recent ≤256 KiB). Empty if the shell isn't alive. */
+  /** Rolling raw output (most recent ≤256 KiB) for text search. Empty if the shell isn't alive. Not a replay source: use `getSnapshot`. */
   getScrollback(projectId: number, shellIndex: number): string {
     return this.entries.get(key(projectId, shellIndex))?.scrollback ?? '';
   }
 
+  /**
+   * Serialized terminal state (screen, scrollback, SGR, cursor) of the live
+   * shell, for a remounting viewport to replay into a terminal of the same
+   * size. Resolves '' if the shell is unknown or has exited.
+   */
+  async getSnapshot(projectId: number, shellIndex: number): Promise<string> {
+    return this.entries.get(key(projectId, shellIndex))?.screen.snapshot() ?? '';
+  }
+
+  /**
+   * Writes `data` to the live shell's PTY, then emits
+   * `'input' { projectId, shellIndex, data }` — the single choke point every
+   * input path (keystrokes, prompt paste, drag-drop) goes through. A shell
+   * that is not alive gets neither the write nor the event.
+   */
   write(projectId: number, shellIndex: number, data: string): void {
     const e = this.entries.get(key(projectId, shellIndex));
     if (!e) return;
@@ -145,6 +172,7 @@ export class PtyManager extends EventEmitter {
       e.cmdNotified = false;
     }
     e.pty.write(data);
+    this.emit('input', { projectId, shellIndex, data });
   }
 
   /**
@@ -240,10 +268,16 @@ export class PtyManager extends EventEmitter {
     return out;
   }
 
+  /**
+   * Resize the live PTY, and remember the size either way so a PTY that
+   * does not exist yet (or is respawned later) starts at it.
+   */
   resize(projectId: number, shellIndex: number, cols: number, rows: number): void {
+    this.requestedSizes.set(key(projectId, shellIndex), { cols, rows });
     const e = this.entries.get(key(projectId, shellIndex));
     if (!e) return;
     e.pty.resize(cols, rows);
+    e.screen.resize(cols, rows);
     e.cols = cols; e.rows = rows;
   }
 
@@ -251,7 +285,13 @@ export class PtyManager extends EventEmitter {
     const e = this.entries.get(key(projectId, shellIndex));
     if (!e) return;
     e.pty.kill();
-    this.entries.delete(key(projectId, shellIndex));
+    this.releaseEntry(key(projectId, shellIndex), e);
+  }
+
+  /** Drop the entry and its headless terminal, unless a respawn already replaced it. */
+  private releaseEntry(k: string, entry: Entry): void {
+    entry.screen.dispose();
+    if (this.entries.get(k) === entry) this.entries.delete(k);
   }
 
   isAlive(projectId: number, shellIndex: number): boolean {
@@ -263,4 +303,24 @@ export class PtyManager extends EventEmitter {
       projectId: e.projectId, shellIndex: e.shellIndex, pid: e.pid, cols: e.cols, rows: e.rows, startedAt: e.startedAt,
     }));
   }
+}
+
+/**
+ * Append PTY output to the raw rolling scrollback, keeping the most recent
+ * ~256 KiB. The cut snaps to a line boundary and skips a dangling escape
+ * fragment, because replaying a sequence cut mid-way (e.g. inside
+ * `\x1b[38;5;208m`) renders garbage.
+ */
+function appendScrollback(scrollback: string, data: string): string {
+  const next = scrollback + data;
+  if (next.length <= SCROLLBACK_CAP) return next;
+  let cut = next.length - SCROLLBACK_CAP;
+  const nextNl = next.indexOf('\n', cut);
+  if (nextNl > -1 && nextNl - cut < 8192) cut = nextNl + 1;
+  const window = next.slice(cut, cut + 32);
+  if (window.includes('\x1b') && !/[A-Za-z]/.test(window)) {
+    const skipTo = next.indexOf('\n', cut);
+    if (skipTo > -1 && skipTo - cut < 16384) cut = skipTo + 1;
+  }
+  return next.slice(cut);
 }

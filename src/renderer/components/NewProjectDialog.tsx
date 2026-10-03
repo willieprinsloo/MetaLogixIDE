@@ -129,8 +129,8 @@ export function NewProjectDialog({ open, roots, defaultRootId, onClose, onCreate
 
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose} data-testid="new-project-dialog">
-      <div className="bg-[--panel-strong] w-[560px] max-w-[92vw] rounded-xl shadow-2xl border border-[--border] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose} data-testid="new-project-dialog">
+      <div className="modal-panel bg-[--panel-strong] w-[560px] max-w-[92vw] rounded-xl shadow-2xl border border-[--border] overflow-hidden" onClick={(e) => e.stopPropagation()}>
         <div className="px-5 py-4 border-b border-[--border] flex items-center justify-between">
           <div className="font-semibold">New project</div>
           <button onClick={onClose} className="text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel]" aria-label="Close">
@@ -286,7 +286,7 @@ export function NewProjectDialog({ open, roots, defaultRootId, onClose, onCreate
             onClick={submit}
             disabled={!canSubmit}
             className={`text-sm px-4 py-1.5 rounded-md text-white font-medium ${
-              canSubmit ? 'bg-[color:var(--accent)] hover:brightness-110' : 'bg-[--panel-strong] text-[--text-muted] cursor-not-allowed'
+              canSubmit ? 'pressable bg-[color:var(--accent)] hover:brightness-110' : 'bg-[--panel-strong] text-[--text-muted] cursor-not-allowed'
             }`}
             data-testid="new-project-create"
           >

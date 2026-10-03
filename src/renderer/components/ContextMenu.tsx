@@ -32,8 +32,9 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
     <>
       <div className="fixed inset-0 z-40" onClick={onClose} onContextMenu={(e) => { e.preventDefault(); onClose(); }} />
       <div
-        className="fixed z-50 min-w-[200px] rounded-md border border-[--border] bg-[--panel-strong] shadow-xl backdrop-blur-md py-1 text-sm"
-        style={{ left: clampedX, top: clampedY }}
+        className="popover fixed z-50 min-w-[200px] rounded-md border border-[--border] bg-[--panel-strong] shadow-xl backdrop-blur-md py-1 text-sm"
+        // Grow out of the click point, even when clamping shifted the menu.
+        style={{ left: clampedX, top: clampedY, transformOrigin: `${x - clampedX}px ${y - clampedY}px` }}
         role="menu"
         data-testid="context-menu"
       >

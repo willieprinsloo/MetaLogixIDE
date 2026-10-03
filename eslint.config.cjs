@@ -5,7 +5,7 @@ const reactHooksPlugin = require('eslint-plugin-react-hooks');
 
 module.exports = [
   {
-    ignores: ['out/**', 'dist/**', 'node_modules/**'],
+    ignores: ['out/**', 'dist/**', 'node_modules/**', '.claude/**'],
   },
   {
     files: ['**/*.{ts,tsx}'],

@@ -1,9 +1,9 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js/lib/common';
 import { api } from '@renderer/api';
 import { ResizeHandle } from './ResizeHandle';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
+import { MarkdownPreview } from './MarkdownPreview';
 import { usePersistedNumber } from '@renderer/hooks/usePersistedNumber';
 import { useGitStatus } from '@renderer/hooks/useGitStatus';
 import { toast } from '@renderer/hooks/useToasts';
@@ -17,19 +17,6 @@ interface OpenFile {
   kind: 'text' | 'binary';
   editing: boolean;
 }
-
-const md = new MarkdownIt({
-  html: false,
-  linkify: true,
-  breaks: false,
-  typographer: true,
-  highlight: (str: string, lang: string) => {
-    if (lang && hljs.getLanguage(lang)) {
-      try { return hljs.highlight(str, { language: lang, ignoreIllegals: true }).value; } catch { /* fall through */ }
-    }
-    return ''; // skip auto-detection — much slower than knowing the fence lang
-  },
-});
 
 const EXT_TO_LANG: Record<string, string> = {
   ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript',
@@ -306,7 +293,7 @@ function FileTabBar({
             <span className="truncate max-w-[160px]">{name}</span>
             <button
               onClick={(e) => { e.stopPropagation(); onClose(f.relPath); }}
-              className={`w-4 h-4 flex items-center justify-center rounded transition ${
+              className={`w-4 h-4 flex items-center justify-center rounded transition-colors ${
                 active
                   ? 'text-[--text-muted] hover:text-[--danger] hover:bg-[--panel]'
                   : 'text-[--text-muted] opacity-0 group-hover:opacity-100 hover:text-[--danger]'
@@ -565,21 +552,6 @@ function FilePreview({
   const isImg = IMG_EXT.has(ext);
   const editable = file.kind === 'text';
   const editing = file.editing && editable;
-  const html = useMemo(() => (isMd ? md.render(file.buffer) : ''), [file.buffer, isMd]);
-
-  // Intercept any <a> click inside the rendered Markdown and route it
-  // through app:open-external so real URLs open in the OS browser instead
-  // of navigating the renderer window (which would blow up sandboxing).
-  function onPreviewClick(e: React.MouseEvent<HTMLDivElement>) {
-    const target = (e.target as HTMLElement).closest('a');
-    if (!target) return;
-    const href = target.getAttribute('href');
-    if (!href) return;
-    e.preventDefault();
-    if (/^(https?|mailto|file):/i.test(href)) {
-      void api.invoke('app:open-external', { url: href }).catch((err) => console.error(err));
-    }
-  }
 
   return (
     <div className="h-full flex flex-col min-h-0" data-testid="file-preview">
@@ -602,7 +574,7 @@ function FilePreview({
               onClick={onSave}
               disabled={!dirty}
               className={`text-[11px] px-2 py-0.5 rounded ${
-                dirty ? 'bg-[color:var(--accent)] text-white hover:brightness-110' : 'bg-[--panel] text-[--text-muted] cursor-not-allowed'
+                dirty ? 'pressable bg-[color:var(--accent)] text-white hover:brightness-110' : 'bg-[--panel] text-[--text-muted] cursor-not-allowed'
               }`}
               title="Save (⌘S)"
               data-testid="file-save"
@@ -635,11 +607,7 @@ function FilePreview({
           <EditorWithLineNumbers value={file.buffer} onChange={onChange} scrollToLine={scrollToLine} onScrolled={onScrolled} lang={isMd ? 'markdown' : EXT_TO_LANG[ext] ?? ''} />
         )}
         {file.kind === 'text' && !editing && isMd && (
-          <div
-            className="markdown p-6 max-w-3xl mx-auto"
-            onClick={onPreviewClick}
-            dangerouslySetInnerHTML={{ __html: html }}
-          />
+          <MarkdownPreview source={file.buffer} />
         )}
         {file.kind === 'text' && !editing && !isMd && (
           <SyntaxHighlightedPre content={file.buffer} lang={EXT_TO_LANG[ext] ?? ''} scrollToLine={scrollToLine} onScrolled={onScrolled} />

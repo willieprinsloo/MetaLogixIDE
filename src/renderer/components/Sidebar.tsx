@@ -3,23 +3,30 @@ import { useRoots } from '@renderer/hooks/useRoots';
 import { useProjects } from '@renderer/hooks/useProjects';
 import { useRecents } from '@renderer/hooks/useRecents';
 import { useAliveShellIds } from '@renderer/hooks/useAliveShellIds';
+import { useOverallClaudeState, useProjectClaudeState } from '@renderer/hooks/useClaudeStates';
 import type { Project, Root } from '@shared/types';
+import type { ClaudeShellState } from '@shared/claude-state';
 import { api } from '@renderer/api';
 import { toast } from '@renderer/hooks/useToasts';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
+import { StatusDot } from './StatusDot';
+import { ENV_COPY } from '@renderer/project-env-copy';
 
 interface Props {
   selectedProjectId: number | null;
   onSelect: (p: Project) => void;
   onNewProject?: () => void;
+  /** Opens the environment variables editor for a project (context menu). */
+  onEditEnv: (p: Project) => void;
   width?: number;
 }
 
-export function Sidebar({ selectedProjectId, onSelect, onNewProject, width }: Props) {
+export function Sidebar({ selectedProjectId, onSelect, onNewProject, onEditEnv, width }: Props) {
   const { roots, refresh: refreshRoots } = useRoots();
   const { projects, refresh: refreshProjects } = useProjects();
   const { recents } = useRecents(10);
   const { aliveIds } = useAliveShellIds();
+  const overallClaudeState = useOverallClaudeState();
   const [filter, setFilter] = useState('');
 
   // Stable order for the "In use" section: each project keeps the seq
@@ -116,14 +123,14 @@ export function Sidebar({ selectedProjectId, onSelect, onNewProject, width }: Pr
         <div className="flex gap-1">
           <button
             onClick={addRoot}
-            className="flex-1 text-xs font-medium bg-[--panel-strong] border border-[--border] hover:bg-[--panel] transition rounded-md py-1.5"
+            className="flex-1 text-xs font-medium bg-[--panel-strong] border border-[--border] hover:bg-[--panel] pressable rounded-md py-1.5"
             title="Add a root directory"
           >
             + Root
           </button>
           <button
             onClick={onNewProject}
-            className="flex-1 text-xs font-medium bg-[color:var(--accent)] text-white hover:brightness-110 active:brightness-95 transition rounded-md py-1.5"
+            className="flex-1 text-xs font-medium bg-[color:var(--accent)] text-white hover:brightness-110 active:brightness-95 pressable rounded-md py-1.5"
             title="Create a new project (⌘⇧N)"
             data-testid="new-project-btn"
             disabled={!onNewProject}
@@ -135,7 +142,7 @@ export function Sidebar({ selectedProjectId, onSelect, onNewProject, width }: Pr
 
       <div className="flex-1 min-h-0 overflow-y-auto py-1">
         {inUse.length > 0 && (
-          <Section title="In use" testId="section-in-use" accent>
+          <Section title="In use" testId="section-in-use" accent dotState={overallClaudeState}>
             {inUse.map((p) => (
               <ProjectRow
                 key={p.id}
@@ -144,6 +151,7 @@ export function Sidebar({ selectedProjectId, onSelect, onNewProject, width }: Pr
                 alive
                 onSelect={onSelect}
                 onRename={askRename}
+                onEditEnv={onEditEnv}
               />
             ))}
           </Section>
@@ -159,6 +167,7 @@ export function Sidebar({ selectedProjectId, onSelect, onNewProject, width }: Pr
                 alive={aliveIds.has(p.id)}
                 onSelect={onSelect}
                 onRename={askRename}
+                onEditEnv={onEditEnv}
               />
             ))}
           </Section>
@@ -174,6 +183,7 @@ export function Sidebar({ selectedProjectId, onSelect, onNewProject, width }: Pr
               aliveIds={aliveIds}
               onSelect={onSelect}
               onRename={askRename}
+              onEditEnv={onEditEnv}
             />
           ))}
         </Section>
@@ -201,8 +211,15 @@ function writeCollapsedSections(set: Set<string>): void {
 }
 
 function Section({
-  title, testId, accent = false, children,
-}: { title: string; testId: string; accent?: boolean; children: React.ReactNode }) {
+  title, testId, accent = false, dotState, children,
+}: {
+  title: string;
+  testId: string;
+  accent?: boolean;
+  /** Worst Claude state across the section's shells (D4); only meaningful when `accent` is set. */
+  dotState?: ClaudeShellState;
+  children: React.ReactNode;
+}) {
   const [collapsedSet, setCollapsedSet] = useState<Set<string>>(readCollapsedSections);
   const collapsed = collapsedSet.has(title);
   function toggle() {
@@ -223,7 +240,7 @@ function Section({
         className="w-full px-3 pt-2 pb-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wider font-semibold text-[--text] hover:text-[--text] hover:bg-[--panel]/60"
       >
         <span className="inline-block w-3 transition-transform text-[--text-muted]" style={{ transform: collapsed ? 'rotate(-90deg)' : 'none' }}>▾</span>
-        {accent && <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 live-dot" />}
+        {accent && <StatusDot state={dotState ?? 'idle'} />}
         <span className={accent ? '' : 'text-[--text-muted]'}>{title}</span>
       </button>
       {!collapsed && children}
@@ -237,6 +254,7 @@ function ProjectRow({
   alive,
   onSelect,
   onRename,
+  onEditEnv,
   indent = 12,
 }: {
   project: Project;
@@ -245,8 +263,10 @@ function ProjectRow({
   onSelect: (p: Project) => void;
   /** Lifted so the Rename dialog lives at Sidebar level and stays open across rerenders. */
   onRename: (p: Project) => void;
+  onEditEnv: (p: Project) => void;
   indent?: number;
 }) {
+  const claudeState = useProjectClaudeState(project.id);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   async function unload(e: React.MouseEvent) {
     e.stopPropagation();
@@ -272,6 +292,7 @@ function ProjectRow({
   }
   const menuItems: ContextMenuItem[] = [
     { label: 'Rename folder…',  onClick: () => onRename(project) },
+    { label: ENV_COPY.contextMenuItem, onClick: () => onEditEnv(project) },
     { label: 'Reveal in Finder', onClick: () => void revealInFinder(), separatorAfter: true },
     { label: 'Copy full path',   onClick: () => void copyPath() },
   ];
@@ -279,7 +300,7 @@ function ProjectRow({
     <div
       onContextMenu={onContextMenu}
       title={`${project.path}\n(right-click for options)`}
-      className={`group w-full flex items-center gap-2 pr-1 py-1 text-sm rounded-md mx-1 transition ${
+      className={`group w-full flex items-center gap-2 pr-1 py-1 text-sm rounded-md mx-1 transition-colors ${
         selected ? 'bg-[color:var(--accent)] text-white' : 'hover:bg-[--panel-strong]'
       }`}
     >
@@ -290,19 +311,23 @@ function ProjectRow({
         className="flex-1 min-w-0 flex items-center gap-2 text-left"
         style={{ paddingLeft: indent }}
       >
-        <span
-          aria-hidden
-          className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
-            alive ? 'bg-green-500 live-dot' : selected ? 'bg-white/70' : 'bg-transparent border border-[--border]'
-          }`}
-        />
+        {alive ? (
+          <StatusDot state={claudeState} className="shrink-0" />
+        ) : (
+          <span
+            aria-hidden
+            className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
+              selected ? 'bg-white/70' : 'bg-transparent border border-[--border]'
+            }`}
+          />
+        )}
         <span className="truncate">{project.name}</span>
       </button>
       {alive && (
         <button
           onClick={unload}
           data-testid="row-unload"
-          className={`w-4 h-4 flex items-center justify-center rounded transition ${
+          className={`w-4 h-4 flex items-center justify-center rounded transition-colors ${
             selected
               ? 'text-white/80 hover:text-white hover:bg-white/15 opacity-100'
               : 'text-[--text-muted] hover:text-[--danger] hover:bg-[--panel] opacity-0 group-hover:opacity-100 focus:opacity-100'
@@ -324,7 +349,6 @@ function RescanIcon({ spinning }: { spinning: boolean }) {
     <svg
       width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-      className={spinning ? 'animate-spin-slow' : ''}
       style={spinning ? { animation: 'mp-spin 0.7s linear infinite' } : undefined}
     >
       <polyline points="23 4 23 10 17 10" />
@@ -363,6 +387,7 @@ function RootBlock({
   aliveIds,
   onSelect,
   onRename,
+  onEditEnv,
 }: {
   root: Root;
   projects: Project[];
@@ -370,6 +395,7 @@ function RootBlock({
   aliveIds: Set<number>;
   onSelect: (p: Project) => void;
   onRename: (p: Project) => void;
+  onEditEnv: (p: Project) => void;
 }) {
   const [collapsed, setCollapsedState] = useState<Set<number>>(readCollapsed);
   const open = !collapsed.has(root.id);
@@ -405,6 +431,7 @@ function RootBlock({
           alive={aliveIds.has(p.id)}
           onSelect={onSelect}
           onRename={onRename}
+          onEditEnv={onEditEnv}
           indent={22}
         />
       ))}
@@ -493,7 +520,7 @@ function RenameProjectDialog({
           <button
             onClick={submit}
             disabled={!canSubmit}
-            className="text-xs font-medium px-3 py-1.5 rounded-md bg-[color:var(--accent)] text-white hover:brightness-110 disabled:opacity-50"
+            className="text-xs font-medium px-3 py-1.5 rounded-md pressable bg-[color:var(--accent)] text-white hover:brightness-110 disabled:opacity-50"
           >
             {busy ? 'Renaming…' : 'Rename'}
           </button>

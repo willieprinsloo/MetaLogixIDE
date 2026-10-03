@@ -56,7 +56,7 @@ export function ResizeHandle({ value, onChange, onReset, min, max, side = 'left'
       onPointerUp={onUp}
       onDoubleClick={onDoubleClick}
       data-testid="resize-handle"
-      className={`shrink-0 w-1 cursor-col-resize -mx-0.5 hover:bg-[color:var(--accent)] transition ${
+      className={`shrink-0 w-1 cursor-col-resize -mx-0.5 hover:bg-[color:var(--accent)] transition-colors ${
         dragging ? 'bg-[color:var(--accent)]' : 'bg-transparent'
       }`}
       title="Drag to resize · Double-click to reset"

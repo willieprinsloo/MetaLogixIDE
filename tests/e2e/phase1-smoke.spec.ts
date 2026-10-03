@@ -9,11 +9,31 @@
  * so no real `claude` CLI is needed.
  */
 
-import { test, expect, _electron as electron } from '@playwright/test';
+import { test, expect, _electron as electron, type Page } from '@playwright/test';
 import { mkdtempSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { rmSync } from 'node:fs';
+
+/**
+ * Reads the shell's terminal state via `shells:snapshot` (main's headless
+ * xterm, serialized: screen plus scrollback, with SGR and cursor moves —
+ * not raw PTY bytes) for the given project's primary (shellIndex 0)
+ * shell. xterm renders via the WebGL
+ * addon (ShellTab.tsx) with screenReaderMode intentionally off (see
+ * b169fd8), so there is no DOM text to assert against — `shells:snapshot`
+ * is the only way to read terminal output from the outside.
+ */
+async function shellOutput(win: Page, projectName: string): Promise<string> {
+  return win.evaluate(async (name: string) => {
+    const api = (window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<never> } }).api;
+    const { shells } = (await api.invoke('shells:alive-list', undefined)) as { shells: Array<{ projectId: number; projectName: string; shellIndex: number }> };
+    const shell = shells.find((s) => s.projectName === name && s.shellIndex === 0);
+    if (!shell) return '';
+    const snap = (await api.invoke('shells:snapshot', { projectId: shell.projectId, shellIndex: shell.shellIndex })) as { output: string };
+    return snap.output;
+  }, projectName);
+}
 
 test('Phase 1 smoke: multi-root, switcher, shell, alive panel, files tab', async () => {
   const mockClaude = resolve(process.cwd(), 'scripts/mock-claude.mjs');
@@ -34,11 +54,16 @@ test('Phase 1 smoke: multi-root, switcher, shell, alive panel, files tab', async
   mkdirSync(projB2); mkdirSync(join(projB2, '.git'));
 
   const app = await electron.launch({
-    args: ['.'],
+    // Own user-data dir: Electron's default userData path is not reliably
+    // isolated by HOME alone (see root-removal.spec.ts), so persisted
+    // renderer state (localStorage — e.g. the mainTab toggle) and the
+    // single-instance lock can leak across launches without this.
+    args: ['.', `--user-data-dir=${join(isolatedHome, 'userData')}`],
     env: {
       ...process.env,
       HOME: isolatedHome,
       METAIDE_TEST_MODE: '1',
+      METAIDE_CLAUDE_PERMISSION_MODE: 'bypass',
       METAIDE_DEFAULT_LAUNCH_FIRST:      JSON.stringify({ argv: ['node', mockClaude],               env: {} }),
       METAIDE_DEFAULT_LAUNCH_SUBSEQUENT: JSON.stringify({ argv: ['node', mockClaude, '--continue'], env: {} }),
     },
@@ -54,18 +79,23 @@ test('Phase 1 smoke: multi-root, switcher, shell, alive panel, files tab', async
   await win.waitForLoadState('domcontentloaded');
 
   // ── 2. Add Root A ─────────────────────────────────────────────────────────
-  await win.evaluate((path: string) => {
-    (window as { prompt: (msg?: string) => string }).prompt = () => path;
+  // `dialogs:pick-directory` always resolves `{ path: null }` under
+  // METAIDE_TEST_MODE=1 (register.ts) — clicking "+ Root" is a no-op there,
+  // so roots are seeded through the IPC surface directly (as root-removal.spec.ts
+  // does); `roots:add` broadcasts `projects:changed`, which useRoots listens
+  // for, so the sidebar picks it up without a reload.
+  await win.evaluate(async (path: string) => {
+    const api = (window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<unknown> } }).api;
+    await api.invoke('roots:add', { path });
   }, rootA);
-  await win.getByRole('button', { name: '+ Root' }).click();
   await expect(win.getByRole('button', { name: 'alpha', exact: true })).toBeVisible({ timeout: 5000 });
   await expect(win.getByRole('button', { name: 'beta',  exact: true })).toBeVisible({ timeout: 5000 });
 
   // ── 3. Add Root B ─────────────────────────────────────────────────────────
-  await win.evaluate((path: string) => {
-    (window as { prompt: (msg?: string) => string }).prompt = () => path;
+  await win.evaluate(async (path: string) => {
+    const api = (window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<unknown> } }).api;
+    await api.invoke('roots:add', { path });
   }, rootB);
-  await win.getByRole('button', { name: '+ Root' }).click();
   await expect(win.getByRole('button', { name: 'gamma', exact: true })).toBeVisible({ timeout: 5000 });
   await expect(win.getByRole('button', { name: 'delta', exact: true })).toBeVisible({ timeout: 5000 });
 
@@ -98,13 +128,13 @@ test('Phase 1 smoke: multi-root, switcher, shell, alive panel, files tab', async
 
   // Shell tab should open and show mock-claude ready banner
   await expect(win.locator('.xterm')).toBeVisible({ timeout: 10000 });
-  await expect(win.locator('.xterm-accessibility')).toContainText('mock-claude ready', { timeout: 10000 });
+  await expect.poll(() => shellOutput(win, 'alpha'), { timeout: 10000 }).toContain('mock-claude ready');
 
   // ── 7. Type hello + Enter → verify echo ───────────────────────────────────
   await win.locator('.xterm').click();
   await win.keyboard.type('hello');
   await win.keyboard.press('Enter');
-  await expect(win.locator('.xterm-accessibility')).toContainText('echo: hello', { timeout: 10000 });
+  await expect.poll(() => shellOutput(win, 'alpha'), { timeout: 10000 }).toContain('echo: hello');
 
   // ── 8. Sidebar "In use" section shows the alpha project ──────────────────
   const inUseSection = win.getByTestId('section-in-use');

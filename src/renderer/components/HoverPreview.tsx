@@ -55,8 +55,8 @@ export function HoverPreview({ state, onOpen }: { state: HoverPreviewState | nul
   const canClick = data?.found;
   return (
     <div
-      className="fixed z-50 w-[480px] max-h-[300px] rounded-md border border-[--border] bg-[--panel-strong] shadow-2xl backdrop-blur-md overflow-hidden text-[12px] pointer-events-auto"
-      style={{ left, top }}
+      className="popover fixed z-50 w-[480px] max-h-[300px] rounded-md border border-[--border] bg-[--panel-strong] shadow-2xl backdrop-blur-md overflow-hidden text-[12px] pointer-events-auto"
+      style={{ left, top, transformOrigin: `${state.x - left}px ${state.y - top}px` }}
       onClick={() => { if (canClick) onOpen(data.relPath, state.line); }}
       onMouseDown={(e) => e.preventDefault()}
       role="tooltip"

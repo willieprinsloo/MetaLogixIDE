@@ -1,4 +1,6 @@
 import type { Project, Root, AliveShellSummary, SettingsMap } from './types';
+import type { ClaudePermissionMode } from './claude-permission-mode';
+import type { ClaudeShellStateEntry } from './claude-state';
 
 /**
  * Single-character git status codes we bubble up. The two-position
@@ -82,6 +84,8 @@ export interface IpcContract {
   'shells:resize':      { request: { projectId: number; shellIndex: number; cols: number; rows: number }; response: { ok: true } };
   'shells:write':       { request: { projectId: number; shellIndex: number; data: string }; response: { ok: true } };
   'shells:alive-list':  { request: undefined;                                   response: { shells: AliveShellSummary[] } };
+  /** Claude state of every shell that is not idle; shells absent from the list are idle. */
+  'claude-state:list':  { request: undefined;                                   response: { shells: ClaudeShellStateEntry[] } };
   'shells:pin':         { request: { projectId: number; shellIndex: number; pinned: boolean }; response: { ok: true } };
   'shells:snapshot':    { request: { projectId: number; shellIndex: number };   response: { output: string; alive: boolean } };
   /**
@@ -118,6 +122,16 @@ export interface IpcContract {
   // settings
   'settings:get': { request: { key: keyof SettingsMap };                        response: { value: SettingsMap[keyof SettingsMap] } };
   'settings:set': { request: { key: keyof SettingsMap; value: SettingsMap[keyof SettingsMap] }; response: { ok: true } };
+  'settings:set-claude-permission-mode': { request: { mode: ClaudePermissionMode }; response: { mode: ClaudePermissionMode; changedKeys: Array<keyof SettingsMap> } };
+
+  // notifications
+  /**
+   * The main window reports which shells it currently shows (active tab, plus
+   * the right split pane when set; empty when no project or the Files tab is
+   * showing). Main uses it to hold back Claude notifications for a shell the
+   * user is viewing. Popouts are known to main already and are not reported.
+   */
+  'notifications:viewed-shells': { request: { shells: Array<{ projectId: number; shellIndex: number }> }; response: { ok: true } };
 
   // files (read-only)
   'files:tree':      { request: { projectId: number; relPath?: string };                    response: { entries: Array<{ name: string; isDir: boolean; relPath: string }> } };
@@ -325,10 +339,13 @@ export interface IpcEvents {
   'popout:changed':         { popped: Array<{ projectId: number; shellIndex: number }> };
   'metaproject:event':      { event: string; payload: unknown };
   'ports:changed':          { projectId: number; shellIndex: number; ports: number[] };
+  /** A shell's Claude state changed; sent to every window on real transitions only. */
+  'claude-state:changed':   ClaudeShellStateEntry;
   /**
-   * Fired when the user clicks an OS "command finished" notification. The
-   * renderer should switch to the named project, focus the shell tab, and
-   * bring the window forward.
+   * Fired when the user clicks an OS notification for a live shell — the
+   * generic "command finished" one or a Claude "needs input" / "finished"
+   * one. The renderer should switch to the named project, focus the shell
+   * tab, and bring the window forward.
    */
   'shell:focus-request':    { projectId: number; shellIndex: number };
   /**

@@ -1,8 +1,28 @@
-import { test, expect, _electron as electron } from '@playwright/test';
+import { test, expect, _electron as electron, type Page } from '@playwright/test';
 import { mkdtempSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { rmSync } from 'node:fs';
+
+/**
+ * Reads the shell's terminal state via `shells:snapshot` (main's headless
+ * xterm, serialized: screen plus scrollback, with SGR and cursor moves —
+ * not raw PTY bytes) for the given project's primary (shellIndex 0)
+ * shell. xterm renders via the WebGL
+ * addon (ShellTab.tsx) with screenReaderMode intentionally off (see
+ * b169fd8), so there is no DOM text to assert against — `shells:snapshot`
+ * is the only way to read terminal output from the outside.
+ */
+async function shellOutput(win: Page, projectName: string): Promise<string> {
+  return win.evaluate(async (name: string) => {
+    const api = (window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<never> } }).api;
+    const { shells } = (await api.invoke('shells:alive-list', undefined)) as { shells: Array<{ projectId: number; projectName: string; shellIndex: number }> };
+    const shell = shells.find((s) => s.projectName === name && s.shellIndex === 0);
+    if (!shell) return '';
+    const snap = (await api.invoke('shells:snapshot', { projectId: shell.projectId, shellIndex: shell.shellIndex })) as { output: string };
+    return snap.output;
+  }, projectName);
+}
 
 test('full lifecycle: add root → discover → launch shell → echo', async () => {
   const mockClaude = resolve(process.cwd(), 'scripts/mock-claude.mjs');
@@ -12,11 +32,16 @@ test('full lifecycle: add root → discover → launch shell → echo', async ()
   mkdirSync(proj); mkdirSync(join(proj, '.git'));
 
   const app = await electron.launch({
-    args: ['.'],
+    // Own user-data dir: Electron's default userData path is not reliably
+    // isolated by HOME alone (see root-removal.spec.ts), so persisted
+    // renderer state (localStorage — e.g. the mainTab toggle) and the
+    // single-instance lock can leak across launches without this.
+    args: ['.', `--user-data-dir=${join(isolatedHome, 'userData')}`],
     env: {
       ...process.env,
       HOME: isolatedHome,               // isolate SQLite path
       METAIDE_TEST_MODE: '1',
+      METAIDE_CLAUDE_PERMISSION_MODE: 'bypass',
       METAIDE_DEFAULT_LAUNCH_FIRST:      JSON.stringify({ argv: ['node', mockClaude],              env: {} }),
       METAIDE_DEFAULT_LAUNCH_SUBSEQUENT: JSON.stringify({ argv: ['node', mockClaude, '--continue'],env: {} }),
     },
@@ -24,9 +49,14 @@ test('full lifecycle: add root → discover → launch shell → echo', async ()
   const win = await app.firstWindow();
   await win.waitForLoadState('domcontentloaded');
 
-  // Add root — the prompt() dialog is intercepted.
-  await win.evaluate((path: string) => { (window as { prompt: (msg?: string) => string }).prompt = () => path; }, demoRoot);
-  await win.getByRole('button', { name: '+ Root' }).click();
+  // Add root via IPC directly. `dialogs:pick-directory` always resolves
+  // `{ path: null }` under METAIDE_TEST_MODE=1 (register.ts), so clicking
+  // "+ Root" is a no-op there; `roots:add` broadcasts `projects:changed`,
+  // which useRoots listens for, so the sidebar picks it up without a reload.
+  await win.evaluate(async (path: string) => {
+    const api = (window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<unknown> } }).api;
+    await api.invoke('roots:add', { path });
+  }, demoRoot);
 
   // Wait for demo to appear (exact match avoids matching the root path button).
   await expect(win.getByRole('button', { name: 'demo', exact: true })).toBeVisible({ timeout: 5000 });
@@ -34,8 +64,6 @@ test('full lifecycle: add root → discover → launch shell → echo', async ()
   // Click project → launches shell.
   await win.getByRole('button', { name: 'demo', exact: true }).click();
 
-  // xterm renders text into canvas / DOM. The banner text is written to
-  // hidden accessibility layer (`.xterm-accessibility` div).
   await expect(win.locator('.xterm')).toBeVisible({ timeout: 10000 });
 
   // Type "hello" then Enter — xterm captures via focused terminal.
@@ -43,8 +71,8 @@ test('full lifecycle: add root → discover → launch shell → echo', async ()
   await win.keyboard.type('hello');
   await win.keyboard.press('Enter');
 
-  // Assert echo appears in the accessibility text (xterm mirrors output there).
-  await expect(win.locator('.xterm-accessibility')).toContainText('echo: hello', { timeout: 10000 });
+  // Assert echo appears in the shell's serialized terminal snapshot.
+  await expect.poll(() => shellOutput(win, 'demo'), { timeout: 10000 }).toContain('echo: hello');
 
   await app.close();
   rmSync(isolatedHome, { recursive: true, force: true });

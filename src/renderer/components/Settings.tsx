@@ -3,6 +3,10 @@ import type { LaunchCmd, Root, SettingsMap } from '@shared/types';
 import { parseArgv } from '@shared/parse-argv';
 import { api } from '@renderer/api';
 import { useTheme, type ThemeMode } from '@renderer/hooks/useTheme';
+import { useClaudePermissionMode } from '@renderer/hooks/useClaudePermissionMode';
+import { PermissionModeControl } from '@renderer/components/PermissionModeControl';
+import { PERMISSION_MODE_COPY, PERMISSION_MODE_TEST_IDS } from '@renderer/permission-mode-copy';
+import type { ClaudePermissionMode } from '@shared/claude-permission-mode';
 
 type Section = 'general' | 'roots' | 'launch' | 'metaproject';
 
@@ -11,12 +15,12 @@ export function Settings({ open, onClose }: { open: boolean; onClose: () => void
   if (!open) return null;
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      className="modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
       onClick={onClose}
       data-testid="settings-modal"
     >
       <div
-        className="relative bg-[--panel-strong] w-[760px] max-w-[92vw] h-[600px] max-h-[92vh] rounded-xl shadow-2xl border border-[--border] overflow-hidden flex flex-col"
+        className="modal-panel relative bg-[--panel-strong] w-[760px] max-w-[92vw] h-[600px] max-h-[92vh] rounded-xl shadow-2xl border border-[--border] overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -56,7 +60,7 @@ export function Settings({ open, onClose }: { open: boolean; onClose: () => void
         <div className="h-12 flex items-center justify-end gap-2 border-t border-[--border] px-4 bg-[--panel]/60">
           <button
             onClick={onClose}
-            className="text-sm px-4 py-1.5 bg-[--accent] hover:brightness-110 text-white rounded-md"
+            className="text-sm px-4 py-1.5 pressable bg-[--accent] hover:brightness-110 text-white rounded-md"
             data-testid="settings-done"
           >
             Done
@@ -97,18 +101,24 @@ function GeneralPanel() {
   const [scanDepth, setScanDepth] = useState<number | null>(null);
   const [maxWatched, setMaxWatched] = useState<number | null>(null);
   const [opacity, setOpacity] = useState<number>(100);
+  const [notifyNeedsInput, setNotifyNeedsInput] = useState<boolean>(true);
+  const [notifyFinished, setNotifyFinished] = useState<boolean>(true);
 
   const load = useCallback(async () => {
-    const [c, d, w, o] = await Promise.all([
+    const [c, d, w, o, ni, nf] = await Promise.all([
       api.invoke('settings:get', { key: 'keep_alive_cap' }),
       api.invoke('settings:get', { key: 'scan_depth' }),
       api.invoke('settings:get', { key: 'max_watched_paths' }),
       api.invoke('settings:get', { key: 'window_opacity' }),
+      api.invoke('settings:get', { key: 'notify_claude_needs_input' }),
+      api.invoke('settings:get', { key: 'notify_claude_finished' }),
     ]);
     setCap(c.value as number);
     setScanDepth(d.value as number);
     setMaxWatched(w.value as number);
     setOpacity((o.value as number) ?? 100);
+    setNotifyNeedsInput((ni.value as boolean) ?? true);
+    setNotifyFinished((nf.value as boolean) ?? true);
   }, []);
 
   useEffect(() => { void load(); }, [load]);
@@ -173,6 +183,31 @@ function GeneralPanel() {
           <span className="w-14 text-right text-sm text-[--text] font-mono">{opacity}%</span>
         </div>
       </Field>
+
+      <Field label="Notifications" hint="OS notifications for Claude Code sessions running in app shells.">
+        <div className="space-y-2">
+          <label className="flex items-center gap-2 text-sm text-[--text]">
+            <input
+              type="checkbox"
+              checked={notifyNeedsInput}
+              onChange={(e) => { setNotifyNeedsInput(e.target.checked); void save('notify_claude_needs_input', e.target.checked); }}
+              className="accent-[--accent]"
+              data-testid="notify-needs-input-toggle"
+            />
+            Notify when Claude needs input
+          </label>
+          <label className="flex items-center gap-2 text-sm text-[--text]">
+            <input
+              type="checkbox"
+              checked={notifyFinished}
+              onChange={(e) => { setNotifyFinished(e.target.checked); void save('notify_claude_finished', e.target.checked); }}
+              className="accent-[--accent]"
+              data-testid="notify-finished-toggle"
+            />
+            Notify when Claude finishes
+          </label>
+        </div>
+      </Field>
     </div>
   );
 }
@@ -209,7 +244,7 @@ function RootsPanel() {
       <Header title="Root directories" subtitle="Folders scanned for projects. Add each parent folder where your projects live." />
       <button
         onClick={add}
-        className="w-full text-sm font-medium bg-[--accent] hover:brightness-110 text-white rounded-md py-2"
+        className="w-full text-sm font-medium pressable bg-[--accent] hover:brightness-110 text-white rounded-md py-2"
       >
         + Add root
       </button>
@@ -229,9 +264,13 @@ function RootsPanel() {
 
 /* ─────────────────────────── Launch commands ─────────────────────────── */
 
+const LAUNCH_KEYS: ReadonlyArray<keyof SettingsMap> = ['default_launch_cmd.first', 'default_launch_cmd.subsequent'];
+
 function LaunchPanel() {
   const [first, setFirst]           = useState<LaunchCmd | null>(null);
   const [subsequent, setSubsequent] = useState<LaunchCmd | null>(null);
+  const [modeBusy, setModeBusy]     = useState(false);
+  const { mode, choose, error: modeError } = useClaudePermissionMode();
 
   const load = useCallback(async () => {
     const [f, s] = await Promise.all([
@@ -242,7 +281,23 @@ function LaunchPanel() {
     setSubsequent(s.value as LaunchCmd);
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+    const off = api.on('settings:changed', ({ key }) => {
+      if (LAUNCH_KEYS.includes(key)) void load();
+    });
+    return () => { off(); };
+  }, [load]);
+
+  async function changeMode(next: ClaudePermissionMode) {
+    setModeBusy(true);
+    try {
+      await choose(next);
+      await load();
+    } finally {
+      setModeBusy(false);
+    }
+  }
 
   async function saveFirst(value: LaunchCmd) {
     setFirst(value);
@@ -259,8 +314,12 @@ function LaunchPanel() {
         title="Launch commands"
         subtitle="What runs when you open a project. First launch runs 'first'; subsequent launches use 'subsequent' (typically adds --continue)."
       />
-      {first && <LaunchEditor label="First launch" value={first} onChange={saveFirst} />}
-      {subsequent && <LaunchEditor label="Subsequent launches" value={subsequent} onChange={saveSubsequent} />}
+      <Field label={PERMISSION_MODE_COPY.settingsLabel} hint={PERMISSION_MODE_COPY.settingsHint}>
+        <PermissionModeControl mode={mode} disabled={modeBusy} onChange={(m) => void changeMode(m)} />
+        {modeError && <div role="alert" className="text-xs text-[--danger]">{modeError}</div>}
+      </Field>
+      {first && <LaunchEditor label="First launch" value={first} onChange={saveFirst} testId={PERMISSION_MODE_TEST_IDS.launchEditorFirst} />}
+      {subsequent && <LaunchEditor label="Subsequent launches" value={subsequent} onChange={saveSubsequent} testId={PERMISSION_MODE_TEST_IDS.launchEditorSubsequent} />}
       <div className="text-xs text-[--text-muted] leading-relaxed">
         Tokens supported: <code>${'{HOME}'}</code>, <code>${'{PROJECT_PATH}'}</code>, <code>${'{PROJECT_NAME}'}</code>, <code>${'{env.NAME}'}</code>.
         Interpolation is per-argv-element, so tokens cannot introduce new arguments.
@@ -269,7 +328,7 @@ function LaunchPanel() {
   );
 }
 
-function LaunchEditor({ label, value, onChange }: { label: string; value: LaunchCmd; onChange: (v: LaunchCmd) => void }) {
+function LaunchEditor({ label, value, onChange, testId }: { label: string; value: LaunchCmd; onChange: (v: LaunchCmd) => void; testId: string }) {
   const [argvText, setArgvText] = useState(value.argv.join(' '));
   useEffect(() => { setArgvText(value.argv.join(' ')); }, [value]);
 
@@ -289,7 +348,9 @@ function LaunchEditor({ label, value, onChange }: { label: string; value: Launch
         onBlur={commit}
         onKeyDown={(e) => { if (e.key === 'Enter') { commit(); (e.target as HTMLInputElement).blur(); } }}
         className="w-full font-mono text-sm bg-[--input-bg] text-[--text] border border-[--input-border] rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-[--accent]/60"
-        placeholder='e.g. claude --dangerously-skip-permissions'
+        placeholder='e.g. claude --permission-mode auto'
+        aria-label={label}
+        data-testid={testId}
       />
       <div className="text-[11px] text-[--text-muted]">argv: <span className="font-mono">{JSON.stringify(value.argv)}</span></div>
     </div>

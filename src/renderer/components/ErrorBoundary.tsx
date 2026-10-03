@@ -51,7 +51,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
           <div className="flex items-center gap-2">
             <button
               onClick={this.reload}
-              className="flex-1 bg-[color:var(--accent)] text-white rounded-md py-1.5 text-sm hover:brightness-110"
+              className="flex-1 pressable bg-[color:var(--accent)] text-white rounded-md py-1.5 text-sm hover:brightness-110"
             >
               Reload window
             </button>

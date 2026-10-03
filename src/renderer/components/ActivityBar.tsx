@@ -95,7 +95,7 @@ function ABButton({
       title={label}
       aria-label={label}
       {...rest}
-      className={`relative w-8 h-8 flex items-center justify-center rounded-md transition ${
+      className={`relative w-8 h-8 flex items-center justify-center rounded-md pressable ${
         active
           ? 'bg-[--panel-strong] text-[--text]'
           : 'text-[--text-muted] hover:text-[--text] hover:bg-[--panel-strong]'
