@@ -20,10 +20,10 @@ export function findCliProfile(project: Project, settings: SettingsRepo, name: s
 
 /**
  * Resolves the primary launch for a project. Template env values keep their
- * legacy interpolation (raw project env ⊕ template env, no inherited env);
- * the project's own variables are layered on top by `resolveSpawnEnv`, and
- * template argv `${env.NAME}` resolves against that final environment.
- * `inherited` is the main process env at spawn time.
+ * legacy interpolation (raw project env ⊕ template env, no inherited or
+ * app-wide env); app-wide and the project's own variables are layered on top
+ * by `resolveSpawnEnv`, and template argv `${env.NAME}` resolves against that
+ * final environment. `inherited` is the main process env at spawn time.
  */
 export function resolveLaunch(
   project: Project,
@@ -60,7 +60,8 @@ export function resolveLaunch(
     ...paths,
     env: { ...(project.config.env ?? {}), ...(template.env ?? {}) },
   });
-  const { env, lookup } = resolveSpawnEnv({ project, templateEnv, inherited, homeDir });
+  const appEnv = settings.get('app_env');
+  const { env, lookup } = resolveSpawnEnv({ project, templateEnv, inherited, homeDir, appEnv });
 
   return {
     argv: interpolateArgv(template.argv, { ...paths, env: lookup }),

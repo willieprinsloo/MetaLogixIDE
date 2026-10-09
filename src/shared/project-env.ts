@@ -1,7 +1,8 @@
 /**
- * Name and value rules for per-project environment variables. One source of
- * truth for the editor (inline row reasons) and the `projects:update-config`
- * IPC boundary (reject before write).
+ * Name and value rules for project and app-wide environment variables. One
+ * source of truth for both editors (inline row reasons) and the
+ * `projects:update-config` and `settings:set-app-env` IPC boundaries (reject
+ * before write).
  */
 
 /** Names with this prefix (case-insensitive) are reserved for the app's own variables. */
@@ -33,17 +34,40 @@ export type ProjectEnvParse =
   /** `error` names the offending key, never a value. */
   | { ok: false; error: string };
 
-/** Validates an untrusted project env map as received over IPC. */
-export function parseProjectEnv(input: unknown): ProjectEnvParse {
+/** Which env map is being validated; only drives the wording of a rejection message. */
+export type EnvScope = 'project' | 'app';
+
+const SCOPE_LABEL: Record<EnvScope, string> = { project: 'Project', app: 'App' };
+
+/**
+ * Validates an untrusted env map as received over IPC, for either the
+ * per-project scope or the app-wide scope. Same name/value rules in both
+ * scopes; only the error wording differs.
+ */
+export function parseEnvMap(input: unknown, scope: EnvScope): ProjectEnvParse {
+  const label = SCOPE_LABEL[scope];
   if (!isPlainObject(input))
-    return { ok: false, error: 'Project environment must be an object of name/value strings' };
+    return { ok: false, error: `${label} environment must be an object of name/value strings` };
   const entries = Object.entries(input);
   for (const [name, value] of entries) {
     const problem = entryProblem(name, value);
     if (problem)
-      return { ok: false, error: `Invalid project environment variable "${name}": ${problem}` };
+      return {
+        ok: false,
+        error: `Invalid ${label.toLowerCase()} environment variable "${name}": ${problem}`,
+      };
   }
   return { ok: true, env: Object.fromEntries(entries) as Record<string, string> };
+}
+
+/** Validates an untrusted project env map as received over IPC. */
+export function parseProjectEnv(input: unknown): ProjectEnvParse {
+  return parseEnvMap(input, 'project');
+}
+
+/** Validates an untrusted app-wide env map as received over IPC. */
+export function parseAppEnv(input: unknown): ProjectEnvParse {
+  return parseEnvMap(input, 'app');
 }
 
 function isPlainObject(input: unknown): input is Record<string, unknown> {

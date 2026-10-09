@@ -3,7 +3,11 @@ export type FontSettingKey = (typeof FONT_SETTING_KEYS)[number];
 export type FontFamilyPreference = string | null;
 
 export const MAX_FONT_FAMILY_CODE_POINTS = 256;
-export const UI_FONT_FALLBACK = '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif';
+// system-ui leads: it is the desktop's UI font everywhere (SF Pro on macOS,
+// Segoe UI on Windows, the GTK/fontconfig font on Linux). On Linux, Chromium
+// resolves -apple-system and BlinkMacSystemFont to plain sans-serif, so they
+// must not come first.
+export const UI_FONT_FALLBACK = 'system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif';
 export const TERMINAL_SYMBOL_FONT = 'Symbols Nerd Font Mono';
 export const TERMINAL_FONT_FALLBACK = `"SF Mono", "JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, "${TERMINAL_SYMBOL_FONT}", monospace`;
 

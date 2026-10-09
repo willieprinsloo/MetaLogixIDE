@@ -172,6 +172,13 @@ rescan flows. With `autoFocus`, `ContextMenu` focuses its first enabled item,
 and moves with the arrow keys; `SidebarHeader` returns focus to "+" when the menu closes. Copy and
 test ids live in `src/renderer/sidebar-copy.ts`.
 
+Rescan (and the automatic rescan at startup) adds newly discovered folders and
+drops projects whose folder no longer exists
+(`src/main/domain/prune-missing.ts`). Deleting a project row cascades to its
+saved shells, recents and prompts, so pruning skips a root whose own folder is
+missing (an unmounted drive must not empty it) and any project that still has
+a live shell.
+
 Section headers (In use, Recents, Projects) align with the filter field and
 show a chevron on the right. The full list is titled "Projects" but stores its
 collapsed state under the legacy key "All projects", so existing state
@@ -232,6 +239,15 @@ preference preserves the compatibility stack (`src/shared/font-settings.ts:1-10`
 | Presentation | `src/renderer/components/FontControl.tsx` | One combobox per preference: installed-family search, exact-name entry, System default, preview, and status. |
 | Style adapter | `src/renderer/fonts/use-apply-ui-font.ts` | Sets the UI font through one CSS custom property. |
 | Terminal adapter | `src/renderer/terminal-font-update.ts` | Updates xterm in place, waits for readiness, and synchronizes terminal geometry. |
+| Contract | `src/shared/terminal-font-size.ts` | Defines the terminal font size key, bounds (9-28, default 14), parser, clamp, zoom step, and legacy migration rule. |
+| IO | `src/main/ipc/register.ts` | `settings:set-terminal-font-size` validates the size, writes only when unset if asked, and broadcasts `settings:changed` only when the value changed. The generic setter rejects the key. |
+| Renderer state | `src/renderer/fonts/terminal-font-size-store.ts`, `terminal-font-size-context.tsx` | One store per window: loads or migrates the size, applies changes locally first, ignores stale refreshes, and reverts with a toast on a failed save. |
+| Presentation | `src/renderer/components/settings/TerminalFontSizeControl.tsx`, `font-size-draft.ts` | The Terminal font size stepper and its pure input rules. |
+| Contract | `src/shared/terminal-font-weight.ts` | Defines the font weight and bold weight keys, the nine weights, the defaults (400 and 700), the bold rule (`derivedBoldWeight`, `isValidBoldWeight`, `boldWeightChoices`), and `resolveTerminalWeights`, which turns the stored pair into the weights in use. |
+| IO | `src/main/ipc/register.ts` | `settings:set-terminal-font-weight` validates W, derives bold in main, writes both keys in one `setMany` transaction, and broadcasts once per changed key. `settings:set-terminal-bold-weight` accepts only a bold weight heavier than the font weight in use. The generic setter rejects both keys. |
+| Renderer state | `src/renderer/fonts/terminal-font-weight-store.ts`, `terminal-font-weight-context.tsx` | One store per window for the pair: resolves the stored values without writing, applies changes locally first, re-syncs on either key, and reverts with that setting's toast on a failed save. |
+| Presentation | `src/renderer/components/settings/TerminalFontWeightControl.tsx` | The Terminal font weight and Terminal bold weight selects. |
+| Terminal adapter | `src/renderer/terminal-font-weight-apply.ts` | Maps the pair to xterm's `fontWeight` and `fontWeightBold`. |
 
 The UI preference changes inherited application text. Explicit `.font-mono`
 and Markdown code rules keep their compatibility stack
@@ -244,6 +260,25 @@ font store. The updater changes `term.options.fontFamily`, waits for the
 selected family with a bounded timeout, fits the terminal, clears stale glyph
 state, repaints all rows, and reports the resulting dimensions to the PTY
 (`src/renderer/terminal-font-update.ts:108-139`).
+
+The terminal font size follows the same store-and-broadcast path through its
+own channel. `null` in the settings store means the size was never saved; the
+first window to load then migrates the legacy `metaide.shellFontSize` value
+with `onlyIfUnset`, so concurrent windows cannot overwrite each other. Each
+`ShellTab` reads the shared size through a ref, so a change sets
+`term.options.fontSize` and forces a geometry sync instead of recreating the
+terminal (`src/renderer/components/ShellTab.tsx:374-379`). A terminal waits
+for the loaded size before it opens, within the existing 2 s layout cap.
+
+The terminal font and bold weights use the same store-and-broadcast path
+with two channels, one per user action. Main is the only place that derives
+bold from the font weight, so the stored pair is never half-written; both
+main and the renderer resolve a missing or invalid stored value with the same
+shared function. A weight change sets `fontWeight` and `fontWeightBold` in
+one `term.options` assignment (`src/renderer/components/ShellTab.tsx:384`).
+xterm repaints in place and the WebGL renderer rebuilds its glyph atlas.
+Weight does not change cell size, so there is no geometry sync or PTY
+resize. A terminal also waits for the loaded weights before it opens.
 
 ### Split shell and motion
 
@@ -432,58 +467,104 @@ Rules:
   of the project's live shells. The "In use" header shows the worst state
   of all live shells. An inactive shell tab is grey when idle.
 
-### Project environment variables
+### Project and app-wide environment variables
 
-Each project can store environment variables. Every shell the app starts
-for the project gets them: the primary launch (first, subsequent and the
+Each project can store environment variables. The app can also store
+app-wide environment variables, which apply to every project. Every shell
+the app starts gets both: the primary launch (first, subsequent and the
 no-session fallback), plain shells, CLI profiles, custom commands and task
-runs. The user edits them in the project's Env tab, next to Shell and
-Files. The sidebar context menu item "Environment variables…" selects the
-project and opens that tab.
+runs. A project variable overrides the app-wide variable with the same name.
+
+The user edits project variables in the project's Env tab, next to Shell
+and Files. The sidebar context menu item "Environment variables…" selects
+the project and opens that tab. The user edits app-wide variables in
+Settings → Environment, after "Launch commands".
 
 | Layer | File | Responsibility |
 |---|---|---|
-| Contract | `src/shared/project-env.ts` | Name and value rules (`envNameProblem`, `envValueProblem`) and `parseProjectEnv`, used by the editor and the IPC handler. |
-| Logic | `src/main/domain/spawn-env.ts` | `resolveSpawnEnv`: the environment overlay for one spawn, and the lookup for `${env.NAME}` in launch argv. Never reads `process.env`. |
-| Logic | `src/main/domain/launch.ts` | `resolveLaunch` takes the inherited environment and uses `resolveSpawnEnv` for the primary launch. |
-| IO | `src/main/ipc/register.ts` | `projectSpawnEnv` for the plain shell, CLI and task sites. `validatedConfigPatch` checks `projects:update-config` before it writes. That channel emits `projects:changed`. |
+| Contract | `src/shared/project-env.ts` | Name and value rules (`envNameProblem`, `envValueProblem`) and `parseEnvMap`, used by the editors and the IPC handlers. `parseProjectEnv` and `parseAppEnv` apply the same rules; only the wording of the rejection message differs. |
+| Contract | `src/shared/types.ts` → `SettingsMap['app_env']` | The stored app-wide map, in the `settings` table. Default `{}`. |
+| Logic | `src/main/domain/spawn-env.ts` | `resolveSpawnEnv`: the environment overlay for one spawn, and the lookup for `${env.NAME}` in launch argv. Takes the stored app-wide map as the required `appEnv` input. Never reads `process.env` or the settings. |
+| Logic | `src/main/domain/launch.ts` | `resolveLaunch` takes the inherited environment, reads `app_env` from the settings and uses `resolveSpawnEnv` for the primary launch. |
+| IO | `src/main/ipc/register.ts` | `projectSpawnEnv` reads `app_env` for the plain shell, CLI and task sites. `validatedConfigPatch` checks `projects:update-config` before it writes. That channel emits `projects:changed`. `settings:set-app-env` runs `parseAppEnv` before it writes, and emits `settings:changed { key: 'app_env' }` only after a successful write. The generic `settings:set` rejects the `app_env` key. |
 | Logic | `src/renderer/project-env-rows.ts` | The editor's row model: rows from the stored map, per-row problems, `canSave` and rows back to a map. |
 | Logic | `src/renderer/project-env-rows.ts` → `isDraftDirty` | Decides if a draft differs from the stored map: the ordered non-blank rows against the ordered stored entries. |
-| Presentation | `src/renderer/hooks/useEnvDrafts.ts` | Holds unsaved drafts per project, in memory only. A draft lasts until Save, Discard or app close. |
-| Presentation | `src/renderer/components/ProjectEnvTab.tsx` | The Env tab body. Reads the project fresh through `projects:list` when it mounts, edits the draft, and saves only `{ env }`. Save stays disabled until the stored values have loaded. |
+| Presentation | `src/renderer/hooks/useEnvDrafts.ts` | Holds unsaved drafts per project and one app-wide draft (`APP_ENV_DRAFT_KEY`), in memory only. A draft lasts until Save, Discard or app close. `App` owns the drafts, so the app-wide draft survives closing Settings. |
+| Logic | `src/renderer/env-reveal.ts` | `createRevealTimers`: one timer for each revealed row. A revealed value masks again after `REVEAL_TIMEOUT_MS` (39 000 ms). It calls `setTimeout` and `clearTimeout` at call time, so a test clock can replace them. |
+| Logic | `src/renderer/env-clipboard.ts` | `copyEnvValue`: writes the raw value through `navigator.clipboard` and shows a toast. The toast never contains the value or the name. |
+| Logic | `src/renderer/app-env-inherited.ts` | `inheritedRows`: the app-wide rows in stored order, each marked `overridden` when the project's saved map has the same name. |
+| Presentation | `src/renderer/hooks/useRevealState.ts` | Reveal state for one mounted editor. Unmount masks every value. `clearAll` masks every value on demand. |
+| Presentation | `src/renderer/hooks/useAppEnv.ts` | `useAppEnv` reads `app_env` through `settings:get` and reads it again on `settings:changed { key: 'app_env' }`. `saveAppEnv` calls `settings:set-app-env`. |
+| Presentation | `src/renderer/components/env/EnvEditor.tsx` | The editable body that both editors share: notices, rows, Add, Save and Discard. `saveEnvRows` saves, drops the draft and then masks every value. A failed save keeps the draft and the reveal state. |
+| Presentation | `src/renderer/components/env/EnvValueField.tsx` | The masked value input with its reveal and copy buttons. |
+| Presentation | `src/renderer/components/env/InheritedEnvList.tsx` | The read-only "From app settings" list in the project Env tab. |
+| Presentation | `src/renderer/components/ProjectEnvTab.tsx` | The Env tab body. Reads the project fresh through `projects:list` when it mounts, edits the draft, and saves only `{ env }`. Save stays disabled until the stored values have loaded. Shows the inherited list below Save and Discard. |
+| Presentation | `src/renderer/components/settings/EnvironmentPanel.tsx` | Settings → Environment: `useAppEnv`, `saveAppEnv` and the shared editor. |
 | Contract | `src/renderer/main-tab.ts` | `MainTab` (`shell`, `files`, `diff`, `env`) and `isMainTab`, the validator for the persisted tab. |
-| Contract | `src/renderer/project-env-copy.ts` | Every string and test id of the editor. |
+| Contract | `src/renderer/project-env-copy.ts` | Every string and test id of both editors (`ENV_COPY`, `ENV_TESTIDS`, `APP_ENV_COPY`, `APP_ENV_TESTIDS`). |
 
 Rules:
 
 - Precedence, lowest to highest: the app's inherited environment, the
-  template env (the launch command, CLI profile or custom command env),
-  the project variables, and the Claude hook variables. `PtyManager`
-  layers the inherited environment underneath and the launch decorator
-  layers the hook variables on top.
+  app-wide variables, the template env (the launch command, CLI profile or
+  custom command env), the project variables, and the Claude hook
+  variables. `PtyManager` layers the inherited environment underneath and
+  the launch decorator layers the hook variables on top. A project cannot
+  unset an app-wide variable. It can override it, also with the empty
+  string.
+- App-wide variables use the same name and value rules as project
+  variables. Stored app-wide entries that break the rules are skipped at
+  spawn.
+- App-wide values can use `${HOME}`, `${PROJECT_PATH}`, `${PROJECT_NAME}`
+  and `${env.NAME}`. The path tokens resolve for the project being spawned.
+  In an app-wide value, `${env.NAME}` reads the inherited environment only,
+  so an app-wide variable cannot read another app-wide variable.
 - A valid name matches `^[A-Za-z_][A-Za-z0-9_]*$`, has at most 255
   characters, does not start with `METAIDE_` (any case) and is not
   `__proto__`, which a plain object would drop on save. A value must
   not contain a NUL character. An empty value sets the variable to the
   empty string. Stored entries that break these rules are skipped at spawn.
 - Project values can use `${HOME}`, `${PROJECT_PATH}`, `${PROJECT_NAME}`
-  and `${env.NAME}`. `${env.NAME}` reads the inherited environment with the
-  template env on top, in one pass. A project variable cannot read another
-  project variable. An unset name gives the empty string.
+  and `${env.NAME}`. `${env.NAME}` reads the inherited environment, then the
+  interpolated app-wide variables, then the template env, in one pass. A
+  project variable cannot read another project variable. An unset name
+  gives the empty string.
 - `${env.NAME}` in launch argv reads the final environment: inherited,
-  then template env, then project variables. On a name clash, argv sees
-  the project value. Template env values reach argv after interpolation,
+  then app-wide variables, then template env, then project variables. On a
+  name clash, argv sees the project value. Template env values reach argv after interpolation,
   so `X=${HOME}/t` gives argv the expanded path, not the literal token.
 - Template env values are interpolated as before this feature, against
   the stored project map and the template env, without the inherited
-  environment.
+  environment and without the app-wide variables
+  (`src/main/domain/launch.ts:59-62`). A template env value that uses
+  `${env.NAME}` therefore cannot read an app-wide variable, although the
+  template env ranks above the app-wide variables.
 - CLI profile and custom command env is passed as it is, without
   interpolation.
 - Saving replaces the whole map, so a removed row is gone. Shells that
   already run keep their environment. Changes apply to the next spawn.
 - Unsaved edits stay as a draft for each project when the user switches
   tab or project. The Env tab label shows `•` while a draft differs from
-  the stored values. Discard drops the draft.
+  the stored values. Discard drops the draft. The app-wide draft follows
+  the same rules. It survives a Settings section change and closing
+  Settings. The Environment nav item shows `•` while the draft differs.
+- Both editors mask every value by default, as a password field does.
+  Names are not masked. Each row has a reveal button and a copy button.
+  A revealed value masks again after 39 seconds. Each row has its own
+  timer. Removing a row masks that row. Discard, a save that succeeds, a
+  change to the stored map while no draft is open, leaving the editor,
+  selecting another project and closing Settings mask every value. In the
+  project Env tab, a change to the saved app-wide map also masks every
+  value, including the inherited rows. Reveal state is not stored.
+- Masking only hides values on screen. Values are stored as plain text in
+  the local SQLite database, and the renderer holds them in memory.
+- Copy writes the raw value, with `${…}` tokens not expanded. Copy works
+  while the value is masked and does not reveal it. The copy button is
+  disabled while the value is empty.
+- The project Env tab lists the saved app-wide variables read-only, below
+  Save and Discard. A row whose name the project's saved map also defines
+  shows "Overridden by this project". The list updates when
+  `settings:changed { key: 'app_env' }` arrives.
 - The Env tab does not count as viewing a shell for notifications.
   Switching from Env back to Shell does not focus the terminal, the same
   as switching from Files. The sidebar handler sets the tab before it
@@ -575,7 +656,7 @@ links outside a diagram open through the `app:open-external` IPC channel.
    (`src/renderer/fonts/font-settings-context.tsx:39-68`).
 4. The UI adapter updates the root CSS property, or each terminal updater
    changes its existing xterm instance (`src/renderer/fonts/use-apply-ui-font.ts:12-28`,
-   `src/renderer/components/ShellTab.tsx:337-349`).
+   `src/renderer/components/ShellTab.tsx:387-392`).
 5. A terminal font change completes with fit, repaint, and PTY resize. It
    does not recreate the PTY or replay scrollback
    (`src/renderer/terminal-font-update.ts:68-105`).
@@ -607,18 +688,31 @@ links outside a diagram open through the `app:open-external` IPC channel.
    Otherwise the main window is restored and focused, and
    `shell:focus-request` is sent only while the shell is still alive.
 
-### Project environment variables at spawn
+### Project and app-wide environment variables at spawn
+
+The user saves Settings → Environment:
+
+1. `settings:set-app-env` runs `parseAppEnv` on `env`. An invalid map is
+   rejected before any write, with an error that names the key and never
+   the value.
+2. The handler writes `app_env` to the `settings` table and emits
+   `settings:changed { key: 'app_env' }`. `useAppEnv` reads the map again.
+
+The user saves the project Env tab, and a shell starts:
 
 1. The user saves the Env tab. `projects:update-config` runs
    `parseProjectEnv` on `env`. An invalid map is rejected before any write,
    with an error that names the key and never the value.
 2. `ProjectsRepo.updateConfig` merges the patch shallowly, so `env`
    replaces the stored map. The handler emits `projects:changed`.
-3. A spawn site builds its template env and calls `resolveSpawnEnv` with
-   the project, the template env and `process.env`.
-4. `resolveSpawnEnv` interpolates the valid project variables against the
-   inherited environment with the template env on top. It returns the
-   template env with the project variables on top.
+3. A spawn site builds its template env, reads `app_env` from the settings
+   and calls `resolveSpawnEnv` with the project, the template env, the
+   app-wide map and `process.env`.
+4. `resolveSpawnEnv` interpolates the valid app-wide variables against the
+   inherited environment. It interpolates the valid project variables
+   against the inherited environment, then the app-wide variables, then
+   the template env. It returns the app-wide variables, then the template
+   env, then the project variables on top.
 5. `PtyManager.spawn` starts the PTY with `process.env` underneath that
    overlay. For a Claude shell, the launch decorator adds the hook
    variables last.

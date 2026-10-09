@@ -5,6 +5,8 @@ interface Props {
   label: string;
   shortcut?: string;
   side?: 'top' | 'bottom';
+  /** Also show while a child has keyboard focus (`:focus-visible`); off by default. */
+  focusable?: boolean;
   children: React.ReactNode;
 }
 
@@ -16,14 +18,15 @@ interface Props {
  * Shows after a short delay on hover; hides immediately on leave / click.
  * Once one tooltip has been seen, sweeping onto a neighbour within
  * WARM_MS opens it at once with no animation — the delay has already done
- * its job of filtering accidental hovers.
+ * its job of filtering accidental hovers. With `focusable`, keyboard focus
+ * on a child shows it too and blur hides it.
  */
 const OPEN_DELAY_MS = 350;
 const WARM_MS = 400;
 let lastHiddenAt = 0;
 let openCount = 0;
 
-export function Tooltip({ label, shortcut, side = 'bottom', children }: Props) {
+export function Tooltip({ label, shortcut, side = 'bottom', focusable = false, children }: Props) {
   const wrapRef = useRef<HTMLSpanElement>(null);
   const [pos, setPos] = useState<{ x: number; y: number; instant: boolean } | null>(null);
   const timer = useRef<number | null>(null);
@@ -57,6 +60,9 @@ export function Tooltip({ label, shortcut, side = 'bottom', children }: Props) {
     if (timer.current) window.clearTimeout(timer.current);
     setPos(null);
   }
+  function onFocus(e: React.FocusEvent) {
+    if (e.target instanceof Element && e.target.matches(':focus-visible')) onEnter();
+  }
 
   return (
     <>
@@ -65,6 +71,8 @@ export function Tooltip({ label, shortcut, side = 'bottom', children }: Props) {
         onMouseEnter={onEnter}
         onMouseLeave={onLeave}
         onMouseDown={onLeave}
+        onFocus={focusable ? onFocus : undefined}
+        onBlur={focusable ? onLeave : undefined}
         className="inline-flex"
       >
         {children}

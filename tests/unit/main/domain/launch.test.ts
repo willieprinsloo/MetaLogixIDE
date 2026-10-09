@@ -217,3 +217,34 @@ describe('resolveLaunch — project env (AC10–AC14)', () => {
     expect(resolveLaunch(p, fakeSettings, '/home/u', {}).env).toEqual({ A: '1' });
   });
 });
+
+describe('resolveLaunch — app-wide env (AC9, AC10)', () => {
+  const settingsWith = (app_env: Record<string, string>) =>
+    ({ get: (k: string) => (k === 'app_env' ? app_env : DEFAULT_SETTINGS[k as keyof typeof DEFAULT_SETTINGS]) }) as unknown as import('@main/repos/settings-repo').SettingsRepo;
+
+  it('an app-wide variable reaches the primary launch env with no project or template value', () => {
+    const p = project();
+    const r = resolveLaunch(p, settingsWith({ X: 'app' }), '/home/u', {});
+    expect(r.env.X).toBe('app');
+  });
+
+  it('argv ${env.X} sees the app-wide value when there is no project or template value', () => {
+    const p = project({ config: { launchCmd: { first: { argv: ['run', '${env.X}'], env: {} } } } });
+    const r = resolveLaunch(p, settingsWith({ X: 'app' }), '/home/u', {});
+    expect(r.argv).toEqual(['run', 'app']);
+  });
+
+  it('a project value still wins over an app-wide value of the same name', () => {
+    const p = project({ config: { env: { X: 'proj' } } });
+    const r = resolveLaunch(p, settingsWith({ X: 'app' }), '/home/u', {});
+    expect(r.env.X).toBe('proj');
+  });
+
+  it('finding 5 — template env interpolation does not see app-wide variables', () => {
+    const p = project({
+      config: { launchCmd: { first: { argv: ['run'], env: { T: '[${env.X}]' } } } },
+    });
+    const r = resolveLaunch(p, settingsWith({ X: 'app' }), '/home/u', {});
+    expect(r.env.T).toBe('[]');
+  });
+});

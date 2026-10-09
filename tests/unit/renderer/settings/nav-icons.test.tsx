@@ -5,8 +5,11 @@ import {
   SectionButton,
   type SettingsSection,
 } from '@renderer/components/settings/nav-icons';
+import { APP_ENV_COPY, APP_ENV_TESTIDS, ENV_COPY } from '@renderer/project-env-copy';
 
-const SECTIONS: readonly SettingsSection[] = ['general', 'roots', 'launch', 'metaproject'];
+const SECTIONS: readonly SettingsSection[] = ['general', 'roots', 'launch', 'env', 'metaproject'];
+
+const ENV_GLYPH = 'M8 4H7a2 2 0 0 0-2 2v4l-2 2 2 2v4a2 2 0 0 0 2 2h1';
 
 function textOf(html: string): string {
   return html.replace(/<[^>]*>/g, '');
@@ -46,6 +49,7 @@ describe('NavIcon', () => {
     ['general', '<circle cx="16" cy="6" r="2">'],
     ['roots', 'M3 7a2 2 0 0 1 2-2h4l2 2h8'],
     ['launch', 'M4 17l6-5-6-5M12 19h8'],
+    ['env', ENV_GLYPH],
     ['metaproject', '<rect x="3" y="4" width="18" height="16" rx="2">'],
   ] as const)('draws the agreed glyph for %s', (section, glyph) => {
     const html = renderToStaticMarkup(<NavIcon section={section} />);
@@ -76,6 +80,7 @@ describe('SectionButton', () => {
     ['general', 'General'],
     ['roots', 'Root directories'],
     ['launch', 'Launch commands'],
+    ['env', 'Environment'],
     ['metaproject', 'Metaproject'],
   ] as const)('names the %s item exactly "%s"', (section, label) => {
     const html = renderItem(section, false, label);
@@ -103,6 +108,34 @@ describe('SectionButton', () => {
       expect(label).toContain('min-w-0');
     },
   );
+
+  it('names an item with unsaved changes by unsavedLabel and shows the hidden marker (AC7)', () => {
+    const html = renderToStaticMarkup(
+      <SectionButton
+        section="env"
+        active={false}
+        onClick={() => {}}
+        unsavedLabel={APP_ENV_COPY.navUnsavedLabel}
+      >
+        {APP_ENV_COPY.navLabel}
+      </SectionButton>,
+    );
+    expect(html).toMatch(new RegExp(`^<button[^>]*aria-label="${APP_ENV_COPY.navUnsavedLabel}"`));
+    expect(html).toMatch(
+      new RegExp(
+        `<span[^>]*aria-hidden="true"[^>]*data-testid="${APP_ENV_TESTIDS.unsaved}"[^>]*>${ENV_COPY.tabUnsavedMarker}</span>`,
+      ),
+    );
+    expect(html.indexOf(APP_ENV_COPY.navLabel)).toBeLessThan(
+      html.indexOf(ENV_COPY.tabUnsavedMarker),
+    );
+  });
+
+  it('shows no marker without unsavedLabel', () => {
+    const html = renderItem('env', false, APP_ENV_COPY.navLabel);
+    expect(html).not.toContain(APP_ENV_TESTIDS.unsaved);
+    expect(textOf(html)).toBe(APP_ENV_COPY.navLabel);
+  });
 
   it('is a plain button so it never submits a form', () => {
     expect(renderItem('general', false, 'General')).toMatch(/^<button[^>]*type="button"/);

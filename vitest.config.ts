@@ -11,7 +11,8 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    // .claude/ holds mutation-test copies of the tree; never collect them.
-    exclude: ['tests/e2e/**', 'node_modules/**', '.claude/**'],
+    // .claude/ holds mutation-test copies of the tree; dist/ and out/ hold
+    // packaged builds whose bundled node_modules ship their own tests.
+    exclude: ['tests/e2e/**', 'node_modules/**', '.claude/**', 'dist/**', 'out/**'],
   },
 });

@@ -5,8 +5,8 @@ import { envNameProblem, envValueProblem } from '@shared/project-env';
 
 /**
  * Inputs for computing a spawn's environment. Precedence, lowest to highest:
- * inherited < template env < project variables; hook variables are layered
- * on later by the Claude launch decorator.
+ * inherited < app-wide variables < template env < project variables; hook
+ * variables are layered on later by the Claude launch decorator.
  */
 export interface SpawnEnvInput {
   project: Pick<Project, 'path' | 'config'>;
@@ -15,33 +15,39 @@ export interface SpawnEnvInput {
   /** The main process environment at spawn time; never read from `process.env` inside the domain. */
   inherited: Readonly<Record<string, string | undefined>>;
   homeDir: string;
+  /** Stored app-wide variables, before validation or interpolation. Required so the compiler finds every caller. */
+  appEnv: Record<string, string>;
 }
 
 export interface SpawnEnv {
-  /** Overlay for `PtyManager.spawn`: template env ⊕ interpolated project variables. */
+  /** Overlay for `PtyManager.spawn`: interpolated app-wide variables ⊕ template env ⊕ interpolated project variables. */
   env: Record<string, string>;
   /** inherited ⊕ env — the lookup for `${env.NAME}` in template argv (AC13). */
   lookup: Record<string, string>;
 }
 
 /**
- * Computes the overlay env and the argv lookup for one spawn. Project values
- * are interpolated in a single pass against inherited ⊕ template env, so
- * `${env.PATH}` extends the inherited PATH and one project var never sees
- * another. Stored entries that fail the shared name/value rules are dropped.
+ * Computes the overlay env and the argv lookup for one spawn. Precedence is
+ * app-wide < template < project. App values are interpolated against the
+ * inherited env only (an app value cannot reference another app value);
+ * project values are interpolated in a single pass against inherited ⊕
+ * interpolated app ⊕ template, so `${env.PATH}` extends the inherited PATH
+ * and one project var never sees another. Stored entries that fail the
+ * shared name/value rules are dropped, in both the app and project maps.
  */
 export function resolveSpawnEnv(input: SpawnEnvInput): SpawnEnv {
   const inherited = definedOnly(input.inherited);
-  const ctx = {
+  const paths = {
     home: input.homeDir,
     projectPath: input.project.path,
     projectName: basename(input.project.path),
-    env: { ...inherited, ...input.templateEnv },
   };
-  const env = {
-    ...input.templateEnv,
-    ...interpolateEnv(validProjectVars(input.project.config.env), ctx),
-  };
+  const app = interpolateEnv(validVars(input.appEnv), { ...paths, env: inherited });
+  const project = interpolateEnv(validVars(input.project.config.env), {
+    ...paths,
+    env: { ...inherited, ...app, ...input.templateEnv },
+  });
+  const env = { ...app, ...input.templateEnv, ...project };
   return { env, lookup: { ...inherited, ...env } };
 }
 
@@ -51,7 +57,7 @@ function definedOnly(source: Readonly<Record<string, string | undefined>>): Reco
   return out;
 }
 
-function validProjectVars(stored: Record<string, string> | undefined): Record<string, string> {
+function validVars(stored: Record<string, string> | undefined): Record<string, string> {
   const entries = Object.entries(stored ?? {}).filter(([name, value]) => isValidEntry(name, value));
   return Object.fromEntries(entries);
 }

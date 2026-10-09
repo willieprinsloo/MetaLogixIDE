@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { FontDiscoveryState } from '@renderer/components/FontControl';
 import { discoverLocalFonts } from '@renderer/fonts/local-font-access';
-import { GeneralPanel } from '@renderer/components/settings/GeneralPanel';
-import { RootsPanel } from '@renderer/components/settings/RootsPanel';
-import { LaunchPanel } from '@renderer/components/settings/LaunchPanel';
-import { MetaprojectPanel } from '@renderer/components/settings/MetaprojectPanel';
+import { SettingsSectionPanel } from '@renderer/components/settings/SettingsSectionPanel';
 import { SectionButton, type SettingsSection } from '@renderer/components/settings/nav-icons';
 import { versionLabel } from '@renderer/components/settings/version-label';
 import { useAppVersion } from '@renderer/hooks/useAppVersion';
 import { useDialogFocus } from '@renderer/hooks/useDialogFocus';
+import { APP_ENV_DRAFT_KEY, type EnvDrafts } from '@renderer/hooks/useEnvDrafts';
+import { APP_ENV_COPY } from '@renderer/project-env-copy';
 
 interface FontDiscoverySession {
   readonly fontDiscovery: FontDiscoveryState;
@@ -18,26 +17,35 @@ interface FontDiscoverySession {
 interface SettingsDialogProps extends FontDiscoverySession {
   readonly section: SettingsSection;
   readonly onSection: (section: SettingsSection) => void;
+  readonly envDrafts: EnvDrafts;
   readonly version: string | null;
   readonly onClose: () => void;
 }
 
-/** Renders application settings and owns installed-font discovery for one open session. */
+interface SettingsProps {
+  readonly open: boolean;
+  readonly onClose: () => void;
+  readonly section: SettingsSection;
+  readonly onSection: (section: SettingsSection) => void;
+  readonly envDrafts: EnvDrafts;
+}
+
+/** Renders application settings and owns installed-font discovery for one open session. The caller owns the active `section` (so it can open a given one) and `envDrafts` (so the app-wide env draft outlives the dialog). */
 export function Settings({
   open,
   onClose,
-}: {
-  open: boolean;
-  onClose: () => void;
-}): React.JSX.Element | null {
-  const [section, setSection] = useState<SettingsSection>('general');
+  section,
+  onSection,
+  envDrafts,
+}: SettingsProps): React.JSX.Element | null {
   const version = useAppVersion();
   const fonts = useFontDiscoverySession(open);
   if (!open) return null;
   return (
     <SettingsDialog
       section={section}
-      onSection={setSection}
+      onSection={onSection}
+      envDrafts={envDrafts}
       version={version}
       onClose={onClose}
       {...fonts}
@@ -81,6 +89,7 @@ const PANEL_CLASS =
 function SettingsDialog({
   section,
   onSection,
+  envDrafts,
   version,
   onClose,
   fontDiscovery,
@@ -107,18 +116,18 @@ function SettingsDialog({
       >
         <SettingsHeader titleId={titleId} onClose={onClose} />
         <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
-          <SettingsNav section={section} onSection={onSection} version={version} />
-          <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 pb-7 pt-1 sm:pl-3 sm:pr-7">
-            {section === 'general' && (
-              <GeneralPanel
-                fontDiscovery={fontDiscovery}
-                onLoadInstalledFonts={onLoadInstalledFonts}
-              />
-            )}
-            {section === 'roots' && <RootsPanel />}
-            {section === 'launch' && <LaunchPanel />}
-            {section === 'metaproject' && <MetaprojectPanel />}
-          </div>
+          <SettingsNav
+            section={section}
+            onSection={onSection}
+            envUnsaved={envDrafts.isDirty(APP_ENV_DRAFT_KEY)}
+            version={version}
+          />
+          <SettingsSectionPanel
+            section={section}
+            envDrafts={envDrafts}
+            fontDiscovery={fontDiscovery}
+            onLoadInstalledFonts={onLoadInstalledFonts}
+          />
         </div>
         <SettingsFooter onClose={onClose} />
       </div>
@@ -170,6 +179,7 @@ function SettingsHeader({
 interface SettingsNavProps {
   readonly section: SettingsSection;
   readonly onSection: (section: SettingsSection) => void;
+  readonly envUnsaved: boolean;
   readonly version: string | null;
 }
 
@@ -177,10 +187,16 @@ const NAV_ITEMS: readonly { readonly section: SettingsSection; readonly label: s
   { section: 'general', label: 'General' },
   { section: 'roots', label: 'Root directories' },
   { section: 'launch', label: 'Launch commands' },
+  { section: 'env', label: APP_ENV_COPY.navLabel },
   { section: 'metaproject', label: 'Metaproject' },
 ];
 
-function SettingsNav({ section, onSection, version }: SettingsNavProps): React.JSX.Element {
+function SettingsNav({
+  section,
+  onSection,
+  envUnsaved,
+  version,
+}: SettingsNavProps): React.JSX.Element {
   return (
     <nav
       aria-label="Settings sections"
@@ -192,6 +208,9 @@ function SettingsNav({ section, onSection, version }: SettingsNavProps): React.J
           section={item.section}
           active={section === item.section}
           onClick={() => onSection(item.section)}
+          unsavedLabel={
+            item.section === 'env' && envUnsaved ? APP_ENV_COPY.navUnsavedLabel : undefined
+          }
         >
           {item.label}
         </SectionButton>

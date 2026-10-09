@@ -13,6 +13,8 @@ import {
 } from '@renderer/components/FontControl';
 import { FONT_COPY } from '@renderer/fonts/font-contract';
 import { useFontSettings } from '@renderer/fonts/font-settings-context';
+import { TerminalFontSizeControl } from '@renderer/components/settings/TerminalFontSizeControl';
+import { TerminalBoldWeightControl, TerminalFontWeightControl } from '@renderer/components/settings/TerminalFontWeightControl';
 import {
   SettingRow,
   SettingStack,
@@ -152,7 +154,7 @@ function AppearanceSection({
       <SettingStack label="Theme">
         <PaletteCards palette={theme.palette} effective={theme.effective} onSelect={onPalette} />
       </SettingStack>
-      <SettingRow label="Mode" hint="System follows macOS.">
+      <SettingRow label="Mode" hint="System follows your OS appearance.">
         <ModeControl mode={theme.mode} effective={theme.effective} onChange={onMode} />
       </SettingRow>
       <SettingRow label="Window opacity" hint="Below 100% your desktop shows through.">
@@ -273,6 +275,9 @@ function FontSettingsControls({
         onSave={(value) => saveFont('terminal_font_family', value)}
         onLoadInstalledFonts={onLoadInstalledFonts}
       />
+      <TerminalFontSizeControl />
+      <TerminalFontWeightControl />
+      <TerminalBoldWeightControl />
     </SettingsSection>
   );
 }

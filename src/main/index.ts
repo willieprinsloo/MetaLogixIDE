@@ -127,7 +127,7 @@ function baseWebPreferences() {
   };
 }
 
-function darwinChrome(): Partial<Electron.BrowserWindowConstructorOptions> {
+function platformChrome(): Partial<Electron.BrowserWindowConstructorOptions> {
   return process.platform === 'darwin'
     ? {
         titleBarStyle: 'hiddenInset',
@@ -137,7 +137,9 @@ function darwinChrome(): Partial<Electron.BrowserWindowConstructorOptions> {
         visualEffectState: 'active',
         roundedCorners: true,
       }
-    : {};
+    // Windows/Linux draw the app menu as an in-window bar above our own title
+    // bar. Hide it until Alt is pressed; its accelerators keep working.
+    : { autoHideMenuBar: true };
 }
 
 function wireExternalLinks(win: BrowserWindow): void {
@@ -165,7 +167,7 @@ async function createMainWindow(): Promise<BrowserWindow> {
     height: 900,
     show: false,
     backgroundColor: '#00000000',
-    ...darwinChrome(),
+    ...platformChrome(),
     webPreferences: baseWebPreferences(),
   });
   win.once('ready-to-show', () => win.show());
@@ -199,7 +201,7 @@ export async function createPopoutWindow(projectId: number, shellIndex: number):
     height: 620,
     show: false,
     backgroundColor: '#00000000',
-    ...darwinChrome(),
+    ...platformChrome(),
     webPreferences: baseWebPreferences(),
   });
   const query = `popout=1&projectId=${projectId}&shellIndex=${shellIndex}`;
@@ -373,7 +375,9 @@ ipcMain.handle('app:renderer-ready-for-files', () => {
 });
 
 const startupReady = app.whenReady().then(async () => {
-  if (process.platform === 'darwin') {
+  // GUI launches (Dock, desktop launchers) inherit a minimal PATH that lacks
+  // version-manager shims, so `claude` and friends wouldn't resolve.
+  if (process.platform !== 'win32') {
     const loginShell = process.env.SHELL || '/bin/zsh';
     try {
       process.env.PATH = await resolveLoginShellPath(loginShell, homedir(), process.env);
@@ -398,6 +402,7 @@ const startupReady = app.whenReady().then(async () => {
   // reads + SQL upserts, and the file watcher is already running.
   try {
     const { discoverProjects } = await import('./domain/discovery');
+    const { pruneMissingProjects } = await import('./domain/prune-missing');
     const scanDepth = services.settings.get('scan_depth');
     for (const root of services.roots.list()) {
       for (const disc of discoverProjects(root.path, scanDepth)) {
@@ -406,6 +411,8 @@ const startupReady = app.whenReady().then(async () => {
           services.projects.updateConfig(p.id, { linkedMetaprojectProjectId: disc.metaprojectProjectId });
         }
       }
+      // Nothing is alive yet at boot, so every project whose folder is gone goes.
+      pruneMissingProjects({ projects: services.projects, hasLiveShell: () => false }, root);
       services.watcher.watch(root.path);
     }
   } catch (e) {

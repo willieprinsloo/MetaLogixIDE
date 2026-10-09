@@ -1,8 +1,8 @@
 /** Coordinates in-place xterm font changes with bounded readiness and geometry updates. */
 import { TERMINAL_FONT_FALLBACK, TERMINAL_SYMBOL_FONT, type FontFamilyPreference } from '@shared/font-settings';
 import { buildFontFamilyStack, serializeFontFamily } from '@renderer/fonts/font-family';
+import { TERMINAL_FONT_SIZE } from '@shared/terminal-font-size';
 
-const DEFAULT_FONT_SIZE = 14;
 const MIN_HOST_SIZE = 20;
 
 export interface TerminalFontUpdatePort {
@@ -123,7 +123,7 @@ export function createTerminalFontUpdater(
       );
 
       if (dependencies.loadFont) {
-        const fontSize = dependencies.terminal.options.fontSize || DEFAULT_FONT_SIZE;
+        const fontSize = dependencies.terminal.options.fontSize || TERMINAL_FONT_SIZE.default;
         const pendingFonts = [
           waitForFont(
             dependencies.loadFont,

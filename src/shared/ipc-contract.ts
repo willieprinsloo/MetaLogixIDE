@@ -2,6 +2,7 @@ import type { Project, Root, AliveShellSummary, SettingsMap } from './types';
 import type { ClaudePermissionMode } from './claude-permission-mode';
 import type { ClaudeShellStateEntry } from './claude-state';
 import type { FontFamilyPreference, FontSettingKey } from './font-settings';
+import type { TerminalFontWeight } from './terminal-font-weight';
 
 /**
  * Single-character git status codes we bubble up. The two-position
@@ -137,6 +138,13 @@ export interface IpcContract {
   'settings:get': { request: { key: keyof SettingsMap };                        response: { value: SettingsMap[keyof SettingsMap] } };
   'settings:set': { request: { key: keyof SettingsMap; value: SettingsMap[keyof SettingsMap] }; response: { ok: true } };
   'settings:set-font': { request: { key: FontSettingKey; value: unknown }; response: { value: FontFamilyPreference } };
+  'settings:set-terminal-font-size': { request: { value: unknown; onlyIfUnset?: boolean }; response: { value: number; changed: boolean } };
+  /** Validated write of the terminal font weight W; main also sets the bold weight to derivedBoldWeight(W), both in one transaction. changedKeys lists the keys whose stored value changed (empty = nothing written); emits settings:changed once per changed key. */
+  'settings:set-terminal-font-weight': { request: { value: unknown }; response: { weight: TerminalFontWeight; boldWeight: TerminalFontWeight; changedKeys: Array<keyof SettingsMap> } };
+  /** Validated write of the terminal bold weight; rejects a weight not heavier than the font weight in use (resolveTerminalWeights). changed=false when equal to the stored value. Emits settings:changed { key: 'terminal_bold_weight' } on change. */
+  'settings:set-terminal-bold-weight': { request: { value: unknown }; response: { value: TerminalFontWeight; changed: boolean } };
+  /** Validated replace of the whole app env map; rejects naming the key only; emits settings:changed { key: 'app_env' }. */
+  'settings:set-app-env': { request: { env: Record<string, string> }; response: { env: Record<string, string> } };
   'settings:set-claude-permission-mode': { request: { mode: ClaudePermissionMode }; response: { mode: ClaudePermissionMode; changedKeys: Array<keyof SettingsMap> } };
 
   // notifications

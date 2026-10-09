@@ -21,6 +21,22 @@ export const ENV_COPY = {
   discard: 'Discard',
   saveFailed: 'Could not save environment variables',
   loadFailed: 'Could not load environment variables',
+  revealLabel: (row: number) => `Show value, row ${row}`,
+  hideLabel: (row: number) => `Hide value, row ${row}`,
+  copyLabel: (row: number) => `Copy value, row ${row}`,
+  inheritedValueLabel: (row: number) => `App-wide value, row ${row}`,
+  inheritedRevealLabel: (row: number) => `Show app-wide value, row ${row}`,
+  inheritedHideLabel: (row: number) => `Hide app-wide value, row ${row}`,
+  inheritedCopyLabel: (row: number) => `Copy app-wide value, row ${row}`,
+  revealTooltip: 'Show value',
+  hideTooltip: 'Hide value',
+  copyTooltip: 'Copy value',
+  copied: 'Value copied',
+  copyFailed: 'Could not copy value',
+  inheritedTitle: 'From app settings',
+  inheritedEmpty: 'No variables from app settings.',
+  inheritedOverridden: 'Overridden by this project',
+  openAppEnv: 'Open app environment settings',
   reason: {
     invalid: 'Use letters, digits and _, not starting with a digit',
     'too-long': 'Name must be 255 characters or fewer',
@@ -42,4 +58,27 @@ export const ENV_TESTIDS = {
   save: 'project-env-save',
   discard: 'project-env-discard',
   empty: 'project-env-empty',
+  reveal: 'env-reveal',
+  copy: 'env-copy',
+  inherited: 'project-env-inherited',
+  inheritedRow: 'project-env-inherited-row',
+  inheritedName: 'project-env-inherited-name',
+  inheritedValue: 'project-env-inherited-value',
+  inheritedOverridden: 'project-env-inherited-overridden',
+  inheritedEmpty: 'project-env-inherited-empty',
+  openAppEnv: 'project-env-open-app-env',
+} as const;
+
+/** Strings for the Settings → Environment section. Notices, hint, row labels, reasons, Add/Save/Discard and toasts are shared from ENV_COPY. */
+export const APP_ENV_COPY = {
+  navLabel: 'Environment',
+  navUnsavedLabel: 'Environment, unsaved changes', // aria-label while the app draft differs; the visible marker is ENV_COPY.tabUnsavedMarker
+  panelTitle: 'App-wide environment variables',
+  panelSubtitle: 'Applied to every shell in every project. A project variable with the same name wins.',
+  emptyState: 'No app-wide environment variables.',
+} as const;
+export const APP_ENV_TESTIDS = {
+  panel: 'app-env-panel',
+  unsaved: 'app-env-unsaved',
+  empty: 'app-env-empty',
 } as const;

@@ -9,8 +9,12 @@
 import type { FontFamilyPreference } from '@shared/font-settings';
 import { parseFontFamilyPreference } from '@shared/font-settings';
 
-/** Longest family list rendered at once; typing narrows it further. */
-export const MAX_VISIBLE_FAMILIES = 200;
+/**
+ * Longest family list rendered at once; typing narrows it further. Each row
+ * draws in its own face (~2-3 ms apiece), and a Linux install with the Noto
+ * set easily passes 250 families, so the cap leaves room for those.
+ */
+export const MAX_VISIBLE_FAMILIES = 500;
 
 export type FontOption =
   | { readonly kind: 'default' }

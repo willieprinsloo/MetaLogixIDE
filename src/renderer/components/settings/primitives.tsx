@@ -80,6 +80,10 @@ export function SettingStack({ label, children }: { readonly label: string; read
   );
 }
 
+/** Shared visual class for a compact right-aligned number field, reused by `WorkspaceNumber` and `TerminalFontSizeControl` so every Settings number input matches. */
+export const NUMBER_FIELD_CLASS =
+  'h-[34px] w-[84px] shrink-0 rounded-[9px] bg-[--surface-field] px-2.5 text-right text-[13px] tabular-nums text-[--text] focus:outline-none focus:ring-2 focus:ring-[--accent]/60 focus-visible:rounded-[9px]';
+
 interface NumberProps {
   readonly id: string;
   readonly value: number | null;
@@ -103,7 +107,7 @@ export function WorkspaceNumber({ id, value, min, max, step = 1, onChange }: Num
         const n = Number(e.target.value);
         if (Number.isFinite(n)) onChange(Math.max(min, Math.min(max, n)));
       }}
-      className="h-[34px] w-[84px] shrink-0 rounded-[9px] bg-[--surface-field] px-2.5 text-right text-[13px] tabular-nums text-[--text] focus:outline-none focus:ring-2 focus:ring-[--accent]/60 focus-visible:rounded-[9px]"
+      className={NUMBER_FIELD_CLASS}
     />
   );
 }

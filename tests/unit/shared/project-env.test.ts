@@ -3,6 +3,7 @@ import {
   envNameProblem,
   envValueProblem,
   parseProjectEnv,
+  parseAppEnv,
   MAX_ENV_NAME_LENGTH,
 } from '@shared/project-env';
 
@@ -168,5 +169,80 @@ describe('parseProjectEnv', () => {
     expect(error).toContain('__proto__');
     expect(error).toContain('reserved');
     expect(error).not.toContain('S3CRET');
+  });
+});
+
+describe('parseAppEnv', () => {
+  it('accepts a valid map and returns it with insertion order', () => {
+    const res = parseAppEnv({ B: '2', A: '', _C: '${env.PATH}' });
+    expect(res).toEqual({ ok: true, env: { B: '2', A: '', _C: '${env.PATH}' } });
+    expect(res.ok && Object.keys(res.env)).toEqual(['B', 'A', '_C']);
+  });
+
+  it('accepts an empty map', () => {
+    expect(parseAppEnv({})).toEqual({ ok: true, env: {} });
+  });
+
+  it('rejects a non-object input, naming it an app environment', () => {
+    const res = parseAppEnv(null);
+    expect(res.ok).toBe(false);
+    expect(!res.ok && res.error).toBe(
+      'App environment must be an object of name/value strings',
+    );
+  });
+
+  it.each([
+    ['invalid', 'MY-VAR'],
+    ['leading digit', '1FOO'],
+    ['reserved', 'metaide_hook_token'],
+    ['reserved __proto__', '__proto__'],
+    ['too long', 'A'.repeat(256)],
+  ])('rejects a %s name, naming the key as an app environment variable', (_label, name) => {
+    const res = parseAppEnv({ [name]: 'S3CRET' });
+    expect(res.ok).toBe(false);
+    const error = !res.ok ? res.error : '';
+    expect(error).toContain('Invalid app environment variable');
+    expect(error).toContain(name);
+    expect(error).not.toContain('S3CRET');
+  });
+
+  it('rejects a NUL value and names the key, never the value', () => {
+    const res = parseAppEnv({ TOKEN: 'S3CRET\0tail' });
+    expect(res.ok).toBe(false);
+    const error = !res.ok ? res.error : '';
+    expect(error).toContain('TOKEN');
+    expect(error).not.toContain('S3CRET');
+  });
+
+  it('rejects a non-string value', () => {
+    const res = parseAppEnv({ GOOD: 'ok', BAD_KEY: { nested: 'x' } });
+    expect(res.ok).toBe(false);
+    expect(!res.ok && res.error).toContain('BAD_KEY');
+  });
+
+  it('rejects an array input', () => {
+    expect(parseAppEnv(['A', '1']).ok).toBe(false);
+  });
+
+  it('rejects an object with a custom prototype', () => {
+    const input = Object.create({ A: 'x' }) as Record<string, string>;
+    input.B = '1';
+    expect(parseAppEnv(input).ok).toBe(false);
+  });
+
+  it('accepts a null-prototype object', () => {
+    const input = Object.create(null) as Record<string, string>;
+    input.A = '1';
+    expect(parseAppEnv(input)).toEqual({ ok: true, env: { A: '1' } });
+  });
+
+  it('message text differs from parseProjectEnv for the same bad input', () => {
+    const project = parseProjectEnv({ 'MY-VAR': 'x' });
+    const app = parseAppEnv({ 'MY-VAR': 'x' });
+    expect(project.ok).toBe(false);
+    expect(app.ok).toBe(false);
+    expect(!project.ok && project.error).toContain('project environment variable');
+    expect(!app.ok && app.error).toContain('app environment variable');
+    expect(!project.ok && project.error).not.toBe(!app.ok && app.error);
   });
 });

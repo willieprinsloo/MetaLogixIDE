@@ -583,7 +583,7 @@ html, body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: var(--metaide-ui-font-family, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif);
+  font-family: var(--metaide-ui-font-family, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }

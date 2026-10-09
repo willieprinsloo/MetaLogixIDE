@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client';
 import { LazyMotion, MotionConfig, domAnimation } from 'motion/react';
 import { App } from './App';
 import { FontSettingsProvider } from './fonts/font-settings-context';
+import { TerminalFontSizeProvider } from './fonts/terminal-font-size-context';
+import { TerminalFontWeightProvider } from './fonts/terminal-font-weight-context';
 import './styles.css';
 import 'katex/dist/katex.min.css';
 
@@ -14,7 +16,11 @@ createRoot(rootElement).render(
     <MotionConfig reducedMotion="user">
       <LazyMotion features={domAnimation} strict>
         <FontSettingsProvider>
-          <App />
+          <TerminalFontSizeProvider>
+            <TerminalFontWeightProvider>
+              <App />
+            </TerminalFontWeightProvider>
+          </TerminalFontSizeProvider>
         </FontSettingsProvider>
       </LazyMotion>
     </MotionConfig>

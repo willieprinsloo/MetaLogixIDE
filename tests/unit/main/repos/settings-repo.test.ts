@@ -119,6 +119,86 @@ describe('SettingsRepo', () => {
     });
   });
 
+  describe('terminal font size (AC3, AC9, AC10)', () => {
+    it('a fresh seed gives terminal_font_size === null', () => {
+      const repo = seed();
+      expect(repo.get('terminal_font_size')).toBeNull();
+    });
+
+    it('an existing DB whose row is already 18 keeps 18 after seedDefaults (INSERT OR IGNORE)', () => {
+      const repo = seed();
+      repo.set('terminal_font_size', 18);
+      repo.seedDefaults();
+      expect(repo.get('terminal_font_size')).toBe(18);
+    });
+
+    it('an upgraded install with no prior row adds the null default without touching unrelated settings', () => {
+      const db = openDb(join(mkdtempSync(join(tmpdir(), 'st-')), 'db'));
+      runMigrations(db, migrationsDir);
+      db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('theme', JSON.stringify('light'));
+      const repo = new SettingsRepo(db);
+
+      repo.seedDefaults();
+
+      expect(repo.get('terminal_font_size')).toBeNull();
+      expect(repo.get('theme')).toBe('light');
+    });
+  });
+
+  describe('terminal font weight (AC3, AC8)', () => {
+    it('a fresh seed gives terminal_font_weight === null', () => {
+      const repo = seed();
+      expect(repo.get('terminal_font_weight')).toBeNull();
+    });
+
+    it('an existing DB whose row is already 600 keeps 600 after seedDefaults (INSERT OR IGNORE)', () => {
+      const repo = seed();
+      repo.set('terminal_font_weight', 600);
+      repo.seedDefaults();
+      expect(repo.get('terminal_font_weight')).toBe(600);
+    });
+
+    it('an upgraded install with no prior row adds the null default without touching unrelated settings', () => {
+      const db = openDb(join(mkdtempSync(join(tmpdir(), 'st-')), 'db'));
+      runMigrations(db, migrationsDir);
+      db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('theme', JSON.stringify('light'));
+      const repo = new SettingsRepo(db);
+
+      repo.seedDefaults();
+
+      expect(repo.get('terminal_font_weight')).toBeNull();
+      expect(repo.get('theme')).toBe('light');
+    });
+  });
+
+  // Test-after against the DEFAULT_SETTINGS default already added in setup (settings-repo.ts); these
+  // confirm the seeding behaviour (not the IPC validation, which lives in register.test.ts).
+  describe('terminal bold weight (AC3, AC8)', () => {
+    it('a fresh seed gives terminal_bold_weight === null', () => {
+      const repo = seed();
+      expect(repo.get('terminal_bold_weight')).toBeNull();
+    });
+
+    it('an existing DB whose row is already 900 keeps 900 after seedDefaults (INSERT OR IGNORE)', () => {
+      const repo = seed();
+      repo.set('terminal_bold_weight', 900);
+      repo.seedDefaults();
+      expect(repo.get('terminal_bold_weight')).toBe(900);
+    });
+
+    it('an upgraded install with no prior row adds the null default without touching unrelated settings', () => {
+      const db = openDb(join(mkdtempSync(join(tmpdir(), 'st-')), 'db'));
+      runMigrations(db, migrationsDir);
+      db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('theme', JSON.stringify('light'));
+      const repo = new SettingsRepo(db);
+
+      repo.seedDefaults();
+
+      expect(repo.get('terminal_bold_weight')).toBeNull();
+      expect(repo.get('theme')).toBe('light');
+    });
+  });
+
   it('AC1 — fresh seed leaves claude_permission_mode null', () => {
     const repo = seed();
     expect(repo.get('claude_permission_mode')).toBeNull();
@@ -245,5 +325,19 @@ describe('SettingsRepo', () => {
     repo.seedDefaults();
     expect(repo.get('notify_claude_finished')).toBe(false);
     expect(repo.get('notify_claude_needs_input')).toBe(true);
+  });
+
+  describe('app_env (AC3)', () => {
+    it('defaults to an empty map on a fresh DB', () => {
+      const repo = seed();
+      expect(repo.get('app_env')).toEqual({});
+    });
+
+    it('set then get preserves insertion order of 3 keys', () => {
+      const repo = seed();
+      repo.set('app_env', { B: '2', A: '1', C: '3' });
+      expect(Object.keys(repo.get('app_env'))).toEqual(['B', 'A', 'C']);
+      expect(repo.get('app_env')).toEqual({ B: '2', A: '1', C: '3' });
+    });
   });
 });

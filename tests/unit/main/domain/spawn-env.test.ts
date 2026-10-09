@@ -9,6 +9,7 @@ function input(env: ProjectConfig['env'], overrides: Partial<SpawnEnvInput> = {}
     templateEnv: {},
     inherited: {},
     homeDir: '/home/u',
+    appEnv: {},
     ...overrides,
   };
 }
@@ -215,5 +216,138 @@ describe('resolveSpawnEnv — composition with the Claude launch decorator', () 
     const { env } = resolveSpawnEnv(input({ METAIDE_HOOK_TOKEN: 'evil' }));
     const out = decorate(1, 1, { argv: ['zsh', '-l'], env, cwd: '/r/api', variant: 'first' });
     expect(out.env).toEqual({});
+  });
+});
+
+describe('resolveSpawnEnv — app env precedence (AC10, AC11)', () => {
+  it('app < template < project', () => {
+    const r = resolveSpawnEnv(
+      input({ X: 'proj' }, { templateEnv: { X: 'tpl' }, appEnv: { X: 'app' } }),
+    );
+    expect(r.env.X).toBe('proj');
+  });
+
+  it('template wins over app when there is no project value', () => {
+    const r = resolveSpawnEnv(input({}, { templateEnv: { X: 'tpl' }, appEnv: { X: 'app' } }));
+    expect(r.env.X).toBe('tpl');
+  });
+
+  it('app value appears in the overlay with no project or template value', () => {
+    const r = resolveSpawnEnv(input({}, { appEnv: { X: 'app' } }));
+    expect(r.env).toEqual({ X: 'app' });
+  });
+
+  it('app value wins over the same name in the inherited environment', () => {
+    const r = resolveSpawnEnv(
+      input({}, { appEnv: { X: 'app' }, inherited: { X: 'inherited' } }),
+    );
+    expect(r.env.X).toBe('app');
+    expect(r.lookup.X).toBe('app');
+  });
+
+  it('a project value of the empty string overrides a non-empty app value', () => {
+    const r = resolveSpawnEnv(input({ X: '' }, { appEnv: { X: 'app' } }));
+    expect(r.env.X).toBe('');
+    expect(Object.keys(r.env)).toContain('X');
+  });
+});
+
+describe('resolveSpawnEnv — app value interpolation (AC12)', () => {
+  it('resolves ${HOME}, ${PROJECT_PATH} and ${PROJECT_NAME}', () => {
+    const r = resolveSpawnEnv(
+      input({}, { appEnv: { X: '${HOME}|${PROJECT_PATH}|${PROJECT_NAME}' } }),
+    );
+    expect(r.env.X).toBe('/home/u|/r/api|api');
+  });
+
+  it('${env.NAME} reads the inherited environment only', () => {
+    const r = resolveSpawnEnv(
+      input({}, { appEnv: { X: '[${env.BASE}]' }, inherited: { BASE: 'inh' } }),
+    );
+    expect(r.env.X).toBe('[inh]');
+  });
+
+  it('an app value cannot reference another app value', () => {
+    const r = resolveSpawnEnv(
+      input({}, { appEnv: { BASE: 'app-base', X: '[${env.BASE}]' } }),
+    );
+    expect(r.env.X).toBe('[]');
+  });
+
+  it('${env.NAME} does not read the template env', () => {
+    const r = resolveSpawnEnv(
+      input({}, { appEnv: { X: '[${env.T}]' }, templateEnv: { T: 'tpl' } }),
+    );
+    expect(r.env.X).toBe('[]');
+  });
+
+  it('an unset name resolves to the empty string', () => {
+    const r = resolveSpawnEnv(input({}, { appEnv: { X: '[${env.NOPE}]' } }));
+    expect(r.env.X).toBe('[]');
+  });
+});
+
+describe('resolveSpawnEnv — project values read interpolated app values (AC13)', () => {
+  it('a project value reads an app value via ${env.NAME}', () => {
+    const r = resolveSpawnEnv(
+      input({ P: '${env.BASE}/x' }, { appEnv: { BASE: '/opt' } }),
+    );
+    expect(r.env.P).toBe('/opt/x');
+  });
+
+  it('PATH chain: app extends inherited, project extends the result on both sides', () => {
+    const r = resolveSpawnEnv(
+      input(
+        { PATH: '/b:${env.PATH}' },
+        { appEnv: { PATH: '${env.PATH}:/a' }, inherited: { PATH: '/inh' } },
+      ),
+    );
+    expect(r.env.PATH).toBe('/b:/inh:/a');
+  });
+});
+
+describe('resolveSpawnEnv — argv lookup precedence (AC14)', () => {
+  it('lookup carries project over template over app for the same name', () => {
+    const r = resolveSpawnEnv(
+      input(
+        { X: 'proj' },
+        { templateEnv: { X: 'tpl' }, appEnv: { X: 'app' }, inherited: { X: 'inh' } },
+      ),
+    );
+    expect(r.lookup.X).toBe('proj');
+  });
+
+  it('lookup falls back to template then app when the project sets nothing', () => {
+    const r = resolveSpawnEnv(input({}, { templateEnv: { X: 'tpl' }, appEnv: { X: 'app' } }));
+    expect(r.lookup.X).toBe('tpl');
+    const r2 = resolveSpawnEnv(input({}, { appEnv: { X: 'app' } }));
+    expect(r2.lookup.X).toBe('app');
+  });
+});
+
+describe('resolveSpawnEnv — invalid stored app entries are dropped (AC15)', () => {
+  it.each([
+    ['reserved', 'METAIDE_HOOK_TOKEN'],
+    ['reserved lower-case', 'metaide_x'],
+    ['reserved __proto__', '__proto__'],
+    ['invalid', 'MY-VAR'],
+  ])('drops a %s app name', (_label, name) => {
+    const r = resolveSpawnEnv(input({}, { appEnv: { [name]: 'v', OK: 'app-ok' } }));
+    expect(r.env).toEqual({ OK: 'app-ok' });
+    expect(r.lookup).not.toHaveProperty(name);
+  });
+
+  it('drops a non-string or NUL-carrying app value, never stopping the spawn', () => {
+    const appEnv = { NUM: 1, NUL: 'a\0b', OK: 'app-ok' } as unknown as Record<string, string>;
+    const r = resolveSpawnEnv(input({}, { appEnv }));
+    expect(r.env).toEqual({ OK: 'app-ok' });
+  });
+});
+
+describe('resolveSpawnEnv — does not mutate appEnv', () => {
+  it('leaves the caller-supplied appEnv object untouched', () => {
+    const appEnv = { X: 'app' };
+    resolveSpawnEnv(input({ X: 'proj' }, { appEnv }));
+    expect(appEnv).toEqual({ X: 'app' });
   });
 });

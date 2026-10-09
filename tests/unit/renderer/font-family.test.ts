@@ -31,7 +31,7 @@ describe('font-family serialization', () => {
 
   it('places one selected literal family ahead of the exact UI fallback', () => {
     expect(buildFontFamilyStack('Acme, "UI"; font', UI_FONT_FALLBACK)).toBe(
-      '"Acme, \\"UI\\"; font", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif',
+      '"Acme, \\"UI\\"; font", system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif',
     );
   });
 

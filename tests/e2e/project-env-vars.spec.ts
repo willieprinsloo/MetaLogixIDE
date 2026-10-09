@@ -470,19 +470,23 @@ test('keyboard: Env tab reachable from Files, tab order through rows, Enter neit
   expect(labels).toHaveLength(4);
   expect(labels.every((l) => l.length > 0)).toBe(true);
 
-  // Tab order from row 1's name: name, value, remove per row, then Add, Discard, Save.
+  // Tab order from row 1's name: name, value, reveal, copy, remove per row, then Add, Discard, Save.
   await panel.getByLabel(ENV_COPY.nameLabel(1), { exact: true }).focus();
   const seen: string[] = [await activeId(win)];
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 12; i++) {
     await win.keyboard.press('Tab');
     seen.push(await activeId(win));
   }
   expect(seen).toEqual([
     `${ENV_TESTIDS.name}|${ENV_COPY.nameLabel(1)}`,
     `${ENV_TESTIDS.value}|${ENV_COPY.valueLabel(1)}`,
+    `${ENV_TESTIDS.reveal}|${ENV_COPY.revealLabel(1)}`,
+    `${ENV_TESTIDS.copy}|${ENV_COPY.copyLabel(1)}`,
     `${ENV_TESTIDS.remove}|${ENV_COPY.removeLabel(1)}`,
     `${ENV_TESTIDS.name}|${ENV_COPY.nameLabel(2)}`,
     `${ENV_TESTIDS.value}|${ENV_COPY.valueLabel(2)}`,
+    `${ENV_TESTIDS.reveal}|${ENV_COPY.revealLabel(2)}`,
+    `${ENV_TESTIDS.copy}|${ENV_COPY.copyLabel(2)}`,
     `${ENV_TESTIDS.remove}|${ENV_COPY.removeLabel(2)}`,
     `${ENV_TESTIDS.add}|`,
     `${ENV_TESTIDS.discard}|`,

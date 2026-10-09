@@ -11,6 +11,7 @@ import { FilesTab } from './components/FilesTab';
 import { ChatTab } from './components/ChatTab';
 import { GitPanel } from './components/GitPanel';
 import { Settings } from './components/Settings';
+import type { SettingsSection } from './components/settings/nav-icons';
 import { ResizeHandle } from './components/ResizeHandle';
 import { FileFinder } from './components/FileFinder';
 import { NewProjectDialog } from './components/NewProjectDialog';
@@ -256,6 +257,7 @@ function MainApp() {
   // resize the projects list back to a tiny column when the user flips modes.
   const [chatPanelWidth, setChatPanelWidth] = usePersistedNumber('metaide.chatPanelWidth', 400, 300, 640);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
   const [finderOpen, setFinderOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [openInFiles, setOpenInFiles] = useState<{ relPath: string; line: number | null } | null>(null);
@@ -597,6 +599,10 @@ function MainApp() {
             projectId={project.id}
             projectName={project.name}
             drafts={envDrafts}
+            onOpenAppEnv={() => {
+              setSettingsSection('env');
+              setSettingsOpen(true);
+            }}
           />
         );
     }
@@ -979,7 +985,13 @@ function MainApp() {
 
       <StatusBar project={selected} aliveCount={aliveCount} />
       <ProjectSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} onPick={pick} />
-      <Settings open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <Settings
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        section={settingsSection}
+        onSection={setSettingsSection}
+        envDrafts={envDrafts}
+      />
       <FileFinder
         open={finderOpen && selected != null}
         projectId={selected?.id ?? null}

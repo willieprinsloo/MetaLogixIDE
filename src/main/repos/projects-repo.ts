@@ -47,6 +47,16 @@ export class ProjectsRepo {
     return (this.db.prepare('SELECT * FROM projects WHERE hidden = 0 ORDER BY pinned DESC, last_opened_at DESC, name').all() as Row[]).map(toProject);
   }
 
+  /** Every project under a root, hidden ones included. */
+  listByRoot(rootId: number): Project[] {
+    return (this.db.prepare('SELECT * FROM projects WHERE root_id = ?').all(rootId) as Row[]).map(toProject);
+  }
+
+  /** Deletes the row; the schema cascades to its shells, recents and prompts. */
+  remove(id: number): void {
+    this.db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+  }
+
   setPinned(id: number, pinned: boolean): void {
     this.db.prepare('UPDATE projects SET pinned = ? WHERE id = ?').run(pinned ? 1 : 0, id);
   }

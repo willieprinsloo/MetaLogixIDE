@@ -15,29 +15,20 @@ import {
   type FontSettingKey,
 } from '../../src/shared/font-settings';
 import { FONT_COPY, FONT_TEST_IDS, UI_FONT_CSS_PROPERTY } from '../../src/renderer/fonts/font-contract';
+import {
+  terminalProbes,
+  installResizeRecorder,
+  resizeCalls,
+  latestCallsByShell,
+} from './helpers/terminal-probe';
 
 const PROJECT = 'fonts-e2e';
 const E2E_TIMEOUT = 10_000;
 
 type Api = { invoke: (channel: string, request: unknown) => Promise<unknown> };
-type ResizeCall = { projectId: number; shellIndex: number; cols: number; rows: number };
 type InvokeHandler = (event: unknown, request: unknown) => unknown;
 type IpcMainWithHandlers = { _invokeHandlers?: Map<string, InvokeHandler> };
 type RendererWindow = Window & { api: Api };
-type ResizeGlobals = typeof globalThis & { __fontResizeCalls: ResizeCall[] };
-type TermProbe = {
-  key: 'left' | 'right' | 'single';
-  token: number;
-  fontFamily: string;
-  fontSize: number;
-  cols: number;
-  rows: number;
-  bufferLength: number;
-  selection: string;
-  textareaValue: string;
-  unicodeVersion: string;
-  screen: string;
-};
 
 interface Harness {
   app: ElectronApplication;
@@ -202,88 +193,6 @@ function fontOptions(win: Page, key: FontSettingKey): Locator {
   return win.getByRole('listbox', { name: `${label} options`, exact: true });
 }
 
-/** Finds xterm Terminal refs through the same React-fiber hook precedent as claude-tab-remount.spec.ts. */
-async function terminalProbes(win: Page): Promise<TermProbe[]> {
-  return win.evaluate(() => {
-    type Line = { translateToString: (trim: boolean) => string };
-    type Buffer = {
-      baseY: number;
-      viewportY: number;
-      length: number;
-      getLine: (row: number) => Line | undefined;
-    };
-    type Term = {
-      cols: number;
-      rows: number;
-      options: { fontFamily?: string; fontSize?: number };
-      buffer: { active: Buffer };
-      textarea?: HTMLTextAreaElement;
-      unicode: { activeVersion: string };
-      getSelection: () => string;
-    };
-    type Hook = { memoizedState: unknown; next: Hook | null };
-    type Fiber = { tag: number; memoizedState: unknown; return: Fiber | null };
-    type ProbeGlobals = { __fontTermIds?: WeakMap<object, number>; __fontNextTermId?: number };
-    const globals = window as unknown as Window & ProbeGlobals;
-    globals.__fontTermIds ??= new WeakMap<object, number>();
-    globals.__fontNextTermId ??= 1;
-    const isTerm = (value: unknown): value is Term => {
-      if (!value || typeof value !== 'object') return false;
-      const candidate = value as Partial<Term>;
-      return !!candidate.buffer?.active && typeof candidate.cols === 'number' && typeof candidate.getSelection === 'function';
-    };
-    const findTerm = (node: HTMLElement): Term | null => {
-      let element: HTMLElement | null = node;
-      let fiber: Fiber | null = null;
-      while (element && !fiber) {
-        const key = Object.keys(element).find((name) => name.startsWith('__reactFiber$'));
-        if (key) fiber = (element as unknown as Record<string, Fiber>)[key] ?? null;
-        element = element.parentElement;
-      }
-      for (let current = fiber; current; current = current.return) {
-        if (current.tag !== 0) continue;
-        for (let hook = current.memoizedState as Hook | null; hook; hook = hook.next) {
-          const ref = hook.memoizedState as { current?: unknown } | null;
-          if (ref && typeof ref === 'object' && 'current' in ref && isTerm(ref.current)) return ref.current;
-        }
-      }
-      return null;
-    };
-    return [...document.querySelectorAll<HTMLElement>('.xterm')]
-      .filter((node) => node.offsetParent !== null)
-      .map((node) => {
-        const term = findTerm(node);
-        if (!term) throw new Error('visible xterm has no discoverable Terminal ref');
-        const ids = globals.__fontTermIds;
-        if (!ids) throw new Error('terminal identity registry unavailable');
-        let token = ids.get(term);
-        if (token === undefined) {
-          token = globals.__fontNextTermId ?? 1;
-          globals.__fontNextTermId = token + 1;
-          ids.set(term, token);
-        }
-        const buffer = term.buffer.active;
-        const visible: string[] = [];
-        for (let row = 0; row < term.rows; row += 1) {
-          visible.push(buffer.getLine(buffer.viewportY + row)?.translateToString(true) ?? '');
-        }
-        return {
-          key: node.closest('[data-testid="split-right"]') ? 'right' : node.closest('.split-left') ? 'left' : 'single',
-          token,
-          fontFamily: term.options.fontFamily ?? '',
-          fontSize: term.options.fontSize ?? 0,
-          cols: term.cols,
-          rows: term.rows,
-          bufferLength: buffer.length,
-          selection: term.getSelection(),
-          textareaValue: term.textarea?.value ?? '',
-          unicodeVersion: term.unicode.activeVersion,
-          screen: visible.join('\n'),
-        } satisfies TermProbe;
-      });
-  });
-}
-
 async function selectEveryTerminal(win: Page): Promise<void> {
   await win.evaluate(() => {
     type Term = { buffer: object; selectAll: () => void };
@@ -314,28 +223,6 @@ async function selectEveryTerminal(win: Page): Promise<void> {
         }
       }
     }
-  });
-}
-
-async function installResizeRecorder(app: ElectronApplication): Promise<void> {
-  await app.evaluate(({ ipcMain }) => {
-    const ipcMainWithHandlers = ipcMain as unknown as IpcMainWithHandlers;
-    const original = ipcMainWithHandlers._invokeHandlers?.get('shells:resize');
-    if (!original) throw new Error('shells:resize handler unavailable');
-    const globals = globalThis as ResizeGlobals;
-    globals.__fontResizeCalls = [];
-    ipcMain.removeHandler('shells:resize');
-    ipcMain.handle('shells:resize', (event, request: ResizeCall) => {
-      globals.__fontResizeCalls.push({ ...request });
-      return original(event, request);
-    });
-  });
-}
-
-async function resizeCalls(app: ElectronApplication): Promise<ResizeCall[]> {
-  return app.evaluate(() => {
-    const globals = globalThis as ResizeGlobals;
-    return [...globals.__fontResizeCalls];
   });
 }
 
@@ -416,12 +303,6 @@ async function exerciseCopySanitizer(win: Page): Promise<{ selected: string; cop
     node.dispatchEvent(new ClipboardEvent('copy', { bubbles: true, cancelable: true, clipboardData: transfer }));
     return { selected, copied: transfer.getData('text/plain') };
   });
-}
-
-function latestCallsByShell(calls: ResizeCall[]): Map<number, ResizeCall> {
-  const latest = new Map<number, ResizeCall>();
-  for (const call of calls) latest.set(call.shellIndex, call);
-  return latest;
 }
 
 type SetFontGlobals = typeof globalThis & { __fontSetCalls: string[] };
