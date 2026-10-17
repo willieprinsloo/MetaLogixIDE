@@ -139,8 +139,8 @@ export function GitPanel({ projectId }: { projectId: number | null }) {
       <div className="px-3 py-2 border-b border-[--border] flex items-center gap-2 shrink-0">
         <BranchIcon />
         <span className="text-sm font-medium truncate flex-1" title={status.branch ?? ''}>{status.branch ?? 'detached'}</span>
-        {status.ahead  > 0 && <span className="text-[10px] font-mono text-emerald-400 px-1 rounded bg-emerald-400/10">↑{status.ahead}</span>}
-        {status.behind > 0 && <span className="text-[10px] font-mono text-rose-400 px-1 rounded bg-rose-400/10">↓{status.behind}</span>}
+        {status.ahead  > 0 && <span className="text-[10px] font-mono text-[color:var(--git-added,#34d399)] px-1 rounded bg-[color:var(--git-ahead-chip,rgb(52_211_153/0.1))]">↑{status.ahead}</span>}
+        {status.behind > 0 && <span className="text-[10px] font-mono text-[color:var(--git-deleted,#fb7185)] px-1 rounded bg-[color:var(--git-behind-chip,rgb(251_113_133/0.1))]">↓{status.behind}</span>}
         <button
           onClick={refresh}
           className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel-strong]"
@@ -223,7 +223,7 @@ function Section({ title, count, onBulk, bulkLabel, children }: {
         <span className="text-[10px] uppercase tracking-wider font-semibold text-[--text-muted] flex-1">{title} <span className="opacity-60">({count})</span></span>
         <button
           onClick={onBulk}
-          className="text-[10px] text-[color:var(--accent)] hover:brightness-110"
+          className="text-[10px] text-[color:var(--accent-label,var(--accent))] hover:brightness-110"
         >
           {bulkLabel}
         </button>
@@ -302,9 +302,9 @@ function DiffView({ text }: { text: string }) {
         let cls = 'text-[--text-muted]';
         // Skip the file headers ("diff --git", "index …", "---", "+++") from
         // dominating the coloured output.
-        if (l.startsWith('@@')) cls = 'text-sky-400';
-        else if (l.startsWith('+') && !l.startsWith('+++')) cls = 'text-emerald-400 bg-emerald-500/5';
-        else if (l.startsWith('-') && !l.startsWith('---')) cls = 'text-rose-400 bg-rose-500/5';
+        if (l.startsWith('@@')) cls = 'text-[color:var(--git-untracked,#38bdf8)]';
+        else if (l.startsWith('+') && !l.startsWith('+++')) cls = 'text-[color:var(--git-added,#34d399)] bg-emerald-500/5';
+        else if (l.startsWith('-') && !l.startsWith('---')) cls = 'text-[color:var(--git-deleted,#fb7185)] bg-rose-500/5';
         else if (l.startsWith('diff --git') || l.startsWith('index ') || l.startsWith('+++') || l.startsWith('---')) cls = 'text-[--text-muted] opacity-60';
         return <div key={i} className={`px-2 ${cls}`}>{l || ' '}</div>;
       })}

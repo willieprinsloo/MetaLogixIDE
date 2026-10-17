@@ -13,6 +13,7 @@ import { isSaveShortcut } from '@renderer/app-keys';
 import { SHORTCUT_COPY } from '@renderer/shortcut-copy';
 import { useShortcutPlatform } from '@renderer/shortcut-platform';
 import type { GitFileStatus } from '@shared/ipc-contract';
+import { APP_FILE_DRAG_TYPE } from '@shared/terminal-drop-contract';
 
 interface Entry { name: string; isDir: boolean; relPath: string; }
 interface OpenFile {
@@ -485,8 +486,9 @@ function FileTreePane({
                 draggable={!e.isDir}
                 onDragStart={(ev) => {
                   // Two behaviours in one gesture:
-                  //   1. Set text/plain so the local shell drop handler still
-                  //      pastes the path (that's the intra-app use case).
+                  //   1. Set APP_FILE_DRAG_TYPE so a terminal drop resolves the
+                  //      absolute path in this project; text/plain stays for
+                  //      every other drop target.
                   //   2. Ask main to start a native OS drag session so the
                   //      user can drop the file into Finder, VS Code, Mail,
                   //      etc. preventDefault is intentionally NOT called —
@@ -495,6 +497,7 @@ function FileTreePane({
                   //      apps. See main/ipc/register.ts 'files:start-drag'.
                   ev.dataTransfer.effectAllowed = 'copy';
                   ev.dataTransfer.setData('text/plain', e.relPath);
+                  ev.dataTransfer.setData(APP_FILE_DRAG_TYPE, JSON.stringify({ projectId, relPath: e.relPath }));
                   void api.invoke('files:start-drag', { projectId, paths: [e.relPath] })
                     .catch(() => { /* fine — HTML5 drag still works for the shell */ });
                 }}

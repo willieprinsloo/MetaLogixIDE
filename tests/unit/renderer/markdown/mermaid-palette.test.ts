@@ -21,6 +21,7 @@ import {
 import {
   CONTRAST_GRAPHIC,
   CONTRAST_TEXT,
+  MAC_PREVIEW_SURFACE,
   MIN_CATEGORY_DELTA_E,
   PaletteTokenError,
   THEME_TOKEN_NAMES,
@@ -29,6 +30,8 @@ import {
 } from '@renderer/markdown/mermaid/paletteContract';
 import { readThemeTokens } from '@renderer/markdown/mermaid/themeTokens';
 import { deltaE2000 } from '../../../support/deltaE2000';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { stylesheetBlock, stylesheetTokens, type TokenBlock } from './support/styleTokens';
 
 const HEX6 = /^#[0-9a-f]{6}$/;
@@ -396,6 +399,49 @@ describe.each(THEMES)('mermaidThemeVariables (%s tokens, %s theme)', (block, the
 
   it('is deterministic', () => {
     expect(mermaidThemeVariables(tokens, theme)).toEqual(mermaidThemeVariables(tokens, theme));
+  });
+});
+
+const FROSTED_CSS = readFileSync(resolve(__dirname, '../../../../src/renderer/frosted-chrome.css'), 'utf8');
+const MAC_BLOCKS: Record<TokenBlock, RegExp> = {
+  dark: /:root\[data-platform="mac"\],\s*:root\[data-platform="mac"\]\[data-theme="dark"\]\s*\{([^}]*)\}/,
+  light: /:root\[data-platform="mac"\]\[data-theme="light"\]\s*\{([^}]*)\}/,
+  systemLight: /@media\s*\(prefers-color-scheme:\s*light\)\s*\{\s*:root\[data-platform="mac"\]:not\(\[data-theme\]\)\s*\{([^}]*)\}/,
+};
+
+function macPreviewSurface(block: TokenBlock): Rgb {
+  const body = MAC_BLOCKS[block].exec(FROSTED_CSS)?.[1] ?? '';
+  const value = new RegExp(`${MAC_PREVIEW_SURFACE}:\\s*([^;]+);`).exec(body)?.[1];
+  const parsed = value === undefined ? null : parseColour(value);
+  if (!parsed) throw new Error(`frosted-chrome.css ${block} block has no colour for ${MAC_PREVIEW_SURFACE}`);
+  expect(parsed.a, `${block} ${MAC_PREVIEW_SURFACE} is opaque`).toBe(1);
+  return parsed;
+}
+
+const LEVELS_CSS = readFileSync(resolve(__dirname, '../../../../src/renderer/frosted-glass-levels.css'), 'utf8');
+
+describe('macOS preview surface at every frosted-glass level (glass-settings AC29)', () => {
+  it('no Medium or Strong level redeclares the preview surface, so markdown keeps the opaque mac sheet', () => {
+    expect(LEVELS_CSS).toMatch(/\[data-chrome-frost="(medium|strong)"\]/);
+    expect(LEVELS_CSS).not.toMatch(new RegExp(`${MAC_PREVIEW_SURFACE}\\s*:`));
+  });
+});
+
+describe.each(THEMES)('macOS preview surface (%s tokens, %s theme, AC29)', (block, theme) => {
+  const tokens = stylesheetTokens(block);
+  let vars: Record<string, string> = {};
+  let surface: Rgb = { r: 0, g: 0, b: 0 };
+  beforeAll(() => {
+    vars = palette(tokens, theme);
+    surface = macPreviewSurface(block);
+  });
+
+  it.each(TEXT_ON_BACKGROUND)('%s reaches 4.5:1 on the opaque mac sheet', (fg) => {
+    expect(contrastRatio(rgb(role(vars, fg)), surface)).toBeGreaterThanOrEqual(CONTRAST_TEXT);
+  });
+
+  it.each(GRAPHICS)('%s reaches 3:1 on the opaque mac sheet', (name) => {
+    expect(contrastRatio(rgb(role(vars, name)), surface)).toBeGreaterThanOrEqual(CONTRAST_GRAPHIC);
   });
 });
 

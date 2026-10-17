@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { chmodSync, writeFileSync } from 'node:fs';
 import { buildServices } from '@main/services';
 import { mkdtempSync } from 'node:fs';
@@ -57,7 +57,7 @@ describe('buildServices — METAIDE_CLAUDE_PERMISSION_MODE env hook (AC21)', () 
   });
 });
 
-describe('buildServices — Claude hook wiring', () => {
+describe('buildServices — Claude hook and OMP receiver startup', () => {
   it('constructs the hook services without opening a socket or writing the settings file', async () => {
     const home = mkdtempSync(join(tmpdir(), 'svc-home-'));
     const services = buildServices({ ...tempOpts(), homeDir: home });
@@ -66,6 +66,7 @@ describe('buildServices — Claude hook wiring', () => {
     expect(services.hookReceiver.boundAddress()).toBeNull();
     expect(services.hookRuntime.settingsPath()).toBeNull();
     expect(services.viewedShells).toBeDefined();
+    expect(services.ompReceiver.boundPort()).toBeNull();
     expect(services.homeDir).toBe(home);
   });
 
@@ -96,45 +97,6 @@ describe('buildServices — Claude hook wiring', () => {
     }
   });
 });
-
-describe('buildServices — Claude state tracker', () => {
-  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
-
-  it('builds claudeState with nothing listed', () => {
-    const services = buildServices(tempOpts());
-    expect(services.claudeState).toBeDefined();
-    expect(services.claudeState.list()).toEqual([]);
-  });
-
-  it('claudeState authenticates hooks against the hook sessions', () => {
-    const services = buildServices(tempOpts());
-    const shell = { projectId: 3, shellIndex: 0 };
-    const hook = (sessionId: string) => ({ sessionId, shell, event: { hookEventName: 'UserPromptSubmit', notificationType: null, message: null, backgroundTaskCount: 0 } });
-    services.claudeState.handle(hook('not-issued'));
-    expect(services.claudeState.stateOf(shell)).toBe('idle');
-    services.claudeState.handle(hook(services.hookSessions.issue(shell).id));
-    expect(services.claudeState.list()).toEqual([{ projectId: 3, shellIndex: 0, state: 'busy' }]);
-  });
-
-  it("claudeState's stale-busy guard reads the PTY's last output time and the wall clock", () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    const services = buildServices(tempOpts());
-    const shell = { projectId: 3, shellIndex: 0 };
-    const live = vi.spyOn(services.ptyManager, 'liveShells');
-    services.claudeState.handle({ sessionId: services.hookSessions.issue(shell).id, shell, event: { hookEventName: 'UserPromptSubmit', notificationType: null, message: null, backgroundTaskCount: 0 } });
-    vi.setSystemTime(Date.now() + 20_000);
-    live.mockReturnValue([
-      { projectId: 3, shellIndex: 1, pid: 2, startedAt: 0, lastDataAt: 0 },
-      { projectId: 3, shellIndex: 0, pid: 1, startedAt: 0, lastDataAt: Date.now() - 1000 },
-    ]);
-    services.claudeState.tick();
-    expect(services.claudeState.stateOf(shell)).toBe('busy');
-    live.mockReturnValue([{ projectId: 3, shellIndex: 1, pid: 2, startedAt: 0, lastDataAt: Date.now() }]);
-    services.claudeState.tick();
-    expect(services.claudeState.stateOf(shell)).toBe('idle');
-  });
-});
-
 describe('buildServices — shell runtime restart', () => {
   it('discards previous-runtime shells without losing projects or the configured cap', () => {
     const opts = tempOpts();

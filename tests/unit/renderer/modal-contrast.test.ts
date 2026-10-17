@@ -7,6 +7,11 @@
  * and the D1T parameters (lift, alpha, scrim darken factor) are parsed straight out of
  * `styles.css`, using the composite model in `helpers/modal-composite.ts` (the same model the
  * design record's contrast table was built from), so a regression in either file fails this test.
+ * AC30 (macos-frosted-chrome): on macOS a modal composites over the translucent chrome (`--chrome-solid`
+ * at `--chrome-glass-alpha` over a grey sweep of the black-to-white material envelope), the opaque
+ * `--sheet-solid`, or the frosted Shell sheet and split card, read from `frosted-chrome.css` (Subtle) and
+ * `frosted-glass-levels.css` (Medium, Strong) at every chrome level and terminal level (glass-settings
+ * AC12, AC17); the same floors hold there with unchanged `--modal-*`.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -254,6 +259,104 @@ describe.each(CASES)('$label AC23 contrast', (c) => {
   it(`${label}: a raised surface inside a modal is lighter than the panel alone over the theme base (R14, the settings-board oracle)`, () => {
     const panel = over({ c: panelBase(theme, params).c, a: params.panelAlpha }, solid(theme.dark ? '#000000' : '#ffffff'));
     expect(luminance(raisedInModal(theme, params))).toBeGreaterThan(luminance(panel));
+  });
+});
+
+const frostedCss = readFileSync(resolve(__dirname, '../../../src/renderer/frosted-chrome.css'), 'utf8');
+const MAC_BLOCKS: Record<string, { dark: string; light: string }> = {
+  default: {
+    dark: extractBlock(frostedCss, /:root\[data-platform="mac"\],\s*:root\[data-platform="mac"\]\[data-theme="dark"\]\s*\{/),
+    light: extractBlock(frostedCss, /:root\[data-platform="mac"\]\[data-theme="light"\]\s*\{/),
+  },
+  catppuccin: {
+    dark: extractBlock(frostedCss, /:root\[data-platform="mac"\]\[data-palette="catppuccin"\]\s*\{/),
+    light: extractBlock(frostedCss, /:root\[data-platform="mac"\]\[data-palette="catppuccin"\]\[data-theme="light"\]\s*\{/),
+  },
+  'rose-pine': {
+    dark: extractBlock(frostedCss, /:root\[data-platform="mac"\]\[data-palette="rose-pine"\]\s*\{/),
+    light: extractBlock(frostedCss, /:root\[data-platform="mac"\]\[data-palette="rose-pine"\]\[data-theme="light"\]\s*\{/),
+  },
+};
+
+const MATERIAL_SWEEP: readonly Colour[] = Array.from({ length: 18 }, (_, i) => rgba(i * 15, i * 15, i * 15));
+
+const levelsCss = readFileSync(resolve(__dirname, '../../../src/renderer/frosted-glass-levels.css'), 'utf8');
+const CHROME_LEVELS = ['subtle', 'medium', 'strong'] as const;
+type ChromeLevel = (typeof CHROME_LEVELS)[number];
+const escape = (s: string): string => s.replace(/[[\]().*+?^$|]/g, '\\$&');
+
+/** The level block for a palette block at Medium or Strong: its selector with `[data-chrome-frost]` added to each compound. */
+function levelBlock(c: Case, level: Exclude<ChromeLevel, 'subtle'>): string {
+  const cf = `[data-chrome-frost="${level}"]`;
+  const mac = ':root[data-platform="mac"]';
+  const pal = c.palette === 'default' ? '' : `[data-palette="${c.palette}"]`;
+  const selectors = c.dark
+    ? c.palette === 'default'
+      ? [`${mac}${cf}`, `${mac}[data-theme="dark"]${cf}`]
+      : [`${mac}${pal}${cf}`]
+    : [`${mac}${pal}[data-theme="light"]${cf}`];
+  return extractBlock(levelsCss, new RegExp(`${selectors.map(escape).join(',\\s*')}\\s*\\{`));
+}
+
+/** What sits under a modal on macOS at every level: the chrome, the Shell sheet and split card at each terminal level over each grey material, and the opaque sheet. */
+function macUnders(c: Case): { readonly label: string; readonly under: Colour }[] {
+  const palette = MAC_BLOCKS[c.palette]![c.dark ? 'dark' : 'light'];
+  const chrome = parseColour(extractVar(palette, '--chrome-solid'));
+  const sheet = parseColour(extractVar(palette, '--sheet-solid'));
+  const pane = parseColour(extractVar(palette, '--pane-solid'));
+  return [
+    ...CHROME_LEVELS.flatMap((level) => {
+      const block = level === 'subtle' ? palette : levelBlock(c, level);
+      const alpha = (name: string): number => parseFloat(extractVar(block, name));
+      const terminals = [
+        ['subtle', '--terminal-glass-alpha', '--terminal-pane-alpha'],
+        ['medium', '--terminal-medium-glass-alpha', '--terminal-medium-pane-alpha'],
+        ['strong', '--terminal-strong-glass-alpha', '--terminal-strong-pane-alpha'],
+      ] as const;
+      return MATERIAL_SWEEP.flatMap((m, i) => {
+        const onChrome = over({ c: chrome.c, a: alpha('--chrome-glass-alpha') }, m);
+        return [
+          { label: `chrome ${level} over grey ${i * 15}`, under: onChrome },
+          ...terminals.flatMap(([tl, sheetAlpha, paneAlpha]) => {
+            const onSheet = over({ c: sheet.c, a: alpha(sheetAlpha) }, onChrome);
+            return [
+              { label: `Shell sheet ${level}/${tl} over grey ${i * 15}`, under: onSheet },
+              { label: `split card ${level}/${tl} over grey ${i * 15}`, under: over({ c: pane.c, a: alpha(paneAlpha) }, onSheet) },
+            ];
+          }),
+        ];
+      });
+    }),
+    { label: 'sheet', under: sheet },
+  ];
+}
+
+describe.each(CASES)('$label AC30 contrast on the macOS stack at every frosted-glass level', (c) => {
+  const theme = themeFor(c);
+  const params = MODAL_PARAMS[c.dark ? 'dark' : 'light'];
+  const text = textFor(c);
+  const muted = modalTextMuted(c);
+  const unders = macUnders(c);
+
+  it('models every chrome level and terminal level', () => {
+    expect(unders).toHaveLength(CHROME_LEVELS.length * MATERIAL_SWEEP.length * 7 + 1);
+  });
+
+  it(`text, muted text and the highlighted row clear ${GATE}:1 over every mac backdrop`, () => {
+    for (const { label, under } of unders) {
+      const surface = modalSurface(theme, params, under);
+      expect(ratio(text, surface), `text, ${label}`).toBeGreaterThanOrEqual(GATE);
+      expect(ratio(muted, surface), `muted, ${label}`).toBeGreaterThanOrEqual(GATE);
+      expect(ratio(text, highlighted(c, surface)), `highlighted row, ${label}`).toBeGreaterThanOrEqual(GATE);
+    }
+  });
+
+  it(`reduced transparency text and muted text clear ${GATE}:1 over every mac backdrop`, () => {
+    for (const { label, under } of unders) {
+      const surface = reducedSurface(theme, params, under);
+      expect(ratio(text, surface), `text, ${label}`).toBeGreaterThanOrEqual(GATE);
+      expect(ratio(muted, surface), `muted, ${label}`).toBeGreaterThanOrEqual(GATE);
+    }
   });
 });
 

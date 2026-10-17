@@ -9,11 +9,11 @@
  */
 
 import { expect, _electron as electron, type Page, type ElectronApplication } from '@playwright/test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { SIDEBAR_TESTIDS } from '../../../src/renderer/sidebar-copy';
 import { PALETTE_TESTIDS } from '../../../src/renderer/command-palette-contract';
+import { guardedLaunch } from './claude-harness';
 
 type Api = { invoke: (c: string, r: unknown) => Promise<never> };
 
@@ -21,6 +21,8 @@ export interface Launched {
   app: ElectronApplication;
   win: Page;
   demoRoot: string;
+  /** The `--user-data-dir` the app was launched with (`app.getPath('userData')`). */
+  userData: string;
   cleanup: () => void;
 }
 
@@ -46,42 +48,45 @@ export async function launch(
   opts: { unsetEnv?: readonly string[] } = {},
 ): Promise<Launched> {
   const mockClaude = resolve(process.cwd(), 'scripts/mock-claude.mjs');
-  const isolatedHome = mkdtempSync(join(tmpdir(), 'metaide-switch-home-'));
-  const demoRoot = mkdtempSync(join(tmpdir(), 'metaide-switch-root-'));
-  for (const name of projectNames) {
-    const proj = join(demoRoot, name);
-    mkdirSync(proj);
-    mkdirSync(join(proj, '.git'));
-    writeFileSync(join(proj, 'notes.txt'), 'hello from notes\n');
-  }
-  const base: Record<string, string | undefined> = {
-    ...process.env,
-    HOME: isolatedHome,
-    SHELL: '/bin/sh',
-    METAIDE_TEST_MODE: '1',
-    METAIDE_CLAUDE_PERMISSION_MODE: 'bypass',
-    METAIDE_DEFAULT_LAUNCH_FIRST:      JSON.stringify({ argv: ['node', mockClaude],               env: {} }),
-    METAIDE_DEFAULT_LAUNCH_SUBSEQUENT: JSON.stringify({ argv: ['node', mockClaude, '--continue'], env: {} }),
-  };
-  const unset = new Set(opts.unsetEnv ?? []);
-  const env = Object.fromEntries(Object.entries(base).filter(([k, v]) => v !== undefined && !unset.has(k))) as Record<string, string>;
-  const app = await electron.launch({
-    args: ['.', `--user-data-dir=${join(isolatedHome, 'userData')}`],
-    env,
+  return guardedLaunch(async (scope) => {
+    const isolatedHome = scope.tempDir('metaide-switch-home-');
+    const demoRoot = scope.tempDir('metaide-switch-root-');
+    for (const name of projectNames) {
+      const proj = join(demoRoot, name);
+      mkdirSync(proj);
+      mkdirSync(join(proj, '.git'));
+      writeFileSync(join(proj, 'notes.txt'), 'hello from notes\n');
+    }
+    const base: Record<string, string | undefined> = {
+      ...process.env,
+      HOME: isolatedHome,
+      SHELL: '/bin/sh',
+      METAIDE_TEST_MODE: '1',
+      METAIDE_CLAUDE_PERMISSION_MODE: 'bypass',
+      METAIDE_DEFAULT_LAUNCH_FIRST:      JSON.stringify({ argv: ['node', mockClaude],               env: {} }),
+      METAIDE_DEFAULT_LAUNCH_SUBSEQUENT: JSON.stringify({ argv: ['node', mockClaude, '--continue'], env: {} }),
+    };
+    const unset = new Set(opts.unsetEnv ?? []);
+    const env = Object.fromEntries(Object.entries(base).filter(([k, v]) => v !== undefined && !unset.has(k))) as Record<string, string>;
+    const userData = join(isolatedHome, 'userData');
+    const app = scope.own(await electron.launch({
+      args: ['.', `--user-data-dir=${userData}`],
+      env,
+    }));
+    const win = await app.firstWindow();
+    await win.waitForLoadState('domcontentloaded');
+    await app.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0]!.setSize(1400, 900); });
+    await win.evaluate(async (path: string) => {
+      await (window as unknown as { api: Api }).api.invoke('roots:add', { path });
+    }, demoRoot);
+    return {
+      app, win, demoRoot, userData,
+      cleanup: () => {
+        rmSync(isolatedHome, { recursive: true, force: true });
+        rmSync(demoRoot, { recursive: true, force: true });
+      },
+    };
   });
-  const win = await app.firstWindow();
-  await win.waitForLoadState('domcontentloaded');
-  await app.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0]!.setSize(1400, 900); });
-  await win.evaluate(async (path: string) => {
-    await (window as unknown as { api: Api }).api.invoke('roots:add', { path });
-  }, demoRoot);
-  return {
-    app, win, demoRoot,
-    cleanup: () => {
-      rmSync(isolatedHome, { recursive: true, force: true });
-      rmSync(demoRoot, { recursive: true, force: true });
-    },
-  };
 }
 
 /** The sidebar filter's text input, whether the test id sits on the input or on its wrapping field. */

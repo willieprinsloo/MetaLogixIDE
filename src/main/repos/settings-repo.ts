@@ -24,6 +24,10 @@ export const DEFAULT_SETTINGS: SettingsMap = {
   'claude_permission_mode':        null,
   'notify_claude_needs_input':     true,
   'notify_claude_finished':        true,
+  'frost_chrome':                  true,
+  'chrome_frost_level':            'subtle',
+  'terminal_frost_level':          'off',
+  'vibrancy_material':             'sidebar',
   'app_env':                       {},
   // Seeded named CLIs the "+ new shell" menu shows out of the box. The bare
   // "Terminal" (login $SHELL) is offered by the menu itself as a separate
@@ -50,7 +54,28 @@ export const DEFAULT_SETTINGS: SettingsMap = {
 export class SettingsRepo {
   constructor(private readonly db: Database) {}
 
+  /**
+   * One-time migration (spec D4, AC2): on a build that has not yet seen `terminal_frost_level`,
+   * derives it from the legacy `frost_terminal` boolean (`true` → `'subtle'`, anything else —
+   * `false`, a missing row, or a non-boolean stored value — → `'off'`). The row's own presence
+   * is the run-once marker, so it must run before the defaults INSERT OR IGNORE below, and a
+   * value the user later sets is never overwritten. `frost_terminal` itself is only read here,
+   * never written (AC34, D19).
+   */
+  private migrateTerminalFrostLevel(): void {
+    const existing = this.db.prepare(`SELECT 1 FROM settings WHERE key = 'terminal_frost_level'`).get();
+    if (existing) return;
+    const legacyRow = this.db.prepare(`SELECT value FROM settings WHERE key = 'frost_terminal'`).get() as { value: string } | undefined;
+    let legacyEnabled = false;
+    if (legacyRow) {
+      try { legacyEnabled = JSON.parse(legacyRow.value) === true; } catch { legacyEnabled = false; }
+    }
+    const migrated: SettingsMap['terminal_frost_level'] = legacyEnabled ? 'subtle' : 'off';
+    this.db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('terminal_frost_level', JSON.stringify(migrated));
+  }
+
   seedDefaults(): void {
+    this.migrateTerminalFrostLevel();
     const ins = this.db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
     const override = process.env.METAIDE_DEFAULT_LAUNCH_FIRST;
     const overrideSub = process.env.METAIDE_DEFAULT_LAUNCH_SUBSEQUENT;

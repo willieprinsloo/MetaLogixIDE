@@ -8,11 +8,11 @@ import { SIDEBAR_WIDTH } from '../../src/renderer/sidebar-width';
 import { DIFF_TESTIDS } from '../../src/renderer/diff-tab-copy';
 import { ENV_TESTIDS } from '../../src/renderer/project-env-copy';
 import { PROJECT_SETTINGS_COPY, PROJECT_SETTINGS_TESTIDS } from '../../src/renderer/project-settings-contract';
-import { CLAUDE_DOT } from '../../src/shared/claude-state';
+import { AGENT_DOT } from '../../src/shared/agent-state';
 import { PALETTE_COPY } from '../../src/renderer/command-palette-contract';
 import type { EffectiveTheme } from '../../src/renderer/markdown/contract';
 import { commitAll, git, GIT_ENV, initRepo, porcelain } from './helpers/git-repo';
-import { badgeContrast, colourDistance, elementColour, fmtColour, resolveToken } from './helpers/chrome-colour';
+import { badgeContrast, colourDistance, elementColour, fmtColour, isMacPlatform, resolveToken } from './helpers/chrome-colour';
 
 /**
  * Shell chrome dimensions and the centred title
@@ -331,6 +331,7 @@ test('AC1/AC3/AC10–AC13/AC15/AC25–AC28: chrome dimensions, badges and branch
   await expect(taskBadge).toHaveText('3');
 
   const look = await currentLook(win);
+  const mac = await isMacPlatform(win);
   try {
     for (const palette of PALETTES) {
       for (const theme of THEMES) {
@@ -387,10 +388,17 @@ test('AC1/AC3/AC10–AC13/AC15/AC25–AC28: chrome dimensions, badges and branch
             .toBeGreaterThanOrEqual(4.5);
         }
 
-        // AC3
+        // AC3. The token is resolved beside the branch, so on macOS it reads the
+        // chrome's D16 lift (docs/specs/macos-frosted-chrome.md); off mac nothing
+        // overrides it and this equals the root value.
         const branchColour = await elementColour(win, titleBranch(), 'color');
-        const pink = await resolveToken(win, '--hue-pink');
+        const pink = await resolveToken(win, '--hue-pink', titleBranch().locator('xpath=..'));
         expect(colourDistance(branchColour, pink), `${at} branch ${fmtColour(branchColour)} is --hue-pink ${fmtColour(pink)}`).toBeLessThanOrEqual(1);
+        if (mac) {
+          // Positive control: on mac the chrome pink is lifted away from the root (working-area) pink.
+          const rootPink = await resolveToken(win, '--hue-pink');
+          expect(colourDistance(pink, rootPink), `${at} control: chrome --hue-pink ${fmtColour(pink)} is lifted from root ${fmtColour(rootPink)}`).toBeGreaterThan(1);
+        }
 
         // AC15 (fresh HOME, no stored width)
         expect((await box(win.locator('aside[data-view="projects"]'))).width, `${at} sidebar width`).toBe(SIDEBAR_WIDTH.default);
@@ -428,7 +436,16 @@ test('AC1/AC3/AC10–AC13/AC15/AC25–AC28: chrome dimensions, badges and branch
   }
 });
 
-test('AC24a: the projects, chat and git panels paint no section tint in any palette or theme', async () => {
+/**
+ * macOS frosted chrome (docs/specs/macos-frosted-chrome.md D10, AC10):
+ * on macOS the chat column sits directly on the chrome and deliberately
+ * gets its own solid surface, `background-color: var(--sheet-solid)`
+ * (frosted-chrome.css `[data-view="chat"]`) — a one-layer "tint" by design,
+ * not a regression of this AC. Off macOS (and with `data-platform` absent,
+ * i.e. Windows/Linux, AC25) nothing changes: the original "no tint at all"
+ * assertion still holds for every view, chat included.
+ */
+test('AC24a: the projects, chat and git panels paint no section tint in any palette or theme (off mac); on mac the chat column wears exactly its own solid --sheet-solid surface (D10)', async () => {
   await selectProject('chromed');
   /** Every non-transparent layer between the panel (incl. its ::before/::after) and the window's chrome surface. */
   const tints = (view: string) => win.evaluate((v) => {
@@ -462,6 +479,25 @@ test('AC24a: the projects, chat and git panels paint no section tint in any pale
   expect(await tints('projects'), 'positive control: an injected ::before tint is detected').toHaveLength(1);
   await win.evaluate(() => document.getElementById('e2e-tint-control')?.remove());
 
+  const mac = await isMacPlatform(win);
+  /**
+   * The chat panel's own `<tag>.<classPrefix> <resolved --sheet-solid>`
+   * entry, in the exact shape `tints()` emits for a painted element in its
+   * ancestor walk — computed fresh per palette/theme (the solid colour
+   * differs per combination; see frosted-chrome.css's per-palette blocks).
+   */
+  const expectedChatTint = (): Promise<string> =>
+    win.evaluate(() => {
+      const panel = document.querySelector('[data-view="chat"]');
+      if (!panel) throw new Error('no chat panel');
+      const probe = document.createElement('div');
+      probe.style.backgroundColor = 'var(--sheet-solid)';
+      document.body.appendChild(probe);
+      const colour = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return `${panel.tagName}.${(panel as HTMLElement).className.slice(0, 40)} ${colour}`;
+    });
+
   const look = await currentLook(win);
   try {
     for (const [view, open] of [['projects', null], ['chat', 'ab-chat'], ['git', 'ab-git']] as const) {
@@ -470,7 +506,17 @@ test('AC24a: the projects, chat and git panels paint no section tint in any pale
       for (const palette of PALETTES) {
         for (const theme of THEMES) {
           await setLook(win, palette, theme);
-          expect(await tints(view), `${palette}/${theme} ${view} panel tint layers`).toEqual([]);
+          const at = `${palette}/${theme} ${view}`;
+          if (mac && view === 'chat') {
+            // D10/AC10 (docs/specs/macos-frosted-chrome.md): on macOS the
+            // chat column gets its own solid surface, painted directly on
+            // the panel element itself (not a pseudo or ancestor tint) —
+            // exactly one layer, exactly --sheet-solid. Off mac, unchanged
+            // (the `else` branch below, which this view still hits there).
+            expect(await tints(view), `${at} panel tint layers (mac, D10)`).toEqual([await expectedChatTint()]);
+          } else {
+            expect(await tints(view), `${at} panel tint layers`).toEqual([]);
+          }
         }
       }
       if (open) await win.getByTestId(open).click();
@@ -494,7 +540,7 @@ test('AC9a/AC28: a popout shell window\'s title bar is 44px in every palette and
     await expect(drag.getByText('chromed', { exact: true })).toBeVisible({ timeout: 8000 });
     await expect(drag.getByText('Shell 0', { exact: true })).toBeVisible();
     await expect(drag.getByText('MetaLogix IDE', { exact: true })).toHaveCount(1);
-    await expect(drag.getByTestId(CLAUDE_DOT.testId)).toHaveCount(1);
+    await expect(drag.getByTestId(AGENT_DOT.testId)).toHaveCount(1);
     for (const palette of PALETTES) {
       for (const theme of THEMES) {
         await setLook(popout, palette, theme);

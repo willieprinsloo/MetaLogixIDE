@@ -3,7 +3,7 @@
  * palette component, App wiring, unit tests and e2e suite all agree on. Change a value here and
  * every consumer follows; never restate a string or test id in a consumer.
  */
-import type { ClaudeShellState } from '@shared/claude-state';
+import { AGGREGATE_STATE_LABEL } from '@shared/agent-state';
 import type { Project } from '@shared/types';
 import type { ShortcutPlatform } from './shortcut-contract';
 import { SHORTCUT_COPY } from './shortcut-copy';
@@ -160,8 +160,8 @@ export const PALETTE_COPY = {
     files: 'Files',
   } satisfies Record<PaletteGroupId, string>,
   current: 'Current',
-  /** A running project's Claude state, shown on the right of its row. */
-  projectStatus: { idle: 'Idle', busy: 'Working', blocked: 'Needs input' } satisfies Record<ClaudeShellState, string>,
+  /** Generic severity for a running project, irrespective of its agents. */
+  projectStatus: AGGREGATE_STATE_LABEL,
   /** Label of the open hint on the highlighted project row. */
   openHint: 'Open',
   /** The chip in the search row naming the prefix mode; the normal mode has none. */

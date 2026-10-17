@@ -17,7 +17,12 @@ export function rootHueToken(path: string): RootHueToken {
   return ROOT_HUE_TOKENS[hash % ROOT_HUE_TOKENS.length]!;
 }
 
+/** CSS colour a hue token paints. The accent hue reads `--accent-mark`, the macOS chrome's lifted accent glyph colour, which falls back to `--accent` everywhere else. */
+export function rootHueColour(token: RootHueToken): string {
+  return token === '--accent' ? 'var(--accent-mark, var(--accent))' : `var(${token})`;
+}
+
 /** CSS colour value for a root folder, e.g. `var(--hue-cyan)`. */
 export function rootHueVar(path: string): string {
-  return `var(${rootHueToken(path)})`;
+  return rootHueColour(rootHueToken(path));
 }

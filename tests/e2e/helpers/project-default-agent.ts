@@ -20,7 +20,7 @@ import {
   PROJECT_SETTINGS_COPY as COPY,
   PROJECT_SETTINGS_TESTIDS as IDS,
 } from '../../../src/renderer/project-settings-contract';
-import { baseEnv, launch, type Harness } from './claude-harness';
+import { baseEnv, closeApp, guardedLaunch, launch, type Harness } from './claude-harness';
 
 export interface AgentHarness extends Harness {
   readonly executable: string;
@@ -29,6 +29,16 @@ export interface AgentHarness extends Harness {
 /** Existing harness boots the actual main, SQLite repository, renderer and PTY. */
 export async function launchAgents(names: string[]): Promise<AgentHarness> {
   const h = await launch(names);
+  try {
+    return await seedAgents(h);
+  } catch (error) {
+    await closeApp(h.app);
+    h.cleanup();
+    throw error;
+  }
+}
+
+async function seedAgents(h: Harness): Promise<AgentHarness> {
   const executable = join(h.isolatedHome, 'agent-marker');
   // This is a real child executable, not a mocked settings/launch implementation.
   // Keep stdin observable: settings must neither restart nor send input to it.
@@ -65,22 +75,35 @@ export async function launchAgents(names: string[]): Promise<AgentHarness> {
   return result;
 }
 
-/** Same HOME/userData/database; do not add roots or reseed on restart. */
+/**
+ * Same HOME/userData/database; do not add roots or reseed on restart. A
+ * failed relaunch closes the new app and removes the harness's temp dirs
+ * before rethrowing; the caller's own teardown then finds nothing left.
+ */
 export async function restartAgents(h: AgentHarness): Promise<void> {
   await h.app.close();
-  h.app = await electron.launch({
-    args: ['.', `--user-data-dir=${join(h.isolatedHome, 'userData')}`],
-    env: {
-      ...baseEnv(),
-      HOME: h.isolatedHome,
-      SHELL: '/bin/sh',
-      METAIDE_TEST_MODE: '1',
-      METAIDE_CLAUDE_PERMISSION_MODE: 'bypass',
-    },
-  });
-  h.win = await h.app.firstWindow();
-  await h.win.waitForLoadState('domcontentloaded');
-  await resize(h.app, 1400, 900);
+  try {
+    await guardedLaunch(async (scope) => {
+      h.app = scope.own(
+        await electron.launch({
+          args: ['.', `--user-data-dir=${join(h.isolatedHome, 'userData')}`],
+          env: {
+            ...baseEnv(),
+            HOME: h.isolatedHome,
+            SHELL: '/bin/sh',
+            METAIDE_TEST_MODE: '1',
+            METAIDE_CLAUDE_PERMISSION_MODE: 'bypass',
+          },
+        }),
+      );
+      h.win = await h.app.firstWindow();
+      await h.win.waitForLoadState('domcontentloaded');
+      await resize(h.app, 1400, 900);
+    });
+  } catch (error) {
+    h.cleanup();
+    throw error;
+  }
 }
 
 export async function resize(

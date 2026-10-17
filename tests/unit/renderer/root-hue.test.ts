@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ROOT_HUE_TOKENS, rootHueToken, rootHueVar } from '@renderer/root-hue';
+import { ROOT_HUE_TOKENS, rootHueColour, rootHueToken, rootHueVar } from '@renderer/root-hue';
 
 describe('rootHueToken', () => {
   it('returns the same token for the same path', () => {
@@ -25,8 +25,20 @@ describe('rootHueToken', () => {
 });
 
 describe('rootHueVar', () => {
-  it('wraps the token in var()', () => {
-    const path = '/Users/frits/Projects/Personal';
-    expect(rootHueVar(path)).toBe(`var(${rootHueToken(path)})`);
+  it('is the colour of the path\'s token', () => {
+    for (let i = 0; i < 50; i++) {
+      const path = `/Users/me/Projects/root-${i}`;
+      expect(rootHueVar(path)).toBe(rootHueColour(rootHueToken(path)));
+    }
+  });
+});
+
+describe('rootHueColour', () => {
+  it.each(ROOT_HUE_TOKENS.filter((t) => t !== '--accent'))('wraps %s in var()', (token) => {
+    expect(rootHueColour(token)).toBe(`var(${token})`);
+  });
+
+  it('paints the accent root with the chrome accent glyph token, falling back to --accent off the chrome (glass-settings D18)', () => {
+    expect(rootHueColour('--accent')).toBe('var(--accent-mark, var(--accent))');
   });
 });

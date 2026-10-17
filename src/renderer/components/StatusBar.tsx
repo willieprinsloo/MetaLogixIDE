@@ -37,7 +37,7 @@ export function StatusBar({ project, aliveCount, onOpenPalette }: StatusBarProps
   return (
     <div className="h-[34px] shrink-0 px-3 text-xs text-[--text-muted] flex items-center gap-4 tabular-nums" data-testid="status-bar">
       <span className="flex items-center gap-1.5">
-        <span className={`inline-block w-1.5 h-1.5 rounded-full ${project ? 'bg-[--accent]' : 'bg-[--text-muted]/50'}`} />
+        <span className={`inline-block w-1.5 h-1.5 rounded-full ${project ? 'bg-[color:var(--accent-mark,var(--accent))]' : 'bg-[--text-muted]/50'}`} />
         {project ? project.name : 'no project'}
       </span>
       {git.isRepo && (
@@ -159,7 +159,7 @@ function ShellsChip({ aliveCount }: { aliveCount: number }) {
         )}
       </button>
       {open && (
-        <div className="absolute bottom-full right-0 mb-2 w-[380px] max-h-[400px] overflow-y-auto rounded-md border border-[--border] bg-[--panel-strong] shadow-xl z-50 text-[11px]">
+        <div className="absolute bottom-full right-0 mb-2 w-[380px] max-h-[400px] overflow-y-auto rounded-md border border-[--border] bg-[--panel-strong] shadow-xl z-50 text-[11px]" data-overlay>
           <div className="px-3 py-2 border-b border-[--border] flex items-center gap-2">
             <span className="font-semibold text-[--text]">Alive shells</span>
             <span className="text-[--text-muted]">·  refresh every 2s</span>

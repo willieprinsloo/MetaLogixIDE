@@ -85,7 +85,7 @@ const COMBOS = [
 function worstRatio(sel: string, dark: boolean): number {
   const theme: ThemeColours = { dark, bg: colour(value(sel, '--bg')), panelStrong: colour(value(sel, '--panel-strong')) };
   const accent: Colour = { c: colour(value(sel, '--accent')).c, a: ACCENT_SHARE };
-  const dots = [colour(value(sel, '--claude-busy')), colour(value(sel, '--claude-blocked'))];
+  const dots = [colour(value(sel, '--agent-busy')), colour(value(sel, '--agent-blocked'))];
   const { bg, panelStrong } = unders(theme);
   const rows = [bg, panelStrong].map((under) => over(accent, modalSurface(theme, params(dark), under)));
   return Math.min(...rows.flatMap((row) => dots.map((dot) => ratio(dot, row))));

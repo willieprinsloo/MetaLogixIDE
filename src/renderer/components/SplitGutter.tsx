@@ -44,7 +44,7 @@ export function SplitGutter({ ratio, dragging, onDragStart, onRatioChange }: Pro
     >
       <span
         aria-hidden="true"
-        className={`w-[3px] h-9 rounded-[2px] ${dragging ? 'bg-[--accent]' : 'bg-[--split-grip] group-hover:bg-[--accent]'}`}
+        className={`w-[3px] h-9 rounded-[2px] ${dragging ? 'bg-[color:var(--accent-mark,var(--accent))]' : 'bg-[--split-grip] group-hover:bg-[color:var(--accent-mark,var(--accent))]'}`}
       />
     </div>
   );

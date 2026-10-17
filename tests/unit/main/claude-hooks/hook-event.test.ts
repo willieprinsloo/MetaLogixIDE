@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyHookEvent, NEEDS_INPUT_TYPES, parseHookEvent, stateTransitionFor, type HookEvent } from '@main/claude-hooks/hook-event';
+import { classifyHookEvent, NEEDS_INPUT_TYPES, parseHookEvent } from '@main/claude-hooks/hook-event';
 
 const common = {
   session_id: 'abc123',
@@ -138,67 +138,5 @@ describe('classifyHookEvent', () => {
 
   it('the needs-input set is exactly the four documented blocking types', () => {
     expect([...NEEDS_INPUT_TYPES].sort()).toEqual(['agent_needs_input', 'elicitation_dialog', 'elicitation_url_dialog', 'permission_prompt']);
-  });
-});
-
-describe('stateTransitionFor (spec transition table)', () => {
-  const ev = (hookEventName: string, notificationType: string | null = null, backgroundTaskCount = 0): HookEvent =>
-    ({ hookEventName, notificationType, message: null, backgroundTaskCount });
-
-  it.each(['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure'])('%s → busy (AC2, AC3)', (name) => {
-    expect(stateTransitionFor(ev(name))).toBe('busy');
-  });
-
-  it('PermissionRequest → blocked (AC4)', () => {
-    expect(stateTransitionFor(ev('PermissionRequest'))).toBe('blocked');
-  });
-
-  it.each(['permission_prompt', 'elicitation_dialog', 'elicitation_url_dialog', 'agent_needs_input'])(
-    'Notification/%s → blocked-unless-stale (AC4, stale needs-input row)',
-    (type) => { expect(stateTransitionFor(ev('Notification', type))).toBe('blocked-unless-stale'); },
-  );
-
-  it.each([1, 2, 50])('Stop with %i background tasks → background (AC24)', (count) => {
-    expect(stateTransitionFor(ev('Stop', null, count))).toBe('background');
-  });
-
-  it('Stop with no background tasks → idle (AC6, AC26)', () => {
-    expect(stateTransitionFor(ev('Stop', null, 0))).toBe('idle');
-  });
-
-  it('StopFailure → idle, whatever its background count (AC6)', () => {
-    expect(stateTransitionFor(ev('StopFailure'))).toBe('idle');
-    expect(stateTransitionFor(ev('StopFailure', null, 3))).toBe('idle');
-  });
-
-  it('Notification/idle_prompt → idle-unless-waiting (AC6, AC25)', () => {
-    expect(stateTransitionFor(ev('Notification', 'idle_prompt'))).toBe('idle-unless-waiting');
-  });
-
-  it('a background count on events other than Stop changes nothing', () => {
-    expect(stateTransitionFor(ev('PreToolUse', null, 2))).toBe('busy');
-    expect(stateTransitionFor(ev('PermissionRequest', null, 2))).toBe('blocked');
-    expect(stateTransitionFor(ev('SubagentStop', null, 2))).toBeNull();
-  });
-
-  it.each([
-    ['Notification', 'auth_success'], ['Notification', 'elicitation_complete'], ['Notification', 'agent_completed'],
-    ['Notification', 'some_future_type'], ['Notification', null],
-    ['PermissionDenied', null], ['SubagentStop', null], ['SessionEnd', null], ['SomeFutureEvent', null],
-    ['stop', null], ['pretooluse', null],
-  ])('%s/%s leaves the state unchanged (AC5)', (name, type) => {
-    expect(stateTransitionFor(ev(name, type))).toBeNull();
-  });
-
-  it('notification_type only counts on a Notification event', () => {
-    expect(stateTransitionFor(ev('SubagentStop', 'permission_prompt'))).toBeNull();
-    expect(stateTransitionFor(ev('PermissionDenied', 'idle_prompt'))).toBeNull();
-    expect(stateTransitionFor(ev('Stop', 'permission_prompt'))).toBe('idle');
-  });
-
-  it('does not treat inherited object keys as events', () => {
-    expect(stateTransitionFor(ev('constructor'))).toBeNull();
-    expect(stateTransitionFor(ev('toString'))).toBeNull();
-    expect(stateTransitionFor(ev('__proto__'))).toBeNull();
   });
 });

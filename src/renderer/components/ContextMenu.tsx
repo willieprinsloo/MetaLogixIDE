@@ -122,6 +122,7 @@ export function ContextMenu({ x, y, items, onClose, autoFocus = false }: Props) 
         // Grow out of the click point, even when clamping shifted the menu.
         style={{ left, top, transformOrigin: `${x - left}px ${y - top}px` }}
         role={present ? 'menu' : undefined}
+        data-overlay
         data-testid={present ? 'context-menu' : 'context-menu-leaving'}
         onKeyDown={onMenuKeyDown}
       >

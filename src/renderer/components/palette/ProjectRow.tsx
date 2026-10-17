@@ -1,17 +1,9 @@
-/**
- * A project row's content in the command palette (AC7): a 7px Claude status dot when the project has
- * a live shell (a hollow ring otherwise), the name, then its root folder as the sidebar shows it
- * (hue-tinted glyph) with the root's home-relative path (full project path in the tooltip). On the
- * right: the muted "Current" marker for the selected project, the Claude state as text for a running
- * project ("Working", "Idle", "Needs input"), and the "Open ↩" hint on the highlighted row. Running
- * rows always reserve the hint's slot so their states line up. A component of its own so
- * `useProjectClaudeState` has a stable per-project call site.
- */
+/** Project palette row: generic severity, highlighted contrast ring and existing project identity layout. */
 import { homeRelativePath } from '@renderer/abbreviate-path';
 import { PALETTE_COPY, PALETTE_TESTIDS } from '@renderer/command-palette-contract';
-import { useProjectClaudeState } from '@renderer/hooks/useClaudeStates';
+import { useProjectAgentState } from '@renderer/hooks/useAgentStates';
 import { rootHueVar } from '@renderer/root-hue';
-import type { ClaudeShellState } from '@shared/claude-state';
+import type { AgentState } from '@shared/agent-state';
 import type { Project, Root } from '@shared/types';
 import { RootFolderGlyph } from '../RootFolderGlyph';
 import { StatusDot } from '../StatusDot';
@@ -23,10 +15,10 @@ import { StatusDot } from '../StatusDot';
  */
 export const RING_NEEDED = true;
 
-const STATUS_TONE: Record<ClaudeShellState, string> = {
+const STATUS_TONE: Record<AgentState, string> = {
   idle: 'text-[--modal-text-muted]',
-  busy: 'text-[--claude-busy]',
-  blocked: 'text-[--claude-blocked]',
+  busy: 'text-[--agent-busy]',
+  blocked: 'text-[--agent-blocked]',
 };
 
 interface ProjectRowProps {
@@ -38,13 +30,14 @@ interface ProjectRowProps {
   readonly alive: boolean;
 }
 
+/** Renders one palette project with a severity-only status and current-project hint. */
 export function ProjectRow({ project, root, current, active, alive }: ProjectRowProps): React.JSX.Element {
-  const claudeState = useProjectClaudeState(project.id);
+  const agentState = useProjectAgentState(project.id);
   return (
     <>
       <span className="flex w-3.5 shrink-0 justify-center">
         {alive ? (
-          <StatusDot state={claudeState} ring={active && RING_NEEDED} className="!h-[7px] !w-[7px]" />
+          <StatusDot state={agentState} ring={active && RING_NEEDED} className="!h-[7px] !w-[7px]" />
         ) : (
           <span data-lead="hollow" aria-hidden="true" className="inline-block h-2 w-2 rounded-full border-[1.5px] border-[--modal-text-muted] opacity-70" />
         )}
@@ -58,8 +51,8 @@ export function ProjectRow({ project, root, current, active, alive }: ProjectRow
         </span>
       )}
       {alive && (
-        <span data-testid={PALETTE_TESTIDS.projectStatus} aria-hidden="true" className={`shrink-0 text-[12.5px] ${STATUS_TONE[claudeState]}`}>
-          {PALETTE_COPY.projectStatus[claudeState]}
+        <span data-testid={PALETTE_TESTIDS.projectStatus} aria-hidden="true" className={`shrink-0 text-[12.5px] ${STATUS_TONE[agentState]}`}>
+          {PALETTE_COPY.projectStatus[agentState]}
         </span>
       )}
       {(alive || active) && (

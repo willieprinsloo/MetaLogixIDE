@@ -12,17 +12,26 @@
 
 import type { Locator, Page } from '@playwright/test';
 import type { EffectiveTheme } from '../../../src/renderer/markdown/contract';
-import { contrast, over, readReferenceBackgrounds, resolveColour, toHex, type Rgb, type Rgba } from './mermaid-palette';
+import { REFERENCE_MATERIALS } from '../../../src/renderer/markdown/mermaid/paletteContract';
+import { contrast, isMacPlatform, mustParse, over, readReferenceBackgrounds, resolveColour, toHex, type Rgb, type Rgba } from './mermaid-palette';
 
-export { resolveColour };
+export { isMacPlatform, resolveColour };
 
-/** A custom property resolved through a probe's computed `color`, then through the canvas. */
-export async function resolveToken(win: Page, name: `--${string}`): Promise<Rgba> {
-  const computed = await win.evaluate((n) => {
+/** Resolved `background-color` alpha (0-1) of an element, through the canvas oracle. */
+export async function backgroundAlpha(win: Page, el: Locator): Promise<number> {
+  return (await elementColour(win, el, 'background-color')).a;
+}
+
+/**
+ * A custom property resolved through a probe's computed `color`, then through the canvas. The probe sits in
+ * `<body>`, or inside `within` when given, so it inherits that element's overrides (the macOS chrome lifts).
+ */
+export async function resolveToken(win: Page, name: `--${string}`, within?: Locator): Promise<Rgba> {
+  const computed = await (within ?? win.locator('body')).evaluate((host, n) => {
     const probe = document.createElement('span');
     probe.style.color = `var(${n})`;
     probe.style.display = 'none';
-    document.body.appendChild(probe);
+    host.appendChild(probe);
     const c = getComputedStyle(probe).color;
     probe.remove();
     return c;
@@ -55,12 +64,32 @@ export interface BadgeContrast {
   under: Rgba[];
 }
 
+/** Greys sampled across the material envelope; contrast is not monotonic in the backdrop, so the ends alone are not enough. */
+const ENVELOPE_STEPS = 18;
+
+/**
+ * What the window shows under the chrome root. Non-mac: the theme's reference
+ * backgrounds (`readReferenceBackgrounds`, which stand for the `--bg` that
+ * `<html>` and `<body>` paint). macOS: `<html>` and `<body>` are transparent,
+ * so the chrome sits straight on the vibrancy material, sampled across the
+ * black-to-white `REFERENCE_MATERIALS` envelope (frosted-chrome AC15, AC17).
+ */
+async function windowBackdrops(win: Page, theme: EffectiveTheme): Promise<readonly Rgb[]> {
+  if (!(await isMacPlatform(win))) return readReferenceBackgrounds(win, theme);
+  const [loHex, hiHex] = REFERENCE_MATERIALS[theme];
+  const lo = mustParse(loHex, `REFERENCE_MATERIALS.${theme}`);
+  const hi = mustParse(hiHex, `REFERENCE_MATERIALS.${theme}`);
+  return Array.from({ length: ENVELOPE_STEPS }, (_, i) => {
+    const t = i / (ENVELOPE_STEPS - 1);
+    return { r: lo.r + (hi.r - lo.r) * t, g: lo.g + (hi.g - lo.g) * t, b: lo.b + (hi.b - lo.b) * t };
+  });
+}
+
 /**
  * Contrast of a badge's text against what it actually sits on: the badge
  * fill, over every painted ancestor up to (not including) `<body>` — which
- * includes the translucent `--surface-chrome` — over each of the theme's
- * reference window backgrounds (`readReferenceBackgrounds`, which already
- * stands for the `--bg` that `<html>` and `<body>` paint). Returns the worst.
+ * includes the translucent `--surface-chrome` — over each window backdrop
+ * (`windowBackdrops`). Returns the worst.
  */
 export async function badgeContrast(win: Page, badge: Locator, theme: EffectiveTheme): Promise<BadgeContrast> {
   const layers = await badge.evaluate((el) => {
@@ -82,7 +111,7 @@ export async function badgeContrast(win: Page, badge: Locator, theme: EffectiveT
   for (const u of layers.under) under.push(await resolveColour(win, u));
 
   let ratio = Infinity;
-  for (const ref of await readReferenceBackgrounds(win, theme)) {
+  for (const ref of await windowBackdrops(win, theme)) {
     let bg: Rgb = ref;
     for (const layer of [...under].reverse()) bg = over(layer, bg);
     bg = over(fill, bg);

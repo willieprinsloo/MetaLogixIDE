@@ -14,6 +14,7 @@ import {
   TEXTCONV_OUTPUT, XSS_IMG, XSS_SCRIPT, commitAll, git, porcelain, programRuns, seedConflictRepo, seedRepo,
   seedRepoProgramsRepo, stagedEntries, uniquePathCount, type ScenarioName,
 } from './helpers/git-repo';
+import { isMacPlatform } from './helpers/chrome-colour';
 
 /**
  * Diff tab (docs/specs/2026-10-02-1809-diff-tab.md, AC1–AC43; plan §9).
@@ -414,17 +415,61 @@ test('list: groups in order with counts, status letters in Git panel colours, b.
   await expect(renameRow).toContainText(RENAME_NEW);
   await expect(renameRow).toHaveAttribute('title', new RegExp(DIFF_COPY.renamedFrom(RENAME_OLD).replace(/[.]/g, '\\.')));
 
-  // AC8: each letter has the Git panel's colour for the same file.
+  // AC8: each letter has the Git panel's colour for the same file. M/A/D/?
+  // paint `var(--git-*, <Tailwind -400>)` (git-status-style.ts
+  // STATUS_TEXT_CLASS) and R falls back to `text-[--text-muted]`. Off macOS
+  // nothing sets those tokens, so both surfaces match. On macOS the Git panel
+  // is chrome (D10): D2 lifts `--text-muted` and D16 lifts the `--git-*`
+  // letters there (docs/specs/macos-frosted-chrome.md), while the Diff tab is
+  // working area and keeps the -400 hues, so on mac every Git panel letter
+  // is expected to be the panel's live-resolved lifted token instead.
   const tabColours: Record<string, string> = {};
   for (const [path, g] of [['a.ts', 'staged'], ['added.ts', 'staged'], ['gone.ts', 'staged'], ['dir/u2.txt', 'untracked'], [RENAME_NEW, 'staged']] as const) {
     tabColours[path] = await rowOf(win, path, g).getByTestId(DIFF_TESTIDS.rowStatus).evaluate((el) => getComputedStyle(el).color);
   }
   await win.getByTestId('ab-git').click();
   const gitView = win.locator('[data-view="git"]');
+  const mac = await isMacPlatform(win);
+  // On mac, each row's colour token as the Git panel resolves it (a probe
+  // inside the panel inherits the chrome root's lifts through the cascade, so
+  // this is the real painted value, not a literal), and the -400 hue the
+  // Diff tab must keep.
+  const rowTokens: Record<string, { token: string; tab: string | null }> = {
+    'a.ts': { token: '--git-modified', tab: 'rgb(251, 191, 36)' },
+    'added.ts': { token: '--git-added', tab: 'rgb(52, 211, 153)' },
+    'gone.ts': { token: '--git-deleted', tab: 'rgb(251, 113, 133)' },
+    'dir/u2.txt': { token: '--git-untracked', tab: 'rgb(56, 189, 248)' },
+    [RENAME_NEW]: { token: '--text-muted', tab: null },
+  };
+  const gitLifted: Record<string, string> = {};
+  if (mac) {
+    for (const [path, { token }] of Object.entries(rowTokens)) {
+      gitLifted[path] = await gitView.evaluate((el, t) => {
+        const probe = document.createElement('span');
+        probe.style.color = `var(${t})`;
+        el.appendChild(probe);
+        const c = getComputedStyle(probe).color;
+        probe.remove();
+        return c;
+      }, token);
+    }
+  }
   for (const [path, colour] of Object.entries(tabColours)) {
     const letter = gitView.locator(`button[title=${JSON.stringify(`Toggle diff for ${path}`)}]`).first().locator('xpath=preceding-sibling::span[1]');
     await expect(letter, `Git panel row for ${path}`).toBeVisible();
-    expect(await letter.evaluate((el) => getComputedStyle(el).color), `${path} letter colour`).toBe(colour);
+    const expected = mac ? gitLifted[path]! : colour;
+    expect(await letter.evaluate((el) => getComputedStyle(el).color), `${path} letter colour`).toBe(expected);
+  }
+  if (mac) {
+    for (const [path, { tab }] of Object.entries(rowTokens))
+      if (tab !== null) expect(tabColours[path], `${path} Diff tab letter keeps its Tailwind -400 hue`).toBe(tab);
+    // Positive control: the mac branch above is only meaningful if the lifted
+    // colour actually differs from the Diff tab's unlifted one, or it would
+    // pass vacuously even if D2/D16 broke. D and R are lifted in every
+    // palette and theme; M/A/? keep -400 where it already clears 4.5:1.
+    for (const path of ['gone.ts', RENAME_NEW])
+      expect(gitLifted[path], `control: the Git panel (chrome) ${path} colour is lifted away from the Diff tab (working area) one`)
+        .not.toBe(tabColours[path]);
   }
 });
 

@@ -15,12 +15,22 @@ dots. The product design is in
 ### Main-process startup invariant
 
 After services are constructed, `src/main/index.ts` registers every generic
-IPC handler before creating the initial `BrowserWindow`. Renderer providers
+IPC handler before creating the initial `BrowserWindow`. `startApp`
+(`src/main/index.ts:503-518`) runs the startup steps in order, and
+`registerMainIpc` comes before `openMainWindow`. Renderer providers
 may invoke settings channels while the first document is still loading, so
 window creation must not move ahead of `registerIpc`.
 
+| Layer | File | Responsibility |
+|---|---|---|
+| Composition | `src/main/index.ts` | `startApp` runs the startup steps in order. It owns the module state: the main window, popout windows, and the window-setting readers. It reads the environment and app paths. |
+| Composition | `src/main/startup/receivers.ts` | Starts the Claude hook receiver, then the OMP receiver. A failure in either is logged and does not stop startup. |
+| Composition | `src/main/startup/boot-rescan.ts` | Rescans every registered root at boot and prunes projects whose folder is gone. A failure is logged. |
+| Logic and adapter | `src/main/startup/done-notifier.ts` | Polls finished long-running commands every 500 ms. `planDoneNotice` decides, for one finished command, whether to notify and how. Each command is planned and shown before the next. The wiring shows the native notification and routes its click to the main window or a popout. |
+
 On macOS, startup resolves PATH from the user's interactive login shell before
-constructing services or creating a renderer (`src/main/index.ts:374-386,508-510`).
+constructing services or creating a renderer (`adoptLoginShellPath`,
+`src/main/index.ts:377-389`, the first step of `startApp`).
 The resolver reads only NUL-framed PATH output, ignoring shell startup banners.
 It limits execution to 10 seconds and output to 1 MiB
 (`src/main/domain/login-shell-path.ts:10-33`).
@@ -211,7 +221,8 @@ appearances inherit it:
 | `--badge-ink` | Unused since badges became soft tints; kept for a later token cleanup. |
 
 The side panels (projects, chat, git) paint no tint of their own; they sit
-directly on `--surface-chrome`.
+directly on `--surface-chrome`. On macOS the chat column is the exception: it
+paints the solid sheet colour (see "macOS frosted chrome").
 
 **Title bar.** The main and popout title bars are 44px tall. The main title
 bar centres `TitleGroup` (`src/renderer/components/TitleGroup.tsx`): the
@@ -219,7 +230,7 @@ selected project's name and its branch in `--hue-pink`, or "MetaLogix IDE"
 when no project is selected. The branch uses the status bar's rule
 (`git.branch`, or `HEAD` when detached). The group sits in a box inset 130px
 from both edges, so it stays centred on the window and clear of the traffic
-lights and the buttons. On macOS, `src/main/index.ts` sets
+lights and the buttons. On macOS, `platformChrome` in `src/main/window-chrome.ts` sets
 `trafficLightPosition: { x: 12, y: 14 }` for both window types, which centres
 the lights on the 44px bar. The title-bar buttons are 32px with 3px right
 padding, so the last glyph ends 12px from the edge and mirrors the lights.
@@ -264,6 +275,171 @@ and palettes. Root labels are abbreviated by `src/renderer/abbreviate-path.ts`:
 the macOS home becomes `~`, leading segments shrink to their first character,
 and the last segment stays whole (`~/P/P/acme`). The tooltip shows the full
 path.
+
+### macOS frosted chrome
+
+On macOS the window sits on a native vibrancy material (`sidebar` by default),
+and the chrome lets that material show through. The working area stays solid
+unless the user sets a Terminal frost level. The user controls all of this in
+the Frosted glass settings (see "Frosted glass settings" below). Windows and
+Linux are unchanged.
+
+**Layers.** All mac styling lives in `src/renderer/frosted-chrome.css`,
+imported after `styles.css`. Every selector starts with
+`:root[data-platform="mac"]`, so no rule can match off macOS;
+`frosted-chrome-css.test.ts` enforces this. `styles.css` is not changed by
+this layer. On macOS:
+
+| Layer | Paint |
+|---|---|
+| `html`, `body` | Transparent. `--bg` is not redeclared, so tokens derived from it (the modal scrim) keep their values. |
+| Chrome root (`[data-chrome-root]`) | `--surface-chrome`: the opaque `--chrome-solid` at `--chrome-glass-alpha`. At Chrome frost Subtle that is 0.805 to 0.87 per palette and theme; Medium and Strong are lower (see "Frosted glass settings"). |
+| Main and popout sheet, chat column (`[data-view="chat"]`) | `--sheet-solid`, alpha 1. |
+| Sheet while a shell shows (`[data-sheet-content="shell"]`), Terminal frost not Off | `--surface-terminal`: `--sheet-solid` at `--terminal-live-alpha`. |
+| Split-shell cards | `--surface-pane`: `--pane-solid`. With Terminal frost on, cards follow the sheet; only at Chrome Subtle with Terminal Subtle do they add their own glass, as before. |
+| Raw `--panel`, `--panel-strong`, `--chat-surface` | Same colour, alpha 1, so menus, popovers and inputs are never more translucent than before. |
+
+Hover, selected, active and field fills (`--surface-hover`, `--surface-active`,
+`--accent-soft`, `--surface-field`) and the Tasks badge fill
+(`--hue-orange-soft`) on the chrome are opaque chips mixed into
+`--chrome-solid`, so text on them keeps its contrast. The Git panel ahead and
+behind counts read `--git-ahead-chip` and `--git-behind-chip`, which are opaque
+chips on the chrome. The sheet, the chat column, the modal and command-palette
+layer (`.modal-layer`) and the overlays marked `data-overlay` (the shells
+popover, the Add a shell popover, context menus, toasts) restore every chrome lift. Palette tokens come
+back from `*-base` tokens captured on `:root`. Chrome-only tokens are reset to
+`initial`, so the classes that read them use their fallback.
+
+**Glass invariant.** Palette blocks set only the solid colours, the alphas and
+the label lifts. `--surface-chrome`, `--surface-terminal` and `--surface-pane`
+each have exactly two declarations: the base rule and the Reduce transparency
+override. A count test enforces this, as for the modal glass. The setting
+switches one root token, `--terminal-live-alpha`, so the count stays at two.
+
+**Reduce transparency.** `@media (prefers-reduced-transparency: reduce)` maps
+the three glass surfaces to their solid sources. It reads only the media
+query, never the stored setting, so the stored value is never changed.
+
+**Contrast envelope.** The material colour is unknown, so floors are proven
+over the black-to-white range (`REFERENCE_MATERIALS`):
+`frosted-chrome-contrast.test.ts` runs the cascade of both stylesheets and
+flattens each surface over 18 greys. Text needs 4.5:1, icons and indicators
+3:1. The visible effect, `(1 − total alpha) × 255` per channel, must be at
+least 32, which caps the total alpha at 0.8745. The terminal alpha multiplies
+the chrome alpha, so the terminal can never be more translucent than the
+chrome around it, and `--terminal-glass-alpha` is small (0 to 0.18 at Subtle). Muted and
+label text on the chrome and on the frosted terminal may be lifted
+(`--chrome-text-muted`, `--terminal-text-muted`, `--chrome-chip-text`) to keep
+the floor.
+
+Every coloured text and indicator on the chrome is listed in the test's
+`CHROME_PAINT` inventory (D17). Each entry is held to 4.5:1 (text) or 3:1
+(indicator) in every palette and theme, with the setting OFF and ON and with
+Reduce transparency on and off. A source scan fails if a component already
+in the inventory gains a colour class that is neither listed nor explained. A
+new chrome component is not scanned until it is added to the inventory. To reach the floor, each palette block sets lifted hues that only the
+chrome root reads. In dark themes they are lighter, in light themes darker:
+
+- `--chrome-hue-pink`, `--chrome-hue-cyan`, `--chrome-hue-yellow` and
+  `--chrome-hue-purple`.
+- `--chrome-danger`.
+- `--chrome-agent-idle`, `--chrome-agent-busy` and `--chrome-agent-blocked`.
+- `--chrome-accent-label`, read as `--accent-label` by the Git panel's
+  Stage all.
+- `--chrome-git-*`, read as `--git-*` by the Git panel letters, the ahead and
+  behind counts, and the inline diff.
+
+Classes that need a lift Tailwind cannot reach read a token with the exact old
+colour as fallback, such as `var(--git-added,#34d399)` or
+`var(--accent-label,var(--accent))`. Off macOS, and in the Diff tab, that
+fallback renders, so nothing changes there. The keyboard focus outline reads
+`--focus-outline`. It becomes solid accent only where frosting had lowered it
+below its 26eed37 contrast: catppuccin dark, and rose-pine dark and light.
+The mac prefix of that rule sits in `:where()`, so it keeps the styles.css
+specificity and an element's own `focus-visible:outline-none` still wins.
+
+Two groups are pinned in the test as known debt:
+
+- Indicator colours that were already below their floor at `main@26eed37`
+  (D13).
+- Chrome labels drawn through element opacity (`opacity-60`, `opacity-70`).
+  No token lift can reach the floor for those without collapsing
+  `--text-muted` into `--text`.
+
+The test fails if a pin starts to pass. ANSI colours are not tested.
+
+**Root flags.** `src/renderer/root-flags.ts` sets three attributes on `<html>`:
+`data-platform="mac"` (darwin with Frosted chrome on), `data-chrome-frost`
+(`medium` or `strong`; absent at Subtle) and `data-terminal-frost` (`subtle`,
+`medium` or `strong`; absent at Off). In every other case it removes all three.
+Only the mac stylesheets read `data-platform`, so Frosted chrome off renders
+the pre-frost stack by construction. `main.tsx` calls it before React renders,
+because the CSP forbids an inline script. Attribute names live in
+`src/renderer/frosted-chrome-contract.ts`.
+
+**Frosted glass settings.** Settings > General > Appearance shows a Frosted
+glass group after Window opacity, on macOS only
+(`src/renderer/components/settings/FrostedGlassGroup.tsx`, with
+`FrostLevelRow.tsx` and `MaterialRow.tsx`). It holds four
+settings, declared in `src/shared/frosted-glass.ts`:
+
+| Key | Values | Default |
+|---|---|---|
+| `frost_chrome` | on, off | on |
+| `chrome_frost_level` | Subtle, Medium, Strong | Subtle (the original tuned look) |
+| `terminal_frost_level` | Off, Subtle, Medium, Strong | Off |
+| `vibrancy_material` | Sidebar, Under window, HUD, Menu, Popover | Sidebar |
+
+- Each key is written only through its own channel (`settings:set-frost-chrome`,
+  `settings:set-chrome-frost-level`, `settings:set-terminal-frost-level`,
+  `settings:set-vibrancy-material`). The channel rejects any value outside its
+  list without writing, and emits `settings:changed` on success. The generic
+  `settings:set` refuses all four keys and the legacy `frost_terminal`.
+- `useFrostedGlassAttributes` re-reads the values in every window on
+  `settings:changed`. For the first paint, main adds `frostChrome`,
+  `chromeFrost` and `terminalFrost` to the renderer URL (`rendererQuery` in
+  `src/main/window-chrome.ts`). Off darwin it always sends the no-effect
+  defaults. Main reads the stored values through `readStoredFrostedGlass`,
+  which falls back to the default for any value outside its list.
+- The material reaches new windows through `platformChrome(platform, material)`
+  and open ones through `applyVibrancy`, which calls `setVibrancy` on every
+  window that is not destroyed. Any value outside the list falls back to
+  `sidebar`. Off darwin nothing is applied.
+- With Frosted chrome off, the two level controls are disabled but keep their
+  values, and the material still applies.
+- `seedDefaults` migrates the legacy `frost_terminal` boolean once: `true`
+  becomes Terminal frost Subtle, anything else Off. The legacy row is kept for
+  downgrade and is never written again.
+- `win.setOpacity` (window opacity) multiplies on top of all of this.
+
+Level values live in `src/renderer/frosted-glass-levels.css`, keyed on the two
+level attributes. Chrome alphas (Subtle / Medium / Strong) are 0.85 / 0.805 /
+0.77 in default dark, 0.855 / 0.81 / 0.775 in default light and catppuccin light,
+0.805 / 0.77 / 0.735 in catppuccin dark, 0.81 / 0.775 / 0.74 in rose-pine dark
+and 0.87 / 0.81 / 0.775 in rose-pine light. Each step adds at least 8/255 of
+visible effect. Terminal levels are set per chrome level, as total alphas that
+never go below the chrome alpha. At Chrome Subtle some terminal levels are
+equal, because the chrome leaves no room; the contrast test lists those
+combinations explicitly. Medium and Strong add per-palette label, text and
+`--accent-mark` lifts to keep every floor:
+- Sidebar, Tasks, status bar, root folder, split grip and drop-target accents
+  read `--accent-mark`, so `--accent` and white-on-accent fills never change.
+- In catppuccin light and rose-pine light at Strong, `--term-fg` on `:root` and
+  `--text` on the frosted Shell sheet are slightly darker. ANSI colours are
+  unchanged.
+- At Strong, muted text on the chrome comes close to `--text` in the dark
+  palettes, and equals it in catppuccin light and rose-pine light at Medium and
+  Strong. This is an accepted trade-off of the opt-in levels.
+
+**Focus.** Main and popout windows use `visualEffectState: 'followWindow'`, so
+the material goes flat when the window is not focused, as in Finder. Electron
+sets this only at window creation, so it does not change with the settings.
+
+**Why the envelope covers every material.** Every material paints some sRGB
+colour, and the luminance of a composite rises with each backdrop channel. So
+the black and white composites the test already samples bound every material,
+and no per-material contrast test is needed. Whether a material visibly frosts
+is a manual check.
 
 ### Command palette
 
@@ -335,7 +511,7 @@ decides who gets each key:
 | Ctrl+K | App: command palette | taken from the shell (readline kill-line); the terminal takes focus automatically, so the palette key must work there |
 | Ctrl+Shift+P/K/O/N/T/F, Ctrl+, Ctrl+/ Ctrl+= Ctrl+- Ctrl+0 | App | an explicit allow-list; xterm sends nothing and the event bubbles |
 | Ctrl+Shift+C | Copy | writes the sanitised selection; does nothing without a selection |
-| Ctrl+Shift+V | Paste | reads the clipboard and calls `term.paste`, which honours bracketed paste |
+| Ctrl+Shift+V | Paste | reads the clipboard and inserts it through the terminal paste pipeline (see Terminal drop and paste) |
 | Anything else | xterm default | unchanged |
 
 So Ctrl+P, Ctrl+B and Ctrl+T do nothing in the app from a focused terminal;
@@ -550,27 +726,117 @@ Rules:
 - Closing the split from its header returns focus to the left terminal.
   **To tab** focuses the moved shell's terminal once it is the active pane.
 
+### Terminal drop and paste
+
+Every drop onto a terminal and every paste into it goes through one
+pipeline. The pipeline resolves each item to text, escapes file paths,
+replaces control characters, and inserts the result with `term.paste`. So
+bracketed paste applies when the program in the terminal has turned it on
+(DECSET 2004), and the text arrives as a paste, not as keystrokes. The
+behaviour follows Ghostty, with two additions: dropped bytes that have no
+filesystem path, and an image-only clipboard, are saved to a temporary file
+and that file's path is inserted.
+
+| Layer | File | Responsibility |
+|---|---|---|
+| Contract | `src/shared/terminal-drop-contract.ts` | Size limit, Files-tree drag type, result unions, function types and every user-facing string. |
+| Logic | `src/shared/paste-sanitize.ts` | Replaces each C0 control character other than TAB, LF and CR, plus DEL and the C1 controls U+0080-U+009F, with a space. A C1 character such as U+009B is otherwise echoed back by `cat` and bash readline, and xterm runs it as a control sequence. A payload that contains `ESC[201~` cannot end a bracketed paste early. Pure. |
+| Logic | `src/shared/shell-escape.ts` | POSIX: a backslash before each character in Ghostty's macOS set. Windows: double quotes when the path contains a space or one of `&()^;,=`. Every C0 and C1 control character and DEL in a path, CR, LF and TAB included, becomes a space first. Pure. |
+| Logic | `src/renderer/terminal-drop.ts` | `planDrop`: drop precedence, item order, size pre-check, per-item failure toasts, escaping and sanitising. Pure, with every dependency injected. |
+| Logic | `src/renderer/clipboard-paste.ts` | `resolveClipboardPaste`: clipboard text is sanitised; empty text stages the clipboard image and returns its escaped path. `createPasteFromText` builds the function every paste route calls. `installPasteInterceptor(host)` adds the capture-phase `paste` listener on the xterm host element, before xterm's own listener. Pure. |
+| Logic | `src/renderer/terminal-drop-controller.ts` | `createTerminalDropController`: the drag enter, over, leave and drop handlers, the overlay state, and the window `dragend`/`drop` reset. It copies the `DataTransfer` synchronously, because it is unreadable after the event returns. Pure, over small event interfaces. |
+| Logic | `src/renderer/drag-hover.ts` | The overlay depth counter and `dropKindFor`. Pure. |
+| Adapter | `src/renderer/hooks/useExternalDragGuard.ts` | The window-level guard: the pure `createExternalDragGuard` state, `installExternalDragGuard(target)` for the listeners, and the hook that installs it on `window`. |
+| Adapter | `src/renderer/hooks/useTerminalDrop.ts`, `useTerminalPaste.ts` | React wiring only: each hook builds its controller or interceptor with the IPC, toast and terminal dependencies, and disposes it on unmount. |
+| Presentation | `src/renderer/components/ShellTab.tsx`, `FilesTab.tsx`, `App.tsx` | Wiring: the drop overlay, the context-menu Paste item and the Ctrl+Shift+V key path in ShellTab; the Files-tree drag type in FilesTab; the guard hook in both `MainApp` and `PopoutShell` (`App.tsx:544`, `App.tsx:1120`). |
+| IPC | `src/main/drops/handlers.ts` | `drops:resolve-app-file`, `drops:stage-file`, `drops:stage-clipboard-image`. Each guards its request shape by hand and returns failures as result values. It does not throw. |
+| Adapter | `src/main/drops/staging.ts`, `file-name.ts`, `clipboard-image.ts` | The temporary directory, file names, and the Electron clipboard wrapper. Built once in `buildServices` (`src/main/services.ts:86`). |
+
+Drop precedence:
+
+1. A Files-tree drag carries `application/x-metaide-file` with the
+   `projectId` and `relPath`. The main process resolves it to an absolute
+   path inside the project root. This type wins over any `Files` or
+   `text/plain` entry in the same drop, so the path is inserted once.
+2. Otherwise each dropped file is used in drop order. A file with a path from
+   `webUtils.getPathForFile` inserts that path. A file without a path but
+   with bytes is staged. A file over 50 MB shows a toast and is skipped. A
+   file whose staging fails shows a toast; the other files are still
+   inserted.
+3. With no files, `text/plain` is inserted as it is, without escaping.
+
+A drop with nothing usable inserts nothing. A drop onto an exited shell
+inserts nothing. The pipeline never calls `term.paste('')`, because with
+bracketed paste on that sends an empty bracketed pair.
+
+Paste routes: macOS ⌘V and the Edit menu fire a DOM `paste` event, which the
+paste hook takes. Ctrl+Shift+V and the context-menu Paste item read the
+clipboard and call the same function (`ShellTab.tsx:183`,
+`ShellTab.tsx:599`). All routes sanitise the text. When the clipboard has no
+text, all routes try the clipboard image. The renderer is sandboxed, so the
+main process reads the image.
+
+Temporary directory:
+
+- The location is `<tmp>/metaide-drops-<uid>` on POSIX and
+  `<tmp>/metaide-drops` on Windows (`src/main/drops/staging.ts:46`).
+  In test mode (`METAIDE_TEST_MODE=1`) the entrypoint passes
+  `METAIDE_DROP_DIR`, or `<userData>/drops` when it is unset, so an E2E launch
+  never stages into or prunes the real directory (`testModeDropDir`,
+  `createServices`, `src/main/index.ts:397-406`).
+- Before every write, staging creates the directory with mode 0700 when it
+  is missing. It then refuses to write when the directory is a symlink or
+  not a directory. On POSIX it also refuses when another user owns the
+  directory or its mode is not exactly 0700 (`staging.ts:63-73`). On Windows
+  the owner and mode checks do not run; the per-user `%TEMP%` applies.
+- Files are created with `open(path, 'wx', 0o600)`, an exclusive create
+  (`staging.ts:94`). A name collision adds `-1`, `-2` and so on. A file is
+  never overwritten.
+- File names keep only `A-Z a-z 0-9`, space and `._()+,-`, lose leading
+  dots, and are capped at 100 characters. An empty name becomes
+  `dropped-<timestamp>.<ext>`; a clipboard image is `pasted-<timestamp>.png`.
+  Timestamps are UTC.
+- At startup, after the main window is created, the main process deletes
+  regular files older than 24 hours, once, without awaiting the result
+  (`openMainWindow`, `src/main/index.ts:457-463`). Pruning refuses an untrusted directory, so a
+  planted symlink cannot make it delete other files. A dev build and a
+  packaged build share the directory, so each can prune the other's old
+  files.
+
+The global guard cancels `dragover` and `drop` for every drag that did not
+start in this window, whatever its type. It runs in the main window and in
+every popped-out window. So a file, link or
+text dropped outside a terminal never navigates the window and never opens
+a browser. A drag that starts in the window keeps its native behaviour, for
+example text dragged into the editor or the find box. `dragstart` and
+`dragend` are tracked in the capture phase
+(`src/renderer/hooks/useExternalDragGuard.ts:62`). The in-app state also
+clears on any `pointerdown`, and on a `mousemove` with no button pressed.
+Neither event occurs during a drag, so a lost `dragend` cannot leave the
+guard disabled. A drag from the main window into a popped-out window counts
+as external there.
+
 ### Claude notifications
 
-The app shows an OS notification when Claude Code, running in an app
-shell, needs the user's input or finishes its turn. Claude Code reports
-these events through its own hooks. The app does not read terminal output
-or escape sequences for this.
+The app uses authenticated Claude Code hooks for OS notifications when an
+app-launched shell needs input or finishes. It does not use those hooks to
+set status dots. The notification path does not read terminal output.
 
 | Layer | File | Responsibility |
 |---|---|---|
 | IO | `src/main/claude-hooks/receiver.ts` | Loopback HTTP server. Checks the request, authenticates it, answers `204`, then passes a typed event on. |
 | IO | `src/main/claude-hooks/settings-file.ts` | Builds, writes and removes the app-owned Claude Code settings file. |
-| Logic | `src/main/claude-hooks/hook-event.ts` | Parses a hook payload into a `HookEvent`. Keeps only the event name, notification type, message and the number of background tasks. Classifies an event as `needs-input`, `finished` or `ignored`, and maps it to a state transition (`stateTransitionFor`). |
-| Logic | `src/main/claude-hooks/hook-fanout.ts` | Registers the receiver's one listener and delivers each hook to several listeners. A failure in one listener is logged and does not stop the others. |
+| Logic | `src/main/claude-hooks/hook-event.ts` | Parses and classifies the event name, notification type, message and background-task count for notifications. |
+| Logic | `src/main/claude-hooks/hook-fanout.ts` | Delivers authenticated hooks to the notification history. |
 | Logic | `src/main/claude-hooks/session-registry.ts` | Issues, verifies and releases the per-spawn id and secret. Records which shells are hook-confirmed. |
 | Logic | `src/main/claude-hooks/launch-decorator.ts` | Adds `--settings <file>` and the id and secret to the environment of a Claude launch, just before spawn. |
 | Logic | `src/main/claude-hooks/runtime.ts` | Starts the receiver, then writes the settings file. Stops both on quit. |
 | Contract | `src/main/claude-hooks/protocol.ts` | Hook path, header name and environment variable names. |
-| Logic | `src/main/notifications/claude-notifier.ts` | Decides if an applied hook shows a notification, from the state before and after the tracker applied it. Builds the text and keeps one notification per shell. Also `withoutHookConfirmed`, the filter for the generic notifier. |
+| Logic | `src/main/notifications/claude-hook-history.ts` | Confirms the current hook session and tracks notification eligibility separately from status. |
+| Logic | `src/main/notifications/claude-notifier.ts` | Applies the two notification toggles and viewing rules to eligible hooks. It also filters hook-confirmed shells from the generic notifier. |
 | Logic | `src/main/notifications/viewed-shells.ts` | Holds the shells the main window shows. Decides if the user is viewing a shell. |
 | Adapter | `src/main/notifications/os-notifications.ts` | Wraps Electron `Notification`. Keeps each instance referenced until it is clicked or closed. |
-| Composition | `src/main/notifications/install.ts` | Connects the Claude state tracker's `onHookApplied` stream, the notifier, windows and PTY exit events. Builds the click navigation. |
+| Composition | `src/main/notifications/install.ts` | Connects authenticated hooks, notification history, PTY answers and exits, the notifier and click navigation. |
 | Presentation | `src/renderer/viewed-shells.ts`, `src/renderer/hooks/useReportViewedShells.ts` | Derive the shells on screen and report them on `notifications:viewed-shells`. |
 | Presentation | `src/renderer/components/settings/GeneralPanel.tsx` | The two switches in Settings → General → Notifications. |
 
@@ -586,22 +852,16 @@ Rules:
   generic notifier.
 - The stored launch argv is never decorated. `PtyManager` applies the
   decorator to a copy inside `spawn`.
-- Notifications follow the Claude state (see "Claude status dots"). The
-  notifier reads each hook after the tracker applied it, with the shell's
-  state before and after.
-- Needs input is a `Notification` event with `notification_type`
+- `ClaudeHookHistory` owns notification eligibility. Screen-based status
+  does not affect it.
+- Needs input is an authenticated `Notification` with
   `permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog` or
-  `agent_needs_input` that leaves the shell blocked. Claude Code's question
-  prompt also arrives as `permission_prompt`. A stale needs-input event
-  leaves the shell as it is and shows nothing.
-- Finished is a `Stop` event with no background tasks that moves the shell
-  from busy to idle. A `Stop` with background tasks, a `Stop` on an idle
-  shell, and an idle state from the stale-busy guard, `idle_prompt`,
-  `StopFailure` or a PTY exit show nothing.
-- All other events show nothing, but any confirmed event marks the shell
-  hook-confirmed. The tracker confirms the session.
-- The generic "Command finished" notifier skips hook-confirmed shells.
-  Before a shell is confirmed, the generic notifier is its fallback.
+  `agent_needs_input`, unless the user already answered that prompt.
+- Finished is a `Stop` without background tasks after a confirmed busy
+  turn. A background `Stop`, an idle `Stop` and a PTY exit do not notify.
+- A confirmed hook marks its current shell hook-confirmed. The generic
+  "Command finished" notifier skips that shell. Before confirmation,
+  the generic notifier remains available.
 - The user is viewing a shell when its popout window has focus, or when
   the main window has focus, shows the shell, and the shell is not popped
   out. In split view, both panes are shown.
@@ -609,47 +869,53 @@ Rules:
   releases the shell's session and closes its notification, unless a
   respawn has already replaced that PTY.
 
-### Claude status dots
+### Claude and OMP status dots
 
-Each live dot shows the Claude state of its shell: idle (green), busy
-(amber) or blocked (red). The main process derives the state and pushes it
-to every window. Renderers never read terminal text for it.
+The main process derives one status for each live agent shell. Claude status
+comes from the current terminal title and bounded bottom viewport after xterm
+parses PTY output. OMP status comes from lifecycle events in the app-owned
+extension. Neither Claude hooks nor a renderer's scroll position control
+status dots.
 
 | Layer | File | Responsibility |
 |---|---|---|
-| Contract | `src/shared/claude-state.ts` | `ClaudeShellState`, the state entry, the text label per state and the DOM test hooks. |
-| IO | `src/main/ipc/register.ts` | `claude-state:list` returns every shell that is not idle. |
-| Service | `src/main/claude-status/state-tracker.ts` | The state machine per shell. Confirms each hook session. Emits `onChange` on real transitions and `onHookApplied` for every confirmed hook. |
-| Logic | `src/main/claude-status/answer-input.ts` | `isAnsweringInput`: Enter, a lone Esc, Ctrl-C or a single digit 1-9. |
-| Composition | `src/main/claude-status/install.ts` | Connects the hook fan-out, PTY `input` and `exit` events and a 1 s guard tick to the tracker. Broadcasts `claude-state:changed`. |
-| Adapter | `src/main/pty/manager.ts` | `write()` emits `input` for every write to a shell. |
-| Logic | `src/renderer/claude-state.ts` | Pure snapshot and delta reducers, and the worst state of a shell, a project or all shells. |
-| Presentation | `src/renderer/hooks/useClaudeStates.ts` | One store per window. Fetches the snapshot on first use, applies deltas, and fetches again on `alive-shells:changed`. |
-| Presentation | `src/renderer/components/StatusDot.tsx` | The dot: colour from `data-claude-state`, `title` and `aria-label` from the state label. |
-| Style | `src/renderer/styles.css` | `--claude-idle`, `--claude-busy` and `--claude-blocked` per theme, and the 1 px white ring on the highlighted project row of the command palette. |
+| Contract | `src/shared/agent-state.ts`, `src/shared/omp-report.ts` | Define agent identity, three states, accessible labels and a versioned OMP report. |
+| Adapter | `src/main/pty/{manager,screen-mirror}.ts` | Preserve original launch identity and PTY generation. Sample the active terminal's bottom twelve physical rows, join xterm-wrapped fragments, and capture OSC 0/2 title changes. |
+| Adapter | `src/main/agent-status/foreground-posix.ts` | Check process ancestry and the foreground process group for a manually started Claude on macOS or Linux. |
+| Adapter | `src/main/agent-status/omp-receiver.ts` | Receive bounded reports on loopback. Authenticate the current OMP spawn and reject stale reports. |
+| Adapter | `src/main/agent-status/omp-launch.ts`, `resources/omp-status-extension.js` | Add an explicit app-owned extension to direct OMP launches. Report root-session lifecycle without prompt or tool arguments. |
+| Service | `src/main/agent-status/{claude-screen,omp-session,state-tracker}.ts` | Classify Claude's current title, working rows, and live confirmation forms; apply ordered OMP events and publish changed shell states. |
+| Composition | `src/main/agent-status/install.ts`, `src/main/startup/receivers.ts`, `src/main/index.ts` | Start the receiver before any launch, subscribe to PTY lifecycle, and sample Claude status every 250 ms. |
+| Transport | `src/main/ipc/register.ts`, `src/shared/ipc-contract.ts` | Send `agent-state:list` snapshots, including recognized idle agents, and `agent-state:changed` deltas to all windows. |
+| Renderer | `src/renderer/agent-state.ts`, `src/renderer/hooks/useAgentStates.ts` | Keep the current shell map, apply snapshots and deltas, and compute project/global severity. |
+| Presentation | `src/renderer/components/{StatusDot,ShellTabDot}.tsx`, `src/renderer/styles.css` | Show agent-specific shell labels, generic aggregate labels, the existing three colours and inactive grey tabs. |
 
 Rules:
 
-- A shell with no current hook session is always idle. The tracker keeps a
-  state only while its session is the shell's current session, so a
-  respawn or a release reads idle.
-- `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and `PostToolUseFailure`
-  set busy. `PermissionRequest` and a needs-input `Notification` set
-  blocked.
-- `Stop` with no background tasks and `StopFailure` set idle. `idle_prompt`
-  sets idle unless the shell waits on background work.
-- `Stop` with background tasks sets busy and marks the shell as waiting on
-  background work. Claude Code resumes when that work reports back.
-  `session_crons` does not count.
-- An answering keystroke moves a blocked shell to busy. Terminal reports,
-  such as focus and cursor-position replies, and arrow keys do not.
-- A needs-input `Notification` that arrives after an answering keystroke,
-  with no hook since, is stale and is ignored.
-- A busy shell with no PTY output for 15 s becomes idle, unless it waits on
-  background work. Blocked never expires.
-- Per-shell dots show the shell's state. Project dots show the worst state
-  of the project's live shells. The "In use" header shows the worst state
-  of all live shells. An inactive shell tab is grey when idle.
+- A direct app-launched Claude keeps its launch identity for one PTY
+  generation, including a Windows `.cmd` wrapper or unavailable Claude
+  hooks. A manually started Claude requires foreground process evidence on
+  macOS or Linux. Without that evidence, including on Windows, its dot
+  remains idle.
+- Claude shows busy for a working OSC title or recognized live activity,
+  including a spinner above the persistent input box. A known current approval
+  or confirmation form takes precedence and shows blocked. Unknown or stale
+  text remains idle. The sampler never reads scrollback or a user-scrolled viewport.
+- A direct app-launched OMP loads `resources/omp-status-extension.js` with
+  `-e` alongside user extensions. It clears an inherited `OMPCODE=1`
+  nesting flag for this app-owned root shell. If the receiver or extension
+  is unavailable, or `--trusted-extension` conflicts, OMP still starts
+  and its status remains idle.
+- The OMP receiver accepts only bounded versioned reports for the current
+  spawn credential, PTY generation, session and increasing sequence. During
+  a root session, the extension sends current turn and blocker counts every
+  250 ms. A later heartbeat repairs a lost transition. After 1,500 ms
+  without an accepted report, the tracker returns a live OMP shell to idle.
+  A shell exit or replacement revokes its credential. OMP sends no OS notification.
+- The IPC payload carries only `projectId`, `shellIndex`, `agent` and
+  `state`. An exit clears the renderer entry. Every recognized individual
+  shell label names Claude or OMP, including idle. Project and global
+  labels use generic text. Severity is blocked, then busy, then idle.
 
 ### Project and app-wide environment variables
 
@@ -848,11 +1114,10 @@ links outside a diagram open through the `app:open-external` IPC channel.
 ### Claude notification event
 
 1. At app start, `runtime.ts` starts the receiver on an ephemeral
-   `127.0.0.1` port. It then writes
-   `~/.metaide/claude-hooks/settings-<port>.json`. The file registers
-   `http` hooks for `Notification`, `Stop`, `UserPromptSubmit`,
-   `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionRequest`
-   and `StopFailure`, with a timeout of 1 second.
+   `127.0.0.1` port. It writes
+   `~/.metaide/claude-hooks/settings-<port>.json` with `Notification`,
+   `Stop` and `UserPromptSubmit` HTTP hooks, each with a one-second timeout
+   (`src/main/claude-hooks/settings-file.ts:21-55`).
 2. When a Claude shell spawns, the decorator issues a session id and a
    secret. It adds `--settings <file>` after `argv[0]`, and
    `METAIDE_HOOK_SHELL` and `METAIDE_HOOK_TOKEN` to the environment.
@@ -862,15 +1127,29 @@ links outside a diagram open through the `app:open-external` IPC channel.
    secret, and then the body size (1 MiB at most). It answers `204` with no
    body, and only then passes the event on through the fan-out. Claude Code
    never gets a decision from the app.
-5. The tracker confirms the session, marks the shell hook-confirmed and
-   applies the event. It broadcasts `claude-state:changed` when the state
-   changed, and emits the applied hook with its before and after state.
-6. The notifier classifies the applied hook. It reads the toggle, checks
-   that notifications are supported, and checks if the user is viewing the
-   shell. Then it shows the notification.
+5. `ClaudeHookHistory` confirms the current session and updates only
+   notification eligibility. It sends the applied event and its prior and
+   current eligibility to `ClaudeNotifier`.
+6. The notifier reads the appropriate toggle and checks support and
+   whether the user is viewing the shell. It then shows the notification.
 7. A click on a popped-out shell's notification focuses the popout.
    Otherwise the main window is restored and focused, and
    `shell:focus-request` is sent only while the shell is still alive.
+
+### Agent status update
+
+1. `PtyManager.spawn` records the requested agent identity and a new
+   generation before it emits `spawn`.
+2. Every 250 ms, `AgentStatusTracker` reads the bottom of a recognized
+   Claude shell's active screen after the parser drains. On macOS and
+   Linux, it first checks the foreground process for manually started
+   Claude. Unknown screen content or missing process evidence stays idle.
+3. A direct OMP launch loads the packaged extension. Its root session
+   sends versioned, ordered lifecycle reports to the local receiver.
+   The receiver accepts only credentials bound to the live PTY generation.
+4. The tracker sends changed identity or state through
+   `agent-state:changed`. A new window reads `agent-state:list`.
+   An exit revokes OMP credentials and removes the renderer entry.
 
 ### Project and app-wide environment variables at spawn
 
@@ -927,18 +1206,23 @@ The user saves the project Env tab, and a shell starts:
 Not applicable to the preview. It reads only the local file buffer.
 
 The Claude hook receiver accepts requests only on `127.0.0.1`, with a
-`Host` header that matches its port. Each Claude spawn gets its own
-32-byte secret. The receiver compares it with `timingSafeEqual`. The
-secret is in the PTY environment only, never in argv, in the settings file
-or in logs. Processes that Claude starts inherit the secret, so they can
-raise notifications and change the dot colour for that shell only. A
-released session no longer authenticates. Authentication runs before the
-body is read, so an unauthenticated request never has its body buffered.
+`Host` header that matches its port. Each Claude spawn gets a 32-byte
+secret. The receiver compares it with `timingSafeEqual`. The secret stays
+in the PTY environment, not in argv, settings or logs. Child processes
+inherit it and can raise notifications for that shell, but cannot change
+status dots. Released sessions stop authenticating. The receiver
+authenticates before it buffers the request body.
 
-The `claude-state:list` reply and the `claude-state:changed` event carry
-only `projectId`, `shellIndex` and `state`. No hook message, tool input,
-tool response or background task leaves the parser. The tracker never logs
-PTY input.
+The OMP receiver binds only to `127.0.0.1`. It limits input size, concurrent
+connections and report rate. It checks a per-spawn secret, PTY generation,
+active session and increasing report sequence
+(`src/main/agent-status/omp-receiver.ts:13-36,62-101,104-145`).
+Only a process with the live shell's current credential can report its OMP status.
+
+The `agent-state:list` reply and `agent-state:changed` event carry only
+`projectId`, `shellIndex`, `agent` and `state`. No hook message, prompt,
+tool input, tool response, terminal text, session id or credential crosses
+the status IPC boundary (`src/shared/ipc-contract.ts:102-103,383-384`).
 
 Project variable values are stored in plain text in the project's
 `config_json` in SQLite, and the database backups copy them as they are.
@@ -974,8 +1258,9 @@ rules apply to it.
 
 Known gaps, recorded as follow-ups: a repository's `filter.<name>.clean`
 programs can still run during status, because git cannot turn them off
-for one command. `files:read` checks containment with a plain
-`startsWith` on the project path.
+for one command. The `files:*` handlers check containment lexically
+(`src/main/domain/path-containment.ts`), so unlike `assertWorktreeContained`
+they follow a symlink inside the project that points outside it.
 
 Highlighted lines reach the DOM through one `dangerouslySetInnerHTML`, in
 `SplitDiffRows.tsx`. It takes only the branded `SafeLineHtml` type, which
@@ -994,6 +1279,20 @@ the whole side falls back to escaped plain text.
 | `mermaid` | 11.17.2, exact pin | Diagrams. Version 12 requires Node 22, and the repo uses Node 20. |
 
 ## Architectural Decisions
+
+- **Terminal drops use Ghostty's escaping, not quotes.** Dropped paths are
+  backslash-escaped and pasted, the same as Ghostty does. CLI agents such as
+  Claude Code recognise this form as a file path. The Files-tree resolver
+  checks containment with `isInsideRoot` from
+  `src/main/domain/path-containment.ts`.
+
+- **One containment rule for project files.** `isInsideRoot` and
+  `resolveInsideRoot` (`src/main/domain/path-containment.ts`) decide whether a
+  path is inside a project root with `path.relative()`. The `files:*` handlers,
+  `files:start-drag` and the drop resolver all use them. A string-prefix test is
+  not used, because it accepts a sibling such as `/proj-evil` for the root
+  `/proj`. `files:peek` still reads absolute paths by design; it uses
+  `isInsideRoot` only to choose which root a path is shown under.
 
 - **Motion library.** `motion@14.0.0` is pinned exactly. It was five days
   old when added, inside the usual release-age window; it was accepted
@@ -1076,7 +1375,9 @@ the whole side falls back to escaped plain text.
   `--bg`, painted by both `html` and `body`, over the window's vibrancy
   material. `capturePage` cannot see that material, so the palette checks
   contrast against `--bg` painted twice over black and over white
-  (`REFERENCE_MATERIALS`, `BG_LAYERS` in `paletteContract.ts`).
+  (`REFERENCE_MATERIALS`, `BG_LAYERS` in `paletteContract.ts`). On macOS the
+  sheet is opaque, so a diagram lands on `--sheet-solid`
+  (`MAC_PREVIEW_SURFACE`).
 - **KaTeX runs untrusted.** `renderMath.ts:5-10` sets `trust: false`,
   `maxSize: 20` and `maxExpand: 1000`.
 - **Own math plugin.** No maintained plugin supports `markdown-it` 14 and all
@@ -1116,23 +1417,22 @@ the whole side falls back to escaped plain text.
   and with emulation off, `blur()` does not resign key while no other window
   or app can take focus. Real macOS app activation delivers the event; this
   was verified by hand, not by the suite.
-- **Claude events come from hooks, not terminal output.** By default,
-  Claude Code sends no bell and no notification escape sequence to an
-  xterm.js terminal. A bell also does not tell which event happened. The
-  hook payload gives the event type and message. Tools that read the
-  terminal title spinner or the screen text break when Claude Code changes
-  its interface. The status dots use the PTY only for two things: answering
-  keystrokes, because no hook fires when the user answers a prompt, and
-  output silence, because no hook fires when the user interrupts a turn.
+- **Status authority differs from notification authority.** Claude
+  notifications use authenticated `Notification`, `Stop` and
+  `UserPromptSubmit` hooks. Status dots use the live terminal title and
+  bounded current screen of a recognized Claude PTY. A plain terminal's text
+  cannot establish Claude identity. OMP dots use authenticated lifecycle reports
+  from the app-owned extension. A reporter heartbeat repairs a missed
+  transition; its lease returns stale busy or blocked status to idle.
 - **A `Stop` with background tasks is not the end of the work.** Claude
   Code fires `Stop` when the main agent stops responding, also while
   background shells, subagents or teammates still run. The `background_tasks`
   list in the payload tells the two cases apart. Only its length is kept.
-- **One state drives the dots and the notifications.** The notifier reads
-  the tracker's applied hooks, not the receiver. A stream of state changes
-  alone is not enough: `PermissionRequest` sets blocked, and the
-  `permission_prompt` notification about 6 s later does not change the
-  state but must still notify.
+- **Notifications keep their own hook history.** The notification
+  history confirms Claude's current hook session and tracks eligibility
+  after a prompt answer, background `Stop`, or quiet turn. It does not
+  set status dots. A received needs-input or finished hook can notify
+  while the independent live-screen dot remains idle.
 - **Hooks are `http`, not `command`.** An `http` hook needs no shell,
   `curl` or `node` on the PATH, so the same file works on Windows. HTTP
   errors and timeouts do not block Claude Code.

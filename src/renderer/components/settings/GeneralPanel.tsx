@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useState, type ReactNode } from 'react';
 import type { SettingsMap } from '@shared/types';
 import {
   TERMINAL_FONT_FALLBACK,
@@ -6,7 +6,9 @@ import {
   type FontFamilyPreference,
 } from '@shared/font-settings';
 import { api } from '@renderer/api';
+import { useShortcutPlatform } from '@renderer/shortcut-platform';
 import { useTheme, type ThemeMode, type ThemePalette } from '@renderer/hooks/useTheme';
+import { FrostedGlassGroup } from '@renderer/components/settings/FrostedGlassGroup';
 import {
   FontControl,
   type FontDiscoveryState,
@@ -34,6 +36,7 @@ export function GeneralPanel({
   readonly onLoadInstalledFonts: () => Promise<void>;
 }) {
   const { mode, palette, effective, setMode, setPalette } = useTheme();
+  const platform = useShortcutPlatform();
   const board = useBoardSettings();
 
   return (
@@ -44,7 +47,9 @@ export function GeneralPanel({
         onMode={setMode}
         onPalette={setPalette}
         onOpacity={(v) => void board.applyOpacity(v)}
-      />
+      >
+        {platform === 'mac' && <FrostedGlassGroup />}
+      </AppearanceSection>
       <FontSettingsControls discovery={fontDiscovery} onLoadInstalledFonts={onLoadInstalledFonts} />
       <WorkspaceSection
         cap={board.cap}
@@ -97,7 +102,8 @@ const FIELD: Readonly<Record<BoardKey, keyof BoardValues>> = {
   notify_claude_finished: 'notifyFinished',
 };
 
-async function loadBoard(): Promise<BoardValues> {
+/** Loads the General board's six settings keys in one batch. */
+export async function loadBoard(): Promise<BoardValues> {
   const [c, d, w, o, ni, nf] = await Promise.all([
     api.invoke('settings:get', { key: 'keep_alive_cap' }),
     api.invoke('settings:get', { key: 'scan_depth' }),
@@ -116,8 +122,8 @@ async function loadBoard(): Promise<BoardValues> {
   };
 }
 
-/** Board settings state: loads the six keys once, `update` sets a value locally and saves it, `applyOpacity` clamps to 30..100 and applies window opacity. */
-function useBoardSettings() {
+/** Board settings state: loads the six keys once, `update` sets a value locally and saves it, `applyOpacity` clamps to 30..100 and applies window opacity. The Frosted glass group owns its own four settings through `useFrostedGlassSettings`. */
+export function useBoardSettings() {
   const [values, setValues] = useState<BoardValues>(INITIAL);
 
   useEffect(() => { void loadBoard().then(setValues); }, []);
@@ -136,19 +142,17 @@ function useBoardSettings() {
   return { ...values, update, applyOpacity };
 }
 
-function AppearanceSection({
-  theme,
-  opacity,
-  onMode,
-  onPalette,
-  onOpacity,
-}: {
+export interface AppearanceSectionProps {
   readonly theme: { readonly mode: ThemeMode; readonly palette: ThemePalette; readonly effective: 'light' | 'dark' };
   readonly opacity: number;
   readonly onMode: (mode: ThemeMode) => void;
   readonly onPalette: (palette: ThemePalette) => void;
   readonly onOpacity: (percent: number) => void;
-}) {
+  readonly children?: ReactNode;
+}
+
+/** Settings > General > Appearance section: Theme, Mode, Window opacity, then `children` (the Frosted glass group on mac, D21/AC26). */
+export function AppearanceSection({ theme, opacity, onMode, onPalette, onOpacity, children }: AppearanceSectionProps) {
   return (
     <SettingsSection title="Appearance">
       <SettingStack label="Theme">
@@ -173,6 +177,7 @@ function AppearanceSection({
           <span className="w-10 text-right text-[13px] tabular-nums text-[--text]">{opacity}%</span>
         </div>
       </SettingRow>
+      {children}
     </SettingsSection>
   );
 }

@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { resolveColour } from './helpers/mermaid-palette';
 import { effectiveColours, backgroundLuminance, paintedOver, textContrast, type Theme } from './helpers/contrast';
+import { isMacPlatform } from './helpers/chrome-colour';
+import { FROSTED_GLASS_COPY, FROSTED_GLASS_TESTIDS } from '../../src/renderer/frosted-chrome-contract';
 
 /**
  * Settings General board restyle (docs/specs/2026-10-06-settings-board-restyle.md).
@@ -341,9 +343,40 @@ test('AC4: focus moves to the panel, Tab is contained, and returns to the opener
   await expect(dialog().getByRole('listbox')).toHaveCount(0);
   await expect(dialog()).toBeVisible();
   await expect(input).toBeFocused();
-  // Shift+Tab: backwards to the opacity slider (Tab would open the Terminal list, whose Escape is its own).
+  // Shift+Tab: backwards to the opacity slider (Tab would open the Terminal
+  // list, whose Escape is its own). On macOS (docs/specs/macos-frosted-glass-settings.md
+  // D21/AC26/AC27), GeneralPanel renders the Frosted glass group directly
+  // below Window opacity, so the tab order there is Window opacity ->
+  // Frosted chrome (switch) -> Chrome frost (radiogroup) -> Terminal frost
+  // (radiogroup) -> Material (select) -> Interface, each radiogroup being
+  // one roving-tabindex stop (the control's own `aria-checked="true"`
+  // option), four stops longer than off mac.
   await win.keyboard.press('Shift+Tab');
   expect(await insidePanel()).toBe(true);
+  if (await isMacPlatform(win)) {
+    const material = dialog().getByTestId(FROSTED_GLASS_TESTIDS.material);
+    // Positive control: the group is actually there to land on, not absent
+    // (which would make the following assertions fail for an unrelated reason).
+    await expect(material, 'the Frosted glass group is rendered on mac (AC26)').toBeVisible();
+    await expect(material).toBeFocused();
+    await win.keyboard.press('Shift+Tab');
+    expect(await insidePanel()).toBe(true);
+
+    const terminalFrost = dialog().getByTestId(FROSTED_GLASS_TESTIDS.terminalFrost).locator('[aria-checked="true"]');
+    await expect(terminalFrost).toBeFocused();
+    await win.keyboard.press('Shift+Tab');
+    expect(await insidePanel()).toBe(true);
+
+    const chromeFrost = dialog().getByTestId(FROSTED_GLASS_TESTIDS.chromeFrost).locator('[aria-checked="true"]');
+    await expect(chromeFrost).toBeFocused();
+    await win.keyboard.press('Shift+Tab');
+    expect(await insidePanel()).toBe(true);
+
+    const frostToggle = dialog().getByRole('switch', { name: FROSTED_GLASS_COPY.frostChrome });
+    await expect(frostToggle).toBeFocused();
+    await win.keyboard.press('Shift+Tab');
+    expect(await insidePanel()).toBe(true);
+  }
   await expect(dialog().getByRole('slider', { name: 'Window opacity' })).toBeFocused();
   await win.keyboard.press('Escape');
   await expect(win.getByTestId('settings-modal')).toBeHidden();
@@ -444,12 +477,22 @@ test('AC9-AC12: four section headings, control order, spacing, row layout and hi
   await expect(dialog().getByRole('heading', { level: 1 })).toHaveCount(1);
   await expect(dialog().getByRole('button', { name: 'General', exact: true })).toHaveCount(1);
 
-  // AC10: each control in its own section, in order top to bottom.
+  // AC10: each control in its own section, in order top to bottom. On
+  // macOS the Frosted glass group (docs/specs/macos-frosted-glass-settings.md
+  // AC26) sits in Appearance, directly after Window opacity: switch, Chrome
+  // frost radiogroup, Terminal frost radiogroup, Material select, in order.
+  const mac = await isMacPlatform(win);
   const order: [string, Locator[]][] = [
     ['Appearance', [
       region('Appearance').getByRole('group', { name: 'Theme' }),
       region('Appearance').getByRole('radiogroup', { name: 'Mode' }),
       region('Appearance').getByRole('slider', { name: 'Window opacity' }),
+      ...(mac ? [
+        region('Appearance').getByRole('switch', { name: FROSTED_GLASS_COPY.frostChrome }),
+        region('Appearance').getByTestId(FROSTED_GLASS_TESTIDS.chromeFrost),
+        region('Appearance').getByTestId(FROSTED_GLASS_TESTIDS.terminalFrost),
+        region('Appearance').getByTestId(FROSTED_GLASS_TESTIDS.material),
+      ] : []),
     ]],
     ['Fonts', [
       region('Fonts').getByRole('combobox', { name: 'Interface', exact: true }),
@@ -501,6 +544,21 @@ test('AC9-AC12: four section headings, control order, spacing, row layout and hi
     expectPx(c.x + c.width, r.x + r.width, `${label}: control at right`, 1);
   }
   await expect(region('Appearance').getByRole('group', { name: 'Theme' })).toHaveText('ThemeDefaultCatppuccinRosé Pine');
+
+  // AC26 (docs/specs/macos-frosted-glass-settings.md): the Frosted glass group is a
+  // `role="group"` named "Frosted glass", a descendant of the Appearance section (not a
+  // 5th SettingsSection — the `headings.toHaveText([...SECTIONS])` check above already
+  // pins the section count at 4), and its own row hints render only there, mac-gated so
+  // the generic ROW_HINTS loop above (which runs unconditionally) is never asked to find
+  // a mac-only hint off mac.
+  if (await isMacPlatform(win)) {
+    const group = region('Appearance').getByRole('group', { name: FROSTED_GLASS_COPY.group });
+    await expect(group).toHaveCount(1);
+    await expect(scroller().getByText(FROSTED_GLASS_COPY.frostChromeHint, { exact: true })).toHaveCount(1);
+    await expect(scroller().getByText(FROSTED_GLASS_COPY.materialHint, { exact: true })).toHaveCount(1);
+  } else {
+    await expect(scroller().getByTestId(FROSTED_GLASS_TESTIDS.group)).toHaveCount(0);
+  }
 });
 
 test('AC11: the content never scrolls horizontally at 1440 and 900 wide', async () => {
@@ -893,7 +951,11 @@ test('AC32: text contrast on the effective background in every palette x theme',
     ...SECTIONS.map((s): [string, Locator] => [`heading ${s}`, region(s).getByRole('heading', { level: 2 })]),
     ...[...Object.values(ROW_HINTS), FONTS_HINT].map((h): [string, Locator] => [`hint ${h}`, scroller().getByText(h, { exact: true })]),
     ['selected card label', cards().and(win.locator('[aria-pressed="true"]')).locator(':scope > span').nth(1)],
-    ['checked Mode segment', dialog().getByRole('radio', { checked: true })],
+    // Scoped to the Mode radiogroup specifically: on mac, the Frosted glass group's Chrome
+    // frost and Terminal frost radiogroups (docs/specs/macos-frosted-glass-settings.md
+    // AC26) also live in this dialog and each have their own checked radio, so an
+    // unscoped `dialog().getByRole('radio', { checked: true })` now matches 3, not 1.
+    ['checked Mode segment', region('Appearance').getByRole('radiogroup', { name: 'Mode' }).getByRole('radio', { checked: true })],
   ];
   const check = async (at: string, theme: Theme, items: [string, Locator][], floor: number) => {
     for (const [what, el] of items) {

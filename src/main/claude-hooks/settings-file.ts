@@ -1,14 +1,4 @@
-/**
- * The app-owned Claude Code settings file passed via `--settings`. It
- * registers one `http` hook on `Notification` (all types), `Stop`,
- * `UserPromptSubmit`, the tool events, `PermissionRequest` and
- * `StopFailure`, pointing at the loopback receiver with header
- * templates Claude fills from the PTY env. It holds no secret and lives
- * under `~/.metaide/claude-hooks/`, never under a Claude config path (AC7).
- * The file is keyed by the receiver port so app instances sharing one HOME
- * (packaged + dev) never point each other's Claude shells at the wrong
- * receiver.
- */
+/** Writes only Claude notification and turn-confirmation hooks; status dots never consume hooks. */
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { SHELL_ENV, SHELL_HEADER, TOKEN_ENV } from './protocol';
@@ -29,9 +19,7 @@ export interface HookGroup {
 }
 
 /** Name of a hook event the app registers. */
-export type RegisteredHookEvent =
-  | 'Notification' | 'Stop' | 'UserPromptSubmit'
-  | 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PermissionRequest' | 'StopFailure';
+export type RegisteredHookEvent = 'Notification' | 'Stop' | 'UserPromptSubmit';
 
 /** The settings document written to disk. */
 export interface HookSettings {
@@ -63,11 +51,6 @@ export function buildHookSettings(url: string): HookSettings {
       Notification: all(),
       Stop: unmatched(),
       UserPromptSubmit: unmatched(),
-      PreToolUse: all(),
-      PostToolUse: all(),
-      PostToolUseFailure: all(),
-      PermissionRequest: all(),
-      StopFailure: all(),
     },
   };
 }

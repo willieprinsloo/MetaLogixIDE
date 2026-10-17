@@ -175,6 +175,26 @@ describe('PtyManager', () => {
   });
 });
 
+describe('PtyManager live status port', () => {
+  it('returns generation-scoped spawn identity and a live status sample only while shell lives', async () => {
+    const mgr = new PtyManager();
+    expect(mgr.liveShell(72, 0)).toBeNull();
+    expect(await mgr.liveStatus(72, 0)).toEqual({ rows: [], title: '' });
+    const arrived = untilData(mgr, 72, 'SIZE=');
+    const spawned = await mgr.spawn(72, 0, sizeLaunch(), 80, 6);
+    await arrived;
+    const live = mgr.liveShell(72, 0);
+    expect(live).toMatchObject({ pid: spawned.pid, agent: null });
+    expect(live?.generation).toEqual(expect.any(String));
+    await vi.waitFor(async () => {
+      expect((await mgr.liveStatus(72, 0)).rows.join('\n')).toContain('SIZE=');
+    }, { timeout: 400, interval: 10 });
+    await mgr.kill(72, 0);
+    expect(mgr.liveShell(72, 0)).toBeNull();
+    expect(await mgr.liveStatus(72, 0)).toEqual({ rows: [], title: '' });
+  });
+});
+
 const PRINT_PROBE = 'process.stdout.write(`PROBE=${process.env.HOOK_PROBE ?? "unset"} ARG=${process.argv[1] ?? "none"}\\n`); setTimeout(() => {}, 500)';
 
 function probeLaunch(env: Record<string, string> = {}) {

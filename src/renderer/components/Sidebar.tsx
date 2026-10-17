@@ -4,9 +4,9 @@ import { useRoots } from '@renderer/hooks/useRoots';
 import { useProjects } from '@renderer/hooks/useProjects';
 import { useRecents } from '@renderer/hooks/useRecents';
 import { useAliveShellIds } from '@renderer/hooks/useAliveShellIds';
-import { useOverallClaudeState, useProjectClaudeState } from '@renderer/hooks/useClaudeStates';
+import { useOverallAgentState, useProjectAgentState } from '@renderer/hooks/useAgentStates';
 import type { Project, Root } from '@shared/types';
-import type { ClaudeShellState } from '@shared/claude-state';
+import type { AgentState } from '@shared/agent-state';
 import { api } from '@renderer/api';
 import { toast } from '@renderer/hooks/useToasts';
 import { AnimatePresence } from 'motion/react';
@@ -35,7 +35,7 @@ export function Sidebar({ selectedProjectId, onSelect, onNewProject, onEditEnv, 
   const { projects, refresh: refreshProjects } = useProjects();
   const { recents } = useRecents(10);
   const { aliveIds } = useAliveShellIds();
-  const overallClaudeState = useOverallClaudeState();
+  const overallAgentState = useOverallAgentState();
   const [filter, setFilter] = useState('');
 
   // Stable order for the "In use" section: each project keeps the seq
@@ -100,7 +100,7 @@ export function Sidebar({ selectedProjectId, onSelect, onNewProject, onEditEnv, 
 
       <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7">
         {inUse.length > 0 && (
-          <Section title="In use" testId="section-in-use" accent dotState={overallClaudeState}>
+          <Section title="In use" testId="section-in-use" accent dotState={overallAgentState}>
             {inUse.map((p) => (
               <ProjectRow
                 key={p.id}
@@ -179,8 +179,8 @@ function Section({
   persistKey?: string;
   testId: string;
   accent?: boolean;
-  /** Worst Claude state across the section's shells (D4); only meaningful when `accent` is set. */
-  dotState?: ClaudeShellState;
+  /** Worst severity among the section's shells, independent of agent identity. */
+  dotState?: AgentState;
   children: React.ReactNode;
 }) {
   const [collapsedSet, setCollapsedSet] = useState<Set<string>>(readCollapsedSections);
@@ -231,7 +231,7 @@ function ProjectRow({
   onProjectSettings: (target: ProjectSettingsTarget) => void;
   indent?: number;
 }) {
-  const claudeState = useProjectClaudeState(project.id);
+  const agentState = useProjectAgentState(project.id);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   async function unload(e: React.MouseEvent) {
     e.stopPropagation();
@@ -286,16 +286,16 @@ function ProjectRow({
         onClick={() => onSelect(project)}
         data-testid="project-row"
         data-alive={alive ? '1' : '0'}
-        className="flex-1 min-w-0 h-full flex items-center gap-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--accent] rounded-lg"
+        className="flex-1 min-w-0 h-full flex items-center gap-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent-mark,var(--accent))] rounded-lg"
         style={{ paddingLeft: indent }}
       >
         {alive ? (
-          <StatusDot state={claudeState} className="shrink-0" />
+          <StatusDot state={agentState} className="shrink-0" />
         ) : (
           <span
             aria-hidden
             className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
-              selected ? 'bg-[color:var(--accent)]' : 'bg-[--surface-active]'
+              selected ? 'bg-[color:var(--accent-mark,var(--accent))]' : 'bg-[--surface-active]'
             }`}
           />
         )}

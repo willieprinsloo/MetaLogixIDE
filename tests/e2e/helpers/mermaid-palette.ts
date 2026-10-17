@@ -25,8 +25,7 @@ import {
   type Locator,
   type Page,
 } from '@playwright/test';
-import { cpSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { cpSync, mkdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
   MARKDOWN_PREVIEW_TESTID,
@@ -40,6 +39,7 @@ import {
   BG_LAYERS,
   REFERENCE_MATERIALS,
 } from '../../../src/renderer/markdown/mermaid/paletteContract';
+import { guardedLaunch } from './claude-harness';
 
 export const PROJECT = 'palproj';
 const FIXTURES = resolve(process.cwd(), 'tests/e2e/fixtures/mermaid-palette');
@@ -239,54 +239,58 @@ export interface PaletteIde {
 /** Launches the built app with an isolated profile and one project holding every palette fixture. */
 export async function launchPaletteIde(label: string): Promise<PaletteIde> {
   const mockClaude = resolve(process.cwd(), 'scripts/mock-claude.mjs');
-  const home = mkdtempSync(join(tmpdir(), `metaide-pal-${label}-home-`));
-  const root = mkdtempSync(join(tmpdir(), `metaide-pal-${label}-root-`));
-  const projDir = join(root, PROJECT);
-  mkdirSync(projDir);
-  mkdirSync(join(projDir, '.git'));
-  cpSync(FIXTURES, projDir, { recursive: true });
+  return guardedLaunch(async (scope) => {
+    const home = scope.tempDir(`metaide-pal-${label}-home-`);
+    const root = scope.tempDir(`metaide-pal-${label}-root-`);
+    const projDir = join(root, PROJECT);
+    mkdirSync(projDir);
+    mkdirSync(join(projDir, '.git'));
+    cpSync(FIXTURES, projDir, { recursive: true });
 
-  const app = await electron.launch({
-    args: ['.', `--user-data-dir=${join(home, 'userData')}`],
-    env: {
-      ...process.env,
-      HOME: home,
-      METAIDE_TEST_MODE: '1',
-      METAIDE_CLAUDE_PERMISSION_MODE: 'bypass',
-      METAIDE_DEFAULT_LAUNCH_FIRST: JSON.stringify({ argv: ['node', mockClaude], env: {} }),
-      METAIDE_DEFAULT_LAUNCH_SUBSEQUENT: JSON.stringify({
-        argv: ['node', mockClaude, '--continue'],
-        env: {},
+    const app = scope.own(
+      await electron.launch({
+        args: ['.', `--user-data-dir=${join(home, 'userData')}`],
+        env: {
+          ...process.env,
+          HOME: home,
+          METAIDE_TEST_MODE: '1',
+          METAIDE_CLAUDE_PERMISSION_MODE: 'bypass',
+          METAIDE_DEFAULT_LAUNCH_FIRST: JSON.stringify({ argv: ['node', mockClaude], env: {} }),
+          METAIDE_DEFAULT_LAUNCH_SUBSEQUENT: JSON.stringify({
+            argv: ['node', mockClaude, '--continue'],
+            env: {},
+          }),
+        },
       }),
-    },
-  });
-  const win = await app.firstWindow();
-  const ide: PaletteIde = {
-    app,
-    win,
-    pageErrors: [],
-    cleanup: async () => {
-      await app.close();
-      rmSync(home, { recursive: true, force: true });
-      rmSync(root, { recursive: true, force: true });
-    },
-  };
-  win.on('pageerror', (err) => ide.pageErrors.push(err.message));
-  await win.waitForLoadState('domcontentloaded');
+    );
+    const win = await app.firstWindow();
+    const ide: PaletteIde = {
+      app,
+      win,
+      pageErrors: [],
+      cleanup: async () => {
+        await app.close();
+        rmSync(home, { recursive: true, force: true });
+        rmSync(root, { recursive: true, force: true });
+      },
+    };
+    win.on('pageerror', (err) => ide.pageErrors.push(err.message));
+    await win.waitForLoadState('domcontentloaded');
 
-  // Seed the root through IPC (dialogs are no-ops under METAIDE_TEST_MODE).
-  await win.evaluate(async (path: string) => {
-    const api = (
-      window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<unknown> } }
-    ).api;
-    await api.invoke('roots:add', { path });
-  }, root);
-  const projectButton = win.getByRole('button', { name: PROJECT, exact: true });
-  await expect(projectButton).toBeVisible({ timeout: 10000 });
-  await projectButton.click();
-  await win.getByRole('button', { name: 'Files', exact: true }).click();
-  await expect(fileEntry(win, 'flowchart.md')).toBeVisible({ timeout: 10000 });
-  return ide;
+    // Seed the root through IPC (dialogs are no-ops under METAIDE_TEST_MODE).
+    await win.evaluate(async (path: string) => {
+      const api = (
+        window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<unknown> } }
+      ).api;
+      await api.invoke('roots:add', { path });
+    }, root);
+    const projectButton = win.getByRole('button', { name: PROJECT, exact: true });
+    await expect(projectButton).toBeVisible({ timeout: 10000 });
+    await projectButton.click();
+    await win.getByRole('button', { name: 'Files', exact: true }).click();
+    await expect(fileEntry(win, 'flowchart.md')).toBeVisible({ timeout: 10000 });
+    return ide;
+  });
 }
 
 function fileEntry(win: Page, name: string): Locator {
@@ -371,6 +375,16 @@ export async function openSettled(win: Page, name: string, count: number): Promi
   return p;
 }
 
+/**
+ * True iff the renderer root carries `data-platform="mac"` (frosted-chrome
+ * plan §2.2 / FROST_ATTR.platform, MAC_PLATFORM). Lives here, not in
+ * chrome-colour.ts, so `readReferenceBackgrounds` below can use it without a
+ * circular import (chrome-colour.ts already imports from this module).
+ */
+export async function isMacPlatform(win: Page): Promise<boolean> {
+  return win.evaluate(() => document.documentElement.getAttribute('data-platform') === 'mac');
+}
+
 /* ─────────────────────────────── live tokens ─────────────────────────────── */
 
 /** Raw computed value of a custom property on `<html>`, as the palette would read it. */
@@ -399,13 +413,28 @@ export async function tokenColour(win: Page, name: `--${string}`): Promise<Rgba>
 }
 
 /**
- * The theme's two reference backgrounds: live `--bg` composited `BG_LAYERS`
- * times over each of the theme's `REFERENCE_MATERIALS` bounds.
+ * AC29 (macOS frosted chrome, docs/specs/macos-frosted-chrome.md): on macOS
+ * `html`/`body` are transparent and the preview sits inside the main sheet,
+ * which is the opaque `--sheet-solid` (frosted-chrome plan §2.1) rather than
+ * `--bg` composited over the vibrancy material. The envelope collapses to a
+ * single literal colour there, so both bounds come back equal.
+ */
+const MAC_SHEET_SOLID_TOKEN = '--sheet-solid' as const;
+
+/**
+ * The theme's two reference backgrounds. Non-mac: live `--bg` composited
+ * `BG_LAYERS` times over each of the theme's `REFERENCE_MATERIALS` bounds.
+ * macOS (AC29): the opaque `--sheet-solid` the mac stack paints the sheet
+ * with, read directly (see `MAC_SHEET_SOLID_TOKEN`).
  */
 export async function readReferenceBackgrounds(
   win: Page,
   theme: EffectiveTheme,
 ): Promise<readonly [Rgb, Rgb]> {
+  if (await isMacPlatform(win)) {
+    const sheet = await tokenColour(win, MAC_SHEET_SOLID_TOKEN);
+    return [sheet, sheet] as const;
+  }
   const bg = await tokenColour(win, '--bg');
   const build = (material: string): Rgb => {
     let c: Rgb = mustParse(material, `REFERENCE_MATERIALS.${theme}`);

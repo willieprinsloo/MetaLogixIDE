@@ -7,7 +7,11 @@ import { SearchAddon } from '@xterm/addon-search';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { api } from '@renderer/api';
+import { FROST_ATTR } from '@renderer/frosted-chrome-contract';
 import { useShellStream } from '@renderer/hooks/useShellStream';
+import { useTerminalDrop } from '@renderer/hooks/useTerminalDrop';
+import { useTerminalPaste } from '@renderer/hooks/useTerminalPaste';
+import { DROP_COPY } from '@shared/terminal-drop-contract';
 import { terminalFocus } from '@renderer/hooks/useWindowTerminalFocus';
 import { detectPaths } from '@shared/detect-paths';
 import { sanitizeTerminalCopy } from '@shared/sanitize-terminal-copy';
@@ -117,7 +121,6 @@ export function ShellTab({
   const terminalFontFamilyRef = useRef<FontFamilyPreference>(terminalFontFamily);
   terminalFontFamilyRef.current = terminalFontFamily;
   const [hover, setHover] = useState<HoverPreviewState | null>(null);
-  const [dropActive, setDropActive] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   // When the PTY exits (early launch failure, user ran `exit`, binary crashed)
   // we show a React-state overlay with the exit code + a Re-launch button. The
@@ -129,6 +132,13 @@ export function ShellTab({
   onOpenFileRef.current = onOpenFile;
   const primaryRef = useRef(primary);
   primaryRef.current = primary;
+  const shellExitedRef = useRef(false);
+  const pasteIntoTerminal = useCallback((text: string) => { termRef.current?.paste(text); }, []);
+  const pasteFromText = useTerminalPaste(termHostRef, pasteIntoTerminal);
+  const { overlay: dropOverlay, handlers: dropHandlers } = useTerminalDrop({
+    paste: pasteIntoTerminal,
+    isExited: () => shellExitedRef.current,
+  });
 
   useEffect(() => {
     if (!termHostRef.current) return;
@@ -170,7 +180,7 @@ export function ShellTab({
       getSelection: () => term.getSelection(),
       writeClipboard: (text) => navigator.clipboard.writeText(text),
       readClipboard: () => navigator.clipboard.readText(),
-      paste: (text) => term.paste(text),
+      paste: (text) => { void pasteFromText(text); },
       onClipboardError: (op, err) => {
         toast(SHORTCUT_COPY.clipboardErrorTitle(op), { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') });
       },
@@ -358,9 +368,9 @@ export function ShellTab({
     const media = window.matchMedia('(prefers-color-scheme: dark)');
     const onScheme = () => { term.options.theme = buildTheme(); };
     media.addEventListener('change', onScheme);
-    // Both appearance and palette changes must refresh existing terminals.
+    // Appearance, palette and frosted-glass level changes (the level-scoped --term-fg) must refresh existing terminals.
     const themeObserver = new MutationObserver(() => { term.options.theme = buildTheme(); });
-    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-palette'] });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-palette', FROST_ATTR.platform, FROST_ATTR.chromeFrost, FROST_ATTR.terminalFrost] });
 
     return () => {
       fontUpdater.dispose();
@@ -384,7 +394,7 @@ export function ShellTab({
     };
     // Font metric changes must not recreate the terminal. Dedicated effects below
     // apply font size, weight and family updates to the live instance instead.
-  }, [projectId, shellIndex]);
+  }, [projectId, shellIndex, pasteFromText]);
 
   const findNext = useCallback((q: string) => {
     if (!q || !searchRef.current) return;
@@ -438,11 +448,13 @@ export function ShellTab({
     shellIndex,
     (data) => {
       // Any new data means we're alive again — clear a stale exit overlay.
+      shellExitedRef.current = false;
       if (exitInfo) setExitInfo(null);
       if (snapshotReady.current) termRef.current?.write(data);
       else pendingLive.current += data;
     },
     (code) => {
+      shellExitedRef.current = true;
       termRef.current?.write('\r\n[shell exited]\r\n');
       setExitInfo({ code });
     },
@@ -468,44 +480,13 @@ export function ShellTab({
       ref={containerRef}
       data-testid="shell-tab"
       tabIndex={-1}
-      onDragOver={(e) => {
-        // Terminal accepts BOTH OS file drops (from Finder) AND intra-app
-        // drags from the Files tree (which set text/plain to the relPath).
-        // Without preventDefault the webview would try to navigate to
-        // file://<dropped-path> — that's the "error" the user was seeing.
-        const types = e.dataTransfer?.types;
-        if (types?.includes('Files') || types?.includes('text/plain')) {
-          e.preventDefault();
-          e.dataTransfer.dropEffect = 'copy';
-          setDropActive(true);
-        }
-      }}
-      onDragLeave={() => setDropActive(false)}
+      {...dropHandlers}
       onContextMenu={(e) => {
         // Only intercept when the click is inside the terminal viewport.
         // Anything else (search bar, drop overlay) uses default browser menu.
         if (!(e.target as HTMLElement).closest('.xterm')) return;
         e.preventDefault();
         setMenu({ x: e.clientX, y: e.clientY });
-      }}
-      onDrop={(e) => {
-        setDropActive(false);
-        const dt = e.dataTransfer;
-        if (!dt) return;
-        let paths: string[] = [];
-        if (dt.files?.length) {
-          paths = Array.from(dt.files).map((f) => api.pathForFile(f)).filter((p) => !!p);
-        }
-        if (paths.length === 0) {
-          const text = dt.getData('text/plain');
-          if (text) paths = [text];
-        }
-        if (paths.length === 0) return;
-        e.preventDefault();
-        // Single-quote each path so the CLI receives it verbatim, and escape
-        // any embedded single-quote via the standard `'"'"'` gymnastics.
-        const quoted = paths.map((p) => `'${p.replace(/'/g, "'\\''")}'`).join(' ');
-        void api.invoke('shells:write', { projectId, shellIndex, data: quoted });
       }}
       className="relative w-full h-full min-h-0 px-3 pt-2 pb-3 bg-transparent focus:outline-none"
     >
@@ -536,9 +517,9 @@ export function ShellTab({
           </div>
         </div>
       )}
-      {dropActive && (
-        <div className="absolute inset-2 pointer-events-none rounded-md border-2 border-dashed border-[color:var(--accent)] bg-[color:var(--accent)]/10 flex items-center justify-center text-xs text-[--text] font-medium">
-          Drop to paste path
+      {dropOverlay && (
+        <div className="absolute inset-2 pointer-events-none rounded-md border-2 border-dashed border-[color:var(--accent-mark,var(--accent))] bg-[color:var(--accent)]/10 flex items-center justify-center text-xs text-[--text] font-medium">
+          {dropOverlay === 'path' ? DROP_COPY.overlayPath : DROP_COPY.overlayText}
         </div>
       )}
       {searchOpen && (
@@ -615,8 +596,7 @@ export function ShellTab({
               label: 'Paste',
               onClick: async () => {
                 try {
-                  const text = await navigator.clipboard.readText();
-                  if (text) void api.invoke('shells:write', { projectId, shellIndex, data: text });
+                  await pasteFromText(await navigator.clipboard.readText());
                 } catch (e) {
                   toast('Paste failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
                 }

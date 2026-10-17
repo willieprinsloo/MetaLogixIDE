@@ -38,10 +38,12 @@
  */
 
 import { test, expect, _electron as electron, type Page, type ElectronApplication } from '@playwright/test';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { baseEnv, makeClaudeShim } from './helpers/claude-harness';
+import { electronOptions } from './helpers/agent-status-harness';
 
 type HeadlessModule = typeof import('@xterm/headless');
 // @xterm/headless is a webpack CJS bundle whose named exports Node's ESM
@@ -245,28 +247,23 @@ async function setWindowSize(app: ElectronApplication, size: { width: number; he
 
 /** Launches the app on an isolated HOME with project `demo` open on mock-claude (see claude-tab-width.spec.ts). */
 async function openDemoProject(): Promise<{ app: ElectronApplication; win: Page; cleanup: () => void }> {
-  const mockClaude = resolve(process.cwd(), 'scripts/mock-claude.mjs');
   const isolatedHome = mkdtempSync(join(tmpdir(), 'metaide-home-'));
   const demoRoot     = mkdtempSync(join(tmpdir(), 'metaide-demo-'));
   const proj         = join(demoRoot, 'demo');
   mkdirSync(proj); mkdirSync(join(proj, '.git'));
-  // The "Claude" CLI profile in "+ new shell" runs this shim, which execs mock-claude.
-  const claudeShim = join(isolatedHome, 'bin', 'claude');
-  mkdirSync(join(isolatedHome, 'bin'));
-  writeFileSync(claudeShim, `#!/bin/sh\nexec node ${JSON.stringify(mockClaude)} "$@"\n`);
-  chmodSync(claudeShim, 0o755);
+  // A genuine Claude-named launch exercises the same live status identity as
+  // the rest of the suite while retaining the old terminal snapshot tests.
+  const claudeShim = makeClaudeShim(isolatedHome);
 
-  const app = await electron.launch({
-    args: ['.', `--user-data-dir=${join(isolatedHome, 'userData')}`],
-    env: {
-      ...process.env,
-      HOME: isolatedHome,
-      METAIDE_TEST_MODE: '1',
-      METAIDE_CLAUDE_PERMISSION_MODE: 'bypass',
-      METAIDE_DEFAULT_LAUNCH_FIRST:      JSON.stringify({ argv: ['node', mockClaude],               env: {} }),
-      METAIDE_DEFAULT_LAUNCH_SUBSEQUENT: JSON.stringify({ argv: ['node', mockClaude, '--continue'], env: {} }),
-    },
-  });
+  const app = await electron.launch(electronOptions(isolatedHome, {
+    ...baseEnv(),
+    HOME: isolatedHome,
+    ...(process.platform === 'win32' ? { USERPROFILE: isolatedHome } : { SHELL: '/bin/bash' }),
+    METAIDE_TEST_MODE: '1',
+    METAIDE_CLAUDE_PERMISSION_MODE: 'bypass',
+    METAIDE_DEFAULT_LAUNCH_FIRST: JSON.stringify({ argv: [claudeShim], env: {} }),
+    METAIDE_DEFAULT_LAUNCH_SUBSEQUENT: JSON.stringify({ argv: [claudeShim, '--continue'], env: {} }),
+  }));
   const cleanup = () => {
     rmSync(isolatedHome, { recursive: true, force: true });
     rmSync(demoRoot, { recursive: true, force: true });
@@ -339,10 +336,8 @@ test('Claude tab shows its input box and status line after a long session when y
       return lines.some((l) => l.includes('mock-claude ready')) && !lines.some((l) => FLOOD_END_RE.test(l));
     }, { timeout: 10000, message: 'second shell tab is showing' }).toBe(true);
 
-    // Back to the first tab. Shell 0 was spawned from `node mock-claude.mjs`,
-    // so its tab is labelled "Node"; the profile's tab is "Claude".
-    await win.getByText('Node', { exact: true }).click();
-
+    // Both tabs are Claude launches; target the exact shell-index tab.
+    await win.locator('[data-testid="shell-tab-button"][data-shell-index="0"]').click();
     await expectRemountedClaudeTab(win, flood);
   } finally {
     await app.close();

@@ -340,4 +340,81 @@ describe('SettingsRepo', () => {
       expect(repo.get('app_env')).toEqual({ B: '2', A: '1', C: '3' });
     });
   });
+
+  describe('frosted glass (AC1, AC2, AC34)', () => {
+    it('AC1 — fresh install seeds the four defaults', () => {
+      const repo = seed();
+      expect(repo.get('frost_chrome')).toBe(true);
+      expect(repo.get('chrome_frost_level')).toBe('subtle');
+      expect(repo.get('terminal_frost_level')).toBe('off');
+      expect(repo.get('vibrancy_material')).toBe('sidebar');
+    });
+
+    function upgradedDbWithLegacyFrostTerminal(legacyValue: unknown): SettingsRepo {
+      const db = openDb(join(mkdtempSync(join(tmpdir(), 'st-')), 'db'));
+      runMigrations(db, migrationsDir);
+      if (legacyValue !== undefined) {
+        db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('frost_terminal', JSON.stringify(legacyValue));
+      }
+      return new SettingsRepo(db);
+    }
+
+    it('AC2 — a stored frost_terminal=true migrates to terminal_frost_level "subtle"', () => {
+      const repo = upgradedDbWithLegacyFrostTerminal(true);
+      repo.seedDefaults();
+      expect(repo.get('terminal_frost_level')).toBe('subtle');
+    });
+
+    it.each([
+      ['false', false],
+      ['a missing row', undefined],
+      ['a non-boolean string "yes"', 'yes'],
+      ['a non-boolean number 1', 1],
+    ])('AC2 — %s migrates to terminal_frost_level "off"', (_label, legacyValue) => {
+      const repo = upgradedDbWithLegacyFrostTerminal(legacyValue);
+      repo.seedDefaults();
+      expect(repo.get('terminal_frost_level')).toBe('off');
+    });
+
+    it('AC2 — the migration runs once: a second seedDefaults does not re-derive from frost_terminal', () => {
+      const repo = upgradedDbWithLegacyFrostTerminal(true);
+      repo.seedDefaults();
+      expect(repo.get('terminal_frost_level')).toBe('subtle');
+      repo.seedDefaults();
+      expect(repo.get('terminal_frost_level')).toBe('subtle');
+    });
+
+    it('AC2 — a terminal_frost_level the user already set survives a later seedDefaults (restart)', () => {
+      const repo = upgradedDbWithLegacyFrostTerminal(true);
+      repo.seedDefaults();
+      repo.set('terminal_frost_level', 'strong');
+      repo.seedDefaults();
+      expect(repo.get('terminal_frost_level')).toBe('strong');
+    });
+
+    function rawFrostTerminal(db: ReturnType<typeof openDb>): string | undefined {
+      const row = db.prepare(`SELECT value FROM settings WHERE key = 'frost_terminal'`).get() as { value: string } | undefined;
+      return row?.value;
+    }
+
+    it('AC34 — a fresh install writes no frost_terminal row', () => {
+      const db = openDb(join(mkdtempSync(join(tmpdir(), 'st-')), 'db'));
+      runMigrations(db, migrationsDir);
+      const repo = new SettingsRepo(db);
+      repo.seedDefaults();
+      expect(rawFrostTerminal(db)).toBeUndefined();
+      expect(repo.get('terminal_frost_level')).toBe('off');
+    });
+
+    it('AC34 — a pre-existing frost_terminal row keeps its value across seedDefaults (downgrade safety)', () => {
+      const db = openDb(join(mkdtempSync(join(tmpdir(), 'st-')), 'db'));
+      runMigrations(db, migrationsDir);
+      db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('frost_terminal', JSON.stringify(true));
+      const repo = new SettingsRepo(db);
+      repo.seedDefaults();
+      expect(rawFrostTerminal(db)).toBe('true');
+      repo.seedDefaults();
+      expect(rawFrostTerminal(db)).toBe('true');
+    });
+  });
 });

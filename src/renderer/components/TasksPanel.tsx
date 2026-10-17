@@ -122,7 +122,7 @@ function TaskSection({ title, tasks, running, onRun }: {
             className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-[--panel-strong] disabled:opacity-50"
             title={t.command.join(' ')}
           >
-            <span className="text-[color:var(--accent)] w-3 text-center">▶</span>
+            <span className="text-[color:var(--accent-mark,var(--accent))] w-3 text-center">▶</span>
             <span className="font-medium text-[--text] truncate">{t.name}</span>
             {t.description && <span className="text-[10px] text-[--text-muted] truncate flex-1">{t.description}</span>}
             {running === t.id && <span className="text-[10px] text-[--text-muted]">launching…</span>}

@@ -1,8 +1,8 @@
 import { StatusDot } from './StatusDot';
-import { useShellClaudeState } from '../hooks/useClaudeStates';
+import { useShellAgentState } from '../hooks/useAgentStates';
 
-/** One tab strip dot. Its own component so the per-shell state hook has a stable call site across a `.map()` whose length varies (D1: grey static when idle and inactive). */
+/** One stable per-shell tab subscriber; inactive idle retains its static gray treatment. */
 export function ShellTabDot({ projectId, shellIndex, isActive }: { projectId: number; shellIndex: number; isActive: boolean }) {
-  const state = useShellClaudeState(projectId, shellIndex);
-  return <StatusDot state={state} inactiveWhenIdle={!isActive} />;
+  const { agent, state } = useShellAgentState(projectId, shellIndex);
+  return <StatusDot agent={agent} state={state} inactiveWhenIdle={!isActive} />;
 }

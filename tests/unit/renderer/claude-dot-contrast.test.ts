@@ -1,12 +1,4 @@
-/**
- * Verifies AC21: the busy/blocked dot colours clear WCAG 3:1 non-text
- * contrast against each theme's panel fill (measured, per plan §2 finding
- * 1, composited over black in the dark theme and over white in light,
- * since the panel itself is translucent), and the accent-row ring colour
- * clears 3:1 against both themes' accent. Colours and backgrounds are
- * parsed straight out of `styles.css` rather than hardcoded, so a colour
- * regression there fails this test.
- */
+/** Verifies all agent busy/blocked fills and the palette ring retain WCAG non-text contrast. */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -78,12 +70,12 @@ const darkBlock = extractBlock(css, /:root,\s*:root\[data-theme="dark"\]\s*\{/);
 const lightBlock = extractBlock(css, /:root\[data-theme="light"\]\s*\{/);
 const systemLightBlock = extractBlock(css, /:root:not\(\[data-theme\]\)\s*\{/);
 
-describe('claude dot contrast (AC21)', () => {
+describe('agent dot contrast (AC9)', () => {
   it('dark theme: busy and blocked clear 3:1 against the panel composited over black', () => {
     const panel = parseColor(extractVar(darkBlock, '--panel'));
     const bg = compositeOver(panel, [0, 0, 0]);
-    const busy = parseColor(extractVar(darkBlock, '--claude-busy')).slice(0, 3) as Rgb;
-    const blocked = parseColor(extractVar(darkBlock, '--claude-blocked')).slice(0, 3) as Rgb;
+    const busy = parseColor(extractVar(darkBlock, '--agent-busy')).slice(0, 3) as Rgb;
+    const blocked = parseColor(extractVar(darkBlock, '--agent-blocked')).slice(0, 3) as Rgb;
     expect(contrastRatio(busy, bg)).toBeGreaterThanOrEqual(3);
     expect(contrastRatio(blocked, bg)).toBeGreaterThanOrEqual(3);
   });
@@ -91,8 +83,8 @@ describe('claude dot contrast (AC21)', () => {
   it('light theme: busy and blocked clear 3:1 against the panel composited over white', () => {
     const panel = parseColor(extractVar(lightBlock, '--panel'));
     const bg = compositeOver(panel, [255, 255, 255]);
-    const busy = parseColor(extractVar(lightBlock, '--claude-busy')).slice(0, 3) as Rgb;
-    const blocked = parseColor(extractVar(lightBlock, '--claude-blocked')).slice(0, 3) as Rgb;
+    const busy = parseColor(extractVar(lightBlock, '--agent-busy')).slice(0, 3) as Rgb;
+    const blocked = parseColor(extractVar(lightBlock, '--agent-blocked')).slice(0, 3) as Rgb;
     expect(contrastRatio(busy, bg)).toBeGreaterThanOrEqual(3);
     expect(contrastRatio(blocked, bg)).toBeGreaterThanOrEqual(3);
   });
@@ -100,8 +92,8 @@ describe('claude dot contrast (AC21)', () => {
   it('system-theme light: busy and blocked clear 3:1 against the panel composited over white', () => {
     const panel = parseColor(extractVar(systemLightBlock, '--panel'));
     const bg = compositeOver(panel, [255, 255, 255]);
-    const busy = parseColor(extractVar(systemLightBlock, '--claude-busy')).slice(0, 3) as Rgb;
-    const blocked = parseColor(extractVar(systemLightBlock, '--claude-blocked')).slice(0, 3) as Rgb;
+    const busy = parseColor(extractVar(systemLightBlock, '--agent-busy')).slice(0, 3) as Rgb;
+    const blocked = parseColor(extractVar(systemLightBlock, '--agent-blocked')).slice(0, 3) as Rgb;
     expect(contrastRatio(busy, bg), 'busy').toBeGreaterThanOrEqual(3);
     expect(contrastRatio(blocked, bg), 'blocked').toBeGreaterThanOrEqual(3);
   });

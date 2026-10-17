@@ -1,14 +1,7 @@
-/**
- * Composition wiring for Claude notifications: builds the navigation and
- * window-view ports from the app's window state, feeds the notifier the
- * hooks the Claude state tracker applied (so notifications follow the dot
- * state), and releases a shell's hook session and notification when its PTY
- * exits — unless the shell was already respawned, in which case the exit
- * belongs to the replaced process and must not touch its successor.
- * `index.ts` calls `installClaudeNotifications` once.
- */
+/** Wires authenticated Claude hooks to notification history, never to status dots. */
 import type { ShellKey } from '@main/claude-hooks/session-registry';
-import type { AppliedHook } from '@main/claude-status/state-tracker';
+import type { HookSource } from '@main/claude-hooks/hook-fanout';
+import type { ClaudeHookHistory } from './claude-hook-history';
 import { ClaudeNotifier, type ClaudeNotifyToggle } from './claude-notifier';
 import { OsNotifications, type NotificationConstructor } from './os-notifications';
 import type { ViewedShells, WindowView } from './viewed-shells';
@@ -38,9 +31,13 @@ export interface NavigationDeps {
 
 /** Everything `installClaudeNotifications` wires together. */
 export interface InstallDeps {
-  hooks: { onHookApplied(listener: (applied: AppliedHook) => void): unknown };
+  hooks: HookSource;
+  history: ClaudeHookHistory;
   sessions: { release(shell: ShellKey): void };
-  ptyManager: { on(event: 'exit', listener: (ev: ShellKey) => void): unknown; isAlive(projectId: number, shellIndex: number): boolean };
+  ptyManager: {
+    on(event: 'exit' | 'status-exit' | 'input', listener: (ev: ShellKey & { data?: string }) => void): unknown;
+    isAlive(projectId: number, shellIndex: number): boolean;
+  };
   viewedShells: ViewedShells;
   settings: { get(key: ClaudeNotifyToggle): boolean };
   projects: { get(id: number): { name: string } | null };
@@ -80,7 +77,7 @@ export function createNavigation(deps: NavigationDeps): (shell: ShellKey) => voi
   };
 }
 
-/** Wires tracker-applied hooks → notifier → OS notifications, plus PTY-exit cleanup; returns the notifier. */
+/** Subscribes current authenticated hooks and PTY answers; retains the original notifier. */
 export function installClaudeNotifications(deps: InstallDeps): ClaudeNotifier {
   const view = liveWindowView(deps.windows);
   const isAlive = (shell: ShellKey): boolean => deps.ptyManager.isAlive(shell.projectId, shell.shellIndex);
@@ -91,11 +88,20 @@ export function installClaudeNotifications(deps: InstallDeps): ClaudeNotifier {
     settings: deps.settings,
     projectName: (id) => deps.projects.get(id)?.name ?? null,
   });
-  deps.hooks.onHookApplied((applied) => notifier.handle(applied));
-  deps.ptyManager.on('exit', ({ projectId, shellIndex }) => {
+  deps.hooks.onHook((hook) => deps.history.handle(hook));
+  deps.history.onHookApplied((applied) => notifier.handle(applied));
+  deps.ptyManager.on('input', ({ projectId, shellIndex, data }) => {
+    if (data !== undefined) deps.history.onInput({ projectId, shellIndex }, data);
+  });
+  const timer = setInterval(() => deps.history.tick(), 1000);
+  timer.unref();
+  const exited = ({ projectId, shellIndex }: ShellKey): void => {
     if (deps.ptyManager.isAlive(projectId, shellIndex)) return;
     deps.sessions.release({ projectId, shellIndex });
+    deps.history.shellExited({ projectId, shellIndex });
     notifier.shellExited({ projectId, shellIndex });
-  });
+  };
+  deps.ptyManager.on('status-exit', exited);
+  deps.ptyManager.on('exit', exited);
   return notifier;
 }

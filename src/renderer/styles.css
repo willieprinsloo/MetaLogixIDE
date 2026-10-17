@@ -46,13 +46,10 @@
   --icon-code:  #34d399; /* code     = emerald */
   --icon-mute:  #8b949e;
   --danger:     #f87171;
-  /* Claude status dots (spec claude-status-dots, AC21). Idle stays the
-   * existing green-500 in both themes; busy is amber. The light theme uses
-   * darker busy/blocked shades so they clear 3:1 against the lighter panel
-   * fill. */
-  --claude-idle:    #22c55e; /* green-500 */
-  --claude-busy:    #fbbf24; /* amber-400 */
-  --claude-blocked: #ef4444; /* red-500 */
+  /* Agent status fills preserve the established contrast across all themes. */
+  --agent-idle:    #22c55e; /* green-500 */
+  --agent-busy:    #fbbf24; /* amber-400 */
+  --agent-blocked: #ef4444; /* red-500 */
   /* Highlight.js token colors — dark (GitHub-ish) */
   --hljs-comment:  #7d8590;
   --hljs-keyword:  #ff7b72;
@@ -102,9 +99,9 @@
   --icon-code:  #059669;
   --icon-mute:  #4b5563;
   --danger:     #dc2626;
-  --claude-idle:    #22c55e; /* green-500 */
-  --claude-busy:    #b45309; /* amber-700 */
-  --claude-blocked: #dc2626; /* red-600 */
+  --agent-idle:    #22c55e; /* green-500 */
+  --agent-busy:    #b45309; /* amber-700 */
+  --agent-blocked: #dc2626; /* red-600 */
   /* Highlight.js token colors — light */
   --hljs-comment:  #6a737d;
   --hljs-keyword:  #d73a49;
@@ -151,9 +148,9 @@
     --icon-code:  #059669;
     --icon-mute:  #4b5563;
     --danger:     #dc2626;
-    --claude-idle:    #22c55e;
-    --claude-busy:    #b45309;
-    --claude-blocked: #dc2626;
+    --agent-idle:    #22c55e;
+    --agent-busy:    #b45309;
+    --agent-blocked: #dc2626;
     --hljs-comment:  #6a737d;
     --hljs-keyword:  #d73a49;
     --hljs-string:   #032f62;
@@ -214,9 +211,9 @@
   --icon-code: #a6e3a1;
   --icon-mute: #a6adc8;
   --danger: #f38ba8;
-  --claude-idle: #a6e3a1;
-  --claude-busy: #f9e2af;
-  --claude-blocked: #f38ba8;
+  --agent-idle: #a6e3a1;
+  --agent-busy: #f9e2af;
+  --agent-blocked: #f38ba8;
   --hljs-comment: #9399b2;
   --hljs-keyword: #cba6f7;
   --hljs-string: #a6e3a1;
@@ -276,9 +273,9 @@
   --icon-code: #ebbcba;
   --icon-mute: #908caa;
   --danger: #eb6f92;
-  --claude-idle: #9ccfd8;
-  --claude-busy: #f6c177;
-  --claude-blocked: #eb6f92;
+  --agent-idle: #9ccfd8;
+  --agent-busy: #f6c177;
+  --agent-blocked: #eb6f92;
   --hljs-comment: #908caa;
   --hljs-keyword: #31748f;
   --hljs-string: #f6c177;
@@ -338,9 +335,9 @@
   --icon-code: #40a02b;
   --icon-mute: #5c5f77;
   --danger: #d20f39;
-  --claude-idle: #40a02b;
-  --claude-busy: #df8e1d;
-  --claude-blocked: #d20f39;
+  --agent-idle: #40a02b;
+  --agent-busy: #df8e1d;
+  --agent-blocked: #d20f39;
   --hljs-comment: #6c6f85;
   --hljs-keyword: #8839ef;
   --hljs-string: #40a02b;
@@ -400,9 +397,9 @@
   --icon-code: #286983;
   --icon-mute: #797593;
   --danger: #b4637a;
-  --claude-idle: #286983;
-  --claude-busy: #ea9d34;
-  --claude-blocked: #b4637a;
+  --agent-idle: #286983;
+  --agent-busy: #ea9d34;
+  --agent-blocked: #b4637a;
   --hljs-comment: #797593;
   --hljs-keyword: #286983;
   --hljs-string: #ea9d34;
@@ -463,9 +460,9 @@
     --icon-code: #40a02b;
     --icon-mute: #5c5f77;
     --danger: #d20f39;
-    --claude-idle: #40a02b;
-    --claude-busy: #df8e1d;
-    --claude-blocked: #d20f39;
+    --agent-idle: #40a02b;
+    --agent-busy: #df8e1d;
+    --agent-blocked: #d20f39;
     --hljs-comment: #6c6f85;
     --hljs-keyword: #8839ef;
     --hljs-string: #40a02b;
@@ -525,9 +522,9 @@
     --icon-code: #286983;
     --icon-mute: #797593;
     --danger: #b4637a;
-    --claude-idle: #286983;
-    --claude-busy: #ea9d34;
-    --claude-blocked: #b4637a;
+    --agent-idle: #286983;
+    --agent-busy: #ea9d34;
+    --agent-blocked: #b4637a;
     --hljs-comment: #797593;
     --hljs-keyword: #286983;
     --hljs-string: #ea9d34;
@@ -719,14 +716,10 @@ input::placeholder, textarea::placeholder {
   pointer-events: none;
 }
 
-/* Claude status dot (spec claude-status-dots): fill colour carries the
- * shell/project state, per-theme so busy/blocked clear 3:1 against each
- * theme's panel fill (AC21). `.live-dot` supplies the pulse; the D1 grey
- * inactive-tab dot never gets a `data-claude-state` attribute, so it is
- * unaffected by these rules. */
-.status-dot[data-claude-state="idle"]    { background-color: var(--claude-idle); }
-.status-dot[data-claude-state="busy"]    { background-color: var(--claude-busy); }
-.status-dot[data-claude-state="blocked"] { background-color: var(--claude-blocked); }
+/* Agent state colors use the existing dot test hook, palette contrast and idle gray treatment. */
+.status-dot[data-claude-state="idle"]    { background-color: var(--agent-idle); }
+.status-dot[data-claude-state="busy"]    { background-color: var(--agent-busy); }
+.status-dot[data-claude-state="blocked"] { background-color: var(--agent-blocked); }
 
 /* AC21: on the highlighted project row of the command palette, the amber/red
  * fills do not reach 3:1 against the row in every palette, so the dot gets a

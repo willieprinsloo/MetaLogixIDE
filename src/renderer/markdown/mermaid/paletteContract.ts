@@ -60,9 +60,16 @@ export const REFERENCE_MATERIALS: Record<EffectiveTheme, readonly [lo: string, h
 /**
  * `--bg` is painted by both `html` and `body`, so the translucent layer over
  * the material is `--bg` composited this many times (measured 2026-09-29 with
- * `webContents.capturePage`: dark alpha 203/255, light 218/255).
+ * `webContents.capturePage`: dark alpha 203/255, light 218/255). This is the
+ * Windows and Linux stack. On macOS `html` and `body` are transparent and the
+ * preview sits on the opaque `MAC_PREVIEW_SURFACE` instead (frosted chrome,
+ * which never frosts markdown); the palette is still fitted to these
+ * references, and the unit suite proves it also clears its floors there.
  */
 export const BG_LAYERS = 2;
+
+/** The opaque token the markdown preview paints on macOS (`frosted-chrome.css`). */
+export const MAC_PREVIEW_SURFACE = '--sheet-solid' as const;
 
 export interface Rgb {
   r: number;

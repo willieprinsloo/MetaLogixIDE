@@ -4,7 +4,7 @@ import { menuMotion } from '../menu-motion';
 import { toast } from '../hooks/useToasts';
 import { api } from '../api';
 import { Tooltip } from './Tooltip';
-import { SHELL_TAB_TEST_ID } from '@shared/claude-state';
+import { SHELL_TAB_TEST_ID } from '@shared/agent-state';
 import { ShellTabDot } from './ShellTabDot';
 import { shellChipLabel } from '../shell-label';
 import { SplitPill } from './SplitPill';
@@ -61,6 +61,7 @@ export function NewShellMenu({
   const panelProps = {
     ...motionProps,
     'data-new-shell-menu': '1',
+    'data-overlay': '',
     ...(present ? {} : { inert: '' }),
     'data-testid': present ? undefined : 'new-shell-menu-leaving',
     style: { transformOrigin: 'top left', pointerEvents: present ? undefined : ('none' as const) },

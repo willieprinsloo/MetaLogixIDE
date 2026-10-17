@@ -15,17 +15,12 @@ const expectedHook = {
 };
 
 describe('buildHookSettings', () => {
-  it('registers the same http hook on all eight events, matcher-all where Claude supports a matcher (AC13)', () => {
+  it('registers only notification and turn-confirmation events', () => {
     expect(buildHookSettings(URL)).toEqual({
       hooks: {
         Notification: [{ matcher: '', hooks: [expectedHook] }],
         Stop: [{ hooks: [expectedHook] }],
         UserPromptSubmit: [{ hooks: [expectedHook] }],
-        PreToolUse: [{ matcher: '', hooks: [expectedHook] }],
-        PostToolUse: [{ matcher: '', hooks: [expectedHook] }],
-        PostToolUseFailure: [{ matcher: '', hooks: [expectedHook] }],
-        PermissionRequest: [{ matcher: '', hooks: [expectedHook] }],
-        StopFailure: [{ matcher: '', hooks: [expectedHook] }],
       },
     });
   });
@@ -33,9 +28,7 @@ describe('buildHookSettings', () => {
   it('registers nothing else (user settings stay in charge of everything but these hooks)', () => {
     const settings = buildHookSettings(URL);
     expect(Object.keys(settings)).toEqual(['hooks']);
-    expect(Object.keys(settings.hooks).sort()).toEqual([
-      'Notification', 'PermissionRequest', 'PostToolUse', 'PostToolUseFailure', 'PreToolUse', 'Stop', 'StopFailure', 'UserPromptSubmit',
-    ]);
+    expect(Object.keys(settings.hooks).sort()).toEqual(['Notification', 'Stop', 'UserPromptSubmit']);
   });
 });
 

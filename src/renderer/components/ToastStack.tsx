@@ -49,7 +49,7 @@ export function ToastStack() {
   const entries = useExitingToasts(toasts);
   if (entries.length === 0) return null;
   return (
-    <div className="pointer-events-none fixed bottom-10 right-4 z-[60] flex flex-col-reverse gap-2 max-w-[380px]">
+    <div className="pointer-events-none fixed bottom-10 right-4 z-[60] flex flex-col-reverse gap-2 max-w-[380px]" data-overlay>
       {entries.map(({ toast: t, leaving }) => {
         const s = KIND_STYLES[t.kind];
         const Icon = s.Icon;

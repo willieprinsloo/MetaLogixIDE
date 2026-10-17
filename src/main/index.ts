@@ -5,13 +5,25 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import log from 'electron-log/main';
 import { buildServices, type Services } from './services';
+import { DROP_MAX_AGE_MS, testModeDropDir } from './drops/staging';
 import { registerIpc } from './ipc/register';
 import { buildAppMenu } from './menu';
 import { installClaudeNotifications } from './notifications/install';
-import { installClaudeStatus } from './claude-status/install';
+import { installAgentStatus } from './agent-status/install';
 import { createHookFanout } from './claude-hooks/hook-fanout';
+import { rescanRootsAtBoot } from './startup/boot-rescan';
+import { startDoneNotifier } from './startup/done-notifier';
+import { startReceivers } from './startup/receivers';
 import { withoutHookConfirmed } from './notifications/claude-notifier';
 import { resolveLoginShellPath } from './domain/login-shell-path';
+import {
+  FROSTED_GLASS_FALLBACK,
+  applyVibrancy,
+  platformChrome,
+  readStoredFrostedGlass,
+  rendererQuery,
+  type StoredFrostedGlass,
+} from './window-chrome';
 
 // Route console.log/warn/error to a rolling file at
 // `~/Library/Logs/MetaLogix IDE/main.log` (Electron's app.getPath('logs')).
@@ -127,21 +139,6 @@ function baseWebPreferences() {
   };
 }
 
-function platformChrome(): Partial<Electron.BrowserWindowConstructorOptions> {
-  return process.platform === 'darwin'
-    ? {
-        titleBarStyle: 'hiddenInset',
-        // y centres the lights on the 44px title bar shared by the main and popout windows.
-        trafficLightPosition: { x: 12, y: 14 },
-        vibrancy: 'sidebar',
-        visualEffectState: 'active',
-        roundedCorners: true,
-      }
-    // Windows/Linux draw the app menu as an in-window bar above our own title
-    // bar. Hide it until Alt is pressed; its accelerators keep working.
-    : { autoHideMenuBar: true };
-}
-
 function wireExternalLinks(win: BrowserWindow): void {
   // Any window.open / target=_blank / Ctrl+click routes to the OS browser
   // instead of spawning a new BrowserWindow inside metaIDE.
@@ -167,7 +164,7 @@ async function createMainWindow(): Promise<BrowserWindow> {
     height: 900,
     show: false,
     backgroundColor: '#00000000',
-    ...platformChrome(),
+    ...platformChrome(process.platform, readFrostedGlass().vibrancyMaterial),
     webPreferences: baseWebPreferences(),
   });
   win.once('ready-to-show', () => win.show());
@@ -184,8 +181,9 @@ async function createMainWindow(): Promise<BrowserWindow> {
   });
   win.webContents.on('unresponsive', () => console.warn('[metaide] renderer unresponsive'));
   win.webContents.on('responsive', () => console.log('[metaide] renderer responsive again'));
-  if (process.env.ELECTRON_RENDERER_URL) await win.loadURL(process.env.ELECTRON_RENDERER_URL);
-  else await win.loadFile(join(__dirname, '../renderer/index.html'));
+  const query = rendererQuery({ ...readFrostedGlass(), platform: process.platform });
+  if (process.env.ELECTRON_RENDERER_URL) await win.loadURL(`${process.env.ELECTRON_RENDERER_URL}?${query}`);
+  else await win.loadFile(join(__dirname, '../renderer/index.html'), { search: `?${query}` });
   return win;
 }
 
@@ -201,10 +199,14 @@ export async function createPopoutWindow(projectId: number, shellIndex: number):
     height: 620,
     show: false,
     backgroundColor: '#00000000',
-    ...platformChrome(),
+    ...platformChrome(process.platform, readFrostedGlass().vibrancyMaterial),
     webPreferences: baseWebPreferences(),
   });
-  const query = `popout=1&projectId=${projectId}&shellIndex=${shellIndex}`;
+  const query = rendererQuery({
+    popout: { projectId, shellIndex },
+    ...readFrostedGlass(),
+    platform: process.platform,
+  });
   wireExternalLinks(win);
   applyPersistedOpacity(win);
   if (process.env.ELECTRON_RENDERER_URL) await win.loadURL(`${process.env.ELECTRON_RENDERER_URL}?${query}`);
@@ -338,6 +340,13 @@ function broadcast(channel: string, payload: unknown): void {
   }
 }
 
+/**
+ * Reads the four frosted-glass settings for `BrowserWindow` creation and the renderer query
+ * string (AC1, AC5), each validated by `readStoredFrostedGlass`. Late-bound: set once services
+ * exist; a window created before then, or a failed read, falls back to the shared defaults (AC1).
+ */
+let readFrostedGlass: () => StoredFrostedGlass = () => FROSTED_GLASS_FALLBACK;
+
 // Reads the stored `window_opacity`. Set once services exist. The value is
 // clamped to 30..100 here; a window created before then, a failed read or a
 // non-numeric value stays fully opaque.
@@ -351,20 +360,6 @@ export function applyPersistedOpacity(win: BrowserWindow): void {
   win.setOpacity(opacity);
 }
 
-/**
- * Starts the Claude hook receiver and writes its settings file. A failure
- * is logged and otherwise ignored: Claude shells then launch undecorated,
- * keep the generic notifier (AC22) and show a green status dot, with no
- * dialog.
- */
-async function startClaudeHooks(services: Services): Promise<void> {
-  try {
-    await services.hookRuntime.start();
-  } catch (err) {
-    console.warn('[metaide] Claude hook receiver unavailable; Claude notifications disabled and Claude status dots stay green', err);
-  }
-}
-
 // Renderer signals it's mounted (App.tsx effect) so we can flush any
 // file-open events buffered from a cold launch. Registered outside the
 // ready handler so the receiver is in place before the renderer boots.
@@ -374,62 +369,75 @@ ipcMain.handle('app:renderer-ready-for-files', () => {
   return { ok: true } as const;
 });
 
-const startupReady = app.whenReady().then(async () => {
-  // GUI launches (Dock, desktop launchers) inherit a minimal PATH that lacks
-  // version-manager shims, so `claude` and friends wouldn't resolve.
-  if (process.platform !== 'win32') {
-    const loginShell = process.env.SHELL || '/bin/zsh';
-    try {
-      process.env.PATH = await resolveLoginShellPath(loginShell, homedir(), process.env);
-    } catch (err) {
-      log.warn(
-        '[metaide] Could not resolve interactive login-shell PATH; retaining inherited PATH. Check your shell startup files and runtime PATH configuration.',
-        loginShell,
-        err instanceof Error ? err.message : String(err),
-      );
-    }
-  }
-  // Cold-launch argv scan (Windows/Linux + packaged mac when invoked with
-  // args). Runs after ready so `existsSync` sees the app-relative CWD.
-  scanArgvForFiles(process.argv);
-  // Windows toasts are dropped without an AppUserModelID matching build.appId.
-  if (process.platform === 'win32') app.setAppUserModelId('com.metalogix.metaide');
-  const services = buildServices({ migrationsDir: resolve(app.getAppPath(), 'migrations') });
-  await startClaudeHooks(services);
-  // Auto-rescan every registered root at boot so folders added on disk since
-  // the last launch (or after a discovery-rule change) surface without the
-  // user having to remember Settings → Rescan. Cheap: it's just directory
-  // reads + SQL upserts, and the file watcher is already running.
+/**
+ * Replaces PATH with the interactive login shell's on non-Windows platforms: GUI launches (Dock,
+ * desktop launchers) inherit a minimal PATH lacking version-manager shims, so `claude` and
+ * friends would not resolve. On failure the inherited PATH is kept and a warning logged.
+ */
+async function adoptLoginShellPath(): Promise<void> {
+  if (process.platform === 'win32') return;
+  const loginShell = process.env.SHELL || '/bin/zsh';
   try {
-    const { discoverProjects } = await import('./domain/discovery');
-    const { pruneMissingProjects } = await import('./domain/prune-missing');
-    const scanDepth = services.settings.get('scan_depth');
-    for (const root of services.roots.list()) {
-      for (const disc of discoverProjects(root.path, scanDepth)) {
-        const p = services.projects.upsert(root.id, disc.path, disc.name);
-        if (disc.metaprojectProjectId) {
-          services.projects.updateConfig(p.id, { linkedMetaprojectProjectId: disc.metaprojectProjectId });
-        }
-      }
-      // Nothing is alive yet at boot, so every project whose folder is gone goes.
-      pruneMissingProjects({ projects: services.projects, hasLiveShell: () => false }, root);
-      services.watcher.watch(root.path);
-    }
-  } catch (e) {
-    console.warn('[metaide] boot rescan failed', e);
+    process.env.PATH = await resolveLoginShellPath(loginShell, homedir(), process.env);
+  } catch (err) {
+    log.warn(
+      '[metaide] Could not resolve interactive login-shell PATH; retaining inherited PATH. Check your shell startup files and runtime PATH configuration.',
+      loginShell,
+      err instanceof Error ? err.message : String(err),
+    );
   }
-  // New windows read the current opacity setting when they are created.
+}
+
+/** Sets the Windows AppUserModelID; Windows drops toasts without one matching `build.appId`. */
+function registerWindowsAppId(): void {
+  if (process.platform === 'win32') app.setAppUserModelId('com.metalogix.metaide');
+}
+
+/** Builds the service graph from the app's install paths and the test-mode drop directory env. */
+function createServices(): Services {
+  const ompExtensionPath = app.isPackaged
+    ? join(process.resourcesPath, 'omp-status-extension.js')
+    : resolve(app.getAppPath(), 'resources/omp-status-extension.js');
+  return buildServices({
+    migrationsDir: resolve(app.getAppPath(), 'migrations'),
+    ompExtensionPath,
+    dropDir: testModeDropDir(process.env, app.getPath('userData')),
+  });
+}
+
+/** Installs the agent-status monitor, publishes its tracker on `services`, and returns the handle for shutdown. */
+function attachAgentStatus(services: Services): ReturnType<typeof installAgentStatus> {
+  const agentStatus = installAgentStatus({
+    ptyManager: services.ptyManager,
+    receiver: services.ompReceiver,
+    broadcast,
+  });
+  services.agentStatus = agentStatus.tracker;
+  return agentStatus;
+}
+
+/** Binds the late-bound window setting readers so new windows pick up the stored opacity and frosted glass. */
+function bindWindowSettings(services: Services): void {
   readWindowOpacity = () => services.settings.get('window_opacity');
+  readFrostedGlass = () => readStoredFrostedGlass((key) => services.settings.get(key));
+}
+
+/** Registers the renderer IPC surface, with window operations bound to this module's windows. */
+function registerMainIpc(services: Services): void {
   registerIpc(ipcMain, services, broadcast, {
     createPopoutWindow: async (projectId, shellIndex) => (await createPopoutWindow(projectId, shellIndex)).id,
     returnPopoutWindow: (projectId, shellIndex) => returnPopoutWindow(projectId, shellIndex),
     listPopped: () => listPopped(),
     tileAll: () => tileAllOurWindows(),
+    setVibrancy: (material) => applyVibrancy(BrowserWindow.getAllWindows(), material, process.platform),
   });
-  mainWindow = await createMainWindow();
-  Menu.setApplicationMenu(buildAppMenu(mainWindow));
+}
+
+/** Wires Claude hook events to OS notifications, resolving target windows from this module's state. */
+function installNotifications(services: Services): void {
   installClaudeNotifications({
-    hooks: services.claudeState,
+    hooks: createHookFanout(services.hookReceiver),
+    history: services.hookHistory,
     sessions: services.hookSessions,
     ptyManager: services.ptyManager,
     viewedShells: services.viewedShells,
@@ -443,74 +451,73 @@ const startupReady = app.whenReady().then(async () => {
     },
     broadcast,
   });
-  const claudeStatus = installClaudeStatus({
-    receiver: createHookFanout(services.hookReceiver),
-    tracker: services.claudeState,
-    ptyManager: services.ptyManager,
+}
+
+/** Creates the main window and app menu, then prunes stale drop staging in the background. */
+async function openMainWindow(services: Services): Promise<void> {
+  mainWindow = await createMainWindow();
+  Menu.setApplicationMenu(buildAppMenu(mainWindow));
+  void services.dropStaging.pruneOlderThan(DROP_MAX_AGE_MS).then(
+    (summary) => log.info('[drops] startup prune finished', summary),
+    (err: unknown) => log.warn('[drops] startup prune failed', err),
+  );
+}
+
+/** Starts the long-running command "done" notifier against this module's windows, skipping hook-confirmed shells. */
+function startCommandDoneNotifier(services: Services): NodeJS.Timeout {
+  return startDoneNotifier({
+    pollDone: () => withoutHookConfirmed(services.ptyManager.pollDoneCommands(), (s) => services.hookSessions.isConfirmed(s)),
+    focusedWindow: () => BrowserWindow.getFocusedWindow(),
+    mainWindow: () => mainWindow,
+    popout: (key) => popoutWindows.get(key),
+    isPopped: (key) => popoutWindows.has(key),
+    projectName: (projectId) => services.projects.get(projectId)?.name,
+    notificationClass: Notification,
     broadcast,
   });
+}
 
-  // ─── Long-running command "done" notifier ─────────────────────────────
-  // Every 500 ms ask the PtyManager which shells just finished a command
-  // (idle after long work). Fire a native OS notification for each — but
-  // only when the shell isn't the currently-focused one (otherwise it'd
-  // ping every time you finish typing a heavy `pytest`).
-  const donePoll = setInterval(() => {
-    const done = withoutHookConfirmed(services.ptyManager.pollDoneCommands(), (s) => services.hookSessions.isConfirmed(s));
-    if (done.length === 0) return;
-    const focused = BrowserWindow.getFocusedWindow();
-    const mainFocused = !!focused && !focused.isDestroyed() && focused === mainWindow;
-    for (const d of done) {
-      const project = services.projects.get(d.projectId);
-      const projectName = project?.name ?? `#${d.projectId}`;
-      const secs = Math.round(d.durationMs / 1000);
-      const timeLabel = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`;
-      const key = `${d.projectId}:${d.shellIndex}`;
-      const popped = popoutWindows.has(key);
-      // Skip the notification when the user is actively looking at that
-      // shell — but do fire when a popped-out shell finishes, when the app
-      // is unfocused, or when they're on a different tab entirely.
-      if (mainFocused && !popped) continue;
-      try {
-        const notif = new Notification({
-          title: `${projectName} — shell ${d.shellIndex}`,
-          body: `Command finished in ${timeLabel}`,
-          silent: false,
-        });
-        // Clicking the notification jumps back into that shell: raise the
-        // main window (or the popout if this shell lives in one), and ask
-        // the renderer to switch project + tab via a broadcast event.
-        notif.on('click', () => {
-          try {
-            if (popped) {
-              const w = popoutWindows.get(key);
-              if (w && !w.isDestroyed()) { w.show(); w.focus(); return; }
-            }
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              if (mainWindow.isMinimized()) mainWindow.restore();
-              mainWindow.show(); mainWindow.focus();
-            }
-            broadcast('shell:focus-request', { projectId: d.projectId, shellIndex: d.shellIndex });
-          } catch (err) { console.warn('[metaide] notification click failed', err); }
-        });
-        notif.show();
-      } catch (e) {
-        console.warn('[metaide] notification failed', e);
-      }
-    }
-  }, 500);
-
-  // ─── Ports panel: fan out ports changes to renderer ───────────────────
+/** Fans out per-shell listening-port changes to every renderer for the ports panel. */
+function forwardPortChanges(services: Services): void {
   services.ptyManager.on('ports', (payload: { projectId: number; shellIndex: number; ports: number[] }) => {
     broadcast('ports:changed', payload);
   });
+}
 
+/** Stops the done poller, the agent-status monitor and both receivers when the app quits. */
+function stopOnQuit(services: Services, donePoll: NodeJS.Timeout, agentStatus: ReturnType<typeof installAgentStatus>): void {
   app.on('before-quit', () => {
     clearInterval(donePoll);
-    claudeStatus.stop();
+    agentStatus.stop();
+    services.ompReceiver.stop();
     void services.hookRuntime.stop();
   });
-});
+}
+
+/**
+ * App startup once Electron is ready, in a fixed order: login-shell PATH, cold-launch argv scan
+ * (after ready so `existsSync` sees the app-relative CWD), Windows app id, services, receivers,
+ * agent status, boot rescan, window settings, IPC, Claude notifications, main window, done
+ * notifier, ports fan-out, quit teardown.
+ */
+async function startApp(): Promise<void> {
+  await adoptLoginShellPath();
+  scanArgvForFiles(process.argv);
+  registerWindowsAppId();
+  const services = createServices();
+  await startReceivers(services);
+  const agentStatus = attachAgentStatus(services);
+  await rescanRootsAtBoot(services);
+  bindWindowSettings(services);
+  registerMainIpc(services);
+  installNotifications(services);
+  await openMainWindow(services);
+  const donePoll = startCommandDoneNotifier(services);
+  forwardPortChanges(services);
+  stopOnQuit(services, donePoll, agentStatus);
+}
+
+const startupReady = app.whenReady().then(startApp);
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', async () => {

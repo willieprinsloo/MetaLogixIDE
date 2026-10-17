@@ -2,8 +2,67 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Terminal } from '@xterm/headless';
 import { PtyManager } from '@main/pty/manager';
 import { ScreenMirror } from '@main/pty/screen-mirror';
+import { classifyClaudeScreen } from '@main/agent-status/claude-screen';
 
 const COLS = 80;
+describe('bounded live-screen observation', () => {
+  it('reads only bottom viewport rows after writes drain, never historical approval scrollback', async () => {
+    const mirror = new ScreenMirror(32, 6);
+    mirror.write('Allow Bash command?\r\nEsc to cancel\r\n');
+    for (let n = 0; n < 20; n++) mirror.write(`old ${n}\r\n`);
+    mirror.write('> ');
+    const { rows } = await mirror.liveStatus();
+    expect(rows.length).toBeLessThanOrEqual(12);
+    expect(rows.join('\n')).not.toContain('Allow Bash command?');
+    expect(rows.join('\n')).toContain('> ');
+    mirror.dispose();
+    expect(await mirror.liveStatus()).toEqual({ rows: [], title: '' });
+  });
+
+  it('reads active alternate buffer rather than normal-buffer transcript', async () => {
+    const mirror = new ScreenMirror(30, 5);
+    mirror.write('Allow Bash command?\r\nEsc to cancel');
+    mirror.write('\x1b[?1049h\x1b[H> Ready for another task');
+    const { rows } = await mirror.liveStatus();
+    expect(rows.join('\n')).toContain('Ready for another task');
+    expect(rows.join('\n')).not.toContain('Allow Bash command?');
+    mirror.dispose();
+  });
+  it('keeps a working Claude screen recognizable when narrow PTY lines wrap', async () => {
+    const mirror = new ScreenMirror(9, 11);
+    mirror.write('\x1b[2J\x1b[H\x1b[9;1HClaude Code\r\n✻ Thinking…\r\nEsc to interrupt');
+    const { rows } = await mirror.liveStatus();
+    expect(rows).toContain('✻ Thinking…');
+    expect(rows).toContain('Esc to interrupt');
+    expect(classifyClaudeScreen(rows)).toBe('busy');
+    mirror.dispose();
+  });
+  it('samples Claude title and activity above the last eight physical rows after parsing', async () => {
+    const mirror = new ScreenMirror(80, 18);
+    mirror.write(
+      '\x1b]0;◐ Claude Code\x07\x1b[2J\x1b[H\x1b[7;1H✢ Reading files… (3s · ↓ 120 tokens)\x1b[17;1H❯ ',
+    );
+    const active = await mirror.liveStatus();
+    expect(active.title).toBe('◐ Claude Code');
+    expect(active.rows).toContain('✢ Reading files… (3s · ↓ 120 tokens)');
+    expect(classifyClaudeScreen(active.rows, active.title)).toBe('busy');
+    mirror.write('\x1b]2;✳ Claude Code\x07');
+    expect((await mirror.liveStatus()).title).toBe('✳ Claude Code');
+    mirror.dispose();
+    expect(await mirror.liveStatus()).toEqual({ rows: [], title: '' });
+  });
+  it('settles pending row reads on disposal and never resurrects an obsolete screen', async () => {
+    const mirror = new ScreenMirror(40, 9);
+    mirror.write('secret prompt\r\nAllow Bash command?\r\n');
+    const pending = mirror.liveStatus();
+    mirror.dispose();
+    expect(await pending).toEqual({ rows: [], title: '' });
+    mirror.write('new state');
+    mirror.resize(100, 40);
+    expect(await mirror.liveStatus()).toEqual({ rows: [], title: '' });
+    expect(await mirror.snapshot()).toBe('');
+  });
+});
 const ROWS = 24;
 
 function nodeLaunch(script: string) {

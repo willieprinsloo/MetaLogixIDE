@@ -1,3 +1,7 @@
+import { randomUUID } from 'node:crypto';
+import { isClaudeArgv } from '@main/domain/claude-permission-mode';
+import { isOmpArgv, OMP_SPAWN_ENV } from '@main/agent-status/omp-launch';
+import type { AgentKind } from '@shared/agent-state';
 import { EventEmitter } from 'node:events';
 import type { IPty } from 'node-pty';
 import { spawn as ptySpawn } from 'node-pty';
@@ -8,6 +12,7 @@ import { ScreenMirror } from './screen-mirror';
 interface Entry {
   projectId: number; shellIndex: number;
   pty: IPty; pid: number;
+  generation: string; agent: AgentKind | null;
   cols: number; rows: number;
   startedAt: number;
   earlyBuffer: string;   // captured output within the first 3s
@@ -55,11 +60,7 @@ const PORT_PATTERNS: RegExp[] = [
 const MIN_PORT = 1024;
 const MAX_PORT = 65535;
 
-/**
- * Rewrites a launch just before it spawns (the Claude hook injection). Must
- * return a new object when it changes anything; the caller's launch — the
- * one persisted to the shells table — is never mutated (AC8).
- */
+/** Rewrites spawn argv/env for optional agent integrations without changing the persisted launch. */
 export type SpawnDecorator = (projectId: number, shellIndex: number, launch: ResolvedLaunch) => ResolvedLaunch;
 
 /** Optional collaborators; without a decorator every launch spawns as given. */
@@ -67,7 +68,19 @@ export interface PtyManagerOptions {
   spawnDecorator?: SpawnDecorator;
 }
 
+/** Owns live PTYs and generation-bound launch identities independent of process labels. */
 export class PtyManager extends EventEmitter {
+  /** Returns current spawn identity, never the outer Windows cmd.exe process label. */
+  liveShell(projectId: number, shellIndex: number): { pid: number; generation: string; agent: AgentKind | null } | null {
+    const entry = this.entries.get(key(projectId, shellIndex));
+    return entry ? { pid: entry.pid, generation: entry.generation, agent: entry.agent } : null;
+  }
+
+  /** Samples a live viewport and terminal title after the parser drains. */
+  liveStatus(projectId: number, shellIndex: number): Promise<{ rows: string[]; title: string }> {
+    return this.entries.get(key(projectId, shellIndex))?.screen.liveStatus() ?? Promise.resolve({ rows: [], title: '' });
+  }
+
   private entries = new Map<string, Entry>();
   /** Last size the viewport asked for, per shell — outlives the PTY so a spawn can honour it. */
   private requestedSizes = new Map<string, { cols: number; rows: number }>();
@@ -101,6 +114,7 @@ export class PtyManager extends EventEmitter {
     });
     const entry: Entry = {
       projectId, shellIndex, pty, pid: pty.pid, cols, rows,
+      generation: randomUUID(), agent: isClaudeArgv(launch.argv) ? 'claude' : isOmpArgv(launch.argv) ? 'omp' : null,
       startedAt: Date.now(), earlyBuffer: '', bufferOpen: true,
       scrollback: new RollingScrollback(), screen: new ScreenMirror(cols, rows),
       cmdStartedAt: null, lastDataAt: Date.now(), cmdNotified: false,
@@ -117,6 +131,7 @@ export class PtyManager extends EventEmitter {
       this.releaseEntry(k, entry);
       this.emit('exit', { projectId, shellIndex, code: exitCode, uptimeMs, earlyOutput: captured });
     });
+    this.emit('spawn', { projectId, shellIndex, pid: pty.pid, generation: entry.generation, agent: entry.agent, ompSpawn: entry.agent === 'omp' ? effective.env[OMP_SPAWN_ENV] : undefined });
     return { pid: pty.pid };
   }
 
@@ -337,6 +352,7 @@ export class PtyManager extends EventEmitter {
     entry.screen.dispose();
     this.entries.delete(k);
     this.clearPorts(entry);
+    this.emit('status-exit', { projectId: entry.projectId, shellIndex: entry.shellIndex, pid: entry.pid, generation: entry.generation, agent: entry.agent });
   }
 
   isAlive(projectId: number, shellIndex: number): boolean {

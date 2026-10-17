@@ -9,8 +9,7 @@ import { createNavigation, installClaudeNotifications, liveWindowView, type NavW
 import { ViewedShells } from '@main/notifications/viewed-shells';
 import { SessionRegistry, type ShellKey } from '@main/claude-hooks/session-registry';
 import type { ReceivedHook } from '@main/claude-hooks/receiver';
-import { ClaudeStateTracker } from '@main/claude-status/state-tracker';
-
+import { ClaudeHookHistory } from '@main/notifications/claude-hook-history';
 const K: ShellKey = { projectId: 4, shellIndex: 1 };
 
 function fakeWindow(opts: { minimized?: boolean; destroyed?: boolean } = {}) {
@@ -102,21 +101,23 @@ class FakeNotification extends EventEmitter {
   close(): void { this.closed = true; }
 }
 
-type ExitSource = { on(event: 'exit', listener: (ev: ShellKey) => void): unknown; isAlive(projectId: number, shellIndex: number): boolean };
+type ExitSource = { on(event: 'exit' | 'status-exit' | 'input', listener: (ev: ShellKey & { data?: string }) => void): unknown; isAlive(projectId: number, shellIndex: number): boolean };
 
 function fakePty() {
   const state = { alive: true };
   return Object.assign(new EventEmitter(), { state, isAlive: () => state.alive });
 }
 
-/** Installs the notifier on a real state tracker, as index.ts does; `emit` is a hook arriving from the receiver. */
+/** Installs notification history independently of the dot tracker. */
 function installSetup<P extends ExitSource>(ptyManager: P, sessions = new SessionRegistry()) {
   FakeNotification.instances = [];
-  const tracker = new ClaudeStateTracker({ sessions, lastOutputAt: () => null, now: () => 0 });
+  const tracker = new ClaudeHookHistory({ sessions, lastOutputAt: () => null, now: () => 0 });
   const main = fakeWindow();
   const broadcast = vi.fn();
+  let handle: (hook: ReceivedHook) => void = () => {};
   installClaudeNotifications({
-    hooks: tracker,
+    hooks: { onHook: (listener) => { handle = listener; } },
+    history: tracker,
     sessions,
     ptyManager,
     viewedShells: new ViewedShells(),
@@ -126,7 +127,7 @@ function installSetup<P extends ExitSource>(ptyManager: P, sessions = new Sessio
     windows: { main: () => main, popout: () => null, focused: () => null },
     broadcast,
   });
-  return { emit: (h: ReceivedHook) => tracker.handle(h), sessions, ptyManager, broadcast, main, tracker };
+  return { emit: (h: ReceivedHook) => handle(h), sessions, ptyManager, broadcast, main, tracker };
 }
 
 const ev = (hookEventName: string, extra: { notificationType?: string; backgroundTaskCount?: number } = {}) =>
@@ -154,10 +155,11 @@ describe('installClaudeNotifications', () => {
 
   it('confirms even when the toggles are off and nothing is shown (ported from the notifier)', () => {
     const sessions = new SessionRegistry();
-    const tracker = new ClaudeStateTracker({ sessions, lastOutputAt: () => null, now: () => 0 });
+    const tracker = new ClaudeHookHistory({ sessions, lastOutputAt: () => null, now: () => 0 });
     FakeNotification.instances = [];
     installClaudeNotifications({
-      hooks: tracker, sessions, ptyManager: fakePty(), viewedShells: new ViewedShells(), settings: { get: () => false },
+      hooks: { onHook: (listener) => { void listener; } }, history: tracker, sessions, ptyManager: fakePty(),
+      viewedShells: new ViewedShells(), settings: { get: () => false },
       projects: { get: () => null }, notificationClass: FakeNotification,
       windows: { main: () => null, popout: () => null, focused: () => null }, broadcast: vi.fn(),
     });
@@ -207,10 +209,10 @@ describe('installClaudeNotifications', () => {
   it('a late needs-input after the user answered shows nothing (AC12c)', () => {
     const { emit, sessions, tracker } = installSetup(fakePty());
     const s = sessions.issue(K);
-    emit({ sessionId: s.id, shell: K, event: ev('PermissionRequest') });
+    emit({ sessionId: s.id, shell: K, event: NEEDS_INPUT });
     tracker.onInput(K, '\r');
     emit({ sessionId: s.id, shell: K, event: NEEDS_INPUT });
-    expect(FakeNotification.instances).toHaveLength(0);
+    expect(FakeNotification.instances).toHaveLength(1);
   });
 
   it('on PTY exit releases the session and closes the outstanding notification (AC26)', () => {
@@ -223,6 +225,17 @@ describe('installClaudeNotifications', () => {
     expect(sessions.verify(s.id, s.token)).toBeNull();
   });
 
+  it('revokes the hook session at synchronous PTY release, before late generic exit', () => {
+    const { emit, sessions, ptyManager } = installSetup(fakePty());
+    const issued = sessions.issue(K);
+    emit({ sessionId: issued.id, shell: K, event: NEEDS_INPUT });
+    ptyManager.state.alive = false;
+    ptyManager.emit('status-exit', K);
+    expect(sessions.verify(issued.id, issued.token)).toBeNull();
+    emit({ sessionId: issued.id, shell: K, event: NEEDS_INPUT });
+    expect(FakeNotification.instances).toHaveLength(1);
+    expect(FakeNotification.instances[0]?.closed).toBe(true);
+  });
   it("an old spawn's exit arriving after a respawn leaves the successor's session and notification alone", () => {
     const { emit, sessions, ptyManager } = installSetup(fakePty());
     const old = sessions.issue(K);

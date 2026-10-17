@@ -1,0 +1,59 @@
+name: Agent status packaged platforms
+on:
+  push:
+    branches: [feature/agent-status-monitoring]
+  pull_request:
+    branches: [main]
+
+jobs:
+  agent-status:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: mac
+            arch: arm64
+            executable: dist/mac-arm64/MetaLogix IDE.app/Contents/MacOS/MetaLogix IDE
+          - os: windows-latest
+            target: win
+            arch: x64
+            executable: dist/win-unpacked/MetaLogix IDE.exe
+          - os: ubuntu-latest
+            target: linux
+            arch: x64
+            executable: dist/linux-unpacked/metaide
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build application
+        run: pnpm build
+      - name: Package application
+        # Windows postinstall already rebuilds Electron addons; builder's second
+        # rebuild tries to execute pnpm 11's .mjs entry as a native Windows app.
+        run: pnpm exec electron-builder --dir --${{ matrix.target }} --${{ matrix.arch }} --config.npmRebuild=${{ matrix.target != 'win' }}
+      - name: Check packaged executable
+        shell: bash
+        env:
+          METAIDE_PACKAGED_APP: ${{ matrix.executable }}
+        run: test -f "$METAIDE_PACKAGED_APP"
+      - name: Exercise packaged agent status
+        shell: bash
+        env:
+          METAIDE_PACKAGED_APP: ${{ matrix.executable }}
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            xvfb-run -a pnpm exec playwright test tests/e2e/agent-status.spec.ts
+          else
+            pnpm exec playwright test tests/e2e/agent-status.spec.ts
+          fi

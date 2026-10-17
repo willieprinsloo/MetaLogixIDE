@@ -4,10 +4,10 @@ import { gitStatusTextClass } from '@renderer/git-status-style';
 
 describe('gitStatusTextClass', () => {
   it.each<[GitFileStatus, string]>([
-    ['M', 'text-amber-400'],
-    ['A', 'text-emerald-400'],
-    ['D', 'text-rose-400'],
-    ['?', 'text-sky-400'],
+    ['M', 'text-[color:var(--git-modified,#fbbf24)]'],
+    ['A', 'text-[color:var(--git-added,#34d399)]'],
+    ['D', 'text-[color:var(--git-deleted,#fb7185)]'],
+    ['?', 'text-[color:var(--git-untracked,#38bdf8)]'],
     ['R', 'text-[--text-muted]'],
     ['U', 'text-[--text-muted]'],
     ['!', 'text-[--text-muted]'],

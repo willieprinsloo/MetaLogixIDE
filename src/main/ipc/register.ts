@@ -8,6 +8,8 @@ import { pruneMissingProjects } from '@main/domain/prune-missing';
 import { discoverTasks } from '@main/domain/tasks';
 import { randomUUID } from 'node:crypto';
 import { parseMetaproject } from '@shared/parse-metaproject';
+import type { VibrancyMaterial } from '@shared/frosted-glass';
+import { isChromeFrostLevel, isTerminalFrostLevel, isVibrancyMaterial } from '@shared/frosted-glass';
 import { resolveLaunch } from '@main/domain/launch';
 import { parseProjectDefaultAgent, setProjectDefaultAgent } from '@main/domain/project-default-agent';
 import { resolveSpawnEnv } from '@main/domain/spawn-env';
@@ -36,6 +38,8 @@ import { parseGitPanelStatus } from '@shared/parse-git-panel-status';
 import { describeGitFailure, runGit } from '@main/git/run-git';
 import { GIT_DIFF_MAX_BYTES, readFileDiff } from '@main/git/file-diff';
 import { readDiffSides } from '@main/git/diff-sides';
+import { dropHandlers } from '@main/drops/handlers';
+import { isInsideRoot, resolveInsideRoot } from '@main/domain/path-containment';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 
 const GIT_DIFF_KINDS: ReadonlySet<GitDiffKind> = new Set(['staged', 'unstaged', 'untracked']);
@@ -65,7 +69,7 @@ function validatedConfigPatch(config: unknown): Partial<ProjectConfig> {
   return patch;
 }
 
-type Handler<C extends IpcChannelName> = (services: Services, req: IpcRequest<C>, event?: Electron.IpcMainInvokeEvent) => Promise<IpcResponse<C>>;
+export type Handler<C extends IpcChannelName> = (services: Services, req: IpcRequest<C>, event?: Electron.IpcMainInvokeEvent) => Promise<IpcResponse<C>>;
 type SendEvent = <E extends IpcEventName>(channel: E, payload: IpcEvents[E]) => void;
 
 // Keychain service name for the metaproject credential. One row per (service,
@@ -138,6 +142,8 @@ export interface WindowHooks {
   returnPopoutWindow: (projectId: number, shellIndex: number) => boolean;
   listPopped: () => Array<{ projectId: number; shellIndex: number }>;
   tileAll: () => number;
+  /** Applies the vibrancy material to every open window (no-op off darwin). */
+  setVibrancy: (material: VibrancyMaterial) => void;
 }
 
 const handlers: { [C in IpcChannelName]: Handler<C> } = {
@@ -535,7 +541,10 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'shells:kill':   async (s, { projectId, shellIndex }) => { await s.ptyManager.kill(projectId, shellIndex); s.shells.remove(projectId, shellIndex); return { ok: true } as const; },
   'shells:resize': async (s, { projectId, shellIndex, cols, rows }) => { s.ptyManager.resize(projectId, shellIndex, cols, rows); return { ok: true } as const; },
   'shells:write':  async (s, { projectId, shellIndex, data }) => { s.ptyManager.write(projectId, shellIndex, data); s.shells.touch(projectId, shellIndex, new Date()); return { ok: true } as const; },
-  'claude-state:list': async (s) => ({ shells: s.claudeState.list() }),
+  'agent-state:list': async (s) => {
+    if (!s.agentStatus) throw new Error('agent status not installed');
+    return { shells: s.agentStatus.list() };
+  },
   'shells:alive-list': async (s) => {
     const rows = s.shells.list();
     const projects = new Map(s.projects.list().map(p => [p.id, p]));
@@ -614,6 +623,12 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     if (key === TERMINAL_FONT_WEIGHT_KEY) throw new Error(`${key} can only be changed via settings:set-terminal-font-weight`);
     if (key === TERMINAL_BOLD_WEIGHT_KEY) throw new Error(`${key} can only be changed via settings:set-terminal-bold-weight`);
     if (key === 'app_env') throw new Error('app_env can only be changed via settings:set-app-env');
+    // Legacy key: read only by the terminal_frost_level migration, never written again (D19).
+    if ((key as string) === 'frost_terminal') throw new Error('frost_terminal is a legacy key; use settings:set-terminal-frost-level');
+    if (key === 'frost_chrome') throw new Error('frost_chrome can only be changed via settings:set-frost-chrome');
+    if (key === 'chrome_frost_level') throw new Error('chrome_frost_level can only be changed via settings:set-chrome-frost-level');
+    if (key === 'terminal_frost_level') throw new Error('terminal_frost_level can only be changed via settings:set-terminal-frost-level');
+    if (key === 'vibrancy_material') throw new Error('vibrancy_material can only be changed via settings:set-vibrancy-material');
     s.settings.set(key, value as never);
     return { ok: true } as const;
   },
@@ -728,6 +743,27 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     for (const w of BrowserWindow.getAllWindows()) {
       if (!w.isDestroyed()) w.setOpacity(clamped / 100);
     }
+    return { ok: true } as const;
+  },
+
+  'settings:set-frost-chrome': async (s, { enabled }) => {
+    if (typeof enabled !== 'boolean') return { ok: false, error: 'invalid' } as const;
+    s.settings.set('frost_chrome', enabled);
+    return { ok: true } as const;
+  },
+  'settings:set-chrome-frost-level': async (s, { level }) => {
+    if (!isChromeFrostLevel(level)) return { ok: false, error: 'invalid' } as const;
+    s.settings.set('chrome_frost_level', level);
+    return { ok: true } as const;
+  },
+  'settings:set-terminal-frost-level': async (s, { level }) => {
+    if (!isTerminalFrostLevel(level)) return { ok: false, error: 'invalid' } as const;
+    s.settings.set('terminal_frost_level', level);
+    return { ok: true } as const;
+  },
+  'settings:set-vibrancy-material': async (s, { material }) => {
+    if (!isVibrancyMaterial(material)) return { ok: false, error: 'invalid' } as const;
+    s.settings.set('vibrancy_material', material);
     return { ok: true } as const;
   },
 
@@ -895,7 +931,7 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'files:tree':   async (s, { projectId, relPath }) => {
     const p = s.projects.get(projectId);
     if (!p) throw new Error(`no project ${projectId}`);
-    const abs = relPath ? join(p.path, relPath) : p.path;
+    const abs = resolveInsideRoot(p.path, relPath ?? '');
     const entries = readdirSync(abs).map(name => {
       const full = join(abs, name);
       let isDir = false; try { isDir = statSync(full).isDirectory(); } catch {}
@@ -938,13 +974,19 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'files:write':  async (s, { projectId, relPath, content }) => {
     const p = s.projects.get(projectId);
     if (!p) throw new Error(`no project ${projectId}`);
-    const abs = resolve(p.path, relPath);
-    if (!abs.startsWith(resolve(p.path))) throw new Error('path escapes project root');
+    const abs = resolveInsideRoot(p.path, relPath);
+    // The temp file sits beside the target, so the root as target would put it outside the project.
+    if (abs === resolve(p.path)) throw new Error('refusing to write to project root');
     // Atomic write via a sibling temp file then rename — protects against
     // partial writes if the process dies mid-flush.
     const tmp = `${abs}.metaide-tmp-${process.pid}-${Date.now()}`;
     writeFileSync(tmp, content, 'utf8');
-    renameSync(tmp, abs);
+    try {
+      renameSync(tmp, abs);
+    } catch (err) {
+      rmSync(tmp, { force: true });
+      throw err;
+    }
     const st = statSync(abs);
     return { ok: true as const, sizeBytes: st.size };
   },
@@ -952,8 +994,7 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'files:mkdir':  async (s, { projectId, relPath }) => {
     const p = s.projects.get(projectId);
     if (!p) throw new Error(`no project ${projectId}`);
-    const abs = resolve(p.path, relPath);
-    if (!abs.startsWith(resolve(p.path))) throw new Error('path escapes project root');
+    const abs = resolveInsideRoot(p.path, relPath);
     if (existsSync(abs)) throw new Error(`already exists: ${relPath}`);
     mkdirSync(abs, { recursive: true });
     return { ok: true as const };
@@ -963,9 +1004,8 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     const p = s.projects.get(projectId);
     if (!p) throw new Error(`no project ${projectId}`);
     const root = resolve(p.path);
-    const src = resolve(root, from);
-    const dst = resolve(root, to);
-    if (!src.startsWith(root) || !dst.startsWith(root)) throw new Error('path escapes project root');
+    const src = resolveInsideRoot(root, from);
+    const dst = resolveInsideRoot(root, to);
     if (!existsSync(src)) throw new Error(`no such file: ${from}`);
     if (existsSync(dst)) throw new Error(`target exists: ${to}`);
     renameSync(src, dst);
@@ -975,8 +1015,7 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'files:delete': async (s, { projectId, relPath }) => {
     const p = s.projects.get(projectId);
     if (!p) throw new Error(`no project ${projectId}`);
-    const abs = resolve(p.path, relPath);
-    if (!abs.startsWith(resolve(p.path))) throw new Error('path escapes project root');
+    const abs = resolveInsideRoot(p.path, relPath);
     if (abs === resolve(p.path)) throw new Error('refusing to delete project root');
     if (!existsSync(abs)) return { ok: true as const };
     rmSync(abs, { recursive: true, force: true });
@@ -1002,7 +1041,7 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     for (const r of roots) candidates.push({ abs: resolve(r, relPath), root: r });
 
     for (const { abs, root } of candidates) {
-      if (root && !abs.startsWith(root)) continue;
+      if (root && !isInsideRoot(root, abs)) continue;
       try {
         const st = statSync(abs);
         if (st.isDirectory()) continue;
@@ -1027,8 +1066,7 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'files:reveal': async (s, { projectId, relPath }) => {
     const p = s.projects.get(projectId);
     if (!p) throw new Error(`no project ${projectId}`);
-    const abs = resolve(p.path, relPath);
-    if (!abs.startsWith(resolve(p.path))) throw new Error('path escapes project root');
+    const abs = resolveInsideRoot(p.path, relPath);
     if (!existsSync(abs)) throw new Error(`no such file: ${relPath}`);
     shell.showItemInFolder(abs);
     return { ok: true as const };
@@ -1287,8 +1325,7 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     const p = s.projects.get(projectId);
     if (!p) throw new Error(`no project ${projectId}`);
     // Prevent path traversal — resolved path must stay within project root.
-    const abs = resolve(p.path, relPath);
-    if (!abs.startsWith(resolve(p.path))) throw new Error('path escapes project root');
+    const abs = resolveInsideRoot(p.path, relPath);
     const st = statSync(abs);
     if (st.isDirectory()) throw new Error(`${relPath} is a directory`);
     if (st.size > 2_000_000) return { content: `File too large (${st.size} bytes) — preview capped at 2 MB.`, kind: 'text' as const, sizeBytes: st.size };
@@ -1304,9 +1341,12 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     }
     return { content: buf.toString('utf8'), kind: 'text' as const, sizeBytes: st.size };
   },
+
+  ...dropHandlers,
 };
 
-const CHANNEL_EMITS: Partial<Record<IpcChannelName, IpcEventName[]>> = {
+/** Events broadcast after a channel's handler resolves; exported for the CHANNEL_EMITS guard test. */
+export const CHANNEL_EMITS: Partial<Record<IpcChannelName, IpcEventName[]>> = {
   'roots:add':      ['projects:changed'],
   'roots:remove':   ['projects:changed'],
   'roots:rescan':   ['projects:changed'],
@@ -1320,6 +1360,7 @@ const CHANNEL_EMITS: Partial<Record<IpcChannelName, IpcEventName[]>> = {
   'metaproject:link-local-project': ['projects:changed'],
   'shells:launch':  ['alive-shells:changed', 'projects:changed'],
   'shells:launch-plain': ['alive-shells:changed'],
+  'tasks:run':           ['alive-shells:changed'],
   'shells:launch-cli':   ['alive-shells:changed', 'projects:changed'],
   'shells:cli-profiles-remove': ['projects:changed'],
   'shells:set-default-cli': ['projects:changed'],
@@ -1362,6 +1403,10 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
     'settings:set-terminal-bold-weight': true,
     'settings:set-app-env': true,
     'settings:set-claude-permission-mode': true,
+    'settings:set-frost-chrome': true,
+    'settings:set-chrome-frost-level': true,
+    'settings:set-terminal-frost-level': true,
+    'settings:set-vibrancy-material': true,
   };
 
   for (const channel of Object.keys(handlers) as IpcChannelName[]) {
@@ -1410,6 +1455,33 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
     return result;
   });
 
+  ipcMain.handle('settings:set-frost-chrome', async (_e, req: IpcRequest<'settings:set-frost-chrome'>) => {
+    const result = await handlers['settings:set-frost-chrome'](services, req);
+    if (result.ok) sendEvent('settings:changed', { key: 'frost_chrome' });
+    return result;
+  });
+
+  ipcMain.handle('settings:set-chrome-frost-level', async (_e, req: IpcRequest<'settings:set-chrome-frost-level'>) => {
+    const result = await handlers['settings:set-chrome-frost-level'](services, req);
+    if (result.ok) sendEvent('settings:changed', { key: 'chrome_frost_level' });
+    return result;
+  });
+
+  ipcMain.handle('settings:set-terminal-frost-level', async (_e, req: IpcRequest<'settings:set-terminal-frost-level'>) => {
+    const result = await handlers['settings:set-terminal-frost-level'](services, req);
+    if (result.ok) sendEvent('settings:changed', { key: 'terminal_frost_level' });
+    return result;
+  });
+
+  ipcMain.handle('settings:set-vibrancy-material', async (_e, req: IpcRequest<'settings:set-vibrancy-material'>) => {
+    const result = await handlers['settings:set-vibrancy-material'](services, req);
+    if (result.ok) {
+      sendEvent('settings:changed', { key: 'vibrancy_material' });
+      windowHooks?.setVibrancy(req.material);
+    }
+    return result;
+  });
+
   ipcMain.handle('windows:popout-shell', async (_e, req: IpcRequest<'windows:popout-shell'>) => {
     if (!windowHooks) throw new Error('windows:popout-shell not wired');
     const windowId = await windowHooks.createPopoutWindow(req.projectId, req.shellIndex);
@@ -1435,7 +1507,7 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
     const root = resolve(project.path);
     // Reject anything that escapes the project root — we only expose files
     // the user could already see in the Files tab.
-    const absPaths = req.paths.map((p) => resolve(root, p)).filter((abs) => abs.startsWith(root) && existsSync(abs));
+    const absPaths = req.paths.map((p) => resolve(root, p)).filter((abs) => isInsideRoot(root, abs) && existsSync(abs));
     if (absPaths.length === 0) throw new Error('no valid files to drag');
     // startDrag needs a non-empty NativeImage. app.getFileIcon returns the
     // OS's own icon for the file (or a generic folder icon for dirs), which

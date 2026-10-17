@@ -1,0 +1,687 @@
+/* macOS frosted-glass level values for chrome Medium and Strong (spec macos-frosted-glass-settings
+ * D15). Every selector starts with :root[data-platform="mac"]; imported after frosted-chrome.css,
+ * whose palette blocks hold the Subtle values. Each block mirrors one palette block with
+ * [data-chrome-frost] added, so it is always the most specific match for its combination, and every
+ * block declares the same token set, so no level value leaks across palettes. A block sets the
+ * chrome alpha; the Shell sheet alpha for each terminal level, so the terminal totals over the chrome
+ * sit 8/255 apart (D3, D8); split-card alphas of 0, so a card adds no glass of its own (D16); and the
+ * lifts. The chrome lifts (--chrome-*, D17, D18) and the frosted Shell sheet hooks (--terminal-*,
+ * D24) each mix the Subtle value toward the theme pole by the smallest share that meets the token's
+ * floor across the material envelope (D22); 0% is written as the plain value. Tuned against
+ * tests/unit/renderer/frosted-chrome-contrast.test.ts. */
+
+:root[data-platform="mac"][data-chrome-frost="medium"],
+:root[data-platform="mac"][data-theme="dark"][data-chrome-frost="medium"] {
+  --chrome-glass-alpha: 0.805;
+  --terminal-glass-alpha: 0.32462;
+  --terminal-pane-alpha: 0;
+  --terminal-medium-glass-alpha: 0.16308;
+  --terminal-medium-pane-alpha: 0;
+  --terminal-strong-glass-alpha: 0.00154;
+  --terminal-strong-pane-alpha: 0;
+  --chrome-text: var(--text-base);
+  --chrome-accent-mark: color-mix(in oklab, var(--accent) 93.6%, #ffffff);
+  --chrome-text-muted: color-mix(in oklab, #9aa3ac 86.3%, #ffffff);
+  --chrome-chip-text: #78aaf8;
+  --terminal-text-muted: #99a2ab;
+  --terminal-medium-text-muted: color-mix(in oklab, #99a2ab 93.2%, #ffffff);
+  --terminal-strong-text-muted: color-mix(in oklab, #99a2ab 85.5%, #ffffff);
+  --chrome-hue-pink: color-mix(in oklab, #f87b91 86.6%, #ffffff);
+  --chrome-git-modified: #fbbf24;
+  --chrome-git-added: #34d399;
+  --chrome-git-deleted: color-mix(in oklab, #fc798b 86.8%, #ffffff);
+  --chrome-git-untracked: #38bdf8;
+  --chrome-accent-label: color-mix(in oklab, #6ea3fb 87.4%, #ffffff);
+  --chrome-hue-cyan: #7dcfff;
+  --chrome-hue-yellow: #e0af68;
+  --chrome-hue-purple: #bb9af7;
+  --chrome-danger: color-mix(in oklab, #fa7c7b 86.6%, #ffffff);
+  --chrome-agent-idle: #22c55e;
+  --chrome-agent-busy: #fbbf24;
+  --chrome-agent-blocked: color-mix(in oklab, #ef4444 92%, #ffffff);
+  --chrome-focus-ring: color-mix(in oklab, var(--accent) 93.6%, #ffffff);
+  --terminal-text: var(--text-base);
+  --terminal-accent-mark: color-mix(in oklab, var(--accent) 93.6%, #ffffff);
+  --terminal-agent-idle: var(--agent-idle-base);
+  --terminal-agent-busy: var(--agent-busy-base);
+  --terminal-agent-blocked: color-mix(in oklab, var(--agent-blocked-base) 92.1%, #ffffff);
+}
+
+:root[data-platform="mac"][data-theme="light"][data-chrome-frost="medium"] {
+  --chrome-glass-alpha: 0.81;
+  --terminal-glass-alpha: 0.33316;
+  --terminal-pane-alpha: 0;
+  --terminal-medium-glass-alpha: 0.16737;
+  --terminal-medium-pane-alpha: 0;
+  --terminal-strong-glass-alpha: 0.00158;
+  --terminal-strong-pane-alpha: 0;
+  --chrome-text: var(--text-base);
+  --chrome-accent-mark: color-mix(in oklab, var(--accent) 99%, #000000);
+  --chrome-text-muted: color-mix(in oklab, #4b5563 97.5%, #000000);
+  --chrome-chip-text: #20479a;
+  --terminal-text-muted: #4b5563;
+  --terminal-medium-text-muted: #4b5563;
+  --terminal-strong-text-muted: color-mix(in oklab, #4b5563 97.6%, #000000);
+  --chrome-hue-pink: color-mix(in oklab, #a71451 96.1%, #000000);
+  --chrome-git-modified: color-mix(in oklab, #6d5109 96.6%, #000000);
+  --chrome-git-added: color-mix(in oklab, #136145 96.7%, #000000);
+  --chrome-git-deleted: color-mix(in oklab, #8d3c48 95.9%, #000000);
+  --chrome-git-untracked: color-mix(in oklab, #175d7c 95.5%, #000000);
+  --chrome-accent-label: color-mix(in oklab, #1c4ebd 95.9%, #000000);
+  --chrome-hue-cyan: color-mix(in oklab, #095e75 96%, #000000);
+  --chrome-hue-yellow: color-mix(in oklab, #8e4005 95.7%, #000000);
+  --chrome-hue-purple: #7c3aed;
+  --chrome-danger: color-mix(in oklab, #ab1b1b 95.3%, #000000);
+  --chrome-agent-idle: color-mix(in oklab, #12803b 97.8%, #000000);
+  --chrome-agent-busy: color-mix(in oklab, #b45309 97.8%, #000000);
+  --chrome-agent-blocked: color-mix(in oklab, #d92525 97.1%, #000000);
+  --chrome-focus-ring: color-mix(in oklab, var(--accent) 99%, #000000);
+  --terminal-text: var(--text-base);
+  --terminal-accent-mark: color-mix(in oklab, var(--accent) 99.1%, #000000);
+  --terminal-agent-idle: var(--agent-idle-base);
+  --terminal-agent-busy: color-mix(in oklab, var(--agent-busy-base) 97.8%, #000000);
+  --terminal-agent-blocked: color-mix(in oklab, var(--agent-blocked-base) 96.2%, #000000);
+}
+
+:root[data-platform="mac"][data-palette="catppuccin"][data-chrome-frost="medium"] {
+  --chrome-glass-alpha: 0.77;
+  --terminal-glass-alpha: 0.27522;
+  --terminal-pane-alpha: 0;
+  --terminal-medium-glass-alpha: 0.13826;
+  --terminal-medium-pane-alpha: 0;
+  --terminal-strong-glass-alpha: 0.0013;
+  --terminal-strong-pane-alpha: 0;
+  --chrome-text: var(--text-base);
+  --chrome-accent-mark: var(--accent);
+  --chrome-text-muted: color-mix(in oklab, #adb4cf 86.6%, #ffffff);
+  --chrome-chip-text: #a1c0f8;
+  --terminal-text-muted: color-mix(in oklab, #a6adc8 98%, #ffffff);
+  --terminal-medium-text-muted: color-mix(in oklab, color-mix(in oklab, #a6adc8 93.4%, #ffffff) 94.9%, #ffffff);
+  --terminal-strong-text-muted: color-mix(in oklab, color-mix(in oklab, #a6adc8 93.4%, #ffffff) 84.5%, #ffffff);
+  --chrome-hue-pink: color-mix(in oklab, #f69bb3 87.1%, #ffffff);
+  --chrome-git-modified: #fbbf24;
+  --chrome-git-added: color-mix(in oklab, #34d399 94.7%, #ffffff);
+  --chrome-git-deleted: color-mix(in oklab, #ff99a4 87.4%, #ffffff);
+  --chrome-git-untracked: color-mix(in oklab, #48c1f9 87.4%, #ffffff);
+  --chrome-accent-label: color-mix(in oklab, #8eb7fa 87.6%, #ffffff);
+  --chrome-hue-cyan: #94e2d5;
+  --chrome-hue-yellow: #f9e2af;
+  --chrome-hue-purple: #f5c2e7;
+  --chrome-danger: color-mix(in oklab, #f69bb3 87.1%, #ffffff);
+  --chrome-agent-idle: #a6e3a1;
+  --chrome-agent-busy: #f9e2af;
+  --chrome-agent-blocked: #f38ba8;
+  --chrome-focus-ring: #89b4fa;
+  --terminal-text: var(--text-base);
+  --terminal-accent-mark: var(--accent);
+  --terminal-agent-idle: var(--agent-idle-base);
+  --terminal-agent-busy: var(--agent-busy-base);
+  --terminal-agent-blocked: var(--agent-blocked-base);
+}
+
+:root[data-platform="mac"][data-palette="catppuccin"][data-theme="light"][data-chrome-frost="medium"] {
+  --chrome-glass-alpha: 0.81;
+  --terminal-glass-alpha: 0.33526;
+  --terminal-pane-alpha: 0;
+  --terminal-medium-glass-alpha: 0.16947;
+  --terminal-medium-pane-alpha: 0;
+  --terminal-strong-glass-alpha: 0.00368;
+  --terminal-strong-pane-alpha: 0;
+  --chrome-text: color-mix(in oklab, var(--text-base) 99.9%, #000000);
+  --chrome-accent-mark: color-mix(in oklab, var(--accent) 96.4%, #000000);
+  --chrome-text-muted: color-mix(in oklab, #52556e 95.2%, #000000);
+  --chrome-chip-text: #435892;
+  --terminal-text-muted: #52566f;
+  --terminal-medium-text-muted: color-mix(in oklab, #52566f 97.6%, #000000);
+  --terminal-strong-text-muted: color-mix(in oklab, #52566f 94.6%, #000000);
+  --chrome-hue-pink: color-mix(in oklab, #ac0a2d 96%, #000000);
+  --chrome-git-modified: color-mix(in oklab, #6d5109 96.1%, #000000);
+  --chrome-git-added: color-mix(in oklab, #136145 96.2%, #000000);
+  --chrome-git-deleted: color-mix(in oklab, #8d3c48 95.3%, #000000);
+  --chrome-git-untracked: color-mix(in oklab, #165b79 96.5%, #000000);
+  --chrome-accent-label: color-mix(in oklab, #154ebf 95.3%, #000000);
+  --chrome-hue-cyan: color-mix(in oklab, #0b5e63 96.7%, #000000);
+  --chrome-hue-yellow: color-mix(in oklab, #7a4b0b 96%, #000000);
+  --chrome-hue-purple: color-mix(in oklab, #a5518f 97.5%, #000000);
+  --chrome-danger: color-mix(in oklab, #ac0a2d 96%, #000000);
+  --chrome-agent-idle: color-mix(in oklab, #328021 96.7%, #000000);
+  --chrome-agent-busy: color-mix(in oklab, #9d6311 96.9%, #000000);
+  --chrome-agent-blocked: #d20f39;
+  --chrome-focus-ring: color-mix(in oklab, var(--accent) 96.4%, #000000);
+  --terminal-text: var(--text-base);
+  --terminal-accent-mark: color-mix(in oklab, var(--accent) 96.5%, #000000);
+  --terminal-agent-idle: var(--agent-idle-base);
+  --terminal-agent-busy: var(--agent-busy-base);
+  --terminal-agent-blocked: var(--agent-blocked-base);
+}
+
+:root[data-platform="mac"][data-palette="rose-pine"][data-chrome-frost="medium"] {
+  --chrome-glass-alpha: 0.775;
+  --terminal-glass-alpha: 0.28133;
+  --terminal-pane-alpha: 0;
+  --terminal-medium-glass-alpha: 0.14133;
+  --terminal-medium-pane-alpha: 0;
+  --terminal-strong-glass-alpha: 0.00133;
+  --terminal-strong-pane-alpha: 0;
+  --chrome-text: var(--text-base);
+  --chrome-accent-mark: var(--accent);
+  --chrome-text-muted: color-mix(in oklab, #bab7d1 85.7%, #ffffff);
+  --chrome-chip-text: #cebaec;
+  --terminal-text-muted: #b1aec9;
+  --terminal-medium-text-muted: color-mix(in oklab, color-mix(in oklab, #b1aec9 90.7%, #ffffff) 97.5%, #ffffff);
+  --terminal-strong-text-muted: color-mix(in oklab, color-mix(in oklab, #b1aec9 90.7%, #ffffff) 83.6%, #ffffff);
+  --chrome-hue-pink: color-mix(in oklab, #f7a2b6 86%, #ffffff);
+  --chrome-git-modified: #fbbf24;
+  --chrome-git-added: color-mix(in oklab, #34d399 87.4%, #ffffff);
+  --chrome-git-deleted: color-mix(in oklab, #ffa0aa 86%, #ffffff);
+  --chrome-git-untracked: color-mix(in oklab, #5bc5f9 86.1%, #ffffff);
+  --chrome-accent-label: color-mix(in oklab, #cab0ea 87.2%, #ffffff);
+  --chrome-hue-cyan: #ebbcba;
+  --chrome-hue-yellow: #f6c177;
+  --chrome-hue-purple: #c4a7e7;
+  --chrome-danger: color-mix(in oklab, #f7a2b6 86%, #ffffff);
+  --chrome-agent-idle: #9ccfd8;
+  --chrome-agent-busy: #f6c177;
+  --chrome-agent-blocked: color-mix(in oklab, #eb7193 92.9%, #ffffff);
+  --chrome-focus-ring: #c4a7e7;
+  --terminal-text: var(--text-base);
+  --terminal-accent-mark: var(--accent);
+  --terminal-agent-idle: var(--agent-idle-base);
+  --terminal-agent-busy: var(--agent-busy-base);
+  --terminal-agent-blocked: color-mix(in oklab, var(--agent-blocked-base) 92%, #ffffff);
+}
+
+:root[data-platform="mac"][data-palette="rose-pine"][data-theme="light"][data-chrome-frost="medium"] {
+  --chrome-glass-alpha: 0.81;
+  --terminal-glass-alpha: 0.33316;
+  --terminal-pane-alpha: 0;
+  --terminal-medium-glass-alpha: 0.16737;
+  --terminal-medium-pane-alpha: 0;
+  --terminal-strong-glass-alpha: 0.00158;
+  --terminal-strong-pane-alpha: 0;
+  --chrome-text: var(--text-base);
+  --chrome-accent-mark: var(--accent);
+  --chrome-text-muted: color-mix(in oklab, #5f5b7f 93.8%, #000000);
+  --chrome-chip-text: #40607f;
+  --terminal-text-muted: color-mix(in oklab, #5f5b7f 99.9%, #000000);
+  --terminal-medium-text-muted: color-mix(in oklab, #5f5b7f 96.9%, #000000);
+  --terminal-strong-text-muted: color-mix(in oklab, #5f5b7f 93.9%, #000000);
+  --chrome-hue-pink: color-mix(in oklab, #894a5c 95.1%, #000000);
+  --chrome-git-modified: color-mix(in oklab, #785a0b 94.1%, #000000);
+  --chrome-git-added: color-mix(in oklab, #166b4c 94.5%, #000000);
+  --chrome-git-deleted: color-mix(in oklab, #99424e 94.5%, #000000);
+  --chrome-git-untracked: color-mix(in oklab, #196485 95%, #000000);
+  --chrome-accent-label: color-mix(in oklab, #26657e 94.4%, #000000);
+  --chrome-hue-cyan: color-mix(in oklab, #87504d 93.9%, #000000);
+  --chrome-hue-yellow: color-mix(in oklab, #805418 95%, #000000);
+  --chrome-hue-purple: color-mix(in oklab, #84709b 96%, #000000);
+  --chrome-danger: color-mix(in oklab, #894a5c 95.1%, #000000);
+  --chrome-agent-idle: #286983;
+  --chrome-agent-busy: color-mix(in oklab, #a26b21 96.9%, #000000);
+  --chrome-agent-blocked: color-mix(in oklab, #ad5f75 96.8%, #000000);
+  --chrome-focus-ring: #286983;
+  --terminal-text: var(--text-base);
+  --terminal-accent-mark: var(--accent);
+  --terminal-agent-idle: var(--agent-idle-base);
+  --terminal-agent-busy: var(--agent-busy-base);
+  --terminal-agent-blocked: color-mix(in oklab, var(--agent-blocked-base) 94%, #000000);
+}
+
+@media (prefers-color-scheme: light) {
+  :root[data-platform="mac"][data-chrome-frost="medium"]:not([data-theme]) {
+    --chrome-glass-alpha: 0.81;
+    --terminal-glass-alpha: 0.33316;
+    --terminal-pane-alpha: 0;
+    --terminal-medium-glass-alpha: 0.16737;
+    --terminal-medium-pane-alpha: 0;
+    --terminal-strong-glass-alpha: 0.00158;
+    --terminal-strong-pane-alpha: 0;
+    --chrome-text: var(--text-base);
+    --chrome-accent-mark: color-mix(in oklab, var(--accent) 99%, #000000);
+    --chrome-text-muted: color-mix(in oklab, #4b5563 97.5%, #000000);
+    --chrome-chip-text: #20479a;
+    --terminal-text-muted: #4b5563;
+    --terminal-medium-text-muted: #4b5563;
+    --terminal-strong-text-muted: color-mix(in oklab, #4b5563 97.6%, #000000);
+    --chrome-hue-pink: color-mix(in oklab, #a71451 96.1%, #000000);
+    --chrome-git-modified: color-mix(in oklab, #6d5109 96.6%, #000000);
+    --chrome-git-added: color-mix(in oklab, #136145 96.7%, #000000);
+    --chrome-git-deleted: color-mix(in oklab, #8d3c48 95.9%, #000000);
+    --chrome-git-untracked: color-mix(in oklab, #175d7c 95.5%, #000000);
+    --chrome-accent-label: color-mix(in oklab, #1c4ebd 95.9%, #000000);
+    --chrome-hue-cyan: color-mix(in oklab, #095e75 96%, #000000);
+    --chrome-hue-yellow: color-mix(in oklab, #8e4005 95.7%, #000000);
+    --chrome-hue-purple: #7c3aed;
+    --chrome-danger: color-mix(in oklab, #ab1b1b 95.3%, #000000);
+    --chrome-agent-idle: color-mix(in oklab, #12803b 97.8%, #000000);
+    --chrome-agent-busy: color-mix(in oklab, #b45309 97.8%, #000000);
+    --chrome-agent-blocked: color-mix(in oklab, #d92525 97.1%, #000000);
+    --chrome-focus-ring: color-mix(in oklab, var(--accent) 99%, #000000);
+    --terminal-text: var(--text-base);
+    --terminal-accent-mark: color-mix(in oklab, var(--accent) 99.1%, #000000);
+    --terminal-agent-idle: var(--agent-idle-base);
+    --terminal-agent-busy: color-mix(in oklab, var(--agent-busy-base) 97.8%, #000000);
+    --terminal-agent-blocked: color-mix(in oklab, var(--agent-blocked-base) 96.2%, #000000);
+  }
+
+  :root[data-platform="mac"][data-palette="catppuccin"][data-chrome-frost="medium"]:not([data-theme]) {
+    --chrome-glass-alpha: 0.81;
+    --terminal-glass-alpha: 0.33526;
+    --terminal-pane-alpha: 0;
+    --terminal-medium-glass-alpha: 0.16947;
+    --terminal-medium-pane-alpha: 0;
+    --terminal-strong-glass-alpha: 0.00368;
+    --terminal-strong-pane-alpha: 0;
+    --chrome-text: color-mix(in oklab, var(--text-base) 99.9%, #000000);
+    --chrome-accent-mark: color-mix(in oklab, var(--accent) 96.4%, #000000);
+    --chrome-text-muted: color-mix(in oklab, #52556e 95.2%, #000000);
+    --chrome-chip-text: #435892;
+    --terminal-text-muted: #52566f;
+    --terminal-medium-text-muted: color-mix(in oklab, #52566f 97.6%, #000000);
+    --terminal-strong-text-muted: color-mix(in oklab, #52566f 94.6%, #000000);
+    --chrome-hue-pink: color-mix(in oklab, #ac0a2d 96%, #000000);
+    --chrome-git-modified: color-mix(in oklab, #6d5109 96.1%, #000000);
+    --chrome-git-added: color-mix(in oklab, #136145 96.2%, #000000);
+    --chrome-git-deleted: color-mix(in oklab, #8d3c48 95.3%, #000000);
+    --chrome-git-untracked: color-mix(in oklab, #165b79 96.5%, #000000);
+    --chrome-accent-label: color-mix(in oklab, #154ebf 95.3%, #000000);
+    --chrome-hue-cyan: color-mix(in oklab, #0b5e63 96.7%, #000000);
+    --chrome-hue-yellow: color-mix(in oklab, #7a4b0b 96%, #000000);
+    --chrome-hue-purple: color-mix(in oklab, #a5518f 97.5%, #000000);
+    --chrome-danger: color-mix(in oklab, #ac0a2d 96%, #000000);
+    --chrome-agent-idle: color-mix(in oklab, #328021 96.7%, #000000);
+    --chrome-agent-busy: color-mix(in oklab, #9d6311 96.9%, #000000);
+    --chrome-agent-blocked: #d20f39;
+    --chrome-focus-ring: color-mix(in oklab, var(--accent) 96.4%, #000000);
+    --terminal-text: var(--text-base);
+    --terminal-accent-mark: color-mix(in oklab, var(--accent) 96.5%, #000000);
+    --terminal-agent-idle: var(--agent-idle-base);
+    --terminal-agent-busy: var(--agent-busy-base);
+    --terminal-agent-blocked: var(--agent-blocked-base);
+  }
+
+  :root[data-platform="mac"][data-palette="rose-pine"][data-chrome-frost="medium"]:not([data-theme]) {
+    --chrome-glass-alpha: 0.81;
+    --terminal-glass-alpha: 0.33316;
+    --terminal-pane-alpha: 0;
+    --terminal-medium-glass-alpha: 0.16737;
+    --terminal-medium-pane-alpha: 0;
+    --terminal-strong-glass-alpha: 0.00158;
+    --terminal-strong-pane-alpha: 0;
+    --chrome-text: var(--text-base);
+    --chrome-accent-mark: var(--accent);
+    --chrome-text-muted: color-mix(in oklab, #5f5b7f 93.8%, #000000);
+    --chrome-chip-text: #40607f;
+    --terminal-text-muted: color-mix(in oklab, #5f5b7f 99.9%, #000000);
+    --terminal-medium-text-muted: color-mix(in oklab, #5f5b7f 96.9%, #000000);
+    --terminal-strong-text-muted: color-mix(in oklab, #5f5b7f 93.9%, #000000);
+    --chrome-hue-pink: color-mix(in oklab, #894a5c 95.1%, #000000);
+    --chrome-git-modified: color-mix(in oklab, #785a0b 94.1%, #000000);
+    --chrome-git-added: color-mix(in oklab, #166b4c 94.5%, #000000);
+    --chrome-git-deleted: color-mix(in oklab, #99424e 94.5%, #000000);
+    --chrome-git-untracked: color-mix(in oklab, #196485 95%, #000000);
+    --chrome-accent-label: color-mix(in oklab, #26657e 94.4%, #000000);
+    --chrome-hue-cyan: color-mix(in oklab, #87504d 93.9%, #000000);
+    --chrome-hue-yellow: color-mix(in oklab, #805418 95%, #000000);
+    --chrome-hue-purple: color-mix(in oklab, #84709b 96%, #000000);
+    --chrome-danger: color-mix(in oklab, #894a5c 95.1%, #000000);
+    --chrome-agent-idle: #286983;
+    --chrome-agent-busy: color-mix(in oklab, #a26b21 96.9%, #000000);
+    --chrome-agent-blocked: color-mix(in oklab, #ad5f75 96.8%, #000000);
+    --chrome-focus-ring: #286983;
+    --terminal-text: var(--text-base);
+    --terminal-accent-mark: var(--accent);
+    --terminal-agent-idle: var(--agent-idle-base);
+    --terminal-agent-busy: var(--agent-busy-base);
+    --terminal-agent-blocked: color-mix(in oklab, var(--agent-blocked-base) 94%, #000000);
+  }
+}
+
+:root[data-platform="mac"][data-chrome-frost="strong"],
+:root[data-platform="mac"][data-theme="dark"][data-chrome-frost="strong"] {
+  --chrome-glass-alpha: 0.77;
+  --terminal-glass-alpha: 0.27522;
+  --terminal-pane-alpha: 0;
+  --terminal-medium-glass-alpha: 0.13826;
+  --terminal-medium-pane-alpha: 0;
+  --terminal-strong-glass-alpha: 0.0013;
+  --terminal-strong-pane-alpha: 0;
+  --chrome-text: var(--text-base);
+  --chrome-accent-mark: color-mix(in oklab, var(--accent) 85%, #ffffff);
+  --chrome-text-muted: color-mix(in oklab, #9aa3ac 73.6%, #ffffff);
+  --chrome-chip-text: #78aaf8;
+  --terminal-text-muted: color-mix(in oklab, #99a2ab 89.9%, #ffffff);
+  --terminal-medium-text-muted: color-mix(in oklab, #99a2ab 81.5%, #ffffff);
+  --terminal-strong-text-muted: color-mix(in oklab, #99a2ab 72.9%, #ffffff);
+  --chrome-hue-pink: color-mix(in oklab, #f87b91 73.9%, #ffffff);
+  --chrome-git-modified: #fbbf24;
+  --chrome-git-added: #34d399;
+  --chrome-git-deleted: color-mix(in oklab, #fc798b 73.3%, #ffffff);
+  --chrome-git-untracked: color-mix(in oklab, #38bdf8 88.8%, #ffffff);
+  --chrome-accent-label: color-mix(in oklab, #6ea3fb 74.6%, #ffffff);
+  --chrome-hue-cyan: #7dcfff;
+  --chrome-hue-yellow: color-mix(in oklab, #e0af68 96.7%, #ffffff);
+  --chrome-hue-purple: #bb9af7;
+  --chrome-danger: color-mix(in oklab, #fa7c7b 73.8%, #ffffff);
+  --chrome-agent-idle: #22c55e;
+  --chrome-agent-busy: #fbbf24;
+  --chrome-agent-blocked: color-mix(in oklab, #ef4444 83.5%, #ffffff);
+  --chrome-focus-ring: color-mix(in oklab, var(--accent) 85%, #ffffff);
+  --terminal-text: var(--text-base);
+  --terminal-accent-mark: color-mix(in oklab, var(--accent) 85.1%, #ffffff);
+  --terminal-agent-idle: var(--agent-idle-base);
+  --terminal-agent-busy: var(--agent-busy-base);
+  --terminal-agent-blocked: color-mix(in oklab, var(--agent-blocked-base) 83.6%, #ffffff);
+}
+
+:root[data-platform="mac"][data-theme="light"][data-chrome-frost="strong"] {
+  --chrome-glass-alpha: 0.775;
+  --terminal-glass-alpha: 0.28133;
+  --terminal-pane-alpha: 0;
+  --terminal-medium-glass-alpha: 0.14133;
+  --terminal-medium-pane-alpha: 0;
+  --terminal-strong-glass-alpha: 0.00133;
+  --terminal-strong-pane-alpha: 0;
+  --chrome-text: var(--text-base);
+  --chrome-accent-mark: color-mix(in oklab, var(--accent) 95.1%, #000000);
+  --chrome-text-muted: color-mix(in oklab, #4b5563 92.8%, #000000);
+  --chrome-chip-text: #20479a;
+  --terminal-text-muted: #4b5563;
+  --terminal-medium-text-muted: color-mix(in oklab, #4b5563 96.9%, #000000);
+  --terminal-strong-text-muted: color-mix(in oklab, #4b5563 92.9%, #000000);
+  --chrome-hue-pink: color-mix(in oklab, #a71451 91.5%, #000000);
+  --chrome-git-modified: color-mix(in oklab, #6d5109 92%, #000000);
+  --chrome-git-added: color-mix(in oklab, #136145 92.1%, #000000);
+  --chrome-git-deleted: color-mix(in oklab, #8d3c48 91.2%, #000000);
+  --chrome-git-untracked: color-mix(in oklab, #175d7c 90.9%, #000000);
+  --chrome-accent-label: color-mix(in oklab, #1c4ebd 91.2%, #000000);
+  --chrome-hue-cyan: color-mix(in oklab, #095e75 91.3%, #000000);
+  --chrome-hue-yellow: color-mix(in oklab, #8e4005 91%, #000000);
+  --chrome-hue-purple: color-mix(in oklab, #7c3aed 99.3%, #000000);
+  --chrome-danger: color-mix(in oklab, #ab1b1b 90.7%, #000000);
+  --chrome-agent-idle: color-mix(in oklab, #12803b 94%, #000000);
+  --chrome-agent-busy: color-mix(in oklab, #b45309 93.9%, #000000);
+  --chrome-agent-blocked: color-mix(in oklab, #d92525 93.3%, #000000);
+  --chrome-focus-ring: color-mix(in oklab, var(--accent) 95.1%, #000000);
+  --terminal-text: var(--text-base);
+  --terminal-accent-mark: color-mix(in oklab, var(--accent) 95.1%, #000000);
+  --terminal-agent-idle: var(--agent-idle-base);
+  --terminal-agent-busy: color-mix(in oklab, var(--agent-busy-base) 93.9%, #000000);
+  --terminal-agent-blocked: color-mix(in oklab, var(--agent-blocked-base) 92.3%, #000000);
+}
+
+:root[data-platform="mac"][data-palette="catppuccin"][data-chrome-frost="strong"] {
+  --chrome-glass-alpha: 0.735;
+  --terminal-glass-alpha: 0.23887;
+  --terminal-pane-alpha: 0;
+  --terminal-medium-glass-alpha: 0.12;
+  --terminal-medium-pane-alpha: 0;
+  --terminal-strong-glass-alpha: 0.00113;
+  --terminal-strong-pane-alpha: 0;
+  --chrome-text: var(--text-base);
+  --chrome-accent-mark: var(--accent);
+  --chrome-text-muted: color-mix(in oklab, #adb4cf 70.1%, #ffffff);
+  --chrome-chip-text: #a1c0f8;
+  --terminal-text-muted: color-mix(in oklab, #a6adc8 84.6%, #ffffff);
+  --terminal-medium-text-muted: color-mix(in oklab, color-mix(in oklab, #a6adc8 93.4%, #ffffff) 79.6%, #ffffff);
+  --terminal-strong-text-muted: color-mix(in oklab, color-mix(in oklab, #a6adc8 93.4%, #ffffff) 68.5%, #ffffff);
+  --chrome-hue-pink: color-mix(in oklab, #f69bb3 70.5%, #ffffff);
+  --chrome-git-modified: color-mix(in oklab, #fbbf24 96%, #ffffff);
+  --chrome-git-added: color-mix(in oklab, #34d399 76.6%, #ffffff);
+  --chrome-git-deleted: color-mix(in oklab, #ff99a4 70.1%, #ffffff);
+  --chrome-git-untracked: color-mix(in oklab, #48c1f9 70.8%, #ffffff);
+  --chrome-accent-label: color-mix(in oklab, #8eb7fa 71.1%, #ffffff);
+  --chrome-hue-cyan: #94e2d5;
+  --chrome-hue-yellow: #f9e2af;
+  --chrome-hue-purple: #f5c2e7;
+  --chrome-danger: color-mix(in oklab, #f69bb3 70.5%, #ffffff);
+  --chrome-agent-idle: #a6e3a1;
+  --chrome-agent-busy: #f9e2af;
+  --chrome-agent-blocked: #f38ba8;
+  --chrome-focus-ring: #89b4fa;
+  --terminal-text: var(--text-base);
+  --terminal-accent-mark: var(--accent);
+  --terminal-agent-idle: var(--agent-idle-base);
+  --terminal-agent-busy: var(--agent-busy-base);
+  --terminal-agent-blocked: var(--agent-blocked-base);
+}
+
+:root[data-platform="mac"][data-palette="catppuccin"][data-theme="light"][data-chrome-frost="strong"] {
+  --chrome-glass-alpha: 0.775;
+  --terminal-glass-alpha: 0.44133;
+  --terminal-pane-alpha: 0;
+  --terminal-medium-glass-alpha: 0.30133;
+  --terminal-medium-pane-alpha: 0;
+  --terminal-strong-glass-alpha: 0.16133;
+  --terminal-strong-pane-alpha: 0;
+  --chrome-text: color-mix(in oklab, var(--text-base) 95%, #000000);
+  --chrome-accent-mark: color-mix(in oklab, var(--accent) 92.6%, #000000);
+  --chrome-text-muted: color-mix(in oklab, #52556e 90.5%, #000000);
+  --chrome-chip-text: #435892;
+  --terminal-text-muted: color-mix(in oklab, #52566f 99.9%, #000000);
+  --terminal-medium-text-muted: color-mix(in oklab, #52566f 96.8%, #000000);
+  --terminal-strong-text-muted: color-mix(in oklab, #52566f 93.7%, #000000);
+  --chrome-hue-pink: color-mix(in oklab, #ac0a2d 91.3%, #000000);
+  --chrome-git-modified: color-mix(in oklab, #6d5109 91.4%, #000000);
+  --chrome-git-added: color-mix(in oklab, #136145 91.5%, #000000);
+  --chrome-git-deleted: color-mix(in oklab, #8d3c48 90.7%, #000000);
+  --chrome-git-untracked: color-mix(in oklab, #165b79 91.8%, #000000);
+  --chrome-accent-label: color-mix(in oklab, #154ebf 90.7%, #000000);
+  --chrome-hue-cyan: color-mix(in oklab, #0b5e63 92%, #000000);
+  --chrome-hue-yellow: color-mix(in oklab, #7a4b0b 91.3%, #000000);
+  --chrome-hue-purple: color-mix(in oklab, #a5518f 93.6%, #000000);
+  --chrome-danger: color-mix(in oklab, #ac0a2d 91.3%, #000000);
+  --chrome-agent-idle: color-mix(in oklab, #328021 92.9%, #000000);
+  --chrome-agent-busy: color-mix(in oklab, #9d6311 93%, #000000);
+  --chrome-agent-blocked: color-mix(in oklab, #d20f39 96.7%, #000000);
+  --chrome-focus-ring: color-mix(in oklab, var(--accent) 92.6%, #000000);
+  --terminal-text: color-mix(in oklab, var(--text-base) 99%, #000000);
+  --terminal-accent-mark: color-mix(in oklab, var(--accent) 95.7%, #000000);
+  --terminal-agent-idle: var(--agent-idle-base);
+  --terminal-agent-busy: var(--agent-busy-base);
+  --terminal-agent-blocked: var(--agent-blocked-base);
+}
+
+:root[data-platform="mac"][data-palette="rose-pine"][data-chrome-frost="strong"] {
+  --chrome-glass-alpha: 0.74;
+  --terminal-glass-alpha: 0.24346;
+  --terminal-pane-alpha: 0;
+  --terminal-medium-glass-alpha: 0.12231;
+  --terminal-medium-pane-alpha: 0;
+  --terminal-strong-glass-alpha: 0.00115;
+  --terminal-strong-pane-alpha: 0;
+  --chrome-text: var(--text-base);
+  --chrome-accent-mark: var(--accent);
+  --chrome-text-muted: color-mix(in oklab, #bab7d1 68.3%, #ffffff);
+  --chrome-chip-text: #cebaec;
+  --terminal-text-muted: color-mix(in oklab, #b1aec9 86.2%, #ffffff);
+  --terminal-medium-text-muted: color-mix(in oklab, color-mix(in oklab, #b1aec9 90.7%, #ffffff) 81%, #ffffff);
+  --terminal-strong-text-muted: color-mix(in oklab, color-mix(in oklab, #b1aec9 90.7%, #ffffff) 66.6%, #ffffff);
+  --chrome-hue-pink: color-mix(in oklab, #f7a2b6 68.5%, #ffffff);
+  --chrome-git-modified: color-mix(in oklab, #fbbf24 87.2%, #ffffff);
+  --chrome-git-added: color-mix(in oklab, #34d399 69.6%, #ffffff);
+  --chrome-git-deleted: color-mix(in oklab, #ffa0aa 67.9%, #ffffff);
+  --chrome-git-untracked: color-mix(in oklab, #5bc5f9 68.6%, #ffffff);
+  --chrome-accent-label: color-mix(in oklab, #cab0ea 69.5%, #ffffff);
+  --chrome-hue-cyan: color-mix(in oklab, #ebbcba 85.2%, #ffffff);
+  --chrome-hue-yellow: color-mix(in oklab, #f6c177 90%, #ffffff);
+  --chrome-hue-purple: #c4a7e7;
+  --chrome-danger: color-mix(in oklab, #f7a2b6 68.5%, #ffffff);
+  --chrome-agent-idle: #9ccfd8;
+  --chrome-agent-busy: #f6c177;
+  --chrome-agent-blocked: color-mix(in oklab, #eb7193 82.5%, #ffffff);
+  --chrome-focus-ring: #c4a7e7;
+  --terminal-text: var(--text-base);
+  --terminal-accent-mark: var(--accent);
+  --terminal-agent-idle: var(--agent-idle-base);
+  --terminal-agent-busy: var(--agent-busy-base);
+  --terminal-agent-blocked: color-mix(in oklab, var(--agent-blocked-base) 81.7%, #ffffff);
+}
+
+:root[data-platform="mac"][data-palette="rose-pine"][data-theme="light"][data-chrome-frost="strong"] {
+  --chrome-glass-alpha: 0.775;
+  --terminal-glass-alpha: 0.44133;
+  --terminal-pane-alpha: 0;
+  --terminal-medium-glass-alpha: 0.30133;
+  --terminal-medium-pane-alpha: 0;
+  --terminal-strong-glass-alpha: 0.16133;
+  --terminal-strong-pane-alpha: 0;
+  --chrome-text: color-mix(in oklab, var(--text-base) 95.3%, #000000);
+  --chrome-accent-mark: var(--accent);
+  --chrome-text-muted: color-mix(in oklab, #5f5b7f 89.5%, #000000);
+  --chrome-chip-text: #40607f;
+  --terminal-text-muted: color-mix(in oklab, #5f5b7f 99.5%, #000000);
+  --terminal-medium-text-muted: color-mix(in oklab, #5f5b7f 96.4%, #000000);
+  --terminal-strong-text-muted: color-mix(in oklab, #5f5b7f 93.2%, #000000);
+  --chrome-hue-pink: color-mix(in oklab, #894a5c 90.7%, #000000);
+  --chrome-git-modified: color-mix(in oklab, #785a0b 89.7%, #000000);
+  --chrome-git-added: color-mix(in oklab, #166b4c 90%, #000000);
+  --chrome-git-deleted: color-mix(in oklab, #99424e 90%, #000000);
+  --chrome-git-untracked: color-mix(in oklab, #196485 90.6%, #000000);
+  --chrome-accent-label: color-mix(in oklab, #26657e 90%, #000000);
+  --chrome-hue-cyan: color-mix(in oklab, #87504d 89.5%, #000000);
+  --chrome-hue-yellow: color-mix(in oklab, #805418 90.7%, #000000);
+  --chrome-hue-purple: color-mix(in oklab, #84709b 92.2%, #000000);
+  --chrome-danger: color-mix(in oklab, #894a5c 90.7%, #000000);
+  --chrome-agent-idle: #286983;
+  --chrome-agent-busy: color-mix(in oklab, #a26b21 93.1%, #000000);
+  --chrome-agent-blocked: color-mix(in oklab, #ad5f75 93.1%, #000000);
+  --chrome-focus-ring: #286983;
+  --terminal-text: color-mix(in oklab, var(--text-base) 99.4%, #000000);
+  --terminal-accent-mark: var(--accent);
+  --terminal-agent-idle: var(--agent-idle-base);
+  --terminal-agent-busy: var(--agent-busy-base);
+  --terminal-agent-blocked: color-mix(in oklab, var(--agent-blocked-base) 93.6%, #000000);
+}
+
+@media (prefers-color-scheme: light) {
+  :root[data-platform="mac"][data-chrome-frost="strong"]:not([data-theme]) {
+    --chrome-glass-alpha: 0.775;
+    --terminal-glass-alpha: 0.28133;
+    --terminal-pane-alpha: 0;
+    --terminal-medium-glass-alpha: 0.14133;
+    --terminal-medium-pane-alpha: 0;
+    --terminal-strong-glass-alpha: 0.00133;
+    --terminal-strong-pane-alpha: 0;
+    --chrome-text: var(--text-base);
+    --chrome-accent-mark: color-mix(in oklab, var(--accent) 95.1%, #000000);
+    --chrome-text-muted: color-mix(in oklab, #4b5563 92.8%, #000000);
+    --chrome-chip-text: #20479a;
+    --terminal-text-muted: #4b5563;
+    --terminal-medium-text-muted: color-mix(in oklab, #4b5563 96.9%, #000000);
+    --terminal-strong-text-muted: color-mix(in oklab, #4b5563 92.9%, #000000);
+    --chrome-hue-pink: color-mix(in oklab, #a71451 91.5%, #000000);
+    --chrome-git-modified: color-mix(in oklab, #6d5109 92%, #000000);
+    --chrome-git-added: color-mix(in oklab, #136145 92.1%, #000000);
+    --chrome-git-deleted: color-mix(in oklab, #8d3c48 91.2%, #000000);
+    --chrome-git-untracked: color-mix(in oklab, #175d7c 90.9%, #000000);
+    --chrome-accent-label: color-mix(in oklab, #1c4ebd 91.2%, #000000);
+    --chrome-hue-cyan: color-mix(in oklab, #095e75 91.3%, #000000);
+    --chrome-hue-yellow: color-mix(in oklab, #8e4005 91%, #000000);
+    --chrome-hue-purple: color-mix(in oklab, #7c3aed 99.3%, #000000);
+    --chrome-danger: color-mix(in oklab, #ab1b1b 90.7%, #000000);
+    --chrome-agent-idle: color-mix(in oklab, #12803b 94%, #000000);
+    --chrome-agent-busy: color-mix(in oklab, #b45309 93.9%, #000000);
+    --chrome-agent-blocked: color-mix(in oklab, #d92525 93.3%, #000000);
+    --chrome-focus-ring: color-mix(in oklab, var(--accent) 95.1%, #000000);
+    --terminal-text: var(--text-base);
+    --terminal-accent-mark: color-mix(in oklab, var(--accent) 95.1%, #000000);
+    --terminal-agent-idle: var(--agent-idle-base);
+    --terminal-agent-busy: color-mix(in oklab, var(--agent-busy-base) 93.9%, #000000);
+    --terminal-agent-blocked: color-mix(in oklab, var(--agent-blocked-base) 92.3%, #000000);
+  }
+
+  :root[data-platform="mac"][data-palette="catppuccin"][data-chrome-frost="strong"]:not([data-theme]) {
+    --chrome-glass-alpha: 0.775;
+    --terminal-glass-alpha: 0.44133;
+    --terminal-pane-alpha: 0;
+    --terminal-medium-glass-alpha: 0.30133;
+    --terminal-medium-pane-alpha: 0;
+    --terminal-strong-glass-alpha: 0.16133;
+    --terminal-strong-pane-alpha: 0;
+    --chrome-text: color-mix(in oklab, var(--text-base) 95%, #000000);
+    --chrome-accent-mark: color-mix(in oklab, var(--accent) 92.6%, #000000);
+    --chrome-text-muted: color-mix(in oklab, #52556e 90.5%, #000000);
+    --chrome-chip-text: #435892;
+    --terminal-text-muted: color-mix(in oklab, #52566f 99.9%, #000000);
+    --terminal-medium-text-muted: color-mix(in oklab, #52566f 96.8%, #000000);
+    --terminal-strong-text-muted: color-mix(in oklab, #52566f 93.7%, #000000);
+    --chrome-hue-pink: color-mix(in oklab, #ac0a2d 91.3%, #000000);
+    --chrome-git-modified: color-mix(in oklab, #6d5109 91.4%, #000000);
+    --chrome-git-added: color-mix(in oklab, #136145 91.5%, #000000);
+    --chrome-git-deleted: color-mix(in oklab, #8d3c48 90.7%, #000000);
+    --chrome-git-untracked: color-mix(in oklab, #165b79 91.8%, #000000);
+    --chrome-accent-label: color-mix(in oklab, #154ebf 90.7%, #000000);
+    --chrome-hue-cyan: color-mix(in oklab, #0b5e63 92%, #000000);
+    --chrome-hue-yellow: color-mix(in oklab, #7a4b0b 91.3%, #000000);
+    --chrome-hue-purple: color-mix(in oklab, #a5518f 93.6%, #000000);
+    --chrome-danger: color-mix(in oklab, #ac0a2d 91.3%, #000000);
+    --chrome-agent-idle: color-mix(in oklab, #328021 92.9%, #000000);
+    --chrome-agent-busy: color-mix(in oklab, #9d6311 93%, #000000);
+    --chrome-agent-blocked: color-mix(in oklab, #d20f39 96.7%, #000000);
+    --chrome-focus-ring: color-mix(in oklab, var(--accent) 92.6%, #000000);
+    --terminal-text: color-mix(in oklab, var(--text-base) 99%, #000000);
+    --terminal-accent-mark: color-mix(in oklab, var(--accent) 95.7%, #000000);
+    --terminal-agent-idle: var(--agent-idle-base);
+    --terminal-agent-busy: var(--agent-busy-base);
+    --terminal-agent-blocked: var(--agent-blocked-base);
+  }
+
+  :root[data-platform="mac"][data-palette="rose-pine"][data-chrome-frost="strong"]:not([data-theme]) {
+    --chrome-glass-alpha: 0.775;
+    --terminal-glass-alpha: 0.44133;
+    --terminal-pane-alpha: 0;
+    --terminal-medium-glass-alpha: 0.30133;
+    --terminal-medium-pane-alpha: 0;
+    --terminal-strong-glass-alpha: 0.16133;
+    --terminal-strong-pane-alpha: 0;
+    --chrome-text: color-mix(in oklab, var(--text-base) 95.3%, #000000);
+    --chrome-accent-mark: var(--accent);
+    --chrome-text-muted: color-mix(in oklab, #5f5b7f 89.5%, #000000);
+    --chrome-chip-text: #40607f;
+    --terminal-text-muted: color-mix(in oklab, #5f5b7f 99.5%, #000000);
+    --terminal-medium-text-muted: color-mix(in oklab, #5f5b7f 96.4%, #000000);
+    --terminal-strong-text-muted: color-mix(in oklab, #5f5b7f 93.2%, #000000);
+    --chrome-hue-pink: color-mix(in oklab, #894a5c 90.7%, #000000);
+    --chrome-git-modified: color-mix(in oklab, #785a0b 89.7%, #000000);
+    --chrome-git-added: color-mix(in oklab, #166b4c 90%, #000000);
+    --chrome-git-deleted: color-mix(in oklab, #99424e 90%, #000000);
+    --chrome-git-untracked: color-mix(in oklab, #196485 90.6%, #000000);
+    --chrome-accent-label: color-mix(in oklab, #26657e 90%, #000000);
+    --chrome-hue-cyan: color-mix(in oklab, #87504d 89.5%, #000000);
+    --chrome-hue-yellow: color-mix(in oklab, #805418 90.7%, #000000);
+    --chrome-hue-purple: color-mix(in oklab, #84709b 92.2%, #000000);
+    --chrome-danger: color-mix(in oklab, #894a5c 90.7%, #000000);
+    --chrome-agent-idle: #286983;
+    --chrome-agent-busy: color-mix(in oklab, #a26b21 93.1%, #000000);
+    --chrome-agent-blocked: color-mix(in oklab, #ad5f75 93.1%, #000000);
+    --chrome-focus-ring: #286983;
+    --terminal-text: color-mix(in oklab, var(--text-base) 99.4%, #000000);
+    --terminal-accent-mark: var(--accent);
+    --terminal-agent-idle: var(--agent-idle-base);
+    --terminal-agent-busy: var(--agent-busy-base);
+    --terminal-agent-blocked: color-mix(in oklab, var(--agent-blocked-base) 93.6%, #000000);
+  }
+}
+
+/* D14: in catppuccin light and rose-pine light at chrome Strong with a terminal level on, the xterm
+ * foreground is darkened on :root, so three terminal levels fit 8/255 apart above 4.5:1 (chrome Medium
+ * needs no lift). ShellTab re-reads it when a level attribute changes; ANSI colours are never redeclared. */
+
+:root[data-platform="mac"][data-palette="catppuccin"][data-theme="light"][data-chrome-frost="strong"][data-terminal-frost] {
+  --term-fg: color-mix(in oklab, #4c4f69 99%, #000000);
+}
+
+:root[data-platform="mac"][data-palette="rose-pine"][data-theme="light"][data-chrome-frost="strong"][data-terminal-frost] {
+  --term-fg: color-mix(in oklab, #575279 99.4%, #000000);
+}
+
+@media (prefers-color-scheme: light) {
+  :root[data-platform="mac"][data-palette="catppuccin"][data-chrome-frost="strong"][data-terminal-frost]:not([data-theme]) {
+    --term-fg: color-mix(in oklab, #4c4f69 99%, #000000);
+  }
+
+  :root[data-platform="mac"][data-palette="rose-pine"][data-chrome-frost="strong"][data-terminal-frost]:not([data-theme]) {
+    --term-fg: color-mix(in oklab, #575279 99.4%, #000000);
+  }
+}

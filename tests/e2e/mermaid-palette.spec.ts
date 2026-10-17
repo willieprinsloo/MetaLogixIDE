@@ -28,6 +28,7 @@ import {
 import {
   CONTRAST_GRAPHIC,
   CONTRAST_TEXT,
+  MAC_PREVIEW_SURFACE,
   MIN_CATEGORY_DELTA_E,
   THEME_TOKEN_NAMES,
   type ThemeTokens,
@@ -70,7 +71,7 @@ import {
   type RoleSelector,
   type TextPair,
 } from './helpers/mermaid-palette';
-import { colourDistance, fmtColour, resolveToken } from './helpers/chrome-colour';
+import { colourDistance, fmtColour, isMacPlatform, resolveToken } from './helpers/chrome-colour';
 
 const THEMES: EffectiveTheme[] = ['dark', 'light'];
 
@@ -426,13 +427,25 @@ test.describe('mermaid app palette', () => {
       expect(failures).toEqual([]);
     });
 
-    test(`AC30a (${theme}): diagram text is scored over the translucent --surface-sheet`, async () => {
+    test(`AC30a (${theme}): diagram text is scored over --surface-sheet (translucent off mac; opaque on mac, AC29)`, async () => {
       const win = ide.win;
       await setTheme(win, theme);
       const sheet = await resolveToken(win, '--surface-sheet');
-      // Translucent, so a scorer that skipped it would see a different backdrop.
-      expect(sheet.a, `--surface-sheet ${fmtColour(sheet)} is translucent`).toBeGreaterThan(0);
-      expect(sheet.a, `--surface-sheet ${fmtColour(sheet)} is translucent`).toBeLessThan(1);
+      if (await isMacPlatform(win)) {
+        // docs/specs/macos-frosted-chrome.md AC29: markdown (the Files tab)
+        // sits on the opaque macOS sheet (MAC_PREVIEW_SURFACE = '--sheet-solid'
+        // in paletteContract.ts) rather than a translucent --surface-sheet —
+        // deliberate, not a regression. Positive control: a translucent
+        // reference material would still be wrong here, so prove the sheet
+        // is exactly opaque, not just "some colour".
+        expect(sheet.a, `--surface-sheet ${fmtColour(sheet)} is opaque on mac (AC29)`).toBe(1);
+        const macSurface = await resolveToken(win, MAC_PREVIEW_SURFACE);
+        expect(colourDistance(sheet, macSurface), `--surface-sheet matches ${MAC_PREVIEW_SURFACE} on mac`).toBeLessThanOrEqual(2);
+      } else {
+        // Translucent, so a scorer that skipped it would see a different backdrop.
+        expect(sheet.a, `--surface-sheet ${fmtColour(sheet)} is translucent`).toBeGreaterThan(0);
+        expect(sheet.a, `--surface-sheet ${fmtColour(sheet)} is translucent`).toBeLessThan(1);
+      }
       const p = await openSettled(win, 'flowchart.md', 3);
       const samples = await collectTextSamples(p.locator(BLOCK).nth(0));
       const sheetLayers = samples

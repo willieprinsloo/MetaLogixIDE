@@ -16,8 +16,13 @@ import { ClaudeHookReceiver } from './claude-hooks/receiver';
 import { ClaudeHookRuntime } from './claude-hooks/runtime';
 import { createLaunchDecorator } from './claude-hooks/launch-decorator';
 import { ViewedShells } from './notifications/viewed-shells';
-import { ClaudeStateTracker } from './claude-status/state-tracker';
-import { homedir } from 'node:os';
+import { OmpReceiver } from './agent-status/omp-receiver';
+import { createOmpLaunchDecorator } from './agent-status/omp-launch';
+import { ClaudeHookHistory } from './notifications/claude-hook-history';
+import type { AgentStatusTracker } from './agent-status/state-tracker';
+import { createDropStaging, defaultDropDir, type DropStaging } from './drops/staging';
+import { createClipboardImage, type ClipboardImage } from './drops/clipboard-image';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 export interface Services {
@@ -30,16 +35,19 @@ export interface Services {
   ptyManager: PtyManager;
   watcher: RootWatcher;
   metaproject: MetaprojectClient;
-  /** Per-spawn Claude hook sessions (auth + hook-confirmed state). */
+  /** Hook sessions remain separate from status, for Claude OS notifications. */
   hookSessions: SessionRegistry;
-  /** Loopback receiver for Claude hook POSTs; not listening until `hookRuntime.start()`. */
   hookReceiver: ClaudeHookReceiver;
-  /** Starts/stops the receiver and owns the settings file injected into Claude spawns. */
   hookRuntime: ClaudeHookRuntime;
-  /** Shells the main window reports as visible, for notification suppression. */
+  hookHistory: ClaudeHookHistory;
+  /** Loopback receiver for app-launched OMP reports. */
+  ompReceiver: OmpReceiver;
+  /** Installed before the renderer can spawn a shell. */
+  agentStatus: AgentStatusTracker | null;
   viewedShells: ViewedShells;
-  /** Per-shell Claude state (idle / busy / blocked) behind the status dots; fed by `installClaudeStatus`. */
-  claudeState: ClaudeStateTracker;
+  /** Owner-only temp directory for dropped bytes and pasted images. */
+  dropStaging: DropStaging;
+  clipboardImage: ClipboardImage;
   homeDir: string;
   migrationsDir: string;
 }
@@ -70,11 +78,12 @@ function lastOutputAt(ptyManager: PtyManager, shell: ShellKey): number | null {
 }
 
 /**
- * Composition root for main-process services. Opens and migrates the DB and
- * constructs every repo and adapter; the Claude hook receiver is built but
- * not started (no socket is opened here). `homeDir` defaults to the OS home.
+ * Composition root for main-process services. Receivers are built but not
+ * started here; startup opens their sockets before any shell can launch.
+ * `dropDir` overrides the drop staging directory, which is otherwise resolved
+ * here once from the OS temp directory and the current uid.
  */
-export function buildServices(opts: { dbPath?: string; migrationsDir?: string; homeDir?: string } = {}): Services {
+export function buildServices(opts: { dbPath?: string; migrationsDir?: string; homeDir?: string; ompExtensionPath?: string | null; dropDir?: string } = {}): Services {
   const home = opts.homeDir ?? homedir();
   const dbPath = opts.dbPath ?? join(home, '.metaide', 'metaide.db');
   const migrationsDir = opts.migrationsDir ?? resolve(process.cwd(), 'migrations');
@@ -91,19 +100,33 @@ export function buildServices(opts: { dbPath?: string; migrationsDir?: string; h
   const hookSessions = new SessionRegistry();
   const hookReceiver = new ClaudeHookReceiver(hookSessions);
   const hookRuntime = new ClaudeHookRuntime({ receiver: hookReceiver, homeDir: home });
+  const ompReceiver = new OmpReceiver();
+  const claudeDecorator = createLaunchDecorator({ sessions: hookSessions, settingsPath: () => hookRuntime.settingsPath() });
+  const ompDecorator = createOmpLaunchDecorator({
+    receiver: ompReceiver,
+    extensionPath: opts.ompExtensionPath ?? resolve(process.cwd(), 'resources/omp-status-extension.js'),
+    port: () => ompReceiver.boundPort(),
+  });
   const ptyManager = new PtyManager({
-    spawnDecorator: createLaunchDecorator({ sessions: hookSessions, settingsPath: () => hookRuntime.settingsPath() }),
+    spawnDecorator: (projectId, shellIndex, launch) =>
+      ompDecorator(projectId, shellIndex, claudeDecorator(projectId, shellIndex, launch)),
   });
   const watcher = new RootWatcher({ cap: settings.get('max_watched_paths') });
   const metaproject = new MetaprojectClient();
-  const claudeState = new ClaudeStateTracker({
+  const hookHistory = new ClaudeHookHistory({
     sessions: hookSessions,
     lastOutputAt: (shell) => lastOutputAt(ptyManager, shell),
     now: () => Date.now(),
   });
+  const uid = process.getuid?.() ?? null;
+  const dropStaging = createDropStaging({
+    dir: opts.dropDir ?? defaultDropDir(process.platform, tmpdir(), uid),
+    now: () => new Date(),
+    uid,
+  });
   return {
     db, roots, projects, shells, settings, prompts, ptyManager, watcher, metaproject,
-    hookSessions, hookReceiver, hookRuntime, viewedShells: new ViewedShells(), claudeState,
-    homeDir: home, migrationsDir,
+    hookSessions, hookReceiver, hookRuntime, hookHistory, ompReceiver, agentStatus: null,
+    viewedShells: new ViewedShells(), dropStaging, clipboardImage: createClipboardImage(), homeDir: home, migrationsDir,
   };
 }

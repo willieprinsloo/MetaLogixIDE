@@ -1,22 +1,12 @@
 /**
- * Shared harness for the Claude-hook E2E suites (notifications and status
- * dots): spins up the app with an isolated HOME + userData, a `claude`-named
- * shim that execs `scripts/mock-claude.mjs`, and the small IPC helpers both
- * suites drive shells through.
- *
- * Extracted from `claude-notifications.spec.ts` (docs/plan/claude-status-dots.md
- * §11 "Agent 3", then §12.2/§12.4 "Agent 3b") with no behaviour change to the
- * extracted functions — `installNotificationSpy`, `notifications` and
- * `clickNotification` are byte-identical to what that spec used to define
- * locally, so its own tests keep passing unchanged once repointed to import
- * from here. `waitForClaudeState` is new (3b), for the R1/R2 background-work
- * and stale-needs-input cases in `claude-status-dots.spec.ts`.
+ * Real Electron/PTY harness shared by Claude notification and agent-status
+ * journeys. The fake CLI renders deterministic terminal screens and, only
+ * when the app supplies settings, forwards Claude notification hooks.
  */
 import { _electron as electron, expect, type Page, type ElectronApplication } from '@playwright/test';
 import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import type { ClaudeShellState } from '../../../src/shared/claude-state';
+import { delimiter, join, resolve } from 'node:path';
 
 export type Api = { invoke: (c: string, r: unknown) => Promise<never> };
 export type Recorded = { title: string; body: string; closed: boolean };
@@ -39,16 +29,26 @@ export function baseEnv(): NodeJS.ProcessEnv {
   const rest = { ...process.env };
   delete rest.METAIDE_HOOK_SHELL;
   delete rest.METAIDE_HOOK_TOKEN;
+  delete rest.METAIDE_OMP_STATUS_PORT;
+  delete rest.METAIDE_OMP_STATUS_TOKEN;
+  delete rest.METAIDE_OMP_STATUS_SPAWN;
+  // This test runner itself can be nested in OMP. App-launched child OMP is a
+  // new root session, not a child of the runner's ambient OMP process.
+  delete rest.OMPCODE;
   return rest;
 }
 
-/** Builds a `claude`-named shim in its own bin dir that execs mock-claude.mjs, so spawn argv[0] is a real Claude basename. */
+/** A named executable on both POSIX and Windows (ConPTY launches .cmd via cmd.exe /c). */
 export function makeClaudeShim(homeDir: string): string {
   const binDir = join(homeDir, 'bin');
   mkdirSync(binDir, { recursive: true });
-  const shimPath = join(binDir, 'claude');
-  writeFileSync(shimPath, `#!/bin/sh\nexec node ${JSON.stringify(MOCK_CLAUDE)} "$@"\n`);
-  chmodSync(shimPath, 0o755);
+  const windows = process.platform === 'win32';
+  const shimPath = join(binDir, windows ? 'claude.cmd' : 'claude');
+  if (windows) writeFileSync(shimPath, `@echo off\r\n"${process.execPath}" "${MOCK_CLAUDE}" %*\r\n`);
+  else {
+    writeFileSync(shimPath, `#!/bin/bash\nexec -a claude "${process.execPath}" "${MOCK_CLAUDE}" "$@"\n`);
+    chmodSync(shimPath, 0o755);
+  }
   return shimPath;
 }
 
@@ -69,39 +69,133 @@ export interface Harness {
  * any of them.
  */
 export async function launch(projectNames: string[]): Promise<Harness> {
-  const isolatedHome = mkdtempSync(join(tmpdir(), 'metaide-notif-home-'));
-  const demoRoot = mkdtempSync(join(tmpdir(), 'metaide-notif-root-'));
-  for (const name of projectNames) {
-    const proj = join(demoRoot, name);
-    mkdirSync(proj);
-    mkdirSync(join(proj, '.git'));
-  }
-  const shimPath = makeClaudeShim(isolatedHome);
-  const app = await electron.launch({
-    args: ['.', `--user-data-dir=${join(isolatedHome, 'userData')}`],
-    env: {
-      ...baseEnv(),
-      HOME: isolatedHome,
-      SHELL: '/bin/sh',
-      METAIDE_TEST_MODE: '1',
-      METAIDE_CLAUDE_PERMISSION_MODE: 'bypass',
-      METAIDE_DEFAULT_LAUNCH_FIRST:      JSON.stringify({ argv: [shimPath], env: {} }),
-      METAIDE_DEFAULT_LAUNCH_SUBSEQUENT: JSON.stringify({ argv: [shimPath, '--continue'], env: {} }),
-    },
+  return guardedLaunch(async (scope) => {
+    const isolatedHome = scope.tempDir('metaide-notif-home-');
+    const demoRoot = scope.tempDir('metaide-notif-root-');
+    for (const name of projectNames) {
+      const proj = join(demoRoot, name);
+      mkdirSync(proj);
+      mkdirSync(join(proj, '.git'));
+    }
+    const shimPath = makeClaudeShim(isolatedHome);
+    const app = scope.own(await electron.launch({
+      ...(process.env.METAIDE_PACKAGED_APP ? { executablePath: process.env.METAIDE_PACKAGED_APP } : {}),
+      args: [...(process.env.METAIDE_PACKAGED_APP ? [] : ['.']), `--user-data-dir=${join(isolatedHome, 'userData')}`],
+      env: {
+        ...baseEnv(),
+        HOME: isolatedHome,
+        ...(process.platform === 'win32' ? { USERPROFILE: isolatedHome } : { SHELL: '/bin/bash' }),
+        PATH: `${join(isolatedHome, 'bin')}${delimiter}${process.env.PATH ?? ''}`,
+        METAIDE_TEST_MODE: '1',
+        METAIDE_CLAUDE_PERMISSION_MODE: 'bypass',
+        METAIDE_DEFAULT_LAUNCH_FIRST: JSON.stringify({ argv: [shimPath], env: {} }),
+        METAIDE_DEFAULT_LAUNCH_SUBSEQUENT: JSON.stringify({ argv: [shimPath, '--continue'], env: {} }),
+      },
+    }));
+    const win = await app.firstWindow();
+    await win.waitForLoadState('domcontentloaded');
+    await app.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0]!.setSize(1400, 900); });
+    await win.evaluate(async (path: string) => {
+      await (window as unknown as { api: Api }).api.invoke('roots:add', { path });
+    }, demoRoot);
+    return {
+      app, win, isolatedHome, demoRoot, shimPath,
+      cleanup: () => {
+        rmSync(isolatedHome, { recursive: true, force: true });
+        rmSync(demoRoot, { recursive: true, force: true });
+      },
+    };
   });
-  const win = await app.firstWindow();
-  await win.waitForLoadState('domcontentloaded');
-  await app.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0]!.setSize(1400, 900); });
-  await win.evaluate(async (path: string) => {
-    await (window as unknown as { api: Api }).api.invoke('roots:add', { path });
-  }, demoRoot);
-  return {
-    app, win, isolatedHome, demoRoot, shimPath,
-    cleanup: () => {
-      rmSync(isolatedHome, { recursive: true, force: true });
-      rmSync(demoRoot, { recursive: true, force: true });
+}
+
+/* ───────────────────────── launch teardown guard ───────────────────────── */
+
+/**
+ * Launch setup must finish within this budget, so a wedged launch fails
+ * inside `guardedLaunch` (and is torn down) rather than at the 60 s test
+ * timeout, which abandons the helper mid-await and runs no catch block.
+ */
+export const LAUNCH_BUDGET_MS = 45_000;
+
+/** How long `closeApp` waits for a graceful `app.close()` before SIGKILLing the process group. */
+const CLOSE_GRACE_MS = 10_000;
+
+export interface LaunchScope {
+  /** Creates a temp dir that is removed if the launch fails. */
+  tempDir(prefix: string): string;
+  /** Registers the launched app so a failed launch closes it; returns it unchanged. */
+  own(app: ElectronApplication): ElectronApplication;
+}
+
+/**
+ * Closes `app` without ever throwing: a graceful `close()` bounded by
+ * `CLOSE_GRACE_MS`, then SIGKILL of the Electron process group (Playwright
+ * spawns it detached on POSIX, so `-pid` also reaches its PTY children).
+ */
+export async function closeApp(app: ElectronApplication): Promise<void> {
+  const proc = app.process();
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      app.close(),
+      new Promise((resolveGrace) => { timer = setTimeout(resolveGrace, CLOSE_GRACE_MS); }),
+    ]);
+  } catch {
+    // Best effort: fall through to the kill below.
+  } finally {
+    clearTimeout(timer);
+  }
+  if (proc.exitCode !== null || proc.signalCode !== null || proc.pid === undefined) return;
+  try {
+    if (process.platform === 'win32') proc.kill('SIGKILL');
+    else process.kill(-proc.pid, 'SIGKILL');
+  } catch {
+    // Already gone.
+  }
+}
+
+/**
+ * Runs a launch helper's setup so a throw, or overrunning `budgetMs`, closes
+ * any app it registered with `scope.own` and removes every `scope.tempDir`,
+ * then rethrows the original error. An app registered after the budget has
+ * already failed the launch is closed as soon as it is registered.
+ */
+export async function guardedLaunch<T>(
+  setup: (scope: LaunchScope) => Promise<T>,
+  budgetMs: number = LAUNCH_BUDGET_MS,
+): Promise<T> {
+  const dirs: string[] = [];
+  const apps: ElectronApplication[] = [];
+  let failed = false;
+  const scope: LaunchScope = {
+    tempDir(prefix) {
+      const dir = mkdtempSync(join(tmpdir(), prefix));
+      dirs.push(dir);
+      if (failed) rmSync(dir, { recursive: true, force: true });
+      return dir;
+    },
+    own(app) {
+      apps.push(app);
+      if (failed) void closeApp(app);
+      return app;
     },
   };
+  let timer: NodeJS.Timeout | undefined;
+  const budget = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`launch setup exceeded ${budgetMs} ms`)), budgetMs);
+  });
+  try {
+    return await Promise.race([setup(scope), budget]);
+  } catch (error) {
+    failed = true;
+    await Promise.all(apps.map(closeApp));
+    for (const dir of dirs) {
+      try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Resolves a project's id by name via `projects:list`. */
@@ -151,6 +245,18 @@ export async function waitForShell(win: Page, projId: number, shellIndex: number
   }, { timeout: 10000, message: `shell ${projId}:${shellIndex} prints ${pattern}` }).toContain(pattern);
 }
 
+/** Waits for a confirmed hook receipt, not a screen state: Stop eligibility uses hook history. */
+export async function sendAndConfirmUserPrompt(win: Page, projectId: number, shellIndex: number, text: string): Promise<void> {
+  const count = async (): Promise<number> => win.evaluate(async (shell: { projectId: number; shellIndex: number }) => {
+    const appWindow = window as unknown as { api: Api };
+    const snap = await appWindow.api.invoke('shells:snapshot', shell) as unknown as { output: string };
+    return snap.output.split('HOOK-ACK UserPromptSubmit').length - 1;
+  }, { projectId, shellIndex });
+  const before = await count();
+  await sendLine(win, projectId, shellIndex, text);
+  await expect.poll(count, { timeout: 5000, message: `UserPromptSubmit accepted for ${projectId}:${shellIndex}` }).toBeGreaterThan(before);
+}
+
 export async function aliveShells(win: Page): Promise<Array<{ projectId: number; shellIndex: number; launchArgv: string[] }>> {
   return win.evaluate(async () => {
     const api = (window as unknown as { api: Api }).api;
@@ -159,19 +265,6 @@ export async function aliveShells(win: Page): Promise<Array<{ projectId: number;
   });
 }
 
-/** Polls `claude-state:list` for one shell's Claude state — the list omits idle entries (contract), so absence means idle. */
-export async function waitForClaudeState(win: Page, projId: number, shellIndex: number, state: ClaudeShellState): Promise<void> {
-  await expect.poll(async () => {
-    const { shells } = await win.evaluate(async () => {
-      const api = (window as unknown as { api: Api }).api;
-      return await api.invoke('claude-state:list', undefined) as unknown as {
-        shells: Array<{ projectId: number; shellIndex: number; state: ClaudeShellState }>;
-      };
-    });
-    const entry = shells.find((s) => s.projectId === projId && s.shellIndex === shellIndex);
-    return entry ? entry.state : 'idle';
-  }, { timeout: 5000, message: `shell ${projId}:${shellIndex} reaches ${state}` }).toBe(state);
-}
 
 /** A shell's real hook credentials plus the receiver's authenticated POST URL. */
 export interface HookCredentials { url: string; shellId: string; token: string }

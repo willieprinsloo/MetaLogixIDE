@@ -90,10 +90,10 @@ describe('DiffFileList', () => {
 
   it('shows each status letter in the Git panel colour', () => {
     const html = render(null);
-    expect(rowStatusClass(html, 'unstaged', 'edited.ts')).toContain('text-amber-400');
-    expect(rowStatusClass(html, 'staged', 'added.ts')).toContain('text-emerald-400');
-    expect(rowStatusClass(html, 'unstaged', 'gone.ts')).toContain('text-rose-400');
-    expect(rowStatusClass(html, 'untracked', 'fresh.txt')).toContain('text-sky-400');
+    expect(rowStatusClass(html, 'unstaged', 'edited.ts')).toContain('text-[color:var(--git-modified,#fbbf24)]');
+    expect(rowStatusClass(html, 'staged', 'added.ts')).toContain('text-[color:var(--git-added,#34d399)]');
+    expect(rowStatusClass(html, 'unstaged', 'gone.ts')).toContain('text-[color:var(--git-deleted,#fb7185)]');
+    expect(rowStatusClass(html, 'untracked', 'fresh.txt')).toContain('text-[color:var(--git-untracked,#38bdf8)]');
     expect(rowStatusClass(html, 'staged', 'new.ts')).toContain('text-[--text-muted]');
   });
 

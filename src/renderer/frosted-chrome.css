@@ -1,0 +1,486 @@
+/* macOS frosted chrome. Every selector in this file starts with
+ * :root[data-platform="mac"], so Windows and Linux never match it, and
+ * Frosted chrome OFF (which removes that attribute) renders styles.css alone.
+ * Imported after styles.css and before frosted-glass-levels.css. html and body
+ * go transparent, so the chrome root is the only layer over the vibrancy
+ * material; it paints --chrome-solid at --chrome-glass-alpha. The working area
+ * paints the opaque --sheet-solid. A Terminal frost level (data-terminal-frost)
+ * drops the Shell sheet to that level's --terminal-*-glass-alpha and split cards
+ * to its --terminal-*-pane-alpha. The palette blocks here hold the Subtle chrome
+ * values: the solid, alpha and label-lift tokens (plus the raw panel tokens at
+ * alpha 1, so menus and popovers stay at least as opaque as before);
+ * frosted-glass-levels.css overrides the alpha and lift tokens at Medium and
+ * Strong. Each glass surface token is declared exactly twice, here and in the
+ * Reduce transparency override, so that override always wins. Values are tuned
+ * against the contrast floors in tests/unit/renderer/frosted-chrome-contrast.test.ts. */
+
+:root[data-platform="mac"],
+:root[data-platform="mac"] body {
+  background: transparent;
+}
+
+:root[data-platform="mac"] {
+  --text-base: var(--text);
+  --text-muted-base: var(--text-muted);
+  --accent-soft-text-base: var(--accent-soft-text);
+  --accent-soft-base: var(--accent-soft);
+  --surface-hover-base: var(--surface-hover);
+  --surface-active-base: var(--surface-active);
+  --hue-cyan-base: var(--hue-cyan);
+  --hue-pink-base: var(--hue-pink);
+  --hue-orange-soft-base: var(--hue-orange-soft);
+  --hue-yellow-base: var(--hue-yellow);
+  --hue-purple-base: var(--hue-purple);
+  --danger-base: var(--danger);
+  --agent-idle-base: var(--agent-idle);
+  --agent-busy-base: var(--agent-busy);
+  --agent-blocked-base: var(--agent-blocked);
+  --surface-field-base: var(--surface-field);
+  --terminal-live-alpha: 1;
+  --terminal-pane-live-alpha: 1;
+  --terminal-live-text-muted: var(--terminal-text-muted);
+  --surface-chrome: rgb(from var(--chrome-solid) r g b / var(--chrome-glass-alpha));
+  --surface-sheet: var(--sheet-solid);
+  --surface-terminal: rgb(from var(--sheet-solid) r g b / var(--terminal-live-alpha));
+  --surface-pane: rgb(from var(--pane-solid) r g b / var(--terminal-pane-live-alpha));
+}
+
+:root[data-platform="mac"][data-terminal-frost="subtle"] {
+  --terminal-live-alpha: var(--terminal-glass-alpha);
+  --terminal-pane-live-alpha: var(--terminal-pane-alpha);
+}
+
+:root[data-platform="mac"][data-terminal-frost="medium"] {
+  --terminal-live-alpha: var(--terminal-medium-glass-alpha);
+  --terminal-pane-live-alpha: var(--terminal-medium-pane-alpha);
+  --terminal-live-text-muted: var(--terminal-medium-text-muted);
+}
+
+:root[data-platform="mac"][data-terminal-frost="strong"] {
+  --terminal-live-alpha: var(--terminal-strong-glass-alpha);
+  --terminal-pane-live-alpha: var(--terminal-strong-pane-alpha);
+  --terminal-live-text-muted: var(--terminal-strong-text-muted);
+}
+
+/* Chrome labels and indicators are lifted (D2, D16, D17) and selection, badge and field fills become opaque chips (D11, D15), so none depends on the material.
+ * --text and the accent glyph token --accent-mark fall back to the palette, so they move only where a level block declares a lift (glass-settings D17, D18). */
+:root[data-platform="mac"] [data-chrome-root] {
+  --text: var(--chrome-text, var(--text-base));
+  --accent-mark: var(--chrome-accent-mark, var(--accent));
+  --text-muted: var(--chrome-text-muted);
+  --accent-soft-text: var(--chrome-chip-text);
+  --accent-label: var(--chrome-accent-label);
+  --hue-pink: var(--chrome-hue-pink);
+  --hue-cyan: var(--chrome-hue-cyan);
+  --hue-yellow: var(--chrome-hue-yellow);
+  --hue-purple: var(--chrome-hue-purple);
+  --danger: var(--chrome-danger);
+  --agent-idle: var(--chrome-agent-idle);
+  --agent-busy: var(--chrome-agent-busy);
+  --agent-blocked: var(--chrome-agent-blocked);
+  --focus-outline: var(--chrome-focus-ring);
+  --git-modified: var(--chrome-git-modified);
+  --git-added: var(--chrome-git-added);
+  --git-deleted: var(--chrome-git-deleted);
+  --git-untracked: var(--chrome-git-untracked);
+  --hue-orange-soft: color-mix(in oklab, var(--hue-orange) 22%, var(--chrome-solid));
+  --accent-soft: color-mix(in oklab, var(--accent) 22%, var(--chrome-solid));
+  --surface-hover: color-mix(in oklab, var(--text) 7%, var(--chrome-solid));
+  --surface-active: color-mix(in oklab, var(--text) 10%, var(--chrome-solid));
+  --surface-field: color-mix(in oklab, var(--text) 6%, var(--chrome-solid));
+  --git-ahead-chip: color-mix(in oklab, #34d399 10%, var(--chrome-solid));
+  --git-behind-chip: color-mix(in oklab, #fb7185 10%, var(--chrome-solid));
+}
+
+/* The working area, modals and overlays (popovers, menus, toasts) keep their pre-lift palette values (AC10, AC24, AC30, AC31). */
+:root[data-platform="mac"] [data-chrome-root] [data-sheet-content],
+:root[data-platform="mac"] [data-chrome-root] [data-view="chat"],
+:root[data-platform="mac"] [data-chrome-root] .modal-layer,
+:root[data-platform="mac"] [data-chrome-root] [data-overlay] {
+  --text: var(--text-base);
+  --text-muted: var(--text-muted-base);
+  --accent-soft-text: var(--accent-soft-text-base);
+  --accent-soft: var(--accent-soft-base);
+  --surface-hover: var(--surface-hover-base);
+  --surface-active: var(--surface-active-base);
+  --hue-cyan: var(--hue-cyan-base);
+  --hue-pink: var(--hue-pink-base);
+  --hue-orange-soft: var(--hue-orange-soft-base);
+  --hue-yellow: var(--hue-yellow-base);
+  --hue-purple: var(--hue-purple-base);
+  --danger: var(--danger-base);
+  --agent-idle: var(--agent-idle-base);
+  --agent-busy: var(--agent-busy-base);
+  --agent-blocked: var(--agent-blocked-base);
+  --surface-field: var(--surface-field-base);
+  --accent-label: initial;
+  --accent-mark: initial;
+  --focus-outline: initial;
+  --git-ahead-chip: initial;
+  --git-behind-chip: initial;
+  --git-modified: initial;
+  --git-added: initial;
+  --git-deleted: initial;
+  --git-untracked: initial;
+}
+
+/* Where frosting lowers the styles.css focus outline below its 26eed37 contrast, the chrome draws it in solid accent. */
+/* The mac prefix sits in :where() so each selector keeps its styles.css specificity and an
+ * element's own `focus-visible:outline-none` still wins. */
+:where(:root[data-platform="mac"] [data-chrome-root]) button:focus-visible,
+:where(:root[data-platform="mac"] [data-chrome-root]) a:focus-visible,
+:where(:root[data-platform="mac"] [data-chrome-root]) [role="button"]:focus-visible,
+:where(:root[data-platform="mac"] [data-chrome-root]) [tabindex]:not([tabindex="-1"]):focus-visible {
+  outline-color: var(--focus-outline, color-mix(in oklab, var(--accent) 70%, transparent));
+}
+
+:root[data-platform="mac"] [data-sheet-content="shell"] {
+  --surface-sheet: var(--surface-terminal);
+}
+
+/* The frosted Shell sheet's labels and indicators read --terminal-* hooks that only level blocks declare, so at Subtle they fall back to the palette (glass-settings D18, D24). */
+:root[data-platform="mac"][data-terminal-frost] [data-chrome-root] [data-sheet-content="shell"] {
+  --text: var(--terminal-text, var(--text-base));
+  --accent-mark: var(--terminal-accent-mark, var(--accent));
+  --text-muted: var(--terminal-live-text-muted);
+  --agent-idle: var(--terminal-agent-idle, var(--agent-idle-base));
+  --agent-busy: var(--terminal-agent-busy, var(--agent-busy-base));
+  --agent-blocked: var(--terminal-agent-blocked, var(--agent-blocked-base));
+  --accent-soft: color-mix(in oklab, var(--accent) 22%, var(--sheet-solid));
+  --surface-hover: color-mix(in oklab, var(--text) 7%, var(--sheet-solid));
+  --surface-active: color-mix(in oklab, var(--text) 10%, var(--sheet-solid));
+}
+
+/* The chat column sits on the chrome, outside the sheet, so it needs its own solid surface (D10). */
+:root[data-platform="mac"] [data-view="chat"] {
+  background-color: var(--sheet-solid);
+}
+
+:root[data-platform="mac"],
+:root[data-platform="mac"][data-theme="dark"] {
+  --chrome-solid: #12151a;
+  --chrome-glass-alpha: 0.85;
+  --sheet-solid: #1e222a;
+  --pane-solid: #1c1f27;
+  --terminal-glass-alpha: 0.06;
+  --terminal-pane-alpha: 0.06;
+  --terminal-medium-glass-alpha: 0.06;
+  --terminal-medium-pane-alpha: 0.06;
+  --terminal-strong-glass-alpha: 0.06;
+  --terminal-strong-pane-alpha: 0.06;
+  --chrome-text-muted: #9aa3ac;
+  --chrome-chip-text: #78aaf8;
+  --terminal-text-muted: #99a2ab;
+  --terminal-medium-text-muted: #99a2ab;
+  --terminal-strong-text-muted: #99a2ab;
+  --chrome-hue-pink: #f87b91;
+  --chrome-git-modified: #fbbf24;
+  --chrome-git-added: #34d399;
+  --chrome-git-deleted: #fc798b;
+  --chrome-git-untracked: #38bdf8;
+  --chrome-accent-label: #6ea3fb;
+  --chrome-hue-cyan: #7dcfff;
+  --chrome-hue-yellow: #e0af68;
+  --chrome-hue-purple: #bb9af7;
+  --chrome-danger: #fa7c7b;
+  --chrome-agent-idle: #22c55e;
+  --chrome-agent-busy: #fbbf24;
+  --chrome-agent-blocked: #ef4444;
+  --chrome-focus-ring: color-mix(in oklab, var(--accent) 70%, transparent);
+  --panel: rgb(28 32 40);
+  --panel-strong: rgb(34 38 46);
+  --chat-surface: rgb(22 26 33);
+}
+
+:root[data-platform="mac"][data-theme="light"] {
+  --chrome-solid: #f0f1f5;
+  --chrome-glass-alpha: 0.855;
+  --sheet-solid: #eceef3;
+  --pane-solid: #f0f1f5;
+  --terminal-glass-alpha: 0.05;
+  --terminal-pane-alpha: 0.05;
+  --terminal-medium-glass-alpha: 0.05;
+  --terminal-medium-pane-alpha: 0.05;
+  --terminal-strong-glass-alpha: 0.05;
+  --terminal-strong-pane-alpha: 0.05;
+  --chrome-text-muted: #4b5563;
+  --chrome-chip-text: #20479a;
+  --terminal-text-muted: #4b5563;
+  --terminal-medium-text-muted: #4b5563;
+  --terminal-strong-text-muted: #4b5563;
+  --chrome-hue-pink: #a71451;
+  --chrome-git-modified: #6d5109;
+  --chrome-git-added: #136145;
+  --chrome-git-deleted: #8d3c48;
+  --chrome-git-untracked: #175d7c;
+  --chrome-accent-label: #1c4ebd;
+  --chrome-hue-cyan: #095e75;
+  --chrome-hue-yellow: #8e4005;
+  --chrome-hue-purple: #7c3aed;
+  --chrome-danger: #ab1b1b;
+  --chrome-agent-idle: #12803b;
+  --chrome-agent-busy: #b45309;
+  --chrome-agent-blocked: #d92525;
+  --chrome-focus-ring: color-mix(in oklab, var(--accent) 70%, transparent);
+  --panel: rgb(232 234 240);
+  --panel-strong: rgb(238 240 245);
+  --chat-surface: rgb(240 242 246);
+}
+
+@media (prefers-color-scheme: light) {
+  :root[data-platform="mac"]:not([data-theme]) {
+    --chrome-solid: #f0f1f5;
+    --chrome-glass-alpha: 0.855;
+    --sheet-solid: #eceef3;
+    --pane-solid: #f0f1f5;
+    --terminal-glass-alpha: 0.05;
+    --terminal-pane-alpha: 0.05;
+    --terminal-medium-glass-alpha: 0.05;
+    --terminal-medium-pane-alpha: 0.05;
+    --terminal-strong-glass-alpha: 0.05;
+    --terminal-strong-pane-alpha: 0.05;
+    --chrome-text-muted: #4b5563;
+    --chrome-chip-text: #20479a;
+    --terminal-text-muted: #4b5563;
+    --terminal-medium-text-muted: #4b5563;
+    --terminal-strong-text-muted: #4b5563;
+    --chrome-hue-pink: #a71451;
+    --chrome-git-modified: #6d5109;
+    --chrome-git-added: #136145;
+    --chrome-git-deleted: #8d3c48;
+    --chrome-git-untracked: #175d7c;
+    --chrome-accent-label: #1c4ebd;
+    --chrome-hue-cyan: #095e75;
+    --chrome-hue-yellow: #8e4005;
+    --chrome-hue-purple: #7c3aed;
+    --chrome-danger: #ab1b1b;
+    --chrome-agent-idle: #12803b;
+    --chrome-agent-busy: #b45309;
+    --chrome-agent-blocked: #d92525;
+    --chrome-focus-ring: color-mix(in oklab, var(--accent) 70%, transparent);
+    --panel: rgb(232 234 240);
+    --panel-strong: rgb(238 240 245);
+    --chat-surface: rgb(240 242 246);
+  }
+}
+
+:root[data-platform="mac"][data-palette="catppuccin"] {
+  --chrome-solid: #181825;
+  --chrome-glass-alpha: 0.805;
+  --sheet-solid: #262636;
+  --pane-solid: #242432;
+  --terminal-glass-alpha: 0.18;
+  --terminal-pane-alpha: 0.18;
+  --terminal-medium-glass-alpha: 0;
+  --terminal-medium-pane-alpha: 0;
+  --terminal-strong-glass-alpha: 0;
+  --terminal-strong-pane-alpha: 0;
+  --chrome-text-muted: #adb4cf;
+  --chrome-chip-text: #a1c0f8;
+  --terminal-text-muted: #a6adc8;
+  --terminal-medium-text-muted: color-mix(in oklab, #a6adc8 93.4%, #ffffff);
+  --terminal-strong-text-muted: color-mix(in oklab, #a6adc8 93.4%, #ffffff);
+  --chrome-hue-pink: #f69bb3;
+  --chrome-git-modified: #fbbf24;
+  --chrome-git-added: #34d399;
+  --chrome-git-deleted: #ff99a4;
+  --chrome-git-untracked: #48c1f9;
+  --chrome-accent-label: #8eb7fa;
+  --chrome-hue-cyan: #94e2d5;
+  --chrome-hue-yellow: #f9e2af;
+  --chrome-hue-purple: #f5c2e7;
+  --chrome-danger: #f69bb3;
+  --chrome-agent-idle: #a6e3a1;
+  --chrome-agent-busy: #f9e2af;
+  --chrome-agent-blocked: #f38ba8;
+  --chrome-focus-ring: #89b4fa;
+  --panel: #181825;
+  --panel-strong: #313244;
+  --chat-surface: #1e1e2e;
+}
+
+:root[data-platform="mac"][data-palette="catppuccin"][data-theme="light"] {
+  --chrome-solid: #eef0f4;
+  --chrome-glass-alpha: 0.855;
+  --sheet-solid: #e1e4eb;
+  --pane-solid: #e4e6ed;
+  --terminal-glass-alpha: 0.05;
+  --terminal-pane-alpha: 0.05;
+  --terminal-medium-glass-alpha: 0.05;
+  --terminal-medium-pane-alpha: 0.05;
+  --terminal-strong-glass-alpha: 0.05;
+  --terminal-strong-pane-alpha: 0.05;
+  --chrome-text-muted: #52556e;
+  --chrome-chip-text: #435892;
+  --terminal-text-muted: #52566f;
+  --terminal-medium-text-muted: #52566f;
+  --terminal-strong-text-muted: #52566f;
+  --chrome-hue-pink: #ac0a2d;
+  --chrome-git-modified: #6d5109;
+  --chrome-git-added: #136145;
+  --chrome-git-deleted: #8d3c48;
+  --chrome-git-untracked: #165b79;
+  --chrome-accent-label: #154ebf;
+  --chrome-hue-cyan: #0b5e63;
+  --chrome-hue-yellow: #7a4b0b;
+  --chrome-hue-purple: #a5518f;
+  --chrome-danger: #ac0a2d;
+  --chrome-agent-idle: #328021;
+  --chrome-agent-busy: #9d6311;
+  --chrome-agent-blocked: #d20f39;
+  --chrome-focus-ring: color-mix(in oklab, var(--accent) 70%, transparent);
+  --panel: #e6e9ef;
+  --panel-strong: #dce0e8;
+  --chat-surface: #eff1f5;
+}
+
+:root[data-platform="mac"][data-palette="rose-pine"] {
+  --chrome-solid: #1f1d2e;
+  --chrome-glass-alpha: 0.81;
+  --sheet-solid: #232035;
+  --pane-solid: #211e32;
+  --terminal-glass-alpha: 0.17;
+  --terminal-pane-alpha: 0.17;
+  --terminal-medium-glass-alpha: 0;
+  --terminal-medium-pane-alpha: 0;
+  --terminal-strong-glass-alpha: 0;
+  --terminal-strong-pane-alpha: 0;
+  --chrome-text-muted: #bab7d1;
+  --chrome-chip-text: #cebaec;
+  --terminal-text-muted: #b1aec9;
+  --terminal-medium-text-muted: color-mix(in oklab, #b1aec9 90.7%, #ffffff);
+  --terminal-strong-text-muted: color-mix(in oklab, #b1aec9 90.7%, #ffffff);
+  --chrome-hue-pink: #f7a2b6;
+  --chrome-git-modified: #fbbf24;
+  --chrome-git-added: #34d399;
+  --chrome-git-deleted: #ffa0aa;
+  --chrome-git-untracked: #5bc5f9;
+  --chrome-accent-label: #cab0ea;
+  --chrome-hue-cyan: #ebbcba;
+  --chrome-hue-yellow: #f6c177;
+  --chrome-hue-purple: #c4a7e7;
+  --chrome-danger: #f7a2b6;
+  --chrome-agent-idle: #9ccfd8;
+  --chrome-agent-busy: #f6c177;
+  --chrome-agent-blocked: #eb7193;
+  --chrome-focus-ring: #c4a7e7;
+  --panel: #1f1d2e;
+  --panel-strong: #26233a;
+  --chat-surface: #191724;
+}
+
+:root[data-platform="mac"][data-palette="rose-pine"][data-theme="light"] {
+  --chrome-solid: #fffbf4;
+  --chrome-glass-alpha: 0.87;
+  --sheet-solid: #f8f1e9;
+  --pane-solid: #f9f3ec;
+  --terminal-glass-alpha: 0;
+  --terminal-pane-alpha: 0;
+  --terminal-medium-glass-alpha: 0;
+  --terminal-medium-pane-alpha: 0;
+  --terminal-strong-glass-alpha: 0;
+  --terminal-strong-pane-alpha: 0;
+  --chrome-text-muted: #5f5b7f;
+  --chrome-chip-text: #40607f;
+  --terminal-text-muted: #5f5b7f;
+  --terminal-medium-text-muted: #5f5b7f;
+  --terminal-strong-text-muted: #5f5b7f;
+  --chrome-hue-pink: #894a5c;
+  --chrome-git-modified: #785a0b;
+  --chrome-git-added: #166b4c;
+  --chrome-git-deleted: #99424e;
+  --chrome-git-untracked: #196485;
+  --chrome-accent-label: #26657e;
+  --chrome-hue-cyan: #87504d;
+  --chrome-hue-yellow: #805418;
+  --chrome-hue-purple: #84709b;
+  --chrome-danger: #894a5c;
+  --chrome-agent-idle: #286983;
+  --chrome-agent-busy: #a26b21;
+  --chrome-agent-blocked: #ad5f75;
+  --chrome-focus-ring: #286983;
+  --panel: #fffaf3;
+  --panel-strong: #f2e9e1;
+  --chat-surface: #faf4ed;
+}
+
+@media (prefers-color-scheme: light) {
+  :root[data-platform="mac"][data-palette="catppuccin"]:not([data-theme]) {
+    --chrome-solid: #eef0f4;
+    --chrome-glass-alpha: 0.855;
+    --sheet-solid: #e1e4eb;
+    --pane-solid: #e4e6ed;
+    --terminal-glass-alpha: 0.05;
+    --terminal-pane-alpha: 0.05;
+    --terminal-medium-glass-alpha: 0.05;
+    --terminal-medium-pane-alpha: 0.05;
+    --terminal-strong-glass-alpha: 0.05;
+    --terminal-strong-pane-alpha: 0.05;
+    --chrome-text-muted: #52556e;
+    --chrome-chip-text: #435892;
+    --terminal-text-muted: #52566f;
+    --terminal-medium-text-muted: #52566f;
+    --terminal-strong-text-muted: #52566f;
+    --chrome-hue-pink: #ac0a2d;
+    --chrome-git-modified: #6d5109;
+    --chrome-git-added: #136145;
+    --chrome-git-deleted: #8d3c48;
+    --chrome-git-untracked: #165b79;
+    --chrome-accent-label: #154ebf;
+    --chrome-hue-cyan: #0b5e63;
+    --chrome-hue-yellow: #7a4b0b;
+    --chrome-hue-purple: #a5518f;
+    --chrome-danger: #ac0a2d;
+    --chrome-agent-idle: #328021;
+    --chrome-agent-busy: #9d6311;
+    --chrome-agent-blocked: #d20f39;
+    --chrome-focus-ring: color-mix(in oklab, var(--accent) 70%, transparent);
+    --panel: #e6e9ef;
+    --panel-strong: #dce0e8;
+    --chat-surface: #eff1f5;
+  }
+
+  :root[data-platform="mac"][data-palette="rose-pine"]:not([data-theme]) {
+    --chrome-solid: #fffbf4;
+    --chrome-glass-alpha: 0.87;
+    --sheet-solid: #f8f1e9;
+    --pane-solid: #f9f3ec;
+    --terminal-glass-alpha: 0;
+    --terminal-pane-alpha: 0;
+    --terminal-medium-glass-alpha: 0;
+    --terminal-medium-pane-alpha: 0;
+    --terminal-strong-glass-alpha: 0;
+    --terminal-strong-pane-alpha: 0;
+    --chrome-text-muted: #5f5b7f;
+    --chrome-chip-text: #40607f;
+    --terminal-text-muted: #5f5b7f;
+    --terminal-medium-text-muted: #5f5b7f;
+    --terminal-strong-text-muted: #5f5b7f;
+    --chrome-hue-pink: #894a5c;
+    --chrome-git-modified: #785a0b;
+    --chrome-git-added: #166b4c;
+    --chrome-git-deleted: #99424e;
+    --chrome-git-untracked: #196485;
+    --chrome-accent-label: #26657e;
+    --chrome-hue-cyan: #87504d;
+    --chrome-hue-yellow: #805418;
+    --chrome-hue-purple: #84709b;
+    --chrome-danger: #894a5c;
+    --chrome-agent-idle: #286983;
+    --chrome-agent-busy: #a26b21;
+    --chrome-agent-blocked: #ad5f75;
+    --chrome-focus-ring: #286983;
+    --panel: #fffaf3;
+    --panel-strong: #f2e9e1;
+    --chat-surface: #faf4ed;
+  }
+}
+
+/* Reads only the media query, never a level attribute, so the stored settings are untouched (AC12, glass-settings AC23). */
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-platform="mac"] {
+    --surface-chrome: var(--chrome-solid);
+    --surface-terminal: var(--sheet-solid);
+    --surface-pane: var(--pane-solid);
+  }
+}

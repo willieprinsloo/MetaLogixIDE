@@ -47,10 +47,15 @@ describe('SplitGutter', () => {
     expect(attr(pill(render()), 'aria-hidden')).toBe('true');
   });
 
-  it('paints the pill with --accent while dragging', () => {
-    const p = (attr(pill(render(0.5, true)), 'class') ?? '').split(' ');
-    expect(p).toContain('bg-[--accent]');
-    expect(p).not.toContain('bg-[--split-grip]');
+  it('paints the pill in the accent glyph colour while dragging and on hover: --accent-mark, which is --accent wherever it is unset', () => {
+    const fill = (classes: string[], variant: string) =>
+      classes.map((c) => new RegExp(`^${variant}bg-\\[color:(.+)\\]$`).exec(c)?.[1]).find(Boolean);
+    const unset = (expr: string | undefined) => /^var\(--accent-mark,(var\(--[\w-]+\))\)$/.exec(expr ?? '')?.[1];
+    const dragging = (attr(pill(render(0.5, true)), 'class') ?? '').split(' ');
+    expect(unset(fill(dragging, ''))).toBe('var(--accent)');
+    expect(dragging).not.toContain('bg-[--split-grip]');
+    const idle = (attr(pill(render()), 'class') ?? '').split(' ');
+    expect(unset(fill(idle, 'group-hover:'))).toBe('var(--accent)');
   });
 });
 

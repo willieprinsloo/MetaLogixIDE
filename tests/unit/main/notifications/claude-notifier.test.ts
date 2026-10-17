@@ -2,8 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { ClaudeNotifier, withoutHookConfirmed } from '@main/notifications/claude-notifier';
 import type { HookEvent } from '@main/claude-hooks/hook-event';
 import type { ShellKey } from '@main/claude-hooks/session-registry';
-import type { AppliedHook } from '@main/claude-status/state-tracker';
-import type { ClaudeShellState } from '@shared/claude-state';
+import type { AppliedHook } from '@main/notifications/claude-hook-history';
+import type { AgentState } from '@shared/agent-state';
 
 const API0: ShellKey = { projectId: 1, shellIndex: 0 };
 const WEB2: ShellKey = { projectId: 2, shellIndex: 2 };
@@ -30,14 +30,14 @@ function setup(opts: { supported?: boolean; viewing?: (s: ShellKey) => boolean }
   return { notifier: new ClaudeNotifier(deps), deps, shown, toggles };
 }
 
-/** An applied-hook record as the tracker reports it. */
-function applied(shell: ShellKey, event: Partial<HookEvent> & { hookEventName: string }, from: ClaudeShellState, to: ClaudeShellState): AppliedHook {
+/** A confirmed hook with its notification-history transition. */
+function applied(shell: ShellKey, event: Partial<HookEvent> & { hookEventName: string }, from: AgentState, to: AgentState): AppliedHook {
   const sessionId = shell === WEB2 ? 'sess-web' : 'sess-api';
   return { hook: { sessionId, shell, event: { notificationType: null, message: null, backgroundTaskCount: 0, ...event } }, from, to };
 }
 
-/** A Notification the tracker applied; by default it left the shell blocked, as a genuine needs-input does. */
-function notification(shell: ShellKey, type: string | null, message: string | null = 'Claude needs your permission', transition: [ClaudeShellState, ClaudeShellState] = ['busy', 'blocked']): AppliedHook {
+/** A Notification history applied; by default it left the shell blocked. */
+function notification(shell: ShellKey, type: string | null, message: string | null = 'Claude needs your permission', transition: [AgentState, AgentState] = ['busy', 'blocked']): AppliedHook {
   return applied(shell, { hookEventName: 'Notification', notificationType: type, message }, ...transition);
 }
 

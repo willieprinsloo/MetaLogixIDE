@@ -31,7 +31,7 @@ import {
 import { MODAL_CLASSES } from '../../src/renderer/modal-glass';
 import { DIFF_COPY } from '../../src/renderer/diff-tab-copy';
 import { SETTINGS_NAV_ITEMS } from '../../src/renderer/components/settings/nav-icons';
-import { CLAUDE_DOT } from '../../src/shared/claude-state';
+import { AGENT_DOT } from '../../src/shared/agent-state';
 import {
   launch, openProject, projectIdByName, aliveProjectNames, terminalActiveIn, waitForProjectShown,
   PRIMARY, SIDEBAR_FILTER_INPUT, type Launched,
@@ -380,13 +380,14 @@ test.describe('rows', () => {
     });
   });
 
-  test('AC6: with an empty query the groups are Projects, Go, Project, View, Shell, Theme, App, Settings', async () => {
+  test('AC6: empty-query groups put live projects under Running before Go, Project, View, Shell, Theme, App, Settings', async () => {
     await withApp(['alpha'], async ({ win }) => {
       await openProject(win, 'alpha');
       await openPalette(win);
-      expect(await groupNames(win)).toEqual(GROUP_ORDER.map(groupTitle));
-      // Rows sit in their group: the project under Projects, Open Settings under App.
-      await expect(group(win, 'projects').getByRole('option').filter({ has: win.getByText('alpha', { exact: true }) })).toHaveCount(1);
+      expect(await groupNames(win)).toEqual(GROUP_ORDER.filter((id) => id !== 'projects').map(groupTitle));
+      // A live project belongs to Running, not Projects; commands retain their categories.
+      await expect(group(win, 'running').getByRole('option').filter({ has: win.getByText('alpha', { exact: true }) })).toHaveCount(1);
+      await expect(group(win, 'projects')).toHaveCount(0);
       await expect(group(win, 'App').getByRole('option').filter({ has: win.getByText('Open Settings', { exact: true }) })).toHaveCount(1);
     });
   });
@@ -395,7 +396,7 @@ test.describe('rows', () => {
     await withApp([], async ({ win }) => {
       await openPalette(win);
       const names = await groupNames(win);
-      expect(names, 'empty groups are not shown').toEqual(GROUP_ORDER.filter((id) => id !== 'projects').map(groupTitle));
+      expect(names, 'empty groups are not shown').toEqual(GROUP_ORDER.filter((id) => id !== 'running' && id !== 'projects').map(groupTitle));
       await expect(optionFor(win, 'New project…'), 'positive control: "New project…" is offered').toHaveCount(1);
       await expect(optionFor(win, `${PALETTE_COPY.settingsPrefix}${SETTINGS_NAV_ITEMS.find((i) => i.section === 'roots')!.label}`))
         .toHaveCount(1);
@@ -417,26 +418,34 @@ test.describe('rows', () => {
       expect(listed[0]?.name, 'precondition: the pinned project leads projects:list').toBe('beta');
 
       await openPalette(win);
-      const projectRows = group(win, 'projects').getByRole('option');
-      await expect(projectRows).toHaveCount(listed.length);
-      for (const [i, p] of listed.entries()) {
-        const row = projectRows.nth(i);
-        await expect(row.getByText(p.name, { exact: true }), `row ${i} is ${p.name}`).toHaveCount(1);
-        await expect(row.getByTestId(PALETTE_TESTIDS.projectRoot), `row ${i} has its path as the root label's tooltip`).toHaveAttribute('title', p.path);
+      // Running and dormant projects each retain relative projects:list order.
+      const running = listed.filter((p) => p.name === 'alpha' || p.name === 'gamma');
+      const dormant = listed.filter((p) => p.name === 'beta');
+      await expect(group(win, 'running').getByRole('option')).toHaveCount(running.length);
+      await expect(group(win, 'projects').getByRole('option')).toHaveCount(dormant.length);
+      for (const [groupId, projects] of [['running', running], ['projects', dormant]] as const) {
+        const rows = group(win, groupId).getByRole('option');
+        for (const [i, p] of projects.entries()) {
+          const row = rows.nth(i);
+          await expect(row.getByText(p.name, { exact: true }), `row ${i} in ${groupId} is ${p.name}`).toHaveCount(1);
+          await expect(row.getByTestId(PALETTE_TESTIDS.projectRoot), `row ${i} in ${groupId} has its path as the root label's tooltip`).toHaveAttribute('title', p.path);
+        }
       }
 
       // Live dot: alpha and gamma have live shells, beta has none.
-      await expect(optionFor(win, 'alpha').getByTestId(CLAUDE_DOT.testId), 'live project shows the status dot').toHaveCount(1);
-      await expect(optionFor(win, 'gamma').getByTestId(CLAUDE_DOT.testId)).toHaveCount(1);
-      await expect(optionFor(win, 'beta').getByTestId(CLAUDE_DOT.testId), 'a project with no live shell has no dot').toHaveCount(0);
+      await expect(optionFor(win, 'alpha').getByTestId(AGENT_DOT.testId), 'live project shows the status dot').toHaveCount(1);
+      await expect(optionFor(win, 'gamma').getByTestId(AGENT_DOT.testId)).toHaveCount(1);
+      await expect(optionFor(win, 'beta').getByTestId(AGENT_DOT.testId), 'a project with no live shell has no dot').toHaveCount(0);
 
-      // Current: alpha (not highlighted; beta is first) shows the marker, the others do not.
+      // Running appears first even though beta is pinned; alpha is initially highlighted.
       const alpha = optionFor(win, 'alpha');
-      await expect(alpha).toHaveAttribute('aria-selected', 'false');
-      await expect(alpha.getByText(PALETTE_COPY.current, { exact: true }), 'the current project shows "Current"').toBeVisible();
+      await expect(alpha).toHaveAttribute('aria-selected', 'true');
       await expect(alpha).toHaveAccessibleName(/current/i);
       await expect(optionFor(win, 'beta').getByText(PALETTE_COPY.current, { exact: true }), 'beta is not current').toHaveCount(0);
       await expect(optionFor(win, 'beta')).not.toHaveAccessibleName(/current/i);
+      await optionFor(win, 'beta').hover();
+      await expect(alpha).toHaveAttribute('aria-selected', 'false');
+      await expect(alpha.getByText(PALETTE_COPY.current, { exact: true }), 'the inactive current row shows "Current"').toBeVisible();
       // Highlighted, the current row keeps "current" in its accessible name.
       await alpha.hover();
       await expect(alpha).toHaveAttribute('aria-selected', 'true');
@@ -681,7 +690,7 @@ test.describe('typing and errors', () => {
       await openPalette(win);
       await expect(optionFor(win, 'alpha'), 'positive control').toHaveCount(1);
       await expect(optionFor(win, 'beta')).toHaveCount(1);
-      await expect(optionFor(win, 'beta').getByTestId(CLAUDE_DOT.testId), 'beta has no live shell yet').toHaveCount(0);
+      await expect(optionFor(win, 'beta').getByTestId(AGENT_DOT.testId), 'beta has no live shell yet').toHaveCount(0);
 
       const betaId = await projectIdByName(win, 'beta');
       await invoke(win, 'projects:hide', { id: betaId, hidden: true });
@@ -691,7 +700,7 @@ test.describe('typing and errors', () => {
       await expect(optionFor(win, 'beta'), 'unhiding brings it back').toHaveCount(1);
 
       await invoke(win, 'shells:launch-plain', { projectId: betaId });
-      await expect(optionFor(win, 'beta').getByTestId(CLAUDE_DOT.testId), 'beta\'s dot appears live').toHaveCount(1);
+      await expect(optionFor(win, 'beta').getByTestId(AGENT_DOT.testId), 'beta\'s dot appears live').toHaveCount(1);
       await expect(root(win)).toBeVisible();
     });
   });
@@ -893,13 +902,13 @@ test.describe('prefixes', () => {
       await input(win).fill('!zzzz');
       await expect(emptyState(win), 'any other first character is normal mode').toHaveText(PALETTE_COPY.empty.noResults('!zzzz'));
 
-      // Removing the prefix: "#alpha" → "alpha" on the next keystroke, all groups back.
+      // Removing the prefix: "#a" → "a" on the next keystroke restores command groups.
       await input(win).fill('#a');
-      expect(await groupNames(win)).toEqual([groupTitle('projects')]);
+      expect(await groupNames(win)).toEqual([groupTitle('running'), groupTitle('projects')]);
       await input(win).press('Home');
       await input(win).press('Delete');
       await expect(input(win)).toHaveValue('a');
-      await expect.poll(() => groupNames(win), { message: 'normal mode lists more than projects' }).not.toEqual([groupTitle('projects')]);
+      await expect.poll(() => groupNames(win), { message: 'normal mode lists commands beyond the matched projects' }).not.toEqual([groupTitle('running'), groupTitle('projects')]);
 
       // Mode change resets the highlight to the first row.
       await input(win).fill('');
@@ -929,15 +938,16 @@ test.describe('prefixes', () => {
     });
   });
 
-  test('AC41: "#" lists only projects in projects:list order, matches the text after it, and picks like AC8', async () => {
+  test('AC41: "#" lists only Running and Projects in group order, matches the text after it, and picks like AC8', async () => {
     await withApp(['alpha', 'beta', 'lawreader'], async ({ win }) => {
       await openProject(win, 'alpha');
       await openPalette(win);
       await input(win).fill('#');
-      expect(await groupNames(win)).toEqual([groupTitle('projects')]);
+      expect(await groupNames(win)).toEqual([groupTitle('running'), groupTitle('projects')]);
       const listed = (await listedProjects(win)).map((p) => p.name);
+      const grouped = ['alpha', ...listed.filter((name) => name !== 'alpha')];
       await expect(options(win)).toHaveCount(listed.length);
-      for (const [i, name] of listed.entries()) {
+      for (const [i, name] of grouped.entries()) {
         await expect(options(win).nth(i).getByText(name, { exact: true })).toHaveCount(1);
       }
       await expect(optionFor(win, 'alpha'), 'the current project is marked in "#" mode').toHaveAccessibleName(/current/i);
@@ -956,7 +966,7 @@ test.describe('prefixes', () => {
     await withApp(['alpha'], async ({ win }) => {
       await openProject(win, 'alpha');
       await openPalette(win, 'ControlOrMeta+Shift+P', '>');
-      expect(await groupNames(win)).toEqual(GROUP_ORDER.filter((id) => id !== 'projects').map(groupTitle));
+      expect(await groupNames(win)).toEqual(GROUP_ORDER.filter((id) => id !== 'running' && id !== 'projects').map(groupTitle));
       await expect(optionFor(win, 'alpha'), 'no projects in ">" mode').toHaveCount(0);
       await expect(optionFor(win, 'notes.txt'), 'no files in ">" mode').toHaveCount(0);
       await expect(optionFor(win, 'Switch to Files tab'), 'project commands are listed with a project').toHaveCount(1);

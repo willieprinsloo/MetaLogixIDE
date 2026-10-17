@@ -1,18 +1,8 @@
-/**
- * Turns the hooks the Claude state tracker applied into OS notifications
- * (service layer), so notifications follow the same state as the dots
- * (AC12). "Needs input" shows for a needs-input Notification that left the
- * shell blocked; "finished" for a `Stop` with no background tasks that moved
- * the shell from busy to idle. Each then notifies subject to the per-kind
- * toggle (read per event), OS support and the "user is viewing this shell"
- * rule, with at most one outstanding notification per shell. Session
- * confirmation happens in the tracker. Also hosts the generic notifier's
- * confirmed-shell filter.
- */
+/** Converts confirmed Claude notification history into OS alerts without reading dot state. */
 import { classifyHookEvent, type HookEvent } from '@main/claude-hooks/hook-event';
 import type { ShellKey } from '@main/claude-hooks/session-registry';
-import type { AppliedHook } from '@main/claude-status/state-tracker';
-import type { ClaudeShellState } from '@shared/claude-state';
+import type { AppliedHook } from './claude-hook-history';
+import type { AgentState } from '@shared/agent-state';
 import type { NotificationHandle, NotificationsPort } from './os-notifications';
 
 /** The two toggles the notifier reads. */
@@ -40,7 +30,7 @@ function needsInputBody(message: string | null): string {
   return Array.from(clean).slice(0, MAX_BODY_CHARS).join('');
 }
 
-function isFinishedTurn(event: HookEvent, from: ClaudeShellState, to: ClaudeShellState): boolean {
+function isFinishedTurn(event: HookEvent, from: AgentState, to: AgentState): boolean {
   return event.backgroundTaskCount === 0 && from === 'busy' && to === 'idle';
 }
 
@@ -57,7 +47,7 @@ export class ClaudeNotifier {
 
   constructor(private readonly deps: ClaudeNotifierDeps) {}
 
-  /** Processes one hook the state tracker applied (it already confirmed the session). */
+  /** Processes an authenticated hook independently of screen-based status. */
   handle(applied: AppliedHook): void {
     const { hook } = applied;
     const content = contentFor(applied);
