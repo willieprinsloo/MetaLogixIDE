@@ -31,6 +31,15 @@ export const RpcMethods = {
     params: z.object({ projectId: z.number().int().positive(), shellIndex: z.number() }),
     result: z.object({ stream: z.number() }),
   },
+  /** `stream` is the id of an active shells.attach; `bytes` is base64 of the UTF-8 input. */
+  'shells.input': {
+    params: z.object({ stream: z.number().int().positive(), bytes: z.string() }),
+    result: z.object({ ok: z.literal(true) }),
+  },
+  'shells.resize': {
+    params: z.object({ stream: z.number().int().positive(), cols: z.number().int().positive(), rows: z.number().int().positive() }),
+    result: z.object({ ok: z.literal(true) }),
+  },
   'shells.launch': {
     params: z.object({ projectId: z.number().int().positive(), forceFirst: z.boolean().optional() }),
     result: z.object({ shellIndex: z.number() }),

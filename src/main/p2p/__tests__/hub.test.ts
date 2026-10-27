@@ -192,6 +192,47 @@ describe('shells.attach scrollback', () => {
   });
 });
 
+describe('shells.input / shells.resize', () => {
+  const b64 = (t: string) => Buffer.from(t, 'utf8').toString('base64');
+
+  test('write and resize act on the attached shell; stream ends -> unknown_stream', async () => {
+    await pty.spawn(projectId, 0, { argv: ['node', MOCK], env: {}, cwd: projectRoot, variant: 'first' });
+    try {
+      const baseData = pty.listenerCount('data');
+      const write = vi.spyOn(pty, 'write');
+      const resize = vi.spyOn(pty, 'resize');
+      const { client } = setup();
+      const got: any[] = [];
+      const h = client.openStream('shells.attach', { projectId, shellIndex: 0 }, (e) => got.push(e));
+      await waitFor(() => h.stream !== undefined && got.length > 0, 4000);
+      const stream = h.stream!;
+      expect(await client.call('shells.input', { stream, bytes: b64('ls é\r') })).toEqual({ ok: true });
+      expect(write).toHaveBeenCalledWith(projectId, 0, 'ls é\r');
+      expect(await client.call('shells.resize', { stream, cols: 100, rows: 30 })).toEqual({ ok: true });
+      expect(resize).toHaveBeenCalledWith(projectId, 0, 100, 30);
+      h.close();
+      await waitFor(() => pty.listenerCount('data') === baseData, 2000);
+      await expect(client.call('shells.input', { stream, bytes: b64('x') })).rejects.toMatchObject({ code: 'unknown_stream' });
+    } finally {
+      await pty.kill(projectId, 0);
+    }
+  });
+
+  test('both reject unknown_stream when nothing is attached', async () => {
+    const write = vi.spyOn(pty, 'write');
+    const { client } = setup();
+    await expect(client.call('shells.input', { stream: 99, bytes: b64('x') })).rejects.toMatchObject({ code: 'unknown_stream' });
+    await expect(client.call('shells.resize', { stream: 99, cols: 80, rows: 24 })).rejects.toMatchObject({ code: 'unknown_stream' });
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  test('audit log never records keystrokes', async () => {
+    const { client } = setup();
+    await client.call('shells.input', { stream: 99, bytes: b64('hunter2') }).catch(() => {});
+    expect(readFileSync(auditPath, 'utf8')).not.toContain(b64('hunter2'));
+  });
+});
+
 describe('audit log', () => {
   test('appends one JSON line per RPC call', async () => {
     vi.spyOn(handlers, 'shells:launch').mockResolvedValue({ shellIndex: 0 });

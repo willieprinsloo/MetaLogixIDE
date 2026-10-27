@@ -144,7 +144,7 @@ interface Link {
 
 interface StreamEntry {
   deviceId: string;
-  handle: { close(): void };
+  handle: { close(): void; readonly stream: number | undefined };
 }
 
 const reasonOf = (e: unknown): string => {
@@ -650,6 +650,14 @@ class P2PRuntime {
       );
       this.streams.set(streamId, { deviceId: id, handle });
       return { streamId };
+    }
+    if (method === 'shells.input' || method === 'shells.resize') {
+      // The renderer addresses streams by its local id; the host knows them by wire id.
+      const p = (params ?? {}) as { stream?: number };
+      const entry = typeof p.stream === 'number' ? this.streams.get(p.stream) : undefined;
+      const wire = entry && entry.deviceId === id ? entry.handle.stream : undefined;
+      if (wire === undefined) throw new Error('unknown_stream: stream not attached');
+      return rpc.call(method as RpcMethodName, { ...p, stream: wire } as never);
     }
     return rpc.call(method as RpcMethodName, params as never);
   }

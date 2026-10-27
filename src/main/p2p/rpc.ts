@@ -46,7 +46,9 @@ export class RpcError extends Error {
   }
 }
 
-type Impl = (params: unknown) => Promise<unknown> | AsyncIterable<unknown>;
+/** `stream` is the wire id pre-allocated for a stream request (undefined for unary calls). */
+export interface HandlerContext { stream?: number }
+type Impl = (params: unknown, ctx: HandlerContext) => Promise<unknown> | AsyncIterable<unknown>;
 
 interface Pending {
   resolve(v: unknown): void;
@@ -102,7 +104,7 @@ export class RpcPeer extends EventEmitter {
 
   handle<M extends RpcMethodName>(
     method: M,
-    impl: (params: Params<M>) => Promise<Result<M>> | AsyncIterable<unknown>,
+    impl: (params: Params<M>, ctx: HandlerContext) => Promise<Result<M>> | AsyncIterable<unknown>,
   ): void {
     this.#handlers.set(method, impl as Impl);
   }
@@ -135,10 +137,11 @@ export class RpcPeer extends EventEmitter {
     params: Params<M>,
     onEvent: (data: unknown) => void,
     onClose?: () => void,
-  ): { close(): void } {
+  ): { close(): void; readonly stream: number | undefined } {
     // onClose fires only when the REMOTE ends the stream (not on a local handle.close()).
     const st: ClientStream = { onEvent, closed: false, onClose };
     const handle = {
+      get stream() { return st.stream; },
       close: () => {
         if (st.closed) return;
         st.closed = true;
@@ -338,8 +341,10 @@ export class RpcPeer extends EventEmitter {
     }
 
     let out: Promise<unknown> | AsyncIterable<unknown>;
+    // Allocated up front so a stream handler can register its own wire id (e.g. for shells.input).
+    const stream = wantStream ? this.#nextStream++ : undefined;
     try {
-      out = impl(parsedParams.data);
+      out = impl(parsedParams.data, { stream });
     } catch (err) {
       return this.#handlerFailed(id, method, params, err);
     }
@@ -350,15 +355,14 @@ export class RpcPeer extends EventEmitter {
         this.#report(method, params, { error: 'stream_method' });
         return this.#fail(id, 'stream_method', `${method} is a stream; use openStream`);
       }
-      const stream = this.#nextStream++;
       const it = out[Symbol.asyncIterator]();
-      this.#serverStreams.set(stream, it);
+      this.#serverStreams.set(stream!, it);
       let resolve!: () => void;
       const promise = new Promise<typeof CANCELLED>((r) => { resolve = () => r(CANCELLED); });
-      this.#cancels.set(stream, { promise, resolve });
+      this.#cancels.set(stream!, { promise, resolve });
       this.#report(method, params, 'ok');
-      this.#send({ kind: 'res', id, ok: true, result: { stream } });
-      void this.#pump(stream, it);
+      this.#send({ kind: 'res', id, ok: true, result: { stream: stream! } });
+      void this.#pump(stream!, it);
       return;
     }
 

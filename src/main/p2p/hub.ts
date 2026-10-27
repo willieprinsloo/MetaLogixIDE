@@ -5,7 +5,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { RpcMethods, type Params, type Result, type RpcMethodName } from '../../shared/p2p-contract';
 import type { Services } from '../services';
 import { emitAliveShellsChanged, emitProjectsChanged, handlers } from '../ipc/register';
-import { RpcError, type RpcPeer } from './rpc';
+import { RpcError, type HandlerContext, type RpcPeer } from './rpc';
 
 /*
  * Server-side RPC hub: one per peer/session. Methods call the same implementations the renderer
@@ -67,6 +67,11 @@ export function scrubParams(method: string, params: unknown, opts: { keepUnknown
       .strip()
       .safeParse(params);
     p = parsed.success ? parsed.data : undefined;
+  }
+  if (method === 'shells.input' && p && typeof p === 'object') {
+    // Keystrokes may include passwords: log only the size.
+    const { bytes, ...rest } = p as Record<string, unknown>;
+    p = { ...rest, bytes: typeof bytes === 'string' ? `<${bytes.length} b64 chars>` : undefined };
   }
   return redact(p);
 }
@@ -132,9 +137,13 @@ function chunks(s: string): string[] {
  * generator) so `return()` unsubscribes immediately even while a `next()` is parked: the RPC pump
  * cannot await a generator's `finally` behind a pending `next()`.
  */
-function attachStream(s: Services, projectId: number, shellIndex: number): AsyncIterable<unknown> {
+function attachStream(
+  s: Services, projectId: number, shellIndex: number,
+  registry: Map<number, { projectId: number; shellIndex: number }>, streamId: number | undefined,
+): AsyncIterable<unknown> {
   const pty = s.ptyManager;
   if (!pty.isAlive(projectId, shellIndex)) throw new RpcError('unknown_shell', 'no such shell');
+  if (streamId !== undefined) registry.set(streamId, { projectId, shellIndex });
 
   const queue: unknown[] = [];
   let ready = false;
@@ -174,6 +183,7 @@ function attachStream(s: Services, projectId: number, shellIndex: number): Async
 
   const stop = () => {
     done = true;
+    if (streamId !== undefined) registry.delete(streamId);
     pty.off('data', onData);
     pty.off('exit', onExit);
     if (waiter) { const w = waiter; waiter = null; w({ value: undefined, done: true }); }
@@ -212,7 +222,7 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): void {
   /** Registers `impl`; auditing happens in the peer's onCall hook. */
   function on<M extends RpcMethodName>(
     method: M,
-    impl: (p: Params<M>) => Promise<Result<M>> | AsyncIterable<unknown>,
+    impl: (p: Params<M>, ctx: HandlerContext) => Promise<Result<M>> | AsyncIterable<unknown>,
   ): void {
     peer.handle(method, impl);
   }
@@ -258,7 +268,23 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): void {
     return { ok: true } as const;
   });
 
-  on('shells.attach', ({ projectId, shellIndex }) => attachStream(s, projectId, shellIndex));
+  // Active shells.attach streams on this peer, by wire stream id. Input/resize only act on these.
+  const attached = new Map<number, { projectId: number; shellIndex: number }>();
+  on('shells.attach', ({ projectId, shellIndex }, ctx) => attachStream(s, projectId, shellIndex, attached, ctx.stream));
+
+  on('shells.input', async ({ stream, bytes }) => {
+    const a = attached.get(stream);
+    if (!a) throw new RpcError('unknown_stream', 'stream not attached');
+    s.ptyManager.write(a.projectId, a.shellIndex, Buffer.from(bytes, 'base64').toString('utf8'));
+    return { ok: true } as const;
+  });
+
+  on('shells.resize', async ({ stream, cols, rows }) => {
+    const a = attached.get(stream);
+    if (!a) throw new RpcError('unknown_stream', 'stream not attached');
+    s.ptyManager.resize(a.projectId, a.shellIndex, cols, rows);
+    return { ok: true } as const;
+  });
 
   on('fs.list', async ({ projectId, path }) => {
     const abs = resolveInProject(projectRoot(projectId), path);
