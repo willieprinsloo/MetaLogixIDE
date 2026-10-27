@@ -176,6 +176,7 @@
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
     "@playwright/test": "^1.47.0",
+    "@roamhq/wrtc": "^0.10.0",
     "@types/better-sqlite3": "^7.6.0",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^20.0.0",
