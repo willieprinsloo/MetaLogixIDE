@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import log from 'electron-log/main';
+import { startP2P, stopP2P } from './p2p';
 import { buildServices, type Services } from './services';
 import { DROP_MAX_AGE_MS, testModeDropDir } from './drops/staging';
 import { registerIpc } from './ipc/register';
@@ -432,6 +433,7 @@ function stopOnQuit(services: Services, donePoll: NodeJS.Timeout, agentStatus: R
     agentStatus.stop();
     services.ompReceiver.stop();
     void services.hookRuntime.stop();
+    void stopP2P();
   });
 }
 
@@ -451,6 +453,8 @@ async function startApp(): Promise<void> {
   await rescanRootsAtBoot(services);
   bindWindowSettings(services);
   registerMainIpc(services);
+  // P2P needs the IPC broadcaster (rpc stream events) and must never block or fail app startup.
+  void startP2P(services, { emit: broadcast }).catch((err: unknown) => log.warn('[p2p] start failed', err));
   installNotifications(services);
   await openMainWindow(services);
   const donePoll = startCommandDoneNotifier(services);

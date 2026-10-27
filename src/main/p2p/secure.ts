@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import type { RpcTransport } from './rpc';
 import { createFramer, type HandshakeTransport, type NoiseResult } from './pairing';
 
 /** Max plaintext per data-channel message; keeps well under SCTP/browser message limits. */
@@ -38,6 +39,11 @@ export class SecureTransport extends EventEmitter {
     this.#queue = noise.pendingMessages.map((m) => new Uint8Array(m));
     raw.on('message', this.#onRaw);
     raw.on('close', this.#onRawClose);
+  }
+
+  /** Structural adapter for RpcPeer (its transport type is derived from WebRtcTransport's EventEmitter signatures). */
+  asRpcTransport(): RpcTransport {
+    return this as unknown as RpcTransport;
   }
 
   start(): void {
