@@ -29,11 +29,21 @@ function PairModal({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     let alive = true;
-    api.invoke('p2p:pair-generate-code', undefined).then(
-      (res) => { if (alive) setPair(res); },
-      (e: unknown) => { if (alive) setError(e instanceof Error ? e.message : String(e)); },
-    );
-    return () => { alive = false; };
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    // The code is minted by the relay on first connect; until then main answers relay_not_ready, so keep trying briefly.
+    const attempt = (n: number) => {
+      api.invoke('p2p:pair-generate-code', undefined).then(
+        (res) => { if (alive) { setPair(res); setError(null); } },
+        (e: unknown) => {
+          if (!alive) return;
+          const msg = e instanceof Error ? e.message : String(e);
+          if (/relay_not_ready/.test(msg) && n < 15) retry = setTimeout(() => attempt(n + 1), 1000);
+          else setError(/relay_not_ready/.test(msg) ? 'Not connected to the relay yet. Check the relay address and try again.' : /serve_disabled/.test(msg) ? 'Turn on "Serve this machine" first.' : msg);
+        },
+      );
+    };
+    attempt(0);
+    return () => { alive = false; if (retry) clearTimeout(retry); };
   }, []);
 
   useEffect(() => {
@@ -58,13 +68,14 @@ function PairModal({ onClose }: { onClose: () => void }) {
       >
         <h2 id="p2p-pair-title" className="text-lg font-semibold text-[--text]">Pair a new machine</h2>
         <p className="text-sm text-[--modal-text-muted]">
-          On the other machine, open Settings → P2P and enter this code.
+          On the other machine, open Settings → P2P, choose Join a fleet and enter this code. It stays valid while this window is open.
         </p>
         {error && <div role="alert" className="text-sm text-[--danger,#e5484d]">{error}</div>}
         {!pair && !error && <div className="text-sm opacity-60">Generating…</div>}
         {pair && (
           <>
-            <div data-testid="p2p-pair-code" className="select-text rounded-lg bg-[--surface-field] px-4 py-3 text-center font-mono text-base">
+            <div className="text-xs text-[--text-muted]">Your pair code</div>
+            <div data-testid="p2p-pair-code" className="select-text rounded-lg bg-[--surface-field] px-4 py-3 text-center font-mono text-lg tracking-widest">
               {pair.code}
             </div>
             <div className="text-xs text-[--text-muted]" data-testid="p2p-pair-expiry">
@@ -77,6 +88,43 @@ function PairModal({ onClose }: { onClose: () => void }) {
         </div>
       </div>
     </ModalFrame>
+  );
+}
+
+/** Enter another machine's pair code to join its fleet. */
+function JoinFleet({ onJoined }: { onJoined: () => void }) {
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const join = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await api.invoke('p2p:pair-redeem-code', { code: code.trim() });
+      if (r.ok) { setMsg({ ok: true, text: 'Paired.' }); setCode(''); onJoined(); }
+      else setMsg({ ok: false, text: `Could not pair: ${r.error}` });
+    } catch (e) {
+      setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <input
+          aria-label="Pair code of the other machine"
+          data-testid="p2p-join-code"
+          className={`${INPUT_CLASS} w-48 font-mono`}
+          placeholder="Pair code"
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && code.trim() && !busy) void join(); }}
+        />
+        <button type="button" className={BUTTON_CLASS} disabled={busy || !code.trim()} onClick={() => void join()}>Join a fleet</button>
+      </div>
+      {msg && <div role={msg.ok ? 'status' : 'alert'} className={`text-sm ${msg.ok ? 'text-[--text-muted]' : 'text-[--danger]'}`}>{msg.text}</div>}
+    </div>
   );
 }
 
@@ -231,6 +279,7 @@ export function P2PSettings() {
         <div>
           <button type="button" className={BUTTON_CLASS} onClick={() => setPairing(true)}>Pair a new machine</button>
         </div>
+        <JoinFleet onJoined={refresh} />
         {fleetError ? (
           <div role="alert" className="text-sm text-[--danger]">Fleet unavailable: {fleetError}</div>
         ) : members.length === 0 ? (
