@@ -147,6 +147,8 @@
     }
   },
   "dependencies": {
+    "@noble/ciphers": "^2.4.0",
+    "@noble/curves": "^2.4.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-search": "^0.15.0",
     "@xterm/addon-serialize": "^0.13.0",
@@ -168,7 +170,8 @@
     "node-pty": "^1.0.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
-    "socket.io-client": "^4.8.3"
+    "socket.io-client": "^4.8.3",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
