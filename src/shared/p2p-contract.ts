@@ -84,7 +84,7 @@ export const Frame = z.union([
 ]);
 export type Frame = z.infer<typeof Frame>;
 
-export type FleetEntry = { deviceId: string; name: string; online: boolean; lastSeenAt: number | null };
+export type FleetEntry = { deviceId: string; name: string; online: boolean; lastSeenAt: number | null; /** True for this machine's own entry, when the fleet includes it. */ self?: boolean };
 
 /** Stored in `p2p_settings` (singleton row, id = 1). */
 export interface P2PSettings {
