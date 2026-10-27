@@ -393,6 +393,7 @@ export interface IpcContract {
   /** Viewer side: redeems a code shown on the host. Failure carries the reason (e.g. code_consumed, attempts_exceeded, handshake_failed). */
   'p2p:pair-redeem-code':   { request: { code: string }; response: { ok: true } | { ok: false; error: string } };
   'p2p:revoke-device':      { request: { deviceId: string }; response: { ok: true } };
+  'p2p:reconnect-device':   { request: { deviceId: string }; response: { ok: true } };
   /** Renderer to main dispatch of an RPC method on a paired device; stream methods return `{ streamId }` and push `p2p:rpc-event`. */
   'p2p:rpc-call':           { request: { deviceId: string; method: string; params?: unknown }; response: { result: unknown } };
   'p2p:rpc-close-stream':   { request: { streamId: number }; response: { ok: true } };

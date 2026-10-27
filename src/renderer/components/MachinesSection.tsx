@@ -1,5 +1,7 @@
 import { useMemo, useState } from 'react';
 import { rootHueVar } from '@renderer/root-hue';
+import { api } from '@renderer/api';
+import { toast } from '@renderer/hooks/useToasts';
 import { useFleet } from '@renderer/p2p/useFleet';
 import { useRemoteProjects } from '@renderer/p2p/useRemoteProjects';
 import { useRemoteRoots } from '@renderer/p2p/useRemoteRoots';
@@ -28,24 +30,57 @@ function MachineRow({ m, onOpenPane }: { m: FleetEntry; onOpenPane?: (r: OpenPan
   const [open, setOpen] = useState(false);
   const self = !!m.self;
   const expanded = open && m.online && !self;
+  async function reconnect(e: React.MouseEvent) {
+    e.stopPropagation();
+    try {
+      await api.invoke('p2p:reconnect-device', { deviceId: m.deviceId });
+      toast(`Reconnecting to ${m.name}…`, { kind: 'success', timeoutMs: 1500 });
+    } catch (err) {
+      toast('Reconnect failed', { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') });
+    }
+  }
   return (
-    <div>
-      <button
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        data-testid={`machine-${m.deviceId}`}
-        className="w-full flex items-start gap-2 text-left py-1 text-[13px] text-[--text] hover:bg-[--panel-strong] rounded"
+    <div className="group">
+      <div
+        className="w-full flex items-center gap-2 py-1 text-[13px] text-[--text] hover:bg-[--panel-strong] rounded"
       >
-        <span className={m.online ? 'text-green-500' : 'text-[--text-muted]'}>{m.online ? '⬤' : '○'}</span>
-        <span className="flex-1 min-w-0">
-          <span className="block truncate">
-            <span>{m.name}</span>{self && <span className="text-[--text-muted]">{' (this)'}</span>}
+        <button
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          data-testid={`machine-${m.deviceId}`}
+          className="flex-1 min-w-0 flex items-start gap-2 text-left"
+        >
+          <span className={m.online ? 'text-green-500' : 'text-[--text-muted]'}>{m.online ? '⬤' : '○'}</span>
+          <span className="flex-1 min-w-0">
+            <span className="block truncate">
+              <span>{m.name}</span>{self && <span className="text-[--text-muted]">{' (this)'}</span>}
+            </span>
+            {!m.online && <span className="block text-[11px] text-[--text-muted]">{lastSeen(m.lastSeenAt)}</span>}
           </span>
-          {!m.online && <span className="block text-[11px] text-[--text-muted]">{lastSeen(m.lastSeenAt)}</span>}
-        </span>
-      </button>
+        </button>
+        {!self && (
+          <button
+            onClick={reconnect}
+            data-testid={`machine-${m.deviceId}-reconnect`}
+            title="Reconnect — tear down and rebuild the P2P link"
+            aria-label={`Reconnect to ${m.name}`}
+            className="w-5 h-5 flex items-center justify-center rounded text-[--text-muted] hover:text-[--text] hover:bg-[--surface-hover] opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+          >
+            <ReconnectIcon />
+          </button>
+        )}
+      </div>
       {expanded && <MachineExpanded m={m} onOpenPane={onOpenPane} />}
     </div>
+  );
+}
+
+function ReconnectIcon() {
+  return (
+    <svg aria-hidden width={ICON_SIZE.sm} height={ICON_SIZE.sm} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={ICON_STROKE.outline} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 12a9 9 0 1 1-3-6.7" />
+      <path d="M21 4v5h-5" />
+    </svg>
   );
 }
 

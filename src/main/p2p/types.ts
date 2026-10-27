@@ -12,6 +12,8 @@ export interface P2PApi {
   generatePairCode(): { code: string; expiresAt: number };
   redeemPairCode(code: string): Promise<PairRedeemResult>;
   revokeDevice(deviceId: string): Promise<void>;
+  /** Force-close any live viewer connection to this device so the next RPC rebuilds a fresh one. No-op if nothing is connected. */
+  reconnectDevice(deviceId: string): Promise<void>;
   /** Unary call, or for `shells.attach` a stream: events are pushed on `p2p:rpc-event` and `{ streamId }` is returned. */
   rpcCall(deviceId: string, method: string, params: unknown): Promise<unknown>;
   rpcCloseStream(streamId: number): void;

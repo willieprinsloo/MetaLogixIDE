@@ -754,9 +754,26 @@ class P2PRuntime {
       const entry = typeof p.stream === 'number' ? this.streams.get(p.stream) : undefined;
       const wire = entry && entry.deviceId === id ? entry.handle.stream : undefined;
       if (wire === undefined) throw new Error('unknown_stream: stream not attached');
-      return rpc.call(method as RpcMethodName, { ...p, stream: wire } as never);
+      return this.#callWithReconnect(id, rpc, method as RpcMethodName, { ...p, stream: wire } as never);
     }
-    return rpc.call(method as RpcMethodName, params as never);
+    return this.#callWithReconnect(id, rpc, method as RpcMethodName, params as never);
+  }
+
+  /** Reconnect-on-hang: if an RPC comes back with request_timeout (or the peer
+   * reports it's closed), the WebRTC data channel is wedged. Tearing down the
+   * link here means the NEXT rpcCall goes through ensureConn and builds a
+   * fresh viewer session — the user sees one failed call, then it recovers. */
+  async #callWithReconnect(id: string, rpc: RpcPeer, method: RpcMethodName, params: never): Promise<unknown> {
+    try {
+      return await rpc.call(method, params);
+    } catch (e) {
+      const code = (e as { code?: string } | undefined)?.code;
+      if (code === 'request_timeout' || code === 'closed') {
+        const c = this.conns.get(id);
+        if (c && c.rpc === rpc) this.finishLink(c.link, code === 'request_timeout' ? 'request_timeout' : 'rpc_closed');
+      }
+      throw e;
+    }
   }
 
   async redeemPairCode(code: string): Promise<PairRedeemResult> {
@@ -782,6 +799,15 @@ class P2PRuntime {
     for (const l of [...(this.hostLive.get(id) ?? [])]) this.finishLink(l, 'revoked');
     const c = this.conns.get(id);
     if (c) this.finishLink(c.link, 'revoked');
+  }
+
+  /** Manual reconnect: tear down any live viewer link so the next RPC rebuilds it.
+   * Idempotent — safe to call when nothing is connected. The user-facing "Reconnect"
+   * button in the sidebar invokes this when a device looks stuck. */
+  async reconnectDevice(deviceId: string): Promise<void> {
+    const id = canonicalPubHex(deviceId);
+    const c = this.conns.get(id);
+    if (c) this.finishLink(c.link, 'manual_reconnect');
   }
 
   /** See header: live session, or host connection up and a session completed within ONLINE_GRACE_MS. */
@@ -835,6 +861,7 @@ export function createP2P(services: Services, opts: StartP2POpts = {}): P2PHandl
     generatePairCode: () => need().generatePairCode(),
     redeemPairCode: (code) => need().redeemPairCode(code),
     revokeDevice: (id) => need().revokeDevice(id),
+    reconnectDevice: (id) => need().reconnectDevice(id),
     rpcCall: (id, m, p) => need().rpcCall(id, m, p),
     rpcCloseStream: (streamId) => {
       const s = need().streams.get(streamId);
