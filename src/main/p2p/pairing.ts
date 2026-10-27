@@ -19,12 +19,26 @@ export function generateEnrollmentCode(now: number = Date.now()): { code: string
 }
 
 /**
+ * Canonical form of an enrollment code: NFKC, trimmed, whitespace collapsed to single spaces, lowercase.
+ * Both sides must derive the Noise prologue from this form so that cosmetic differences (case, extra
+ * spaces, full-width characters) in what the human typed cannot break or split the binding.
+ */
+export function normalizeEnrollmentCode(code: string): string {
+  return code.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/** UTF-8 bytes of the normalized code: the Noise prologue for pairing handshakes (both roles). */
+export function enrollmentPrologue(code: string): Uint8Array {
+  return new TextEncoder().encode(normalizeEnrollmentCode(code));
+}
+
+/**
  * Format + TTL check only. Matching the code against the one the host issued is
  * the caller's job (compare with a constant-time equality on the normalised string).
  */
 export function verifyEnrollmentCode(code: string, expiresAt: number, now: number = Date.now()): boolean {
   if (typeof code !== 'string' || !Number.isFinite(expiresAt) || now >= expiresAt) return false;
-  const words = code.trim().toLowerCase().split(/\s+/);
+  const words = normalizeEnrollmentCode(code).split(' ');
   if (words.length !== CODE_WORDS) return false;
   return words.every((w) => EFF_SHORT_WORDLIST.includes(w));
 }

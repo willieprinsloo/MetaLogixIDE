@@ -85,10 +85,43 @@ export function loadKnownDevices(file: string = DEFAULT_KNOWN_DEVICES_PATH): Kno
     if (typeof x.pub !== 'string' || !/^[0-9a-f]{64}$/.test(x.pub) || typeof x.name !== 'string' || typeof x.addedAt !== 'number') {
       throw new Error('known_devices.json contains an invalid entry');
     }
-    return { pub: x.pub, name: x.name, addedAt: x.addedAt };
+    return { pub: canonicalPubHex(x.pub), name: x.name, addedAt: x.addedAt };
   });
 }
 
+/**
+ * Ed25519 public keys encode the sign of x in the top bit of byte 31. The X25519 identity used by the
+ * Noise handshake ignores that bit, so A and its sign-flipped twin are the same device. Clearing it
+ * gives one canonical hex per device; every store and every trust check goes through this.
+ */
+export function canonicalPubHex(pub: Uint8Array | string): string {
+  const bytes = typeof pub === 'string' ? Buffer.from(pub, 'hex') : Buffer.from(pub);
+  if (bytes.length !== 32) throw new Error('invalid device public key');
+  bytes[31] = bytes[31]! & 0x7f;
+  return bytes.toString('hex');
+}
+
+export function isTrustedDevice(pub: Uint8Array | string, file: string = DEFAULT_KNOWN_DEVICES_PATH): boolean {
+  const want = canonicalPubHex(pub);
+  return loadKnownDevices(file).some((d) => d.pub === want);
+}
+
+export function addKnownDevice(pub: Uint8Array | string, name: string, file: string = DEFAULT_KNOWN_DEVICES_PATH, now: number = Date.now()): void {
+  const canon = canonicalPubHex(pub);
+  const list = loadKnownDevices(file).filter((d) => d.pub !== canon);
+  list.push({ pub: canon, name, addedAt: now });
+  saveKnownDevices(list, file);
+}
+
+export function removeKnownDevice(pub: Uint8Array | string, file: string = DEFAULT_KNOWN_DEVICES_PATH): boolean {
+  const canon = canonicalPubHex(pub);
+  const list = loadKnownDevices(file);
+  const next = list.filter((d) => d.pub !== canon);
+  if (next.length === list.length) return false;
+  saveKnownDevices(next, file);
+  return true;
+}
+
 export function saveKnownDevices(list: KnownDevice[], file: string = DEFAULT_KNOWN_DEVICES_PATH): void {
-  atomicWrite(file, JSON.stringify({ devices: list }, null, 2));
+  atomicWrite(file, JSON.stringify({ devices: list.map((d) => ({ ...d, pub: canonicalPubHex(d.pub) })) }, null, 2));
 }

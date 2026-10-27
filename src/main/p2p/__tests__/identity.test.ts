@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadOrCreateDeviceKey, fingerprintFromPub, loadKnownDevices, saveKnownDevices } from '../identity';
+import { loadOrCreateDeviceKey, fingerprintFromPub, loadKnownDevices, saveKnownDevices, canonicalPubHex, addKnownDevice, isTrustedDevice, removeKnownDevice } from '../identity';
 import { EFF_SHORT_WORDLIST } from '../_wordlist';
 
 let dir: string;
@@ -73,7 +73,7 @@ describe('known devices', () => {
   it('round-trips at 0600 with no tmp leftovers', () => {
     const f = path.join(dir, 'known_devices.json');
     expect(loadKnownDevices(f)).toEqual([]);
-    const list = [{ pub: 'ab'.repeat(32), name: 'laptop', addedAt: 123 }];
+    const list = [{ pub: '12'.repeat(32), name: 'laptop', addedAt: 123 }];
     saveKnownDevices(list, f);
     expect(fs.statSync(f).mode & 0o777).toBe(0o600);
     expect(loadKnownDevices(f)).toEqual(list);
@@ -85,5 +85,27 @@ describe('known devices', () => {
     const f = path.join(dir, 'k.json');
     fs.writeFileSync(f, JSON.stringify({ devices: [{ pub: 'zz', name: 'x', addedAt: 1 }] }));
     expect(() => loadKnownDevices(f)).toThrow();
+  });
+});
+
+describe('known device canonicalization', () => {
+  it('clears the Edwards sign bit and treats sign-flipped twins as one device', () => {
+    const a = '11'.repeat(31) + '05';
+    const twin = '11'.repeat(31) + '85';
+    expect(canonicalPubHex(a)).toBe(a);
+    expect(canonicalPubHex(twin)).toBe(a);
+    const f = path.join(dir, 'k.json');
+    addKnownDevice(twin, 'box', f, 5);
+    expect(JSON.parse(fs.readFileSync(f, 'utf8')).devices[0].pub).toBe(a);
+    expect(isTrustedDevice(a, f)).toBe(true);
+    expect(isTrustedDevice(Buffer.from(twin, 'hex'), f)).toBe(true);
+    expect(removeKnownDevice(a, f)).toBe(true);
+    expect(isTrustedDevice(twin, f)).toBe(false);
+    expect(removeKnownDevice(a, f)).toBe(false);
+  });
+  it('canonicalizes legacy entries on load', () => {
+    const f = path.join(dir, 'legacy.json');
+    fs.writeFileSync(f, JSON.stringify({ devices: [{ pub: 'ab'.repeat(32), name: 'x', addedAt: 1 }] }));
+    expect(loadKnownDevices(f)[0]!.pub).toBe('ab'.repeat(31) + '2b');
   });
 });
