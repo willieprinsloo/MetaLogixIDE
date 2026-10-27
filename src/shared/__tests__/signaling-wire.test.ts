@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { encodeFrame, createFrameDecoder, Secret, TypeMetaIDE, SignalingTypes } from '../signaling-wire';
+import { encodeFrame, createFrameDecoder, Secret, SignalingTypes, redactHello } from '../signaling-wire';
 import { RpcMethods, Frame } from '../p2p-contract';
 
 function concat(...parts: Uint8Array[]): Uint8Array {
@@ -59,8 +59,12 @@ describe('Secret', () => {
 
 describe('constants and RpcMethods', () => {
   test('exports signaling literals', () => {
-    expect(TypeMetaIDE).toBe('metaide');
     expect(SignalingTypes.SessionInvite).toBe('session_invite');
+    expect(SignalingTypes.AssignCode).toBe('assign_code');
+  });
+  test('redactHello blanks token and secret but keeps role and code', () => {
+    expect(redactHello({ token: 'tok', role: 'host', code: '123456789', secret: 'sss' })).toEqual({ token: '<redacted>', role: 'host', code: '123456789', secret: '<redacted>' });
+    expect(redactHello({ token: '', role: 'viewer' })).toEqual({ token: '', role: 'viewer' });
   });
   test('Frame accepts both res variants and rejects unknown kinds', () => {
     expect(Frame.safeParse({ kind: 'res', id: 1, ok: true, result: 1 }).success).toBe(true);

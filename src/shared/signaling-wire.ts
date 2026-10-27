@@ -63,7 +63,17 @@ export class Secret<T> {
   }
 }
 
-export const TypeMetaIDE = 'metaide' as const;
+/**
+ * Frame 1 on every relay connection (mrsignald `mrserver.Hello`). NOT an Envelope: a bare JSON object.
+ * `host` + no code/secret -> relay mints a code and answers with `assign_code`; `host` + code/secret ->
+ * relay verifies and reuses it; `viewer` -> anonymous, no credential. `token` is the legacy/admin path (unused by metaIDE).
+ */
+export type Hello = { token: string; role: 'host' | 'viewer'; code?: string; secret?: string };
+
+/** Hello with every credential blanked; the only form that may reach logs or the audit trail. */
+export function redactHello(h: Hello): Hello {
+  return { ...h, token: h.token ? '<redacted>' : '', ...(h.secret ? { secret: '<redacted>' } : {}) };
+}
 
 export type Envelope<T = unknown> = { type: string; data?: T };
 

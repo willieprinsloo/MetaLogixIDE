@@ -1,7 +1,5 @@
 import { app } from 'electron';
-import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { existsSync, readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -24,10 +22,12 @@ import {
   loadKnownDevices,
   loadOrCreateDeviceKey,
   removeKnownDevice,
+  CONNECT_CODE_RE,
   type DeviceKey,
 } from './identity';
-import { McClient, type McStatus } from './mcClient';
-import { doNoiseXxHandshake, enrollmentPrologue, normalizeEnrollmentCode } from './pairing';
+import { loadHostIdentity, saveHostIdentity, type HostIdentity } from './host-identity';
+import { McClient, type McStatus, type TlsOpts } from './mcClient';
+import { doNoiseXxHandshake, pairingPrologue } from './pairing';
 import { PairingSession } from './pairing-session';
 import { RpcPeer } from './rpc';
 import { SecureTransport } from './secure';
@@ -36,14 +36,26 @@ import { WebRtcTransport } from './transport';
 import type { P2PApi, PairRedeemResult } from './types';
 
 /*
- * P2P lifecycle: wires MetaConnect signaling (McClient) -> SignalingSession FSM -> WebRTC transport ->
- * Noise XX -> RpcPeer -> hub (host) / rpcCall (viewer).
+ * P2P lifecycle against mrsignald (metaconnect internal/mrserver). Two kinds of relay connection per device:
  *
- * ---- Host path ----
- *   mc connected -> arm a host slot (SignalingSession.start sends Register + HostCapabilities)
- *   session_invite -> slot is bound to the session id, a fresh slot is armed for the next invite
- *   -> transport opens data channel + offer -> answer -> transport 'open' -> Noise XX (responder)
- *   -> trust check (known_devices) -> RpcPeer + wireHub.
+ *  - ONE persistent HOST connection (when serveEnabled). Hello {role:'host', code?, secret?}; on first run the
+ *    relay mints (code, secret) and replies `assign_code`, which is persisted to ~/.metaide/host-identity.json (0600).
+ *    The code is this machine's public address AND its pair code. The host arms a SignalingSession slot (Register),
+ *    receives `session_invite`, then offers.
+ *  - One short-lived anonymous VIEWER connection PER outbound session (Hello {role:'viewer'}), carrying
+ *    `session_request{code: <target host's code>}`. The relay forbids a connection from being both roles, and a viewer
+ *    connection that drops orphans its session, so viewer connections never reconnect and die with their link.
+ *
+ * Host path:  invite -> transport + offer -> answer -> 'open' -> Noise XX (responder) -> trust check -> RpcPeer + wireHub.
+ * Viewer path: granted -> offer -> answer -> 'open' -> Noise XX (initiator) -> RpcPeer.
+ *
+ * ---- Pairing ----
+ * "Pair a new machine" opens a pairing window on the host and shows the host's own connect code. The other machine
+ * enters it ("Join a fleet"); that viewer session is a pairing session. The relay does not forward a pairing flag, so
+ * the host treats the next invite that arrives while a window is open as the pairing session (a trusted peer
+ * connecting in that window fails its handshake and costs one attempt; acceptable for a 5 min user-initiated window).
+ * Noise prologue = SHA-256(code, session id). After Noise, both sides swap `{hello: name, code: <own host code>}` so each
+ * stores the other's pub key AND the code needed to dial it later.
  *
  * ---- Handshake contract (pendingMessages) ----
  * `doNoiseXxHandshake` returns `pendingMessages`: encrypted frames the peer sent after message 3 but
@@ -52,17 +64,18 @@ import type { P2PApi, PairRedeemResult } from './types';
  * (no await in between), and the SecureTransport replays `pendingMessages` in order before any frame
  * received afterwards. See `handshake()` below; do not insert awaits between the two.
  *
- * ---- Assumptions to be confirmed by the MetaConnect integration test (Task 14) ----
- * - Wire token shape: handled by parseSessionToken (object {iat,exp}, or a JWT-like string).
- * - Rendezvous addressing: viewers put the target deviceId (canonical pub hex) in session_request.code;
- *   pairing sessions use pairRendezvous(code), a hash of the code so the relay never sees the secret.
- *   `pairing: true` rides on session_request / session_invite to tell the host to use the code prologue.
- * - Fleet online status needs a relay endpoint; v1 reports online only for devices connected right now.
+ * ---- Relay wire facts (verified against mrsignald, see tests/live integration) ----
+ * - Session tokens are opaque hex strings; ice servers arrive as `ice_servers` (snake_case); session_denied has no session.
+ * - Fleet `online` heuristic (the relay's /presence endpoint is localhost-only, so not usable from clients):
+ *   a device is online if a live session to/from it exists, or if the host connection is up and we completed a
+ *   session with it (pairing or connect) within the last 60 s (ONLINE_GRACE_MS). Session end clears it.
  */
 
 export const NEGOTIATION_TIMEOUT_MS = 30_000;
 const PAIR_EXCHANGE_TIMEOUT_MS = 5_000;
 const CONNECT_TIMEOUT_MS = 10_000;
+/** See header: how long a completed session counts as proof the peer is reachable. */
+export const ONLINE_GRACE_MS = 60_000;
 const DC_LABEL = 'metaide';
 /** Must match the message peerEngine emits when it rejects a data channel. */
 const CHANNEL_NOT_RELIABLE_MSG = 'data channel must be ordered and reliable';
@@ -77,13 +90,25 @@ export interface SignalingClient extends EventEmitter {
   send(env: Envelope): void;
 }
 
+/** What the lifecycle asks of the signaling client factory (one call per relay connection). */
+export interface ClientCfg {
+  url: string;
+  port: number;
+  role: 'host' | 'viewer';
+  /** Host only; absent on first run. */
+  identity?: { code: string; secret: Secret<string> };
+  /** Host only: persist a freshly minted pair before the client reports `connected`. */
+  onAssignCode?: (id: { code: string; secret: string }) => void | Promise<void>;
+  tls?: TlsOpts;
+}
+
 export interface StartP2POpts {
   /** Defaults to services.homeDir. */
   homeDir?: string;
-  /** Default: contents of ~/.metaide/agent.token. */
-  readToken?: () => string | null;
-  /** Test seam; default constructs a McClient (TLS to the relay). */
-  createClient?: (cfg: { url: string; port: number; token: Secret<string> }) => SignalingClient;
+  /** Test seam; default constructs a McClient. */
+  createClient?: (cfg: ClientCfg) => SignalingClient;
+  /** Transport security for the default McClient (production: TLS; local mrsignald: { plaintext: true }). */
+  relayTls?: TlsOpts;
   /** Test seam; default is a WebRtcTransport in a hidden worker window. */
   createTransport?: (role: 'host' | 'viewer', iceServers: RTCIceServer[]) => WebRtcTransport;
   /** Pushes main -> renderer events (`p2p:rpc-event`). */
@@ -95,8 +120,15 @@ export interface StartP2POpts {
   now?: () => number;
 }
 
-/** Wire tokens arrive as `{iat,exp}` or as a JWT-like string; anything else is rejected (fail closed). */
-export function parseSessionToken(t: unknown): { iat: number; exp: number } | null {
+/** Lifetime granted to an opaque relay token (mrsignald's tokens carry no timestamps). */
+const OPAQUE_TOKEN_TTL_MS = 10 * 60_000;
+
+/**
+ * Wire tokens arrive as `{iat,exp}`, a JWT-like string, or (mrsignald) an opaque hex string with no timestamps; for the
+ * last, validity is synthesised from `nowMs` since the relay will not honour it later than the session anyway.
+ * Anything else is rejected (fail closed).
+ */
+export function parseSessionToken(t: unknown, nowMs: number = Date.now()): { iat: number; exp: number } | null {
   const norm = (iat: unknown, exp: unknown) => {
     if (typeof iat !== 'number' || typeof exp !== 'number') return null;
     // Seconds-since-epoch values (< 1e12) are scaled to ms.
@@ -110,26 +142,24 @@ export function parseSessionToken(t: unknown): { iat: number; exp: number } | nu
       const j = JSON.parse(Buffer.from(seg ?? '', 'base64url').toString('utf8')) as { iat?: unknown; exp?: unknown };
       return norm(j.iat, j.exp);
     } catch {
-      return null;
+      return /^[0-9a-fA-F]{16,256}$/.test(t) ? { iat: nowMs, exp: nowMs + OPAQUE_TOKEN_TTL_MS } : null;
     }
   }
   return null;
 }
 
-/** Relay-visible rendezvous for a pairing session: a hash, so the secret code never leaves the device. */
-export function pairRendezvous(code: string): string {
-  return 'pair-' + createHash('sha256').update('metaide-pair-rdv\0').update(normalizeEnrollmentCode(code)).digest('hex').slice(0, 32);
-}
-
 interface Link {
   role: 'host' | 'viewer';
+  /** The relay connection this link signals over (the host connection, or this viewer's own). */
+  client: SignalingClient;
   session: SignalingSession;
   sessionId: string;
   transport: WebRtcTransport | null;
   pairing: boolean;
   /** Pairing host: the prologue reserved from PairingSession.begin(). */
   prologue?: Uint8Array;
-  /** Pairing viewer: the code's prologue. */
+  /** Pairing viewer: the host code being joined (prologue = SHA-256(code, session id), known once granted). */
+  pairCode?: string;
   codePrologue?: Uint8Array;
   /** Viewer normal path: device we expect on the other end. */
   expectedDevice?: string;
@@ -157,10 +187,14 @@ class P2PRuntime {
   readonly pairing: PairingSession;
   readonly knownPath: string;
   readonly home: string;
+  readonly identityPath: string;
+  /** The persistent host connection. */
   client: SignalingClient | null = null;
+  hostIdentity: HostIdentity | null = null;
   hostSlot: Link | null = null;
   readonly links = new Map<string, Link>();
-  readonly viewerWaiting: Link[] = [];
+  /** Last completed session per device id (online heuristic). */
+  readonly lastOkAt = new Map<string, number>();
   readonly allLinks = new Set<Link>();
   /** Established viewer connections by canonical device id. */
   readonly conns = new Map<string, { rpc: RpcPeer; link: Link }>();
@@ -173,8 +207,14 @@ class P2PRuntime {
   constructor(readonly services: Services, readonly opts: StartP2POpts) {
     this.home = opts.homeDir ?? services.homeDir;
     this.knownPath = join(this.home, '.metaide', 'known_devices.json');
+    this.identityPath = join(this.home, '.metaide', 'host-identity.json');
+    this.hostIdentity = loadHostIdentity(this.identityPath);
     this.deviceKey = loadOrCreateDeviceKey(join(this.home, '.metaide', 'device.key'));
     this.pairing = new PairingSession({ maxAttempts: opts.pairingMaxAttempts, now: opts.now });
+  }
+
+  nowMs(): number {
+    return (this.opts.now ?? Date.now)();
   }
 
   // ---- settings ----
@@ -211,8 +251,7 @@ class P2PRuntime {
     const relayChanged = next.relayUrl !== cur.relayUrl || next.relayPort !== cur.relayPort;
     if (relayChanged) await this.stopClient();
     if (!next.serveEnabled) {
-      this.hostSlot = null;
-      if (this.conns.size === 0) await this.stopClient();
+      await this.stopClient();
     } else if (relayChanged || !this.client) {
       await this.startClientIfServing();
     } else {
@@ -246,47 +285,52 @@ class P2PRuntime {
     this.services.db.prepare('UPDATE devices SET last_seen_at = ? WHERE id = ?').run(Date.now(), id);
   }
 
-  // ---- signaling client ----
+  // ---- signaling clients ----
 
-  token(): string | null {
-    const read = this.opts.readToken ?? (() => {
-      const f = join(this.home, '.metaide', 'agent.token');
-      return existsSync(f) ? readFileSync(f, 'utf8').trim() : null;
+  /** The host code to show as "Your pair code" (null until the relay has minted one). */
+  connectCode(): string | null {
+    return this.hostIdentity?.code ?? null;
+  }
+
+  #makeClient(cfg: ClientCfg): SignalingClient {
+    if (this.opts.createClient) return this.opts.createClient(cfg);
+    return new McClient({
+      url: cfg.url,
+      port: cfg.port,
+      role: cfg.role,
+      identity: cfg.identity,
+      onAssignCode: cfg.onAssignCode,
+      tls: cfg.tls,
+      reconnect: cfg.role === 'host',
     });
-    const t = read();
-    return t ? t : null;
   }
 
   async startClientIfServing(): Promise<void> {
     if (this.#stopped || !this.settings().serveEnabled) return;
-    await this.ensureClient(false);
+    await this.ensureHostClient();
   }
 
-  /** Creates and starts the signaling client; with `wait`, resolves once it is connected. */
-  async ensureClient(wait: boolean): Promise<SignalingClient> {
-    if (!this.client) {
-      const tok = this.token();
-      if (!tok) throw new Error('no_agent_token');
-      const s = this.settings();
-      const cfg = { url: s.relayUrl, port: s.relayPort, token: new Secret(tok) };
-      // TODO(task-14-or-followup): wrap socket in yamux + ctrl stream if MetaConnect integration test shows
-      // the relay requires it. The default McClient socket is plain tls.connect(); it may be that the
-      // TypeMetaIDE route is registered on a raw-TCP sibling listener, which would avoid yamux entirely.
-      const c = this.opts.createClient ? this.opts.createClient(cfg) : new McClient(cfg);
-      c.on('error', () => { /* surfaced through status; McClient reconnects on its own */ });
-      c.on('envelope', (env: Envelope) => this.onEnvelope(env));
-      c.on('status', (st: McStatus) => this.onStatus(st));
-      this.client = c;
-      await c.start();
-    }
-    const c = this.client;
-    if (wait && c.status !== 'connected') {
-      await new Promise<void>((resolve, reject) => {
-        const t = setTimeout(() => { c.off('status', on); reject(new Error('relay_unreachable')); }, CONNECT_TIMEOUT_MS);
-        const on = (st: McStatus) => { if (st === 'connected') { clearTimeout(t); c.off('status', on); resolve(); } };
-        c.on('status', on);
-      });
-    }
+  /** Creates and starts the single persistent host connection (does not wait for it). */
+  async ensureHostClient(): Promise<SignalingClient> {
+    if (this.client) return this.client;
+    const s = this.settings();
+    const id = this.hostIdentity;
+    const c = this.#makeClient({
+      url: s.relayUrl,
+      port: s.relayPort,
+      role: 'host',
+      identity: id ? { code: id.code, secret: new Secret(id.secret) } : undefined,
+      tls: this.opts.relayTls,
+      onAssignCode: (minted) => {
+        saveHostIdentity(minted, this.identityPath); // throws -> client never reports connected
+        this.hostIdentity = minted;
+      },
+    });
+    c.on('error', () => { /* surfaced through status; McClient reconnects on its own */ });
+    c.on('envelope', (env: Envelope) => this.onHostEnvelope(env));
+    c.on('status', (st: McStatus) => this.onHostStatus(st));
+    this.client = c;
+    await c.start();
     return c;
   }
 
@@ -297,7 +341,7 @@ class P2PRuntime {
     if (c) { c.removeAllListeners('envelope'); c.removeAllListeners('status'); await c.stop(); }
   }
 
-  onStatus(st: McStatus): void {
+  onHostStatus(st: McStatus): void {
     if (st === 'connected') this.armHostSlot();
     else this.hostSlot = null;
   }
@@ -308,50 +352,60 @@ class P2PRuntime {
     const session = new SignalingSession({
       role: 'host',
       nowMs: this.opts.now,
+      identity: this.hostIdentity ?? undefined,
       capabilities: {
         agentVersion: this.opts.appVersion ?? app.getVersion(),
         hostFingerprint: this.deviceKey.fingerprint,
         monitors: [], // the IDE does not advertise displays
       },
     });
-    const link = this.newLink('host', session, false);
+    const link = this.newLink('host', c, session, false);
     this.hostSlot = link;
     this.run(link, session.start());
   }
 
-  newLink(role: 'host' | 'viewer', session: SignalingSession, pairing: boolean): Link {
-    const link: Link = { role, session, sessionId: '', transport: null, pairing, handshakeStarted: false, closed: false, timer: null };
+  newLink(role: 'host' | 'viewer', client: SignalingClient, session: SignalingSession, pairing: boolean): Link {
+    const link: Link = { role, client, session, sessionId: '', transport: null, pairing, handshakeStarted: false, closed: false, timer: null };
     this.allLinks.add(link);
     return link;
   }
 
   // ---- inbound signaling ----
 
-  onEnvelope(env: Envelope): void {
+  /** Host connection: invites open new links; everything else is routed by session id. */
+  onHostEnvelope(env: Envelope): void {
     if (this.#stopped) return;
-    const d = (env.data ?? {}) as { session?: string; token?: unknown; iceServers?: unknown; pairing?: unknown };
+    const d = (env.data ?? {}) as { session?: string; token?: unknown; ice_servers?: unknown; iceServers?: unknown };
+    if (env.type === SignalingTypes.SessionInvite) return this.onInvite(env, d);
+    const link = d.session ? this.links.get(d.session) : undefined;
+    if (link && link.role === 'host') this.run(link, link.session.onInbound(env));
+  }
+
+  /** A viewer connection serves exactly one link. */
+  onViewerEnvelope(link: Link, env: Envelope): void {
+    if (this.#stopped || link.closed) return;
+    const d = (env.data ?? {}) as { session?: string; token?: unknown; ice_servers?: unknown; iceServers?: unknown };
     switch (env.type) {
-      case SignalingTypes.SessionInvite: return this.onInvite(env, d);
-      case SignalingTypes.SessionGranted: return this.onGranted(env, d);
-      case SignalingTypes.SessionDenied: {
-        const link = this.viewerWaiting.shift();
-        if (link) this.run(link, link.session.onInbound(env));
-        return;
-      }
-      default: {
-        const link = d.session ? this.links.get(d.session) : undefined;
-        if (link) this.run(link, link.session.onInbound(env));
-      }
+      case SignalingTypes.SessionGranted: return this.onGranted(link, env, d);
+      case SignalingTypes.SessionDenied: return this.run(link, link.session.onInbound(env));
+      default:
+        // After the grant, only this session's messages are meaningful.
+        if (d.session && d.session === link.sessionId) this.run(link, link.session.onInbound(env));
     }
   }
 
   #withToken(env: Envelope, d: { token?: unknown }): Envelope | null {
-    const token = parseSessionToken(d.token);
+    const token = parseSessionToken(d.token, this.nowMs());
     if (!token) return null;
     return { ...env, data: { ...(env.data as object), token } };
   }
 
-  onInvite(env: Envelope, d: { session?: string; iceServers?: unknown; pairing?: unknown; token?: unknown }): void {
+  #iceOf(d: { ice_servers?: unknown; iceServers?: unknown }): RTCIceServer[] {
+    const v = Array.isArray(d.ice_servers) ? d.ice_servers : d.iceServers;
+    return Array.isArray(v) ? (v as RTCIceServer[]) : [];
+  }
+
+  onInvite(env: Envelope, d: { session?: string; ice_servers?: unknown; iceServers?: unknown; token?: unknown }): void {
     const link = this.hostSlot;
     if (!link || !this.settings().serveEnabled) return;
     const fixed = this.#withToken(env, d);
@@ -367,27 +421,27 @@ class P2PRuntime {
     this.hostSlot = null;
     this.armHostSlot(); // ready for the next invite while this one negotiates
 
-    link.pairing = d.pairing === true;
-    if (link.pairing) {
-      const b = this.pairing.begin();
+    // The relay forwards no pairing flag: an open pairing window claims the next invite (see header).
+    if (this.pairing.active) {
+      link.pairing = true;
+      const b = this.pairing.begin(link.sessionId);
       if (!b.ok) { this.run(link, link.session.close(b.error)); return; }
       link.prologue = b.prologue;
     }
     this.startNegotiationTimer(link);
-    this.setupTransport(link, Array.isArray(d.iceServers) ? (d.iceServers as RTCIceServer[]) : []);
+    this.setupTransport(link, this.#iceOf(d));
     void this.hostOffer(link);
   }
 
-  onGranted(env: Envelope, d: { session?: string; iceServers?: unknown; token?: unknown }): void {
-    const link = this.viewerWaiting.shift();
-    if (!link) return;
+  onGranted(link: Link, env: Envelope, d: { session?: string; ice_servers?: unknown; iceServers?: unknown; token?: unknown }): void {
     const fixed = this.#withToken(env, d);
     if (!fixed) { this.run(link, link.session.close('invalid_token')); return; }
     this.run(link, link.session.onInbound(fixed));
     if (link.session.state !== 'granted') return;
     link.sessionId = d.session as string;
     this.links.set(link.sessionId, link);
-    this.setupTransport(link, Array.isArray(d.iceServers) ? (d.iceServers as RTCIceServer[]) : []);
+    if (link.pairing && link.pairCode) link.codePrologue = pairingPrologue(link.pairCode, link.sessionId);
+    this.setupTransport(link, this.#iceOf(d));
   }
 
   startNegotiationTimer(link: Link): void {
@@ -441,7 +495,7 @@ class P2PRuntime {
     for (const fx of effects) {
       switch (fx.kind) {
         case 'send':
-          try { this.client?.send(fx.env); } catch { this.finishLink(link, 'relay_unreachable'); }
+          try { link.client.send(fx.env); } catch { this.finishLink(link, 'relay_unreachable'); }
           break;
         case 'local_offer': void this.viewerAnswer(link, fx.payload); break;
         case 'local_answer':
@@ -498,8 +552,8 @@ class P2PRuntime {
     link.remoteDevice = remote;
     if (link.pairing) {
       this.pairing.settle(true); // a completed code-bound handshake consumes the code
-      const name = await this.exchangeNames(secure, remote);
-      void name;
+      await this.exchangeNames(secure, remote);
+      this.lastOkAt.set(remote, this.nowMs());
       // The viewer closes first; this is only a backstop.
       setTimeout(() => this.finishLink(link, 'paired'), 3000).unref?.();
       return;
@@ -528,7 +582,8 @@ class P2PRuntime {
     const { secure, remote } = await this.handshake(link, 'viewer', link.pairing ? link.codePrologue : undefined);
     link.remoteDevice = remote;
     if (link.pairing) {
-      await this.exchangeNames(secure, remote);
+      await this.exchangeNames(secure, remote, link.pairCode);
+      this.lastOkAt.set(remote, this.nowMs());
       link.settle?.({ ok: true });
       this.finishLink(link, 'paired');
       return;
@@ -541,23 +596,32 @@ class P2PRuntime {
     rpc.on('error', () => { /* per-call errors reach the caller */ });
     link.rpc = rpc;
     this.conns.set(remote, { rpc, link });
+    this.lastOkAt.set(remote, this.nowMs());
     this.touchDevice(remote);
     secure.start();
     link.settle?.({ ok: true });
   }
 
-  /** Pairing: both sides send their device name as the first secure message, then persist each other. */
-  exchangeNames(secure: SecureTransport, remote: string): Promise<string> {
+  /**
+   * Pairing: both sides send `{hello: name, code: <own host connect code>}` as the first secure message, then persist
+   * each other (pub key + the code needed to dial back). `fallbackCode` is the code the joiner already dialled.
+   */
+  exchangeNames(secure: SecureTransport, remote: string, fallbackCode?: string): Promise<string> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('pairing_exchange_timeout')), PAIR_EXCHANGE_TIMEOUT_MS);
       secure.on('close', () => { clearTimeout(timer); reject(new Error('transport_closed')); });
       secure.on('message', (m: Uint8Array) => {
         clearTimeout(timer);
         let name = '';
-        try { name = String((JSON.parse(new TextDecoder().decode(m)) as { hello?: unknown }).hello ?? ''); } catch { /* ignore */ }
+        let code: string | undefined;
+        try {
+          const j = JSON.parse(new TextDecoder().decode(m)) as { hello?: unknown; code?: unknown };
+          name = String(j.hello ?? '');
+          if (typeof j.code === 'string' && CONNECT_CODE_RE.test(j.code)) code = j.code;
+        } catch { /* ignore */ }
         name = name.slice(0, 80) || remote.slice(0, 8);
         try {
-          addKnownDevice(remote, name, this.knownPath);
+          addKnownDevice(remote, name, this.knownPath, Date.now(), code ?? fallbackCode);
           this.recordDevice(remote, name);
           resolve(name);
         } catch (e) {
@@ -565,7 +629,7 @@ class P2PRuntime {
         }
       });
       secure.start();
-      secure.send(new TextEncoder().encode(JSON.stringify({ hello: this.settings().deviceName })));
+      secure.send(new TextEncoder().encode(JSON.stringify({ hello: this.settings().deviceName, ...(this.hostIdentity && this.settings().serveEnabled ? { code: this.hostIdentity.code } : {}) })));
     });
   }
 
@@ -573,9 +637,9 @@ class P2PRuntime {
    * Transient link drops while the signaling client is still up (or coming up) are reported to streams as
    * 'reconnecting' so the renderer shows the Reconnecting pill; terminal reasons pass through unchanged.
    */
-  private streamCloseReason(reason: string): string {
+  private streamCloseReason(link: Link, reason: string): string {
     if (reason !== 'transport_closed' && reason !== 'negotiation_timeout' && reason !== 'relay_unreachable') return reason;
-    const st = this.client?.status;
+    const st = link.client.status;
     return st === 'connected' || st === 'connecting' ? 'reconnecting' : reason;
   }
 
@@ -585,17 +649,16 @@ class P2PRuntime {
     if (link.timer) { clearTimeout(link.timer); link.timer = null; }
     if (this.hostSlot === link) this.hostSlot = null;
     if (link.sessionId) this.links.delete(link.sessionId);
-    const wi = this.viewerWaiting.indexOf(link);
-    if (wi >= 0) this.viewerWaiting.splice(wi, 1);
     this.allLinks.delete(link);
     if (link.role === 'host' && link.pairing && link.prologue && !link.handshakeStarted) this.pairing.abort();
     if (link.remoteDevice) {
+      if (!link.pairing) this.lastOkAt.delete(link.remoteDevice); // a pairing link ending is the normal outcome, not a loss of reachability
       this.hostLive.get(link.remoteDevice)?.delete(link);
       const c = this.conns.get(link.remoteDevice);
       if (c && c.link === link) {
         this.conns.delete(link.remoteDevice);
         for (const [id, s] of this.streams) {
-          if (s.deviceId === link.remoteDevice) { this.streams.delete(id); this.opts.emit?.('p2p:rpc-event', { deviceId: s.deviceId, streamId: id, closed: true, reason: this.streamCloseReason(reason) }); }
+          if (s.deviceId === link.remoteDevice) { this.streams.delete(id); this.opts.emit?.('p2p:rpc-event', { deviceId: s.deviceId, streamId: id, closed: true, reason: this.streamCloseReason(link, reason) }); }
         }
       }
     }
@@ -605,23 +668,45 @@ class P2PRuntime {
     try { link.transport?.close(); } catch { /* already closed */ }
     // Tell the peer why when signaling is still live (no-op if the FSM already closed).
     if (link.session.state !== 'closed' && link.sessionId) {
-      try { this.client?.send({ type: SignalingTypes.SessionClose, data: { session: link.sessionId, reason } }); } catch { /* relay down */ }
+      try { link.client.send({ type: SignalingTypes.SessionClose, data: { session: link.sessionId, reason } }); } catch { /* relay down */ }
     }
+    // A viewer connection exists only for its link.
+    if (link.role === 'viewer') { link.client.removeAllListeners('envelope'); link.client.removeAllListeners('status'); void link.client.stop().catch(() => {}); }
   }
 
   // ---- viewer operations ----
 
-  async connectViewer(opts: { code: string; pairing: boolean; expectedDevice?: string; codePrologue?: Uint8Array }): Promise<{ ok: true } | { ok: false; error: string }> {
+  /**
+   * Opens a dedicated viewer relay connection, requests a session with the host owning `code`, and resolves when the
+   * link is established (RPC ready, or pairing finished) or fails.
+   */
+  async connectViewer(opts: { code: string; pairing: boolean; expectedDevice?: string }): Promise<{ ok: true } | { ok: false; error: string }> {
+    const st = this.settings();
     let client: SignalingClient;
-    try { client = await this.ensureClient(true); } catch (e) { return { ok: false, error: reasonOf(e) }; }
-    void client;
+    try {
+      client = this.#makeClient({ url: st.relayUrl, port: st.relayPort, role: 'viewer', tls: this.opts.relayTls });
+      client.on('error', () => { /* surfaced as status / negotiation timeout */ });
+      await client.start();
+      if (client.status !== 'connected') {
+        await new Promise<void>((resolve, reject) => {
+          const t = setTimeout(() => { client.off('status', on); reject(new Error('relay_unreachable')); }, CONNECT_TIMEOUT_MS);
+          const on = (s2: McStatus) => { if (s2 === 'connected') { clearTimeout(t); client.off('status', on); resolve(); } };
+          client.on('status', on);
+        });
+      }
+    } catch (e) {
+      return { ok: false, error: reasonOf(e) };
+    }
+    if (this.#stopped) { void client.stop(); return { ok: false, error: 'shutdown' }; }
     return new Promise((resolve) => {
-      const session = new SignalingSession({ role: 'viewer', code: opts.code, pairing: opts.pairing, nowMs: this.opts.now });
-      const link = this.newLink('viewer', session, opts.pairing);
+      const session = new SignalingSession({ role: 'viewer', code: opts.code, nowMs: this.opts.now });
+      const link = this.newLink('viewer', client, session, opts.pairing);
       link.expectedDevice = opts.expectedDevice;
-      link.codePrologue = opts.codePrologue;
+      if (opts.pairing) link.pairCode = opts.code;
       link.settle = resolve;
-      this.viewerWaiting.push(link);
+      client.on('envelope', (env: Envelope) => this.onViewerEnvelope(link, env));
+      // Viewer connections never reconnect; a drop before the data channel is up can't be recovered.
+      client.on('status', (s2: McStatus) => { if (s2 === 'disconnected' && !link.handshakeStarted) this.finishLink(link, 'relay_unreachable'); });
       this.startNegotiationTimer(link);
       this.run(link, session.start());
     });
@@ -632,10 +717,12 @@ class P2PRuntime {
     const live = this.conns.get(id);
     if (live) return live.rpc;
     if (!isTrustedDevice(id, this.knownPath)) throw new Error('unknown_device');
+    const code = loadKnownDevices(this.knownPath).find((d) => d.pub === id)?.code;
+    if (!code) throw new Error('no_device_code'); // paired before connect codes existed: re-pair
     let p = this.connecting.get(id);
     if (!p) {
       p = (async () => {
-        const r = await this.connectViewer({ code: id, pairing: false, expectedDevice: id });
+        const r = await this.connectViewer({ code, pairing: false, expectedDevice: id });
         if (!r.ok) throw new Error(r.error);
         return this.conns.get(id)!.rpc;
       })();
@@ -674,7 +761,18 @@ class P2PRuntime {
 
   async redeemPairCode(code: string): Promise<PairRedeemResult> {
     if (!code || typeof code !== 'string') return { ok: false, error: 'invalid_code' };
-    return this.connectViewer({ code: pairRendezvous(code), pairing: true, codePrologue: enrollmentPrologue(code) });
+    const target = code.trim();
+    if (!CONNECT_CODE_RE.test(target)) return { ok: false, error: 'invalid_code' };
+    if (target === this.hostIdentity?.code) return { ok: false, error: 'own_code' };
+    return this.connectViewer({ code: target, pairing: true });
+  }
+
+  /** Opens a pairing window bound to this machine's connect code and returns it as the pair code. */
+  generatePairCode(): { code: string; expiresAt: number } {
+    if (!this.settings().serveEnabled) throw new Error('serve_disabled');
+    const code = this.connectCode();
+    if (!code) throw new Error('relay_not_ready'); // no code minted yet: the host connection has not completed its first Hello
+    return this.pairing.generate(code);
   }
 
   async revokeDevice(deviceId: string): Promise<void> {
@@ -686,6 +784,13 @@ class P2PRuntime {
     if (c) this.finishLink(c.link, 'revoked');
   }
 
+  /** See header: live session, or host connection up and a session completed within ONLINE_GRACE_MS. */
+  isOnline(id: string): boolean {
+    if (this.conns.has(id) || (this.hostLive.get(id)?.size ?? 0) > 0) return true;
+    const ok = this.lastOkAt.get(id);
+    return this.client?.status === 'connected' && ok !== undefined && this.nowMs() - ok < ONLINE_GRACE_MS;
+  }
+
   fleet(): FleetEntry[] {
     const seen = new Map(
       (this.services.db.prepare('SELECT id, last_seen_at FROM devices WHERE is_self = 0').all() as Array<{ id: string; last_seen_at: number | null }>).map((r) => [r.id, r.last_seen_at]),
@@ -693,7 +798,7 @@ class P2PRuntime {
     return loadKnownDevices(this.knownPath).map((d) => ({
       deviceId: d.pub,
       name: d.name,
-      online: this.conns.has(d.pub) || (this.hostLive.get(d.pub)?.size ?? 0) > 0,
+      online: this.isOnline(d.pub),
       lastSeenAt: seen.get(d.pub) ?? null,
     }));
   }
@@ -727,7 +832,7 @@ export function createP2P(services: Services, opts: StartP2POpts = {}): P2PHandl
     fleetList: async () => need().fleet(),
     getSettings: () => need().view(),
     setSettings: (p) => need().setSettings(p),
-    generatePairCode: () => need().pairing.generate(),
+    generatePairCode: () => need().generatePairCode(),
     redeemPairCode: (code) => need().redeemPairCode(code),
     revokeDevice: (id) => need().revokeDevice(id),
     rpcCall: (id, m, p) => need().rpcCall(id, m, p),
@@ -746,11 +851,7 @@ export function createP2P(services: Services, opts: StartP2POpts = {}): P2PHandl
       setHubServices(services);
       r.upsertSelf(r.settings().deviceName);
       services.p2p = { deviceKey: r.deviceKey, pairing: r.pairing, knownDevicesPath: r.knownPath, api };
-      try {
-        await r.startClientIfServing();
-      } catch (e) {
-        if (reasonOf(e) !== 'no_agent_token') throw e; // no token yet: stays dormant until one is provisioned
-      }
+      await r.startClientIfServing();
     },
     async stop() {
       const r = rt;
@@ -766,7 +867,7 @@ let current: P2PHandle | null = null;
 
 /**
  * Starts the P2P subsystem: ensures the schema, loads the device key, publishes `services.p2p`, and (if
- * serving is enabled and an agent token exists) connects to the relay. Idempotent.
+ * serving is enabled) opens the host connection to the relay. Idempotent.
  */
 export async function startP2P(services: Services, opts: StartP2POpts = {}): Promise<void> {
   if (current) return;
