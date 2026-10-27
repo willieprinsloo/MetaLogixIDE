@@ -204,30 +204,17 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): void {
   const record = (method: string, params: unknown, outcome: 'ok' | { error: string }) =>
     audit.write({ ts: Date.now(), remoteDeviceId: opts.remoteDeviceId, method, params: scrubParams(method, params), outcome });
   const events = opts.events ?? { aliveShellsChanged: emitAliveShellsChanged, projectsChanged: emitProjectsChanged };
-  const errCode = (e: unknown) => (e instanceof RpcError ? e.code : 'handler_error');
 
-  /** Registers `impl` with one audit entry per call (stream methods are logged when opened). */
+  // Every inbound request (including invalid_params / unknown_method rejections that never reach a
+  // handler) is audited through the peer's onCall hook; one entry per call, streams at open.
+  peer.setOnCall(record);
+
+  /** Registers `impl`; auditing happens in the peer's onCall hook. */
   function on<M extends RpcMethodName>(
     method: M,
     impl: (p: Params<M>) => Promise<Result<M>> | AsyncIterable<unknown>,
   ): void {
-    peer.handle(method, (params) => {
-      let out: Promise<Result<M>> | AsyncIterable<unknown>;
-      try {
-        out = impl(params);
-      } catch (e) {
-        record(method, params, { error: errCode(e) });
-        throw e;
-      }
-      if (typeof (out as Promise<unknown>).then !== 'function') {
-        record(method, params, 'ok');
-        return out as AsyncIterable<unknown>;
-      }
-      return (out as Promise<Result<M>>).then(
-        (v) => { record(method, params, 'ok'); return v; },
-        (e) => { record(method, params, { error: errCode(e) }); throw e; },
-      );
-    });
+    peer.handle(method, impl);
   }
 
   const projectRoot = (projectId: number): string => {

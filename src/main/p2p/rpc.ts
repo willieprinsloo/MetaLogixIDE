@@ -29,7 +29,13 @@ export const MAX_RPC_FRAME_BYTES = 1 << 20;
 export interface RpcPeerOptions {
   /** Default true. When false, inbound `open-stream` is refused and the handler is not invoked. */
   allowIncomingStreams?: boolean;
+  /** Audit hook, see `RpcPeer.setOnCall`. */
+  onCall?: OnCall;
 }
+
+/** Outcome of an inbound request, reported once per request (streams: at open). */
+export type CallOutcome = 'ok' | { error: string };
+export type OnCall = (method: string, params: unknown, outcome: CallOutcome) => void;
 
 const CANCELLED = Symbol('cancelled');
 
@@ -76,6 +82,7 @@ export class RpcPeer extends EventEmitter {
   readonly #serverStreams = new Map<number, AsyncIterator<unknown>>();
   readonly #cancels = new Map<number, { promise: Promise<typeof CANCELLED>; resolve(): void }>();
   readonly #allowIncomingStreams: boolean;
+  #onCall: OnCall | null;
   #nextReq = 1;
   #nextStream = 1;
   #closed = false;
@@ -86,6 +93,7 @@ export class RpcPeer extends EventEmitter {
   constructor(transport: RpcTransport, opts: RpcPeerOptions = {}) {
     super();
     this.#allowIncomingStreams = opts.allowIncomingStreams ?? true;
+    this.#onCall = opts.onCall ?? null;
     this.#transport = transport as RpcTransport;
     this.#transport.on('message', this.#onMessage);
     this.#transport.on('close', this.#onClose);
@@ -96,6 +104,15 @@ export class RpcPeer extends EventEmitter {
     impl: (params: Params<M>) => Promise<Result<M>> | AsyncIterable<unknown>,
   ): void {
     this.#handlers.set(method, impl as Impl);
+  }
+
+  /**
+   * Registers the audit hook. Invoked exactly once per inbound request with the method, the raw
+   * (unvalidated) params and the outcome: `unknown_method`, `invalid_params`, `result_too_large`,
+   * `invalid_result`, handler error codes, or 'ok'. It must not throw; if it does, the error is swallowed.
+   */
+  setOnCall(cb: OnCall | null): void {
+    this.#onCall = cb;
   }
 
   call<M extends RpcMethodName>(method: M, params: Params<M>): Promise<Result<M>> {
@@ -280,13 +297,22 @@ export class RpcPeer extends EventEmitter {
     }
   }
 
+  #report(method: string, params: unknown, outcome: CallOutcome): void {
+    if (!this.#onCall) return;
+    try { this.#onCall(method, params, outcome); } catch { /* auditing must never break the channel */ }
+  }
+
   #fail(id: number, code: string, message: string): void {
     this.#send({ kind: 'res', id, ok: false, error: { code, message } });
   }
 
-  #handlerFailed(id: number, method: string, err: unknown): void {
+  #handlerFailed(id: number, method: string, params: unknown, err: unknown): void {
     // A handler that throws RpcError chose its code and message for the peer (e.g. path_outside_project).
-    if (err instanceof RpcError) return this.#fail(id, err.code, err.message);
+    if (err instanceof RpcError) {
+      this.#report(method, params, { error: err.code });
+      return this.#fail(id, err.code, err.message);
+    }
+    this.#report(method, params, { error: 'handler_error' });
     // Detail stays local; the peer gets a generic message (no information disclosure).
     this.#emitError(new Error(`handler_error: ${method}: ${err instanceof Error ? err.message : String(err)}`));
     this.#fail(id, 'handler_error', 'handler failed');
@@ -295,11 +321,15 @@ export class RpcPeer extends EventEmitter {
   async #onRequest(id: number, method: string, params: unknown, wantStream: boolean): Promise<void> {
     const impl = this.#handlers.get(method);
     const spec = (RpcMethods as Record<string, (typeof RpcMethods)[RpcMethodName]>)[method];
-    if (!impl || !spec) return this.#fail(id, 'unknown_method', `unknown method: ${method}`);
+    if (!impl || !spec) {
+      this.#report(method, params, { error: 'unknown_method' });
+      return this.#fail(id, 'unknown_method', `unknown method: ${method}`);
+    }
 
     const parsedParams = spec.params.safeParse(params);
     if (!parsedParams.success) {
       const msg = parsedParams.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ');
+      this.#report(method, params, { error: 'invalid_params' });
       return this.#fail(id, 'invalid_params', msg);
     }
 
@@ -307,12 +337,13 @@ export class RpcPeer extends EventEmitter {
     try {
       out = impl(parsedParams.data);
     } catch (err) {
-      return this.#handlerFailed(id, method, err);
+      return this.#handlerFailed(id, method, params, err);
     }
 
     if (isAsyncIterable(out)) {
       if (!wantStream) {
         void Promise.resolve(out[Symbol.asyncIterator]().return?.()).catch(() => {});
+        this.#report(method, params, { error: 'stream_method' });
         return this.#fail(id, 'stream_method', `${method} is a stream; use openStream`);
       }
       const stream = this.#nextStream++;
@@ -321,6 +352,7 @@ export class RpcPeer extends EventEmitter {
       let resolve!: () => void;
       const promise = new Promise<typeof CANCELLED>((r) => { resolve = () => r(CANCELLED); });
       this.#cancels.set(stream, { promise, resolve });
+      this.#report(method, params, 'ok');
       this.#send({ kind: 'res', id, ok: true, result: { stream } });
       void this.#pump(stream, it);
       return;
@@ -330,16 +362,23 @@ export class RpcPeer extends EventEmitter {
     try {
       value = await out;
     } catch (err) {
-      return this.#handlerFailed(id, method, err);
+      return this.#handlerFailed(id, method, params, err);
     }
-    if (wantStream) return this.#fail(id, 'not_a_stream', `${method} is not a stream`);
+    if (wantStream) {
+      this.#report(method, params, { error: 'not_a_stream' });
+      return this.#fail(id, 'not_a_stream', `${method} is not a stream`);
+    }
     const parsedResult = spec.result.safeParse(value);
     if (!parsedResult.success) {
       // Server-side bug: surface locally, tell the peer without leaking details.
       this.#emitError(new Error(`invalid_result: ${method}: ${parsedResult.error.message}`));
+      this.#report(method, params, { error: 'invalid_result' });
       return this.#fail(id, 'invalid_result', `handler for ${method} returned an invalid result`);
     }
-    this.#send({ kind: 'res', id, ok: true, result: parsedResult.data });
+    const okFrame: Frame = { kind: 'res', id, ok: true, result: parsedResult.data };
+    const tooLarge = textEnc.encode(JSON.stringify(okFrame)).byteLength > MAX_RPC_FRAME_BYTES;
+    this.#report(method, params, tooLarge ? { error: 'result_too_large' } : 'ok');
+    this.#send(okFrame);
   }
 
   async #pump(stream: number, it: AsyncIterator<unknown>): Promise<void> {

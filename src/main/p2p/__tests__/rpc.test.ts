@@ -206,4 +206,36 @@ describe('RpcPeer', () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(sideEffects).toEqual([1]);
   });
+
+  describe('onCall audit hook', () => {
+    test('reports ok, invalid_params, unknown_method, result_too_large and handler_error', async () => {
+      const { client, server } = setup();
+      const calls: Array<[string, unknown, unknown]> = [];
+      server.setOnCall((m, p, o) => calls.push([m, p, o]));
+      server.handle('device.info', async () => info);
+      server.handle('projects.get', async () => { throw new Error('boom'); });
+      server.handle('fs.read', async () => ({ content: 'x'.repeat(1 << 20), encoding: 'utf8' as const }));
+      await client.call('device.info', {});
+      await expect(client.call('projects.get', { id: -1 } as never)).rejects.toMatchObject({ code: 'invalid_params' });
+      await expect(client.call('projects.get', { id: 1 })).rejects.toMatchObject({ code: 'handler_error' });
+      await expect(client.call('fs.read', { projectId: 1, path: 'a' })).rejects.toMatchObject({ code: 'result_too_large' });
+      await expect(client.call('shells.kill', { projectId: 1, shellIndex: 0 })).rejects.toMatchObject({ code: 'unknown_method' });
+      expect(calls.map(([m, , o]) => [m, o])).toEqual([
+        ['device.info', 'ok'],
+        ['projects.get', { error: 'invalid_params' }],
+        ['projects.get', { error: 'handler_error' }],
+        ['fs.read', { error: 'result_too_large' }],
+        ['shells.kill', { error: 'unknown_method' }],
+      ]);
+      expect(calls[1]![1]).toEqual({ id: -1 });
+    });
+
+    test('a throwing hook does not break the channel', async () => {
+      const [ta, tb] = pairedTransports();
+      const client = new RpcPeer(ta.asTransport());
+      const server = new RpcPeer(tb.asTransport(), { onCall: () => { throw new Error('x'); } });
+      server.handle('device.info', async () => info);
+      await expect(client.call('device.info', {})).resolves.toEqual(info);
+    });
+  });
 });
