@@ -1475,7 +1475,14 @@ function eventPayload<E extends IpcEventName>(name: E): IpcEvents[E] {
   return {} as IpcEvents[E];
 }
 
+let broadcastEvent: SendEvent | null = null;
+
+/** Broadcast for in-process callers (p2p hub) that bypass the ipcMain wrapper's CHANNEL_EMITS. No-op before registerIpc. */
+export function emitAliveShellsChanged(): void { broadcastEvent?.('alive-shells:changed', {}); }
+export function emitProjectsChanged(): void { broadcastEvent?.('projects:changed', { kind: 'updated' }); }
+
 export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: SendEvent, windowHooks?: WindowHooks): void {
+  broadcastEvent = sendEvent;
   if (services.ptyManager) {
     services.ptyManager.on('data', (ev: IpcEvents['pty:data']) => sendEvent('pty:data', ev));
     services.ptyManager.on('exit', (ev: IpcEvents['pty:exit']) => {

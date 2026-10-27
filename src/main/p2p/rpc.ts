@@ -285,6 +285,8 @@ export class RpcPeer extends EventEmitter {
   }
 
   #handlerFailed(id: number, method: string, err: unknown): void {
+    // A handler that throws RpcError chose its code and message for the peer (e.g. path_outside_project).
+    if (err instanceof RpcError) return this.#fail(id, err.code, err.message);
     // Detail stays local; the peer gets a generic message (no information disclosure).
     this.#emitError(new Error(`handler_error: ${method}: ${err instanceof Error ? err.message : String(err)}`));
     this.#fail(id, 'handler_error', 'handler failed');
