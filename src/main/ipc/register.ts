@@ -195,7 +195,8 @@ function peekFile({ abs, root, projectId }: PeekCandidate, maxLines: number): Ip
   }
 }
 
-const handlers: { [C in IpcChannelName]: Handler<C> } = {
+/** Exported so the P2P hub can call the same implementations directly (no ipcMain round-trip). */
+export const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'dialogs:pick-directory': async (_s, _req, event) => {
     if (process.env.METAIDE_TEST_MODE === '1') {
       return { path: null };
