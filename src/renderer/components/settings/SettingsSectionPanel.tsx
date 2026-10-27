@@ -7,6 +7,7 @@ import { EnvironmentPanel } from '@renderer/components/settings/EnvironmentPanel
 import { GeneralPanel } from '@renderer/components/settings/GeneralPanel';
 import { LaunchPanel } from '@renderer/components/settings/LaunchPanel';
 import { MetaprojectPanel } from '@renderer/components/settings/MetaprojectPanel';
+import { P2PSettings } from '@renderer/components/settings/P2PSettings';
 import { RootsPanel } from '@renderer/components/settings/RootsPanel';
 import type { SettingsSection } from '@renderer/components/settings/nav-icons';
 import type { EnvDrafts } from '@renderer/hooks/useEnvDrafts';
@@ -34,6 +35,7 @@ export function SettingsSectionPanel({
       {section === 'launch' && <LaunchPanel />}
       {section === 'env' && <EnvironmentPanel drafts={envDrafts} />}
       {section === 'metaproject' && <MetaprojectPanel />}
+      {section === 'p2p' && <P2PSettings />}
     </div>
   );
 }

@@ -149,6 +149,7 @@ describe('buildPaletteCommands', () => {
       'Settings: Launch commands',
       'Settings: Environment',
       'Settings: Metaproject',
+      'Settings: P2P',
     ]);
     for (const [i, row] of rows.entries()) {
       await row.run();

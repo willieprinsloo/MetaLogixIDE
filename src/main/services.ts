@@ -23,6 +23,7 @@ import type { AgentStatusTracker } from './agent-status/state-tracker';
 import { createDropStaging, defaultDropDir, type DropStaging } from './drops/staging';
 import { createClipboardImage, type ClipboardImage } from './drops/clipboard-image';
 import { listMiseTasks, type MiseLister } from './domain/mise-cli';
+import type { P2PServices } from './p2p/types';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -53,6 +54,8 @@ export interface Services {
   listMise: MiseLister;
   homeDir: string;
   migrationsDir: string;
+  /** Attached by `startP2P`; absent until the P2P lifecycle has started. */
+  p2p?: P2PServices;
 }
 
 /**

@@ -7,6 +7,7 @@ import type { TerminalFontWeight } from './terminal-font-weight';
 import type { ProjectDefaultAgentRequest, ScopedCliProfile } from './project-default-agent';
 import type { AppFileDragPayload, ClipboardImageResult, ResolveAppFileResult, StageFileRequest, StageResult } from './terminal-drop-contract';
 import type { TasksDiscovery } from './tasks-contract';
+import type { FleetEntry, P2PSettings, P2PSettingsView } from './p2p-contract';
 
 /**
  * Single-character git status codes we bubble up. The two-position
@@ -383,6 +384,19 @@ export interface IpcContract {
     };
   };
 
+  /* ─── P2P remote access (fleet) ─── */
+  'p2p:fleet-list':         { request: undefined; response: { fleet: FleetEntry[] } };
+  'p2p:settings-get':       { request: undefined; response: P2PSettingsView };
+  /** Accepts any subset of the editable settings (not the fingerprint). */
+  'p2p:settings-set':       { request: Partial<P2PSettings>; response: { ok: true } };
+  'p2p:pair-generate-code': { request: undefined; response: { code: string; expiresAt: number } };
+  /** Viewer side: redeems a code shown on the host. Failure carries the reason (e.g. code_consumed, attempts_exceeded, handshake_failed). */
+  'p2p:pair-redeem-code':   { request: { code: string }; response: { ok: true } | { ok: false; error: string } };
+  'p2p:revoke-device':      { request: { deviceId: string }; response: { ok: true } };
+  /** Renderer to main dispatch of an RPC method on a paired device; stream methods return `{ streamId }` and push `p2p:rpc-event`. */
+  'p2p:rpc-call':           { request: { deviceId: string; method: string; params?: unknown }; response: { result: unknown } };
+  'p2p:rpc-close-stream':   { request: { streamId: number }; response: { ok: true } };
+
   // health / dev
   'app:ping':    { request: undefined; response: 'pong' };
 }
@@ -418,5 +432,7 @@ export interface IpcEvents {
    * add the file's parent as a new root if nothing matches.
    */
   'app:open-file-request':  { path: string };
+  /** Pushed stream events from a remote device (`closed` when the stream or its connection ends). */
+  'p2p:rpc-event':          { deviceId: string; streamId: number; data?: unknown; closed?: true; reason?: string };
 }
 export type IpcEventName = keyof IpcEvents;

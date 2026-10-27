@@ -8,6 +8,7 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { api } from '@renderer/api';
 import { FROST_ATTR } from '@renderer/frosted-chrome-contract';
+import { openRemoteShell, type RemoteShellHandle } from '@renderer/p2p/remoteShellBridge';
 import { useShellStream } from '@renderer/hooks/useShellStream';
 import { useTerminalDrop } from '@renderer/hooks/useTerminalDrop';
 import { useTerminalPaste } from '@renderer/hooks/useTerminalPaste';
@@ -81,7 +82,7 @@ const ZOOM_STEP: Readonly<Record<Exclude<TerminalTabAction, 'find'>, 'in' | 'out
 };
 
 export function ShellTab({
-  projectId, shellIndex, onOpenFile, onOpenLaunchSettings, primary = false, popout = false,
+  projectId, shellIndex, onOpenFile, onOpenLaunchSettings, primary = false, popout = false, source = 'local',
 }: {
   projectId: number;
   shellIndex: number;
@@ -93,7 +94,14 @@ export function ShellTab({
   primary?: boolean;
   /** Popout window: hover previews of another project's file cannot be opened from here. */
   popout?: boolean;
+  /** `'local'` (default) drives the local PTY over IPC; `{ kind: 'remote' }` attaches to a shell on a paired device over P2P. */
+  source?: 'local' | { kind: 'remote'; deviceId: string };
 }) {
+  const remoteDeviceId = typeof source === 'object' ? source.deviceId : null;
+  const remoteRef = useRef<RemoteShellHandle | null>(null);
+  // Live-data / exit handlers shared by the local pty stream and the remote bridge (assigned below).
+  const streamHandlersRef = useRef<{ data: (d: string) => void; exit: (code: number | null) => void }>({ data: () => {}, exit: () => {} });
+  const [reconnecting, setReconnecting] = useState(false);
   const platform = useShortcutPlatform();
   const platformRef = useRef(platform);
   platformRef.current = platform;
@@ -156,11 +164,11 @@ export function ShellTab({
   }, [projectId, shellIndex]);
   // Fetch profiles when Starting overlay becomes visible so user can pick one.
   useEffect(() => {
-    if (!showStarting) return;
+    if (!showStarting || remoteDeviceId) return;
     api.invoke('shells:cli-profiles-list', { projectId })
       .then(({ profiles }) => setStartingProfiles(profiles.map((p: { name: string; scope: 'project' | 'global' }) => ({ name: p.name, scope: p.scope }))))
       .catch(() => {});
-  }, [showStarting, projectId]);
+  }, [showStarting, projectId, remoteDeviceId]);
   const onOpenFileRef = useRef<typeof onOpenFile>(onOpenFile);
   onOpenFileRef.current = onOpenFile;
   const [hoverHold] = useState(() => createHoverHold(() => setHover(null)));
@@ -259,7 +267,8 @@ export function ShellTab({
         })));
       },
     };
-    const linkProviderDisposable: IDisposable = term.registerLinkProvider(pathLinkProvider);
+    // Remote shells have no local peek/preview (paths belong to the host's filesystem).
+    const linkProviderDisposable: IDisposable = remoteDeviceId ? { dispose() {} } : term.registerLinkProvider(pathLinkProvider);
 
     // NOTE ordering: we deliberately do NOT term.open() yet. Opening the
     // terminal against a container whose fonts haven't loaded or whose CSS
@@ -268,7 +277,17 @@ export function ShellTab({
     // the "text wraps into a vertical column on the right" bug. We wait
     // until document.fonts is ready AND the host has real pixel dimensions
     // BEFORE opening the terminal.
-    term.onData((data) => { void api.invoke('shells:write', { projectId, shellIndex, data }); });
+    const remote = remoteDeviceId ? openRemoteShell(remoteDeviceId, projectId, shellIndex) : null;
+    remoteRef.current = remote;
+    if (remote) {
+      remote.onData((d) => { setReconnecting(false); streamHandlersRef.current.data(d); });
+      remote.onExit((code) => streamHandlersRef.current.exit(code));
+      remote.onClose((reason) => { if (reason === 'reconnecting') setReconnecting(true); });
+    }
+    term.onData((data) => {
+      if (remote) remote.send(data);
+      else void api.invoke('shells:write', { projectId, shellIndex, data });
+    });
     termRef.current = term;
     let opened = false;
     let disposed = false;
@@ -288,7 +307,8 @@ export function ShellTab({
         return { width: host.clientWidth, height: host.clientHeight };
       },
       resize: (cols, rows) => {
-        void api.invoke('shells:resize', { projectId, shellIndex, cols, rows });
+        if (remote) remote.resize(cols, rows);
+        else void api.invoke('shells:resize', { projectId, shellIndex, cols, rows });
       },
     });
     geometrySyncRef.current = synchronizeGeometry;
@@ -308,7 +328,8 @@ export function ShellTab({
     snapshotReady.current = false;
     pendingLive.current = '';
     let cachedSnapshot: string | null = null;
-    const snapshotPromise = api.invoke('shells:snapshot', { projectId, shellIndex })
+    // Remote: the hub replays scrollback as the first stream events, so there is no snapshot to fetch.
+    const snapshotPromise = (remote ? Promise.resolve({ output: '' }) : api.invoke('shells:snapshot', { projectId, shellIndex }))
       .then(({ output }) => { cachedSnapshot = output; })
       .catch(() => { cachedSnapshot = ''; });
 
@@ -432,6 +453,8 @@ export function ShellTab({
       copyHost?.removeEventListener('copy', onCopy);
       linkProviderDisposable.dispose();
       focusReg.unregister();
+      remote?.close();
+      if (remoteRef.current === remote) remoteRef.current = null;
       term.dispose();
       if (termRef.current === term) termRef.current = null;
       if (fontUpdaterRef.current === fontUpdater) fontUpdaterRef.current = null;
@@ -440,7 +463,7 @@ export function ShellTab({
     };
     // Font metric changes must not recreate the terminal. Dedicated effects below
     // apply font size, weight and family updates to the live instance instead.
-  }, [projectId, shellIndex, pasteFromText, hoverHold]);
+  }, [projectId, shellIndex, remoteDeviceId, pasteFromText, hoverHold]);
 
   const findNext = useCallback((q: string) => {
     if (!q || !searchRef.current) return;
@@ -489,10 +512,8 @@ export function ShellTab({
     return () => el.removeEventListener('keydown', onKey);
   }, [fontSize, setFontSize, platform]);
 
-  useShellStream(
-    projectId,
-    shellIndex,
-    (data) => {
+  streamHandlersRef.current = {
+    data: (data) => {
       // Any new data means we're alive again — clear stale overlays.
       shellExitedRef.current = false;
       if (exitInfo) setExitInfo(null);
@@ -505,11 +526,17 @@ export function ShellTab({
       if (snapshotReady.current) termRef.current?.write(data);
       else pendingLive.current += data;
     },
-    (code) => {
+    exit: (code) => {
       shellExitedRef.current = true;
       termRef.current?.write('\r\n[shell exited]\r\n');
       setExitInfo({ code });
     },
+  };
+  useShellStream(
+    remoteDeviceId ? null : projectId,
+    shellIndex,
+    (d) => streamHandlersRef.current.data(d),
+    (c) => streamHandlersRef.current.exit(c),
   );
 
   // After an exit we always restart with the "first" launch parameters —
@@ -610,7 +637,7 @@ export function ShellTab({
       {/* `isolate` keeps xterm's internal z-indexes (e.g. its link layer) inside the
           host, so the exit overlay, drop hint and search bar always paint above it. */}
       <div ref={termHostRef} className="w-full h-full isolate" />
-      {sessionCorrupted && (
+      {!remoteDeviceId && sessionCorrupted && (
         <div className="absolute inset-x-0 top-3 flex items-center justify-center pointer-events-none">
           <div className="pointer-events-auto flex items-center gap-3 bg-[--danger]/15 border border-[--danger]/40 rounded-md shadow-xl px-3 py-2 text-xs text-[--text] max-w-[720px]">
             <span className="font-medium text-[--danger]">Claude session corrupted</span>
@@ -642,7 +669,7 @@ export function ShellTab({
           </div>
         </div>
       )}
-      {showStarting && !exitInfo && (
+      {!remoteDeviceId && showStarting && !exitInfo && (
         <div className="absolute inset-x-0 bottom-3 flex flex-col items-center gap-1 pointer-events-none">
           {startingProfileOpen && startingProfiles.length > 0 && (
             <div className="pointer-events-auto bg-[--panel-strong] border border-[--border] rounded-md shadow-xl text-xs text-[--text] overflow-hidden min-w-[200px]">
@@ -690,13 +717,21 @@ export function ShellTab({
           </div>
         </div>
       )}
+      {reconnecting && (
+        <div data-testid="shell-reconnecting" className="absolute inset-x-0 bottom-3 flex items-center justify-center pointer-events-none">
+          <div className="flex items-center gap-2 bg-[--panel-strong] border border-[--border] rounded-md shadow-xl px-3 py-2 text-xs text-[--text]">
+            <span className="mp-spinner" aria-hidden />
+            <span className="font-medium">Reconnecting…</span>
+          </div>
+        </div>
+      )}
       {exitInfo && (
         <div className="absolute inset-x-0 bottom-3 flex items-center justify-center pointer-events-none">
           <div className="pointer-events-auto flex items-center gap-3 bg-[--panel-strong] border border-[--border] rounded-md shadow-xl px-3 py-2 text-xs text-[--text]">
             <span className="font-medium">
               Shell exited{typeof exitInfo.code === 'number' ? ` (code ${exitInfo.code})` : ''}
             </span>
-            <button
+            {!remoteDeviceId && <button
               onClick={relaunch}
               disabled={relaunching}
               className="pressable bg-[color:var(--accent)] text-[--accent-text] rounded-md px-2.5 py-1 font-medium hover:brightness-110 disabled:opacity-50 flex items-center gap-1.5"
@@ -704,8 +739,8 @@ export function ShellTab({
             >
               {relaunching && <span className="mp-spinner" aria-hidden />}
               <span>{relaunching ? 'Re-launching…' : 'Re-launch'}</span>
-            </button>
-            {onOpenLaunchSettings && (
+            </button>}
+            {!remoteDeviceId && onOpenLaunchSettings && (
               <button
                 onClick={onOpenLaunchSettings}
                 className="pressable border border-[--border] rounded-md px-2.5 py-1 font-medium hover:bg-[--surface-hover] flex items-center gap-1.5"

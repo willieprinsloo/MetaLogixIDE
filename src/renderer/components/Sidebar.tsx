@@ -17,6 +17,7 @@ import { SIDEBAR_COPY, SIDEBAR_TESTIDS, SECTION_PERSIST_KEYS } from '@renderer/s
 import { SIDEBAR_WIDTH } from '@renderer/sidebar-width';
 import { SidebarHeader } from './SidebarHeader';
 import { ICON_SIZE, ICON_STROKE } from './icon-size';
+import { MachinesSection, type OpenPaneRequest } from './MachinesSection';
 
 interface Props {
   selectedProjectId: number | null;
@@ -24,10 +25,12 @@ interface Props {
   onNewProject?: () => void;
   /** Opens the environment variables editor for a project (context menu). */
   onEditEnv: (p: Project) => void;
+  /** Opens a pane in the main area (used for projects on paired machines). */
+  onOpenPane?: (req: OpenPaneRequest) => void;
   width?: number;
 }
 
-export function Sidebar({ selectedProjectId, onSelect, onNewProject, onEditEnv, width }: Props) {
+export function Sidebar({ selectedProjectId, onSelect, onNewProject, onEditEnv, onOpenPane, width }: Props) {
   const { roots, refresh: refreshRoots } = useRoots();
   const { projects, refresh: refreshProjects } = useProjects();
   const { recents } = useRecents(10);
@@ -96,6 +99,8 @@ export function Sidebar({ selectedProjectId, onSelect, onNewProject, onEditEnv, 
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7">
+        <MachinesSection onOpenPane={onOpenPane} />
+
         {inUse.length > 0 && (
           <Section title="In use" testId="section-in-use" accent dotState={overallClaudeState}>
             {inUse.map((p) => (

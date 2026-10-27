@@ -51,6 +51,11 @@ export default defineConfig({
   preload:  {
     build: {
       rollupOptions: {
+        input: {
+          index: resolve('src/preload/index.ts'),
+          // Hidden P2P WebRTC worker window's narrow bridge (see src/main/p2p/worker).
+          p2pWorker: resolve('src/main/p2p/worker/p2pWorker.preload.ts'),
+        },
         output: { format: 'cjs', entryFileNames: '[name].js' },
       },
     },
@@ -58,7 +63,13 @@ export default defineConfig({
   renderer: {
     root: 'src/renderer',
     build: {
-      rollupOptions: { input: resolve('src/renderer/index.html') },
+      rollupOptions: {
+        input: {
+          index: resolve('src/renderer/index.html'),
+          // Hidden P2P WebRTC worker page (src/main/p2p/worker).
+          p2pWorker: resolve('src/renderer/p2pWorker.html'),
+        },
+      },
       // Emit fonts and CLI icons as files: the CSP does not permit data URLs.
       assetsInlineLimit: (file: string) => (/\.(woff2?|ttf)$/.test(file) || /\/cli-icons\/.*\.svg$/.test(file) ? false : undefined),
     },

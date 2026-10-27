@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence } from 'motion/react';
 import { Sidebar } from './components/Sidebar';
+import { RemoteProjectPane } from './components/RemoteProjectPane';
+import type { OpenPaneRequest } from './components/MachinesSection';
 import { ProjectSwitcher } from './components/ProjectSwitcher';
 import { StatusBar } from './components/StatusBar';
 import { TitleGroup } from './components/TitleGroup';
@@ -148,6 +150,9 @@ function MainApp() {
     return () => { cancelled = true; };
   }, []);
   const [selected, setSelected] = useState<Project | null>(null);
+  // A project on a paired machine, shown in place of the local main body until a local project is picked.
+  const [remotePane, setRemotePane] = useState<OpenPaneRequest | null>(null);
+  const openPane = useCallback((req: OpenPaneRequest) => setRemotePane(req), []);
   // -1 never matches a real project id, so this reads idle when nothing is selected.
   const selectedClaudeState = useProjectAgentState(selected?.id ?? -1);
   // Keep a live ref of `selected` so the shortcut handler (bound once in a
@@ -525,6 +530,7 @@ function MainApp() {
   const lastPickIdRef = useRef<number | null>(null);
   async function pick(p: Project) {
     lastPickIdRef.current = p.id;
+    setRemotePane(null);
     terminalFocus.cancelRequest();
     try {
       const { project } = await api.invoke('projects:open', { id: p.id });
@@ -781,8 +787,9 @@ function MainApp() {
                   replacing it, so the user never has to swap views just to pick
                   a different project. */}
               <Sidebar
-                selectedProjectId={selected?.id ?? null}
+                selectedProjectId={remotePane ? null : selected?.id ?? null}
                 onSelect={pick}
+                onOpenPane={openPane}
                 onNewProject={() => setNewProjectOpen(true)}
                 onEditEnv={editEnv}
                 width={sidebarWidth}
@@ -795,7 +802,7 @@ function MainApp() {
                 max={SIDEBAR_WIDTH.max}
                 side="left"
               />
-              {activeView === 'chat' && (
+              {activeView === 'chat' && !remotePane && (
                 <>
                   <div
                     data-view="chat"
@@ -819,7 +826,7 @@ function MainApp() {
                   />
                 </>
               )}
-              {activeView === 'git' && (
+              {activeView === 'git' && !remotePane && (
                 <>
                   <div
                     data-view="git"
@@ -838,7 +845,7 @@ function MainApp() {
                   />
                 </>
               )}
-              {activeView === 'tasks' && (
+              {activeView === 'tasks' && !remotePane && (
                 <>
                   <div
                     data-view="tasks"
@@ -864,7 +871,7 @@ function MainApp() {
           )}
         </AnimatePresence>
         <main className="flex-1 flex flex-col min-h-0 min-w-0 bg-[--surface-sheet] rounded-[14px] mr-2">
-          <div className="flex items-center gap-1 px-2 pt-1.5 pb-1 text-xs shrink-0" data-testid={DIFF_TESTIDS.tabBar}>
+          <div className={`items-center gap-1 px-2 pt-1.5 pb-1 text-xs shrink-0 ${remotePane ? 'hidden' : 'flex'}`} data-testid={DIFF_TESTIDS.tabBar}>
             <TabButton active={mainTab === 'shell'} onClick={() => setMainTab('shell')}>Shell</TabButton>
             <TabButton active={mainTab === 'files'} onClick={() => setMainTab('files')}>Files</TabButton>
             <TabButton
@@ -958,7 +965,7 @@ function MainApp() {
             </div>
           </div>
           <div className="flex-1 relative min-h-0 flex flex-col">
-            {selected && mainTab === 'shell' && (
+            {!remotePane && selected && mainTab === 'shell' && (
               <ShellTabsBar
                 projectId={selected.id}
                 shells={stripShells(projectShells, rightShellIndex, split.hiddenShells)}
@@ -979,12 +986,14 @@ function MainApp() {
                 onToggleSplit={() => (rightShellIndex != null ? split.closeSplit() : void openSplit())}
               />
             )}
-            {selected ? mainBody(selected) : <EmptyState />}
+            {remotePane
+              ? <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId} projectName={remotePane.projectName} onClose={() => setRemotePane(null)} />
+              : selected ? mainBody(selected) : <EmptyState />}
           </div>
         </main>
       </div>
 
-      <StatusBar project={selected} aliveCount={aliveCount} />
+      <StatusBar project={remotePane ? null : selected} aliveCount={aliveCount} />
       <ProjectSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} onPick={pick} />
       <Settings
         open={settingsOpen}

@@ -147,6 +147,8 @@
     }
   },
   "dependencies": {
+    "@noble/ciphers": "^2.4.0",
+    "@noble/curves": "^2.4.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-search": "^0.15.0",
     "@xterm/addon-serialize": "^0.13.0",
@@ -168,11 +170,15 @@
     "node-pty": "^1.0.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
-    "socket.io-client": "^4.8.3"
+    "socket.io-client": "^4.8.3",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
     "@playwright/test": "^1.47.0",
+    "@roamhq/wrtc": "^0.10.0",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
     "@types/better-sqlite3": "^7.6.0",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^20.0.0",
@@ -190,6 +196,7 @@
     "eslint": "^9.0.0",
     "eslint-plugin-react": "^7.35.0",
     "eslint-plugin-react-hooks": "^5.2.0",
+    "jsdom": "^25.0.1",
     "postcss": "^8.4.0",
     "prettier": "^3.3.0",
     "tailwindcss": "^3.4.0",
