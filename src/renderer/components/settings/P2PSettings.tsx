@@ -26,6 +26,7 @@ function PairModal({ onClose }: { onClose: () => void }) {
   const [pair, setPair] = useState<{ code: string; expiresAt: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -75,8 +76,27 @@ function PairModal({ onClose }: { onClose: () => void }) {
         {pair && (
           <>
             <div className="text-xs text-[--text-muted]">Your pair code</div>
-            <div data-testid="p2p-pair-code" className="select-text rounded-lg bg-[--surface-field] px-4 py-3 text-center font-mono text-lg tracking-widest">
-              {pair.code}
+            <div className="flex items-stretch gap-2">
+              <div data-testid="p2p-pair-code" className="flex-1 select-text rounded-lg bg-[--surface-field] px-4 py-3 text-center font-mono text-lg tracking-widest">
+                {pair.code}
+              </div>
+              <button
+                type="button"
+                data-testid="p2p-pair-copy"
+                aria-label="Copy pair code"
+                className={`${BUTTON_CLASS} shrink-0`}
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(pair.code);
+                    setCopied(true);
+                    window.setTimeout(() => setCopied(false), 1500);
+                  } catch {
+                    setError('Could not copy to clipboard. Select the code manually.');
+                  }
+                }}
+              >
+                {copied ? 'Copied' : 'Copy'}
+              </button>
             </div>
             <div className="text-xs text-[--text-muted]" data-testid="p2p-pair-expiry">
               {remaining > 0 ? `Expires in ${formatRemaining(remaining)}` : 'Code expired. Close and generate a new one.'}
