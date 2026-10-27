@@ -15,9 +15,11 @@ import {
 export type McStatus = 'connecting' | 'connected' | 'disconnected';
 
 export interface TlsOpts {
-  /** Dev only: accept self-signed relay certificates. */
+  /** Opt in to TLS. mrsignald serves plaintext by default; set this only against a TLS-fronted relay. */
+  enabled?: boolean;
+  /** Dev only: accept self-signed relay certificates. Implies `enabled`. */
   tlsInsecure?: boolean;
-  /** Dev/local only: speak plaintext TCP (mrsignald serves plaintext unless started with -tls-cert/-tls-key). */
+  /** Back-compat alias. Default behavior is now plaintext; this flag is a no-op kept so existing call sites type-check. */
   plaintext?: boolean;
 }
 
@@ -141,11 +143,13 @@ export class McClient extends EventEmitter {
 
     const { url, port, role } = this.opts;
     const t = this.opts.tls;
+    // mrsignald is plaintext by default; TLS is opt-in via `enabled` or `tlsInsecure`.
+    const useTls = !!(t?.enabled || t?.tlsInsecure);
     const sock: Duplex = this.opts.createSocket
       ? this.opts.createSocket(url, port)
-      : t?.plaintext
-        ? net.connect({ host: url, port })
-        : tls.connect({ host: url, port, servername: url, rejectUnauthorized: !t?.tlsInsecure });
+      : useTls
+        ? tls.connect({ host: url, port, servername: url, rejectUnauthorized: !t?.tlsInsecure })
+        : net.connect({ host: url, port });
     this.#sock = sock;
 
     const decoder = createFrameDecoder({ maxFrameBytes: MAX_FRAME_BYTES });
@@ -180,8 +184,8 @@ export class McClient extends EventEmitter {
       // Viewers (and hosts reclaiming a code) get no reply to wait for. A host that needs a mint waits for assign_code.
       if (role === 'viewer' || id) becomeReady();
     };
-    // Default tls socket fires secureConnect; plaintext and injected sockets fire connect.
-    const evt = !this.opts.createSocket && !t?.plaintext ? 'secureConnect' : 'connect';
+    // TLS socket fires 'secureConnect'; plaintext/injected sockets fire 'connect'.
+    const evt = !this.opts.createSocket && useTls ? 'secureConnect' : 'connect';
     sock.once(evt, sendHello);
 
     sock.on('data', (chunk: Buffer) => {

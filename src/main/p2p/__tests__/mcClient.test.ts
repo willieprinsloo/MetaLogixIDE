@@ -5,7 +5,7 @@ import { Secret } from '../../../shared/signaling-wire';
 import type { Envelope } from '../../../shared/signaling-wire';
 import { mockRelay, waitFor } from './_mockRelay';
 
-// Plain TCP in tests; production default is tls.connect.
+// Plain TCP in tests; production default is also plaintext (mrsignald serves plaintext).
 const mk = (port: number, extra: Partial<McClientOpts> = {}) =>
   new McClient({
     url: '127.0.0.1',
