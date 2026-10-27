@@ -76,3 +76,12 @@ export const Frame = z.union([
 export type Frame = z.infer<typeof Frame>;
 
 export type FleetEntry = { deviceId: string; name: string; online: boolean; lastSeenAt: number | null };
+
+/** Stored in `p2p_settings` (singleton row, id = 1). */
+export interface P2PSettings {
+  relayUrl: string;
+  relayPort: number;
+  deviceName: string;
+  serveEnabled: boolean;
+}
+export type P2PSettingsView = P2PSettings & { deviceFingerprint: string };

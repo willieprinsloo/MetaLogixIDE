@@ -103,6 +103,11 @@ export class PairingSession {
     else this.#fail();
   }
 
+  /** Releases the in-flight slot without spending budget (the peer went away before any handshake bytes). */
+  abort(): void {
+    this.#inFlight = false;
+  }
+
   /** Test/diagnostic view. */
   get attempts(): number {
     return this.#attempts;

@@ -20,6 +20,7 @@ import { defaultShellArgv, defaultShellBin } from '@main/domain/shell';
 import { chooseEvictee } from '@main/pty/keep-alive';
 import { applyClaudePermissionMode } from '@main/domain/claude-permission-mode';
 import { isClaudePermissionMode } from '@shared/claude-permission-mode';
+import type { P2PApi } from '../p2p/types';
 import { isFontSettingKey, parseFontFamilyPreference } from '@shared/font-settings';
 import { TERMINAL_FONT_SIZE_KEY, parseTerminalFontSize } from '@shared/terminal-font-size';
 import {
@@ -196,6 +197,11 @@ function peekFile({ abs, root, projectId }: PeekCandidate, maxLines: number): Ip
 }
 
 /** Exported so the P2P hub can call the same implementations directly (no ipcMain round-trip). */
+function p2pApi(s: Services): P2PApi {
+  if (!s.p2p) throw new Error('p2p_not_started');
+  return s.p2p.api;
+}
+
 export const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'dialogs:pick-directory': async (_s, _req, event) => {
     if (process.env.METAIDE_TEST_MODE === '1') {
@@ -1312,6 +1318,16 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     walk(root);
     return { matches, filesScanned, truncated };
   },
+
+  /* ─── P2P (fleet) — implementations live behind Services.p2p.api, attached by startP2P ─── */
+  'p2p:fleet-list':         async (s) => ({ fleet: s.p2p ? await s.p2p.api.fleetList() : [] }),
+  'p2p:settings-get':       async (s) => p2pApi(s).getSettings(),
+  'p2p:settings-set':       async (s, patch) => { await p2pApi(s).setSettings(patch); return { ok: true } as const; },
+  'p2p:pair-generate-code': async (s) => p2pApi(s).generatePairCode(),
+  'p2p:pair-redeem-code':   async (s, { code }) => p2pApi(s).redeemPairCode(code),
+  'p2p:revoke-device':      async (s, { deviceId }) => { await p2pApi(s).revokeDevice(deviceId); return { ok: true } as const; },
+  'p2p:rpc-call':           async (s, { deviceId, method, params }) => ({ result: await p2pApi(s).rpcCall(deviceId, method, params ?? {}) }),
+  'p2p:rpc-close-stream':   async (s, { streamId }) => { p2pApi(s).rpcCloseStream(streamId); return { ok: true } as const; },
 
   /* ─── Prompt library ─── */
   'prompts:list':   async (s, { projectId }) => ({ prompts: s.prompts.list(projectId) }),

@@ -63,6 +63,13 @@ export class PeerEngine {
   }
 
   #adopt(dc: RTCDataChannel): void {
+    // The Noise framing assumes an ordered, reliable channel. WebRTC's default (omit maxRetransmits and
+    // maxPacketLifeTime) is exactly that; never pass `null` for them, WebIDL coerces it to 0 (unreliable).
+    if (dc.ordered === false || (dc.maxRetransmits ?? null) !== null || (dc.maxPacketLifeTime ?? null) !== null) {
+      this.o.emit({ type: 'error', message: 'data channel must be ordered and reliable' });
+      try { dc.close(); } catch { /* already closed */ }
+      return;
+    }
     this.#dc = dc;
     dc.binaryType = 'arraybuffer';
     dc.onopen = () => this.o.emit({ type: 'open' });

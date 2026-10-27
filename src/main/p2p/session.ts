@@ -61,6 +61,8 @@ export interface SignalingSessionOptions {
   sessionTokenSkewMs?: number;
   /** Host only: advertised on Register. Monitors is always empty for the IDE (no displays). */
   capabilities?: HostCapabilities;
+  /** Viewer only: marks the request as an enrollment (pairing) session so the host runs the code-bound handshake. */
+  pairing?: boolean;
 }
 
 export interface HostCapabilities {
@@ -85,6 +87,7 @@ export class SignalingSession {
   readonly #nowMs: () => number;
   readonly #skewMs: number;
   readonly #capabilities: HostCapabilities;
+  readonly #pairing: boolean;
   #state: SessionState = 'idle';
   #sessionId = '';
 
@@ -94,6 +97,7 @@ export class SignalingSession {
     this.#code = opts.code;
     this.#nowMs = opts.nowMs ?? (() => Date.now());
     this.#skewMs = opts.sessionTokenSkewMs ?? DEFAULT_SKEW_MS;
+    this.#pairing = opts.pairing === true;
     this.#capabilities = opts.capabilities ?? { agentVersion: '', hostFingerprint: '', monitors: [] };
   }
 
@@ -108,7 +112,7 @@ export class SignalingSession {
       return [{ kind: 'send', env: { type: SignalingTypes.Register, data: { ...this.#capabilities } } }];
     }
     this.#state = 'requesting';
-    return [{ kind: 'send', env: { type: SignalingTypes.SessionRequest, data: { code: this.#code } } }];
+    return [{ kind: 'send', env: { type: SignalingTypes.SessionRequest, data: this.#pairing ? { code: this.#code, pairing: true } : { code: this.#code } } }];
   }
 
   onInbound(env: Envelope): Effect[] {
