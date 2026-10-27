@@ -74,7 +74,10 @@ export function loadOrCreateDeviceKey(file: string = DEFAULT_KEY_PATH): DeviceKe
   }
 }
 
-export type KnownDevice = { pub: string; name: string; addedAt: number };
+/** `code` is the peer's mrsignald host connect code: the address a viewer puts in `session_request`. */
+export type KnownDevice = { pub: string; name: string; addedAt: number; code?: string };
+
+export const CONNECT_CODE_RE = /^[A-Za-z0-9-]{4,32}$/;
 
 export function loadKnownDevices(file: string = DEFAULT_KNOWN_DEVICES_PATH): KnownDevice[] {
   if (!fs.existsSync(file)) return [];
@@ -85,7 +88,8 @@ export function loadKnownDevices(file: string = DEFAULT_KNOWN_DEVICES_PATH): Kno
     if (typeof x.pub !== 'string' || !/^[0-9a-f]{64}$/.test(x.pub) || typeof x.name !== 'string' || typeof x.addedAt !== 'number') {
       throw new Error('known_devices.json contains an invalid entry');
     }
-    return { pub: canonicalPubHex(x.pub), name: x.name, addedAt: x.addedAt };
+    const code = typeof x.code === 'string' && CONNECT_CODE_RE.test(x.code) ? x.code : undefined;
+    return { pub: canonicalPubHex(x.pub), name: x.name, addedAt: x.addedAt, ...(code ? { code } : {}) };
   });
 }
 
@@ -106,10 +110,12 @@ export function isTrustedDevice(pub: Uint8Array | string, file: string = DEFAULT
   return loadKnownDevices(file).some((d) => d.pub === want);
 }
 
-export function addKnownDevice(pub: Uint8Array | string, name: string, file: string = DEFAULT_KNOWN_DEVICES_PATH, now: number = Date.now()): void {
+export function addKnownDevice(pub: Uint8Array | string, name: string, file: string = DEFAULT_KNOWN_DEVICES_PATH, now: number = Date.now(), code?: string): void {
   const canon = canonicalPubHex(pub);
+  const prev = loadKnownDevices(file).find((d) => d.pub === canon);
   const list = loadKnownDevices(file).filter((d) => d.pub !== canon);
-  list.push({ pub: canon, name, addedAt: now });
+  const keep = code && CONNECT_CODE_RE.test(code) ? code : prev?.code;
+  list.push({ pub: canon, name, addedAt: now, ...(keep ? { code: keep } : {}) });
   saveKnownDevices(list, file);
 }
 

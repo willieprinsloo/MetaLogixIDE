@@ -1,12 +1,15 @@
 import { EventEmitter } from 'node:events';
 import tls from 'node:tls';
+import net from 'node:net';
 import type { Duplex } from 'node:stream';
 import {
   createFrameDecoder,
   encodeFrame,
+  redactHello,
   Secret,
-  TypeMetaIDE,
+  SignalingTypes,
   type Envelope,
+  type Hello,
 } from '../../shared/signaling-wire';
 
 export type McStatus = 'connecting' | 'connected' | 'disconnected';
@@ -14,21 +17,40 @@ export type McStatus = 'connecting' | 'connected' | 'disconnected';
 export interface TlsOpts {
   /** Dev only: accept self-signed relay certificates. */
   tlsInsecure?: boolean;
+  /** Dev/local only: speak plaintext TCP (mrsignald serves plaintext unless started with -tls-cert/-tls-key). */
+  plaintext?: boolean;
+}
+
+export interface McIdentity {
+  code: string;
+  secret: Secret<string>;
 }
 
 export interface McClientOpts {
   url: string;
   port: number;
-  token: Secret<string>;
+  /** `host` serves projects/shells (persistent); `viewer` requests one session (anonymous, per-connection). */
+  role: 'host' | 'viewer';
+  /** Host only: previously minted (code, secret). Absent -> the relay mints a pair and sends `assign_code`. */
+  identity?: McIdentity;
+  /** Legacy/admin relay token. Empty for metaIDE. */
+  token?: Secret<string>;
+  /**
+   * Host only: called with a freshly minted (or replaced) identity. The client is not `connected` until this
+   * resolves (the pair must be persisted before the host does anything else). A rejection is fatal for this attempt.
+   */
+  onAssignCode?: (id: { code: string; secret: string }) => void | Promise<void>;
   tls?: TlsOpts;
-  /** Test seam: supply the transport (default: tls.connect). Must emit 'connect'/'secureConnect' semantics via the returned stream. */
+  /** Test seam: supply the transport (default: tls.connect). Must emit 'connect' once usable. */
   createSocket?: (host: string, port: number) => Duplex;
   /** Test seam: backoff tuning. Defaults are the ruled values (500 ms -> 30 s cap, +-25% jitter). */
   backoff?: { startMs?: number; maxMs?: number };
-  /** Uptime after auth_ok before backoff resets (default 10 000). */
+  /** Uptime after `connected` before backoff resets (default 10 000). */
   stableMs?: number;
-  /** Max time to wait for auth_ok once the socket is created (default 30 000). */
-  handshakeTimeoutMs?: number;
+  /** Max time from socket creation until the Hello exchange is complete (default 10 000). */
+  helloTimeoutMs?: number;
+  /** Viewer connections are single-use: a dropped socket orphans the relay session, so do not reconnect. Default true for host, false for viewer. */
+  reconnect?: boolean;
 }
 
 const MAX_FRAME_BYTES = 1 << 20;
@@ -36,12 +58,16 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 /**
- * Signaling client for MetaConnect's control stream.
+ * Signaling client for mrsignald (metaconnect `internal/mrserver/listener.go`).
  *
- * Wire: 4-byte BE length-prefixed JSON frames of `{type, data}`. On connect we
- * send `{type:'auth', data:{token}}` and wait for `{type:'auth_ok'}`
- * (metaconnect/internal/agent/agent.go). Signaling traffic is nested:
- * `{type:'metaide', data:<inner Envelope>}`.
+ * Wire: 4-byte BE length-prefixed JSON frames.
+ *  - Frame 1 (ours -> relay) is a bare Hello `{token, role, code?, secret?}`, NOT an Envelope.
+ *  - Every later frame, both directions, is a bare mrsignal Envelope `{type, data}`.
+ *  - A host without a usable (code, secret) is answered with `assign_code`. The relay never replies to a
+ *    rejected Hello; it just closes the socket (so there is no auth_err, and rejection looks like a drop).
+ *
+ * Events: `status`, `envelope` (bare inner envelope; `assign_code` is consumed here, never re-emitted, since it
+ * carries a secret), `identity` ({code} after a mint/replace), `hello` (redacted Hello, safe to audit), `error`.
  */
 export class McClient extends EventEmitter {
   #sock: Duplex | null = null;
@@ -49,7 +75,6 @@ export class McClient extends EventEmitter {
   #status: McStatus = 'disconnected';
   #attempt = 0;
   #timer: NodeJS.Timeout | null = null;
-  #fatal = false;
   #stableTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly opts: McClientOpts) {
@@ -63,7 +88,6 @@ export class McClient extends EventEmitter {
   async start(): Promise<void> {
     if (!this.#stopped) return;
     this.#stopped = false;
-    this.#fatal = false;
     this.#connect();
   }
 
@@ -84,9 +108,10 @@ export class McClient extends EventEmitter {
     });
   }
 
+  /** Sends a bare mrsignal Envelope. */
   send(env: Envelope): void {
     if (this.#status !== 'connected' || !this.#sock) throw new Error('mc_not_connected');
-    this.#write({ type: TypeMetaIDE, data: env });
+    this.#write(env);
   }
 
   #clearStable(): void {
@@ -104,8 +129,8 @@ export class McClient extends EventEmitter {
     if (this.listenerCount('error') > 0) this.emit('error', e);
   }
 
-  #write(env: { type: string; data?: unknown }): void {
-    this.#sock?.write(encodeFrame(enc.encode(JSON.stringify(env))));
+  #write(obj: unknown): void {
+    this.#sock?.write(encodeFrame(enc.encode(JSON.stringify(obj))));
   }
 
   #connect(): void {
@@ -114,29 +139,50 @@ export class McClient extends EventEmitter {
     this.#status = 'disconnected';
     this.#setStatus('connecting');
 
-    const { url, port } = this.opts;
+    const { url, port, role } = this.opts;
+    const t = this.opts.tls;
     const sock: Duplex = this.opts.createSocket
       ? this.opts.createSocket(url, port)
-      : tls.connect({
-          host: url,
-          port,
-          servername: url,
-          rejectUnauthorized: !this.opts.tls?.tlsInsecure,
-        });
+      : t?.plaintext
+        ? net.connect({ host: url, port })
+        : tls.connect({ host: url, port, servername: url, rejectUnauthorized: !t?.tlsInsecure });
     this.#sock = sock;
 
     const decoder = createFrameDecoder({ maxFrameBytes: MAX_FRAME_BYTES });
-    let authed = false;
+    let ready = false;
     let closed = false;
-    const hsTimer = setTimeout(() => {
-      this.#emitError(new Error('handshake_timeout'));
+    const helloTimer = setTimeout(() => {
+      this.#emitError(new Error('hello_timeout'));
       sock.destroy();
-    }, this.opts.handshakeTimeoutMs ?? 30_000);
+    }, this.opts.helloTimeoutMs ?? 10_000);
 
-    const sendAuth = () => this.#write({ type: 'auth', data: { token: this.opts.token.reveal() } });
-    // Default tls socket fires secureConnect; injected (plain) sockets fire connect.
-    const evt = this.opts.createSocket ? 'connect' : 'secureConnect';
-    sock.once(evt, sendAuth);
+    const becomeReady = () => {
+      if (ready || closed) return;
+      ready = true;
+      clearTimeout(helloTimer);
+      // Only a link that stays up resets backoff; connect-then-drop flaps keep growing it.
+      this.#stableTimer = setTimeout(() => {
+        this.#stableTimer = null;
+        this.#attempt = 0;
+      }, this.opts.stableMs ?? 10_000);
+      this.#setStatus('connected');
+    };
+
+    const sendHello = () => {
+      const id = this.opts.identity;
+      const hello: Hello = {
+        token: this.opts.token?.reveal() ?? '',
+        role,
+        ...(role === 'host' && id ? { code: id.code, secret: id.secret.reveal() } : {}),
+      };
+      this.#write(hello);
+      this.emit('hello', redactHello(hello));
+      // Viewers (and hosts reclaiming a code) get no reply to wait for. A host that needs a mint waits for assign_code.
+      if (role === 'viewer' || id) becomeReady();
+    };
+    // Default tls socket fires secureConnect; plaintext and injected sockets fire connect.
+    const evt = !this.opts.createSocket && !t?.plaintext ? 'secureConnect' : 'connect';
+    sock.once(evt, sendHello);
 
     sock.on('data', (chunk: Buffer) => {
       let frames: Uint8Array[];
@@ -148,38 +194,22 @@ export class McClient extends EventEmitter {
         return;
       }
       for (const f of frames) {
-        let outer: { type?: string; data?: unknown };
+        let env: Envelope;
         try {
-          outer = JSON.parse(dec.decode(f));
+          env = JSON.parse(dec.decode(f)) as Envelope;
         } catch {
           this.#emitError(new Error('bad_frame_json'));
           continue;
         }
-        if (!authed) {
-          if (outer.type === 'auth_ok') {
-            authed = true;
-            clearTimeout(hsTimer);
-            // Only a link that stays up resets backoff; auth-then-drop flaps keep growing it.
-            this.#stableTimer = setTimeout(() => {
-              this.#stableTimer = null;
-              this.#attempt = 0;
-            }, this.opts.stableMs ?? 10_000);
-            this.#setStatus('connected');
-          } else if (outer.type === 'auth_err') {
-            const reason = (outer.data as { reason?: string } | undefined)?.reason ?? 'unknown';
-            this.#fatal = true; // mirrors the Go agent: auth rejection is not retried
-            this.#emitError(new Error(`auth_rejected: ${reason}`));
-            sock.destroy();
-            return;
-          }
+        if (!env || typeof env.type !== 'string') {
+          this.#emitError(new Error('bad_envelope'));
           continue;
         }
-        if (outer.type === TypeMetaIDE) {
-          const inner = outer.data as Envelope | undefined;
-          if (inner && typeof inner.type === 'string') this.emit('envelope', inner);
-          else this.#emitError(new Error('bad_inner_envelope'));
+        if (env.type === SignalingTypes.AssignCode) {
+          void this.#onAssign(env, sock, becomeReady);
+          continue;
         }
-        // Other relay control types (heartbeat, config, ...) are not ours.
+        if (ready) this.emit('envelope', env);
       }
     });
 
@@ -187,12 +217,29 @@ export class McClient extends EventEmitter {
     sock.on('close', () => {
       if (closed) return;
       closed = true;
-      clearTimeout(hsTimer);
+      clearTimeout(helloTimer);
       this.#clearStable();
       if (this.#sock === sock) this.#sock = null;
       this.#setStatus('disconnected');
-      if (!this.#stopped && !this.#fatal) this.#scheduleReconnect();
+      if (!this.#stopped && (this.opts.reconnect ?? role === 'host')) this.#scheduleReconnect();
     });
+  }
+
+  async #onAssign(env: Envelope, sock: Duplex, becomeReady: () => void): Promise<void> {
+    const d = (env.data ?? {}) as { code?: unknown; secret?: unknown };
+    if (this.opts.role !== 'host' || typeof d.code !== 'string' || !d.code || typeof d.secret !== 'string' || !d.secret) {
+      this.#emitError(new Error('bad_assign_code'));
+      return;
+    }
+    try {
+      await this.opts.onAssignCode?.({ code: d.code, secret: d.secret });
+    } catch (e) {
+      this.#emitError(e instanceof Error ? e : new Error('persist_identity_failed'));
+      sock.destroy();
+      return;
+    }
+    this.emit('identity', { code: d.code });
+    becomeReady();
   }
 
   #scheduleReconnect(): void {

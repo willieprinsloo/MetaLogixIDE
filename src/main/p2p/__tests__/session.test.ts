@@ -16,15 +16,32 @@ const invite = (session = 's1', token: { iat: number; exp: number } = goodToken)
 });
 
 describe('SignalingSession host', () => {
-  test('Register carries HostCapabilities', () => {
+  test('Register matches mrsignald RegisterHost: nested snake_case capabilities, no code/secret without an identity', () => {
     const s = new SignalingSession({
       role: 'host',
       nowMs: () => NOW,
       capabilities: { agentVersion: '1.2.3', hostFingerprint: 'a b c d e f', monitors: [] },
     });
     expect(s.start()).toEqual([
-      { kind: 'send', env: { type: SignalingTypes.Register, data: { agentVersion: '1.2.3', hostFingerprint: 'a b c d e f', monitors: [] } } },
+      { kind: 'send', env: { type: SignalingTypes.Register, data: { capabilities: { agent_version: '1.2.3', host_fingerprint: 'a b c d e f', monitors: [] } } } },
     ]);
+  });
+
+  test('Register echoes the persisted code+secret when an identity is supplied', () => {
+    const s = new SignalingSession({
+      role: 'host',
+      nowMs: () => NOW,
+      identity: { code: '123456789', secret: 'sek' },
+      capabilities: { agentVersion: '1', hostFingerprint: 'f', monitors: [] },
+    });
+    expect(s.start()).toEqual([
+      { kind: 'send', env: { type: SignalingTypes.Register, data: { capabilities: { agent_version: '1', host_fingerprint: 'f', monitors: [] }, code: '123456789', secret: 'sek' } } },
+    ]);
+  });
+
+  test('viewer session_request carries only the target code', () => {
+    const s = new SignalingSession({ role: 'viewer', code: '123456789', nowMs: () => NOW });
+    expect(s.start()).toEqual([{ kind: 'send', env: { type: SignalingTypes.SessionRequest, data: { code: '123456789' } } }]);
   });
 
   test('happy path through media_connected', () => {

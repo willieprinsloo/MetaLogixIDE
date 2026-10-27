@@ -33,6 +33,17 @@ export function enrollmentPrologue(code: string): Uint8Array {
 }
 
 /**
+ * Noise prologue for a connect-code pairing handshake: SHA-256("metaide-pair-v1" 0x00 code 0x00 nonce).
+ * The nonce is the relay-issued session id (both peers receive the same one in invite/granted), so a recorded
+ * handshake cannot be replayed against a different session and a relay that swaps in a different host's code
+ * produces a prologue mismatch. NOTE: the connect code is also the relay's address for the host, so the relay
+ * itself knows it; this binds code+session, it is not a secret shared out-of-band from the relay.
+ */
+export function pairingPrologue(connectCode: string, nonce: string): Uint8Array {
+  return new Uint8Array(createHash('sha256').update('metaide-pair-v1\0').update(normalizeEnrollmentCode(connectCode)).update('\0').update(nonce).digest());
+}
+
+/**
  * Format + TTL check only. Matching the code against the one the host issued is
  * the caller's job (compare with a constant-time equality on the normalised string).
  */

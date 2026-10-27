@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { ENROLLMENT_TTL_MS, enrollmentPrologue, generateEnrollmentCode, normalizeEnrollmentCode } from './pairing';
+import { ENROLLMENT_TTL_MS, enrollmentPrologue, generateEnrollmentCode, normalizeEnrollmentCode, pairingPrologue } from './pairing';
 
 export type PairingError = 'no_active_code' | 'code_expired' | 'code_consumed' | 'attempts_exceeded' | 'wrong_code' | 'busy';
 
@@ -45,9 +45,12 @@ export class PairingSession {
     this.#now = opts.now ?? (() => Date.now());
   }
 
-  /** Issues a fresh code, replacing (and resetting the state of) any previous one. */
-  generate(): { code: string; expiresAt: number } {
-    const g = generateEnrollmentCode(this.#now());
+  /**
+   * Opens a pairing window, replacing (and resetting the state of) any previous one. With `connectCode` (the
+   * host's mrsignald code, the normal path) the window is bound to that code; with none, a legacy Diceware code is minted.
+   */
+  generate(connectCode?: string): { code: string; expiresAt: number } {
+    const g = connectCode ? { code: connectCode.trim() } : generateEnrollmentCode(this.#now());
     this.#code = normalizeEnrollmentCode(g.code);
     this.#digest = sha(this.#code);
     this.#expiresAt = this.#now() + ENROLLMENT_TTL_MS;
@@ -86,13 +89,16 @@ export class PairingSession {
     return { ok: true };
   }
 
-  /** Noise path: reserves the single in-flight slot and returns the prologue bytes to handshake with. */
-  begin(): { ok: true; prologue: Uint8Array } | { ok: false; error: PairingError } {
+  /**
+   * Noise path: reserves the single in-flight slot and returns the prologue bytes to handshake with.
+   * With `nonce` (the relay session id) the prologue is SHA-256(code, nonce); without, the legacy code-only prologue.
+   */
+  begin(nonce?: string): { ok: true; prologue: Uint8Array } | { ok: false; error: PairingError } {
     const st = this.#state();
     if (st) return { ok: false, error: st };
     if (this.#inFlight) return { ok: false, error: 'busy' };
     this.#inFlight = true;
-    return { ok: true, prologue: enrollmentPrologue(this.#code!) };
+    return { ok: true, prologue: nonce === undefined ? enrollmentPrologue(this.#code!) : pairingPrologue(this.#code!, nonce) };
   }
 
   /** Reports the handshake outcome for the slot reserved by `begin()`. */

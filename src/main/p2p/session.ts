@@ -61,8 +61,8 @@ export interface SignalingSessionOptions {
   sessionTokenSkewMs?: number;
   /** Host only: advertised on Register. Monitors is always empty for the IDE (no displays). */
   capabilities?: HostCapabilities;
-  /** Viewer only: marks the request as an enrollment (pairing) session so the host runs the code-bound handshake. */
-  pairing?: boolean;
+  /** Host only: the persisted (code, secret) pair, echoed in `register` (mrsignald `RegisterHost.code/secret`). */
+  identity?: { code: string; secret: string };
 }
 
 export interface HostCapabilities {
@@ -87,7 +87,7 @@ export class SignalingSession {
   readonly #nowMs: () => number;
   readonly #skewMs: number;
   readonly #capabilities: HostCapabilities;
-  readonly #pairing: boolean;
+  readonly #identity: { code: string; secret: string } | undefined;
   #state: SessionState = 'idle';
   #sessionId = '';
 
@@ -97,7 +97,7 @@ export class SignalingSession {
     this.#code = opts.code;
     this.#nowMs = opts.nowMs ?? (() => Date.now());
     this.#skewMs = opts.sessionTokenSkewMs ?? DEFAULT_SKEW_MS;
-    this.#pairing = opts.pairing === true;
+    this.#identity = opts.identity;
     this.#capabilities = opts.capabilities ?? { agentVersion: '', hostFingerprint: '', monitors: [] };
   }
 
@@ -109,10 +109,21 @@ export class SignalingSession {
     if (this.#state !== 'idle') return [];
     if (this.#role === 'host') {
       this.#state = 'registered';
-      return [{ kind: 'send', env: { type: SignalingTypes.Register, data: { ...this.#capabilities } } }];
+      // mrsignald `RegisterHost`: {capabilities: {agent_version, host_fingerprint, monitors}, code?, secret?} (snake_case).
+      const c = this.#capabilities;
+      return [{
+        kind: 'send',
+        env: {
+          type: SignalingTypes.Register,
+          data: {
+            capabilities: { agent_version: c.agentVersion, host_fingerprint: c.hostFingerprint, monitors: c.monitors },
+            ...(this.#identity ? { code: this.#identity.code, secret: this.#identity.secret } : {}),
+          },
+        },
+      }];
     }
     this.#state = 'requesting';
-    return [{ kind: 'send', env: { type: SignalingTypes.SessionRequest, data: this.#pairing ? { code: this.#code, pairing: true } : { code: this.#code } } }];
+    return [{ kind: 'send', env: { type: SignalingTypes.SessionRequest, data: { code: this.#code } } }];
   }
 
   onInbound(env: Envelope): Effect[] {
