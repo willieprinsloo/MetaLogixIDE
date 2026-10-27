@@ -224,8 +224,8 @@ class P2PRuntime {
       | { relay_url: string | null; relay_port: number | null; device_name: string | null; serve_enabled: number }
       | undefined;
     return {
-      relayUrl: r?.relay_url ?? 'signal.metalogix.solutions',
-      relayPort: r?.relay_port ?? 7000,
+      relayUrl: r?.relay_url ?? 'remote.metalogix.solutions',
+      relayPort: r?.relay_port ?? 7100,
       deviceName: r?.device_name || hostname(),
       serveEnabled: (r?.serve_enabled ?? 1) === 1,
     };

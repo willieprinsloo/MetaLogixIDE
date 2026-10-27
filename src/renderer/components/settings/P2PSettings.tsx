@@ -10,8 +10,8 @@ const INPUT_CLASS =
 const BUTTON_CLASS =
   'rounded-lg border border-[--border] bg-[--panel] px-3 py-1.5 text-sm text-[--text] hover:bg-[--panel-strong] focus-visible:ring-2 focus-visible:ring-[--accent]';
 
-const DEFAULT_RELAY_URL = 'signal.metalogix.solutions';
-const DEFAULT_RELAY_PORT = '7000';
+const DEFAULT_RELAY_URL = 'remote.metalogix.solutions';
+const DEFAULT_RELAY_PORT = '7100';
 
 function truncateId(id: string): string {
   return id.length > 12 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id;
