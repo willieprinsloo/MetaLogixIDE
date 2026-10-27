@@ -9,7 +9,7 @@ import { EFF_SHORT_WORDLIST } from './_wordlist';
 // Enrollment codes
 // ---------------------------------------------------------------------------
 
-export const ENROLLMENT_TTL_MS = 5 * 60_000;
+export const ENROLLMENT_TTL_MS = 60 * 60_000;
 const CODE_WORDS = 6;
 
 export function generateEnrollmentCode(now: number = Date.now()): { code: string; expiresAt: number } {

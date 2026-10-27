@@ -16,11 +16,11 @@ function newKey() {
 }
 
 describe('enrollment code', () => {
-  it('is 6 unique-set words from the list with a 5 minute TTL', () => {
+  it('is 6 unique-set words from the list with a 1 hour TTL', () => {
     const t0 = 1_000_000;
     const { code, expiresAt } = generateEnrollmentCode(t0);
-    expect(expiresAt - t0).toBe(5 * 60_000);
-    expect(ENROLLMENT_TTL_MS).toBe(300_000);
+    expect(expiresAt - t0).toBe(60 * 60_000);
+    expect(ENROLLMENT_TTL_MS).toBe(3_600_000);
     const words = code.split(' ');
     expect(words).toHaveLength(6);
     for (const w of words) expect(EFF_SHORT_WORDLIST).toContain(w);
