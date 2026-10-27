@@ -16,6 +16,17 @@ const invite = (session = 's1', token: { iat: number; exp: number } = goodToken)
 });
 
 describe('SignalingSession host', () => {
+  test('Register carries HostCapabilities', () => {
+    const s = new SignalingSession({
+      role: 'host',
+      nowMs: () => NOW,
+      capabilities: { agentVersion: '1.2.3', hostFingerprint: 'a b c d e f', monitors: [] },
+    });
+    expect(s.start()).toEqual([
+      { kind: 'send', env: { type: SignalingTypes.Register, data: { agentVersion: '1.2.3', hostFingerprint: 'a b c d e f', monitors: [] } } },
+    ]);
+  });
+
   test('happy path through media_connected', () => {
     const s = new SignalingSession({ role: 'host', nowMs: () => NOW });
     expect(s.state).toBe('idle');

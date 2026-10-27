@@ -59,6 +59,14 @@ export interface SignalingSessionOptions {
   code?: string;
   nowMs?: () => number;
   sessionTokenSkewMs?: number;
+  /** Host only: advertised on Register. Monitors is always empty for the IDE (no displays). */
+  capabilities?: HostCapabilities;
+}
+
+export interface HostCapabilities {
+  agentVersion: string;
+  hostFingerprint: string;
+  monitors: unknown[];
 }
 
 const DEFAULT_SKEW_MS = 5 * 60 * 1000;
@@ -76,6 +84,7 @@ export class SignalingSession {
   readonly #code: string | undefined;
   readonly #nowMs: () => number;
   readonly #skewMs: number;
+  readonly #capabilities: HostCapabilities;
   #state: SessionState = 'idle';
   #sessionId = '';
 
@@ -85,6 +94,7 @@ export class SignalingSession {
     this.#code = opts.code;
     this.#nowMs = opts.nowMs ?? (() => Date.now());
     this.#skewMs = opts.sessionTokenSkewMs ?? DEFAULT_SKEW_MS;
+    this.#capabilities = opts.capabilities ?? { agentVersion: '', hostFingerprint: '', monitors: [] };
   }
 
   get state(): SessionState {
@@ -95,7 +105,7 @@ export class SignalingSession {
     if (this.#state !== 'idle') return [];
     if (this.#role === 'host') {
       this.#state = 'registered';
-      return [{ kind: 'send', env: { type: SignalingTypes.Register, data: {} } }];
+      return [{ kind: 'send', env: { type: SignalingTypes.Register, data: { ...this.#capabilities } } }];
     }
     this.#state = 'requesting';
     return [{ kind: 'send', env: { type: SignalingTypes.SessionRequest, data: { code: this.#code } } }];
