@@ -12,7 +12,7 @@ describe('runMigrations', () => {
   it('applies pending migrations and records version', () => {
     const db = openDb(join(dir, 'a.db'));
     const result = runMigrations(db, migrationsDir);
-    expect(result.applied).toEqual([1, 2]);
+    expect(result.applied).toEqual([1, 2, 3]);
     const versions = db.prepare('SELECT version FROM schema_version ORDER BY version').all();
     expect(versions).toEqual([{ version: 1 }, { version: 2 }]);
     db.close();
