@@ -196,12 +196,12 @@ function peekFile({ abs, root, projectId }: PeekCandidate, maxLines: number): Ip
   }
 }
 
-/** Exported so the P2P hub can call the same implementations directly (no ipcMain round-trip). */
 function p2pApi(s: Services): P2PApi {
   if (!s.p2p) throw new Error('p2p_not_started');
   return s.p2p.api;
 }
 
+/** Exported so the P2P hub can call the same implementations directly (no ipcMain round-trip). */
 export const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'dialogs:pick-directory': async (_s, _req, event) => {
     if (process.env.METAIDE_TEST_MODE === '1') {

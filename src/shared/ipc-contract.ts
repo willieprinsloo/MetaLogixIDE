@@ -433,6 +433,6 @@ export interface IpcEvents {
    */
   'app:open-file-request':  { path: string };
   /** Pushed stream events from a remote device (`closed` when the stream or its connection ends). */
-  'p2p:rpc-event':          { deviceId: string; streamId: number; data?: unknown; closed?: true };
+  'p2p:rpc-event':          { deviceId: string; streamId: number; data?: unknown; closed?: true; reason?: string };
 }
 export type IpcEventName = keyof IpcEvents;

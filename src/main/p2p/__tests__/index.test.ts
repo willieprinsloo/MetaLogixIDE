@@ -82,13 +82,13 @@ class FakeClient extends EventEmitter implements SignalingClient {
   send(env: Envelope) { this.relay.route(this, env); }
 }
 
-class TransportRegistry { byOffer = new Map<string, FakeTransport>(); n = 0; all: FakeTransport[] = []; }
+class TransportRegistry { onCreate?: (t: FakeTransport) => void; byOffer = new Map<string, FakeTransport>(); n = 0; all: FakeTransport[] = []; }
 
 class FakeTransport extends EventEmitter {
   peer: FakeTransport | null = null;
   closed = false;
   id = '';
-  constructor(readonly role: 'host' | 'viewer', readonly reg: TransportRegistry) { super(); reg.all.push(this); }
+  constructor(readonly role: 'host' | 'viewer', readonly reg: TransportRegistry) { super(); reg.all.push(this); reg.onCreate?.(this); }
   async openDataChannel() {}
   async createOffer() { this.id = String(++this.reg.n); this.reg.byOffer.set(this.id, this); return `offer:${this.id}`; }
   async createAnswer(sdp: string) {
@@ -338,6 +338,44 @@ describe('paired sessions', () => {
     // a fresh handshake from the revoked pub completes cryptographically but the host refuses to serve it
     await expect(viewer.p2p.api.rpcCall(idOf(host), 'device.info', {})).rejects.toThrow();
     expect(served()).toBe(before);
+  });
+
+  test('a rejected (non-reliable) data channel finishes the link as channel_not_reliable, not after 30 s', async () => {
+    const relay = new FakeRelay();
+    const reg = new TransportRegistry();
+    const host = makeNode(relay, reg, 'host');
+    const viewer = makeNode(relay, reg, 'viewer');
+    await host.p2p.start();
+    await viewer.p2p.start();
+    await viewer.p2p.api.setSettings({ serveEnabled: false });
+    await waitFor(() => relay.hosts.length >= 1);
+    const { code } = host.p2p.api.generatePairCode();
+    const started = Date.now();
+    // listeners are attached synchronously after creation, so a microtask-delayed emit lands mid-negotiation
+    reg.onCreate = (t) => { if (t.role === 'viewer') queueMicrotask(() => t.emit('error', new Error('data channel must be ordered and reliable'))); };
+    const p = viewer.p2p.api.redeemPairCode(code);
+    await expect(p).resolves.toEqual({ ok: false, error: 'channel_not_reliable' });
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  test('natural stream end is reported to the renderer as closed/remote_ended', async () => {
+    const { host, viewer } = await pairedFleet();
+    const pty = host.services.ptyManager;
+    vi.spyOn(pty, 'isAlive').mockReturnValue(true);
+    vi.spyOn(pty, 'getSnapshot').mockResolvedValue('snapshot');
+    const r = (await viewer.p2p.api.rpcCall(idOf(host), 'shells.attach', { projectId: 1, shellIndex: 0 })) as { streamId: number };
+    await waitFor(() => viewer.events.length >= 1); // snapshot replay
+    pty.emit('exit', { projectId: 1, shellIndex: 0, code: 0 });
+    await waitFor(() => viewer.events.length >= 3);
+    expect(viewer.events).toEqual([
+      expect.objectContaining({ streamId: r.streamId, data: { kind: 'out', bytes: 'snapshot' } }),
+      expect.objectContaining({ streamId: r.streamId, data: { kind: 'exit', code: 0 } }),
+      { deviceId: idOf(host), streamId: r.streamId, closed: true, reason: 'remote_ended' },
+    ]);
+    // the stream is gone: a later explicit close is a harmless no-op and nothing more is emitted
+    viewer.p2p.api.rpcCloseStream(r.streamId);
+    await new Promise((res) => setTimeout(res, 30));
+    expect(viewer.events).toHaveLength(3);
   });
 
   test('pendingMessages: a data frame delivered in the same burst as handshake message 3 is not dropped', async () => {

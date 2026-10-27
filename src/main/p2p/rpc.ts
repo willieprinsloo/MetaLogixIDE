@@ -57,6 +57,7 @@ interface ClientStream {
   onEvent(data: unknown): void;
   closed: boolean;
   stream?: number;
+  onClose?: () => void;
 }
 
 const textEnc = new TextEncoder();
@@ -133,8 +134,10 @@ export class RpcPeer extends EventEmitter {
     method: M,
     params: Params<M>,
     onEvent: (data: unknown) => void,
+    onClose?: () => void,
   ): { close(): void } {
-    const st: ClientStream = { onEvent, closed: false };
+    // onClose fires only when the REMOTE ends the stream (not on a local handle.close()).
+    const st: ClientStream = { onEvent, closed: false, onClose };
     const handle = {
       close: () => {
         if (st.closed) return;
@@ -290,6 +293,7 @@ export class RpcPeer extends EventEmitter {
         if (cs) {
           cs.closed = true;
           this.#clientStreams.delete(f.stream);
+          try { cs.onClose?.(); } catch (err) { this.#emitError(err instanceof Error ? err : new Error(String(err))); }
         }
         this.#cancelServerStream(f.stream);
         break;

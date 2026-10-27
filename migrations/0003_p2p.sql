@@ -2,7 +2,6 @@
 -- Trust itself lives in ~/.metaide/known_devices.json; `devices` mirrors it for fleet listing.
 CREATE TABLE devices (
   id           TEXT PRIMARY KEY,
-  machine_id   TEXT NOT NULL,
   name         TEXT NOT NULL,
   last_seen_at INTEGER,
   is_self      INTEGER NOT NULL DEFAULT 0

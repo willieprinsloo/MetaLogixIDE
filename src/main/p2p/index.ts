@@ -64,6 +64,8 @@ export const NEGOTIATION_TIMEOUT_MS = 30_000;
 const PAIR_EXCHANGE_TIMEOUT_MS = 5_000;
 const CONNECT_TIMEOUT_MS = 10_000;
 const DC_LABEL = 'metaide';
+/** Must match the message peerEngine emits when it rejects a data channel. */
+const CHANNEL_NOT_RELIABLE_MSG = 'data channel must be ordered and reliable';
 
 type EmitFn = <E extends 'p2p:rpc-event'>(channel: E, payload: IpcEvents[E]) => void;
 
@@ -225,19 +227,19 @@ class P2PRuntime {
   upsertSelf(name: string): void {
     this.services.db
       .prepare(
-        `INSERT INTO devices (id, machine_id, name, last_seen_at, is_self) VALUES (?, ?, ?, ?, 1)
+        `INSERT INTO devices (id, name, last_seen_at, is_self) VALUES (?, ?, ?, 1)
          ON CONFLICT(id) DO UPDATE SET name = excluded.name, is_self = 1`,
       )
-      .run(canonicalPubHex(this.deviceKey.pub), hostname(), name, Date.now());
+      .run(canonicalPubHex(this.deviceKey.pub), name, Date.now());
   }
 
   recordDevice(id: string, name: string): void {
     this.services.db
       .prepare(
-        `INSERT INTO devices (id, machine_id, name, last_seen_at, is_self) VALUES (?, ?, ?, ?, 0)
+        `INSERT INTO devices (id, name, last_seen_at, is_self) VALUES (?, ?, ?, 0)
          ON CONFLICT(id) DO UPDATE SET name = excluded.name, last_seen_at = excluded.last_seen_at`,
       )
-      .run(id, name, name, Date.now());
+      .run(id, name, Date.now());
   }
 
   touchDevice(id: string): void {
@@ -407,7 +409,11 @@ class P2PRuntime {
       if (link.handshakeStarted && !link.secure) return;
       this.finishLink(link, 'transport_closed');
     });
-    t.on('error', () => { /* connection state is reported via 'close' */ });
+    t.on('error', (e: Error) => {
+      // The engine rejects unordered/unreliable channels with this error; do not wait for the 30 s negotiation timeout.
+      if (e?.message === CHANNEL_NOT_RELIABLE_MSG) this.finishLink(link, 'channel_not_reliable');
+      // Other errors: connection state is reported via 'close'.
+    });
   }
 
   async hostOffer(link: Link): Promise<void> {
@@ -636,7 +642,12 @@ class P2PRuntime {
     const rpc = await this.ensureConn(id);
     if (method === 'shells.attach') {
       const streamId = ++this.#streamSeq;
-      const handle = rpc.openStream('shells.attach', params as never, (data) => this.opts.emit?.('p2p:rpc-event', { deviceId: id, streamId, data }));
+      const handle = rpc.openStream('shells.attach', params as never, (data) => this.opts.emit?.('p2p:rpc-event', { deviceId: id, streamId, data }),
+        () => {
+          // Remote ended the stream (handler finished, shell exited): tell the renderer once.
+          if (this.streams.delete(streamId)) this.opts.emit?.('p2p:rpc-event', { deviceId: id, streamId, closed: true, reason: 'remote_ended' });
+        },
+      );
       this.streams.set(streamId, { deviceId: id, handle });
       return { streamId };
     }

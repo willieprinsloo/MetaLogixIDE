@@ -207,6 +207,16 @@ describe('RpcPeer', () => {
     expect(sideEffects).toEqual([1]);
   });
 
+  test('openStream onClose fires when the remote ends the stream, not on local close', async () => {
+    const { client, server } = setup();
+    server.handle('shells.attach', () => (async function* () { yield 1; yield 2; })());
+    const got: unknown[] = [];
+    let closed = 0;
+    client.openStream('shells.attach', { projectId: 1, shellIndex: 0 }, (d) => got.push(d), () => closed++);
+    await waitFor(() => closed === 1);
+    expect(got).toEqual([1, 2]);
+  });
+
   describe('onCall audit hook', () => {
     test('reports ok, invalid_params, unknown_method, result_too_large and handler_error', async () => {
       const { client, server } = setup();
