@@ -1,8 +1,12 @@
-import { useEffect, useState } from 'react';
-import { api } from '@renderer/api';
+import { useMemo, useState } from 'react';
+import { rootHueVar } from '@renderer/root-hue';
 import { useFleet } from '@renderer/p2p/useFleet';
 import { useRemoteProjects } from '@renderer/p2p/useRemoteProjects';
+import { useRemoteRoots } from '@renderer/p2p/useRemoteRoots';
+import { useRemoteAliveShells } from '@renderer/p2p/useRemoteAliveShells';
 import type { FleetEntry } from '@shared/p2p-contract';
+import type { Project, Root } from '@shared/types';
+import { ICON_SIZE, ICON_STROKE } from './icon-size';
 
 /** What the sidebar hands to App when a remote project is clicked. */
 export interface OpenPaneRequest {
@@ -40,7 +44,6 @@ function MachineRow({ m, onOpenPane }: { m: FleetEntry; onOpenPane?: (r: OpenPan
           {!m.online && <span className="block text-[11px] text-[--text-muted]">{lastSeen(m.lastSeenAt)}</span>}
         </span>
       </button>
-      {/* No RPCs fire for a collapsed row: projects/shells are fetched only on expand. */}
       {expanded && <MachineExpanded m={m} onOpenPane={onOpenPane} />}
     </div>
   );
@@ -48,37 +51,211 @@ function MachineRow({ m, onOpenPane }: { m: FleetEntry; onOpenPane?: (r: OpenPan
 
 function MachineExpanded({ m, onOpenPane }: { m: FleetEntry; onOpenPane?: (r: OpenPaneRequest) => void }) {
   const { projects, loading, error } = useRemoteProjects(m.deviceId);
-  const [shells, setShells] = useState<number | null>(null);
-  useEffect(() => {
-    if (loading || error) return;
-    let cancelled = false;
-    setShells(null);
-    Promise.all(projects.map((p) =>
-      api.invoke('p2p:rpc-call', { deviceId: m.deviceId, method: 'shells.list', params: { projectId: p.id } })
-        .then((r) => (Array.isArray(r.result) ? r.result.length : 0), () => 0),
-    )).then((counts) => { if (!cancelled) setShells(counts.reduce((a, b) => a + b, 0)); });
-    return () => { cancelled = true; };
-  }, [m.deviceId, projects, loading, error]);
+  const { roots } = useRemoteRoots(m.deviceId);
+  const { aliveProjectIds, shellCount } = useRemoteAliveShells(m.deviceId);
+
+  const inUse = useMemo(() => projects.filter((p) => aliveProjectIds.has(p.id)), [projects, aliveProjectIds]);
+
+  // Recents: projects with a lastOpenedAt, newest first, excluding anything in In Use. Cap 6, same as local.
+  const recents = useMemo(() => {
+    const skip = new Set(inUse.map((p) => p.id));
+    return projects
+      .filter((p) => !skip.has(p.id) && p.lastOpenedAt)
+      .slice()
+      .sort((a, b) => (b.lastOpenedAt ?? '').localeCompare(a.lastOpenedAt ?? ''))
+      .slice(0, 6);
+  }, [projects, inUse]);
+
+  // Folders: group by rootId. If the host didn't return roots (older host),
+  // fall back to grouping by `dirname(path)`.
+  const grouped = useMemo(() => {
+    const byRoot = new Map<number, Project[]>();
+    for (const p of projects) {
+      const rid = p.rootId ?? -1;
+      if (!byRoot.has(rid)) byRoot.set(rid, []);
+      byRoot.get(rid)!.push(p);
+    }
+    return byRoot;
+  }, [projects]);
+
+  const open = (p: Project) => onOpenPane?.({
+    source: { kind: 'remote', deviceId: m.deviceId },
+    deviceName: m.name, projectId: p.id, projectName: p.name,
+  });
+
+  const summary = loading
+    ? 'Loading…'
+    : error
+      ? error
+      : `${projects.length} ${projects.length === 1 ? 'project' : 'projects'} · ${shellCount} live ${shellCount === 1 ? 'shell' : 'shells'}`;
+
   return (
-    <div className="pl-5">
-      {loading && <div className="text-[11px] text-[--text-muted]">Loading…</div>}
-      {error && <div className="text-[11px] text-[--danger]">{error}</div>}
-      {!loading && !error && shells !== null && (
-        <div className="text-[11px] text-[--text-muted]">
-          {projects.length} {projects.length === 1 ? 'project' : 'projects'} · {shells} live {shells === 1 ? 'shell' : 'shells'}
-        </div>
+    <div className="pl-5 space-y-3 pt-1">
+      <div className={`text-[11px] ${error ? 'text-[--danger]' : 'text-[--text-muted]'}`}>{summary}</div>
+
+      {inUse.length > 0 && (
+        <RemoteSection title="In use" testId={`machine-${m.deviceId}-in-use`}>
+          {inUse.map((p) => (
+            <RemoteProjectRow key={p.id} project={p} alive onClick={() => open(p)} />
+          ))}
+        </RemoteSection>
       )}
-      {projects.map((p) => (
-        <button
+
+      {recents.length > 0 && (
+        <RemoteSection title="Recents" testId={`machine-${m.deviceId}-recents`}>
+          {recents.map((p) => (
+            <RemoteProjectRow key={p.id} project={p} alive={aliveProjectIds.has(p.id)} onClick={() => open(p)} />
+          ))}
+        </RemoteSection>
+      )}
+
+      {!loading && !error && projects.length > 0 && (
+        <RemoteSection title="Projects" testId={`machine-${m.deviceId}-folders`} defaultCollapsed>
+          {roots.map((r) => (
+            <RemoteRootBlock
+              key={r.id}
+              root={r}
+              projects={grouped.get(r.id) ?? []}
+              aliveProjectIds={aliveProjectIds}
+              onOpen={open}
+            />
+          ))}
+          {/* Orphaned projects (no matching root — e.g. older host): render under one bucket. */}
+          {(grouped.get(-1) ?? []).length > 0 && (
+            <div className="pt-1">
+              {(grouped.get(-1) ?? []).map((p) => (
+                <RemoteProjectRow key={p.id} project={p} alive={aliveProjectIds.has(p.id)} onClick={() => open(p)} />
+              ))}
+            </div>
+          )}
+        </RemoteSection>
+      )}
+    </div>
+  );
+}
+
+/** Collapsible sub-section inside an expanded machine. Local state only — not persisted. */
+function RemoteSection({
+  title, testId, defaultCollapsed = false, children,
+}: {
+  title: string;
+  testId: string;
+  defaultCollapsed?: boolean;
+  children: React.ReactNode;
+}) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  return (
+    <div data-testid={testId}>
+      <button
+        onClick={() => setCollapsed((c) => !c)}
+        aria-expanded={!collapsed}
+        className="w-full flex items-center gap-2 text-left text-[10px] uppercase tracking-[0.06em] font-medium text-[--text-muted] hover:text-[--text] py-0.5"
+      >
+        <span className="flex-1">{title}</span>
+        <ChevronIcon collapsed={collapsed} />
+      </button>
+      {!collapsed && <div className="pt-0.5">{children}</div>}
+    </div>
+  );
+}
+
+function RemoteProjectRow({
+  project, alive, indent = 0, onClick,
+}: {
+  project: Project;
+  alive: boolean;
+  indent?: number;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={project.path}
+      data-testid="remote-project-row"
+      className="w-full h-[28px] flex items-center gap-2 text-[13px] text-[--text] hover:bg-[--panel-strong] rounded px-1.5"
+      style={{ paddingLeft: 6 + indent }}
+    >
+      <span
+        aria-hidden
+        className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
+          alive ? 'bg-green-500' : 'bg-[--surface-active]'
+        }`}
+      />
+      <span className="truncate flex-1 text-left">{project.name}</span>
+    </button>
+  );
+}
+
+function RemoteRootBlock({
+  root, projects, aliveProjectIds, onOpen,
+}: {
+  root: Root;
+  projects: Project[];
+  aliveProjectIds: Set<number>;
+  onOpen: (p: Project) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (projects.length === 0) return null;
+  const aliveInRoot = projects.filter((p) => aliveProjectIds.has(p.id)).length;
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="w-full text-left px-1.5 py-1 text-xs text-[--text-muted] hover:text-[--text] flex items-center gap-2"
+      >
+        <RootFolderGlyph color={rootHueVar(root.path)} />
+        <span className="truncate flex-1" title={root.path}>{rootFolderName(root.path)}</span>
+        <span className="text-[10px] opacity-70">
+          {aliveInRoot > 0 ? `${aliveInRoot}/${projects.length}` : projects.length}
+        </span>
+        <ChevronIcon collapsed={!open} />
+      </button>
+      {open && projects.map((p) => (
+        <RemoteProjectRow
           key={p.id}
-          onClick={() => onOpenPane?.({
-            source: { kind: 'remote', deviceId: m.deviceId },
-            deviceName: m.name, projectId: p.id, projectName: p.name,
-          })}
-          className="w-full text-left py-1 text-[13px] text-[--text] hover:bg-[--panel-strong] rounded truncate"
-        >{p.name}</button>
+          project={p}
+          alive={aliveProjectIds.has(p.id)}
+          indent={14}
+          onClick={() => onOpen(p)}
+        />
       ))}
     </div>
+  );
+}
+
+function rootFolderName(path: string): string {
+  const sep = path.includes('\\') && !path.includes('/') ? '\\' : '/';
+  const trimmed = path.length > 1 ? path.replace(/[\\/]+$/u, '') : path;
+  const last = trimmed.split(sep).pop();
+  return last && last.length > 0 ? last : trimmed;
+}
+
+function RootFolderGlyph({ color }: { color: string }) {
+  return (
+    <svg aria-hidden width={ICON_SIZE.sm} height={ICON_SIZE.sm} viewBox="0 0 24 24" fill={color} fillOpacity={0.25} stroke={color} strokeWidth="1.8" strokeLinejoin="round" className="shrink-0">
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+    </svg>
+  );
+}
+
+function ChevronIcon({ collapsed }: { collapsed: boolean }) {
+  return (
+    <svg
+      aria-hidden
+      width={ICON_SIZE.sm}
+      height={ICON_SIZE.sm}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={ICON_STROKE.outline}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="shrink-0 text-[--text-muted] transition-transform duration-150"
+      style={{ transform: collapsed ? 'rotate(-90deg)' : 'none' }}
+    >
+      <path d="M6 9l6 6 6-6" />
+    </svg>
   );
 }
 

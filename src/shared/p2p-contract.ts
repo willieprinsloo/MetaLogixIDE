@@ -12,6 +12,9 @@ export const DeviceInfo = z.object({
 /** Remote view of a project. Loose by design: mirrors the host's local Project row. */
 export const Project = z.object({ id: z.number().int().positive(), name: z.string(), path: z.string() }).passthrough();
 
+/** Remote view of a root (project parent directory). Mirrors the host's local Root row. */
+export const Root = z.object({ id: z.number().int().positive(), path: z.string() }).passthrough();
+
 export const ShellInfo = z
   .object({ projectId: z.number().int().positive(), shellIndex: z.number() })
   .passthrough();
@@ -26,7 +29,10 @@ export const RpcMethods = {
   'device.info': { params: z.object({}), result: DeviceInfo },
   'projects.list': { params: z.object({}), result: z.array(Project) },
   'projects.get': { params: z.object({ id: z.number().int().positive() }), result: Project },
+  'roots.list': { params: z.object({}), result: z.array(Root) },
   'shells.list': { params: z.object({ projectId: z.number().int().positive() }), result: z.array(ShellInfo) },
+  /** All alive shells across every project — one call for the "In use" section. */
+  'shells.alive': { params: z.object({}), result: z.array(ShellInfo) },
   'shells.attach': {
     params: z.object({ projectId: z.number().int().positive(), shellIndex: z.number() }),
     result: z.object({ stream: z.number() }),
