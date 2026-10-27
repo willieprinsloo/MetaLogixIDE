@@ -110,7 +110,7 @@ function MachineExpanded({ m, onOpenPane }: { m: FleetEntry; onOpenPane?: (r: Op
       )}
 
       {!loading && !error && projects.length > 0 && (
-        <RemoteSection title="Projects" testId={`machine-${m.deviceId}-folders`} defaultCollapsed>
+        <RemoteSection title="Projects" testId={`machine-${m.deviceId}-folders`}>
           {roots.map((r) => (
             <RemoteRootBlock
               key={r.id}
@@ -134,7 +134,8 @@ function MachineExpanded({ m, onOpenPane }: { m: FleetEntry; onOpenPane?: (r: Op
   );
 }
 
-/** Collapsible sub-section inside an expanded machine. Local state only — not persisted. */
+/** Collapsible sub-section inside an expanded machine. Local state only — not persisted.
+ * Styling mirrors the local Sidebar's Section header (11px, uppercase, 0.06em tracking). */
 function RemoteSection({
   title, testId, defaultCollapsed = false, children,
 }: {
@@ -149,12 +150,12 @@ function RemoteSection({
       <button
         onClick={() => setCollapsed((c) => !c)}
         aria-expanded={!collapsed}
-        className="w-full flex items-center gap-2 text-left text-[10px] uppercase tracking-[0.06em] font-medium text-[--text-muted] hover:text-[--text] py-0.5"
+        className="w-full h-[22px] mb-0.5 flex items-center gap-2 text-left text-[11px] uppercase tracking-[0.06em] font-medium text-[--text-muted] hover:text-[--text]"
       >
         <span className="flex-1">{title}</span>
         <ChevronIcon collapsed={collapsed} />
       </button>
-      {!collapsed && <div className="pt-0.5">{children}</div>}
+      {!collapsed && <div>{children}</div>}
     </div>
   );
 }

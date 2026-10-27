@@ -122,10 +122,24 @@ export class RpcPeer extends EventEmitter {
     if (this.#closed) return Promise.reject(new RpcError('closed', 'rpc peer closed'));
     const id = this.#nextReq++;
     return new Promise<Result<M>>((resolve, reject) => {
-      this.#pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
+      // Without a timeout, a wedged data channel leaves every call hanging
+      // forever — the symptom users see as "P2P stops responding". 30s is
+      // long enough for a normal fs.read, short enough that a dead channel
+      // surfaces promptly instead of appearing-but-doing-nothing.
+      const timer = setTimeout(() => {
+        if (this.#pending.delete(id)) {
+          reject(new RpcError('request_timeout', `${method} did not respond within 30s`));
+        }
+      }, 30_000);
+      (timer as { unref?: () => void }).unref?.();
+      this.#pending.set(id, {
+        resolve: (v: unknown) => { clearTimeout(timer); (resolve as (v: unknown) => void)(v); },
+        reject: (e: Error) => { clearTimeout(timer); reject(e); },
+      });
       try {
         this.#send({ kind: 'req', id, method, params });
       } catch (err) {
+        clearTimeout(timer);
         this.#pending.delete(id);
         reject(err as Error);
       }

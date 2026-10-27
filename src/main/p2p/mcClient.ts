@@ -151,6 +151,15 @@ export class McClient extends EventEmitter {
         ? tls.connect({ host: url, port, servername: url, rejectUnauthorized: !t?.tlsInsecure })
         : net.connect({ host: url, port });
     this.#sock = sock;
+    // TCP keepalive: without this, a NAT or Wi-Fi hop can silently drop the
+    // idle socket after a few minutes. The socket then looks "connected" to
+    // us (no 'end'/'error' fires) but every subsequent frame hangs — which
+    // is exactly the "every now and then P2P stops responding" symptom.
+    // 30s is well below typical NAT/stateful-firewall idle timeouts (2-5 min).
+    const underlying = (sock as unknown as { socket?: net.Socket }).socket ?? sock;
+    if (typeof (underlying as net.Socket).setKeepAlive === 'function') {
+      (underlying as net.Socket).setKeepAlive(true, 30_000);
+    }
 
     const decoder = createFrameDecoder({ maxFrameBytes: MAX_FRAME_BYTES });
     let ready = false;
