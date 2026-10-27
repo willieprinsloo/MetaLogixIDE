@@ -52,7 +52,7 @@ function MachineRow({ m, onOpenPane }: { m: FleetEntry; onOpenPane?: (r: OpenPan
 function MachineExpanded({ m, onOpenPane }: { m: FleetEntry; onOpenPane?: (r: OpenPaneRequest) => void }) {
   const { projects, loading, error } = useRemoteProjects(m.deviceId);
   const { roots } = useRemoteRoots(m.deviceId);
-  const { aliveProjectIds, shellCount } = useRemoteAliveShells(m.deviceId);
+  const { aliveProjectIds } = useRemoteAliveShells(m.deviceId);
 
   const inUse = useMemo(() => projects.filter((p) => aliveProjectIds.has(p.id)), [projects, aliveProjectIds]);
 
@@ -83,15 +83,10 @@ function MachineExpanded({ m, onOpenPane }: { m: FleetEntry; onOpenPane?: (r: Op
     deviceName: m.name, projectId: p.id, projectName: p.name,
   });
 
-  const summary = loading
-    ? 'Loading…'
-    : error
-      ? error
-      : `${projects.length} ${projects.length === 1 ? 'project' : 'projects'} · ${shellCount} live ${shellCount === 1 ? 'shell' : 'shells'}`;
-
   return (
     <div className="pl-5 space-y-3 pt-1">
-      <div className={`text-[11px] ${error ? 'text-[--danger]' : 'text-[--text-muted]'}`}>{summary}</div>
+      {loading && <div className="text-[11px] text-[--text-muted]">Loading…</div>}
+      {error && <div className="text-[11px] text-[--danger]">{error}</div>}
 
       {inUse.length > 0 && (
         <RemoteSection title="In use" testId={`machine-${m.deviceId}-in-use`}>
@@ -195,7 +190,9 @@ function RemoteRootBlock({
   aliveProjectIds: Set<number>;
   onOpen: (p: Project) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  // Match local Sidebar: roots default OPEN. Expanding the machine should
+  // show the full tree, not a wall of collapsed folders needing one click each.
+  const [open, setOpen] = useState(true);
   if (projects.length === 0) return null;
   const aliveInRoot = projects.filter((p) => aliveProjectIds.has(p.id)).length;
   return (
