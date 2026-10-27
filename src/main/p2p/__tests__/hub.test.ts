@@ -137,6 +137,18 @@ describe('fs path safety', () => {
     await expect(client.call('fs.read', { projectId, path: 'link.txt' })).rejects.toMatchObject({ code: 'path_outside_project' });
   });
 
+  test('fs.list reports a symlink entry with its own size, not the external target size', async () => {
+    const big = join(dir, 'external-big.bin');
+    writeFileSync(big, Buffer.alloc(50_000, 1));
+    symlinkSync(big, join(projectRoot, 'biglink'));
+    const { client } = setup();
+    const entries = await client.call('fs.list', { projectId, path: '' });
+    const e = entries.find((d) => d.name === 'biglink');
+    expect(e).toBeDefined();
+    expect(e!.size).toBeLessThan(1000);
+    expect(e!.size).not.toBe(50_000);
+  });
+
   test('fs.list rejects a NUL byte', async () => {
     const { client } = setup();
     await expect(client.call('fs.list', { projectId, path: 'sub\0/..' })).rejects.toMatchObject({ code: 'path_outside_project' });

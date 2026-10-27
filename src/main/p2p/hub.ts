@@ -1,5 +1,5 @@
 import { app } from 'electron';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, lstatSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { RpcMethods, type Params, type Result, type RpcMethodName } from '../../shared/p2p-contract';
@@ -290,7 +290,7 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): void {
     const abs = resolveInProject(projectRoot(projectId), path);
     return readdirSync(abs, { withFileTypes: true }).map((d) => {
       let size: number | undefined;
-      if (!d.isDirectory()) { try { size = statSync(join(abs, d.name)).size; } catch { /* raced away */ } }
+      if (!d.isDirectory()) { try { size = (d.isSymbolicLink() ? lstatSync(join(abs, d.name)) : statSync(join(abs, d.name))).size; } catch { /* raced away */ } }
       return { name: d.name, isDir: d.isDirectory(), ...(size === undefined ? {} : { size }) };
     });
   });

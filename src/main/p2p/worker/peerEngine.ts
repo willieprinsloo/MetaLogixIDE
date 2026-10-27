@@ -83,7 +83,9 @@ export class PeerEngine {
   }
 
   #openDc(label: string): void {
-    this.#adopt(this.#pcOrThrow().createDataChannel(label, { ordered: true }));
+    // `undefined` is required because #adopt compares `?? null`; some engine versions
+    // expose different defaults. Explicit values prevent a future surprise.
+    this.#adopt(this.#pcOrThrow().createDataChannel(label, { ordered: true, maxRetransmits: undefined, maxPacketLifeTime: undefined }));
   }
 
   async #offer(): Promise<string> {

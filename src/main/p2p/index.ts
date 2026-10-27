@@ -569,6 +569,16 @@ class P2PRuntime {
     });
   }
 
+  /**
+   * Transient link drops while the signaling client is still up (or coming up) are reported to streams as
+   * 'reconnecting' so the renderer shows the Reconnecting pill; terminal reasons pass through unchanged.
+   */
+  private streamCloseReason(reason: string): string {
+    if (reason !== 'transport_closed' && reason !== 'negotiation_timeout' && reason !== 'relay_unreachable') return reason;
+    const st = this.client?.status;
+    return st === 'connected' || st === 'connecting' ? 'reconnecting' : reason;
+  }
+
   finishLink(link: Link, reason: string): void {
     if (link.closed) return;
     link.closed = true;
@@ -585,7 +595,7 @@ class P2PRuntime {
       if (c && c.link === link) {
         this.conns.delete(link.remoteDevice);
         for (const [id, s] of this.streams) {
-          if (s.deviceId === link.remoteDevice) { this.streams.delete(id); this.opts.emit?.('p2p:rpc-event', { deviceId: s.deviceId, streamId: id, closed: true }); }
+          if (s.deviceId === link.remoteDevice) { this.streams.delete(id); this.opts.emit?.('p2p:rpc-event', { deviceId: s.deviceId, streamId: id, closed: true, reason: this.streamCloseReason(reason) }); }
         }
       }
     }

@@ -378,6 +378,29 @@ describe('paired sessions', () => {
     expect(viewer.events).toHaveLength(3);
   });
 
+  describe('stream close reason on link drop', () => {
+    async function dropWith(status: McStatus) {
+      const { host, viewer, reg } = await pairedFleet();
+      const pty = host.services.ptyManager;
+      vi.spyOn(pty, 'isAlive').mockReturnValue(true);
+      vi.spyOn(pty, 'getSnapshot').mockResolvedValue('snapshot');
+      const r = (await viewer.p2p.api.rpcCall(idOf(host), 'shells.attach', { projectId: 1, shellIndex: 0 })) as { streamId: number };
+      await waitFor(() => viewer.events.length >= 1);
+      (viewer.client() as FakeClient).status = status;
+      reg.all.find((t) => t.role === 'viewer' && !t.closed)!.emit('close');
+      await waitFor(() => viewer.events.some((e) => (e as { closed?: boolean }).closed === true));
+      return viewer.events.find((e) => (e as { closed?: boolean }).closed === true);
+    }
+
+    test('transport close while McClient is connected reports reason reconnecting', async () => {
+      expect(await dropWith('connected')).toEqual(expect.objectContaining({ closed: true, reason: 'reconnecting' }));
+    });
+
+    test('transport close while McClient is down keeps the terminal reason', async () => {
+      expect(await dropWith('disconnected')).toEqual(expect.objectContaining({ closed: true, reason: 'transport_closed' }));
+    });
+  });
+
   test('pendingMessages: a data frame delivered in the same burst as handshake message 3 is not dropped', async () => {
     // Batching transport: everything sent in one tick is delivered synchronously in one burst, so the
     // data frame lands in the handshake mailbox right behind message 3 (the first-frame race).
