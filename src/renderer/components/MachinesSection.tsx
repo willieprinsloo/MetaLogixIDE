@@ -34,7 +34,7 @@ function MachineRow({ m, onOpenPane }: { m: FleetEntry; onOpenPane?: (r: OpenPan
     e.stopPropagation();
     try {
       await api.invoke('p2p:reconnect-device', { deviceId: m.deviceId });
-      toast(`Reconnecting to ${m.name}…`, { kind: 'success', timeoutMs: 1500 });
+      toast(`Reconnected to ${m.name}`, { kind: 'success', timeoutMs: 1500 });
     } catch (err) {
       toast('Reconnect failed', { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') });
     }

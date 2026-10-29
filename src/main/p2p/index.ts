@@ -76,6 +76,10 @@ const PAIR_EXCHANGE_TIMEOUT_MS = 5_000;
 const CONNECT_TIMEOUT_MS = 10_000;
 /** See header: how long a completed session counts as proof the peer is reachable. */
 export const ONLINE_GRACE_MS = 60_000;
+/** How often the app re-dials trusted devices that have no live link (restart of either side, dropped link). */
+export const AUTO_DIAL_MS = 15_000;
+/** Ceiling for the per-device back-off while a peer stays unreachable. */
+const AUTO_DIAL_MAX_BACKOFF_MS = 5 * 60_000;
 const DC_LABEL = 'metaide';
 /** Must match the message peerEngine emits when it rejects a data channel. */
 const CHANNEL_NOT_RELIABLE_MSG = 'data channel must be ordered and reliable';
@@ -118,6 +122,13 @@ export interface StartP2POpts {
   pairingMaxAttempts?: number;
   handshakeTimeoutMs?: number;
   now?: () => number;
+  /**
+   * Re-dial every trusted device without a live link on this cadence, backing off per device while it stays
+   * unreachable, and dial straight back when a trusted peer connects in. Off when unset; `startP2P` defaults it
+   * to AUTO_DIAL_MS. Without it nothing reconnects after either side restarts (the sidebar only dials devices
+   * that are already online).
+   */
+  autoDialMs?: number;
 }
 
 /** Lifetime granted to an opaque relay token (mrsignald's tokens carry no timestamps). */
@@ -203,6 +214,9 @@ class P2PRuntime {
   readonly streams = new Map<number, StreamEntry>();
   #streamSeq = 0;
   #stopped = false;
+  #dialTimer: NodeJS.Timeout | null = null;
+  /** Auto-dial back-off per device id: earliest next attempt and the delay that produced it. */
+  readonly #dialBackoff = new Map<string, { next: number; delay: number }>();
 
   constructor(readonly services: Services, readonly opts: StartP2POpts) {
     this.home = opts.homeDir ?? services.homeDir;
@@ -576,6 +590,11 @@ class P2PRuntime {
     set.add(link);
     this.touchDevice(remote);
     secure.start();
+    // A trusted peer just reached us, so it is back up: dial it now instead of waiting out its back-off.
+    if (this.opts.autoDialMs) {
+      this.#dialBackoff.delete(remote);
+      this.autoDial();
+    }
   }
 
   async viewerFlow(link: Link): Promise<void> {
@@ -801,13 +820,42 @@ class P2PRuntime {
     if (c) this.finishLink(c.link, 'revoked');
   }
 
-  /** Manual reconnect: tear down any live viewer link so the next RPC rebuilds it.
-   * Idempotent — safe to call when nothing is connected. The user-facing "Reconnect"
-   * button in the sidebar invokes this when a device looks stuck. */
+  /** Manual reconnect: tear down any live viewer link, then dial a fresh one; rejects if the device can't be reached.
+   * Safe to call when nothing is connected. The user-facing "Reconnect" button in the sidebar invokes this when a
+   * device looks stuck or offline. */
   async reconnectDevice(deviceId: string): Promise<void> {
     const id = canonicalPubHex(deviceId);
     const c = this.conns.get(id);
     if (c) this.finishLink(c.link, 'manual_reconnect');
+    this.#dialBackoff.delete(id);
+    await this.ensureConn(id);
+  }
+
+  /** Starts the periodic auto-dial sweep (see StartP2POpts.autoDialMs) and runs the first sweep now. */
+  startAutoDial(): void {
+    const every = this.opts.autoDialMs;
+    if (!every || this.#dialTimer) return;
+    this.#dialTimer = setInterval(() => this.autoDial(), every);
+    this.#dialTimer.unref?.();
+    this.autoDial();
+  }
+
+  /** Dials every trusted device that has a connect code, no live link, no dial in flight and no pending back-off. */
+  autoDial(): void {
+    if (this.#stopped) return;
+    const now = this.nowMs();
+    for (const d of loadKnownDevices(this.knownPath)) {
+      if (!d.code || this.conns.has(d.pub) || this.connecting.has(d.pub)) continue;
+      const prev = this.#dialBackoff.get(d.pub);
+      if (prev && now < prev.next) continue;
+      this.ensureConn(d.pub).then(
+        () => this.#dialBackoff.delete(d.pub),
+        () => {
+          const delay = Math.min(Math.max((prev?.delay ?? 0) * 2, this.opts.autoDialMs ?? 0), AUTO_DIAL_MAX_BACKOFF_MS);
+          this.#dialBackoff.set(d.pub, { next: this.nowMs() + delay, delay });
+        },
+      );
+    }
   }
 
   /** See header: live session, or host connection up and a session completed within ONLINE_GRACE_MS. */
@@ -831,6 +879,7 @@ class P2PRuntime {
 
   async stop(): Promise<void> {
     this.#stopped = true;
+    if (this.#dialTimer) { clearInterval(this.#dialTimer); this.#dialTimer = null; }
     for (const l of [...this.allLinks]) this.finishLink(l, 'shutdown');
     for (const s of this.streams.values()) s.handle.close();
     this.streams.clear();
@@ -879,6 +928,7 @@ export function createP2P(services: Services, opts: StartP2POpts = {}): P2PHandl
       r.upsertSelf(r.settings().deviceName);
       services.p2p = { deviceKey: r.deviceKey, pairing: r.pairing, knownDevicesPath: r.knownPath, api };
       await r.startClientIfServing();
+      r.startAutoDial();
     },
     async stop() {
       const r = rt;
@@ -898,7 +948,7 @@ let current: P2PHandle | null = null;
  */
 export async function startP2P(services: Services, opts: StartP2POpts = {}): Promise<void> {
   if (current) return;
-  const h = createP2P(services, opts);
+  const h = createP2P(services, { autoDialMs: AUTO_DIAL_MS, ...opts });
   current = h;
   try {
     await h.start();
