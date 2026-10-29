@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import log from 'electron-log/main';
 import { startP2P, stopP2P } from './p2p';
+import { isWorkerWindowId } from './p2p/worker/windowWorker';
 import { buildServices, type Services } from './services';
 import { DROP_MAX_AGE_MS, testModeDropDir } from './drops/staging';
 import { registerIpc } from './ipc/register';
@@ -112,10 +113,10 @@ if (!gotLock) {
 } else {
   app.on('second-instance', (_event, argv) => {
     scanArgvForFiles(argv);
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show(); mainWindow.focus();
-    }
+    void ensureMainWindow().then((win) => {
+      if (win.isMinimized()) win.restore();
+      win.show(); win.focus();
+    });
   });
 }
 
@@ -464,8 +465,31 @@ async function startApp(): Promise<void> {
 
 const startupReady = app.whenReady().then(startApp);
 
+/** Open windows the user can see or close; excludes the hidden p2p worker. */
+function userWindows(): BrowserWindow[] {
+  return BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed() && !isWorkerWindowId(w.id));
+}
+
+/** Returns the live main window, recreating it once startup has finished if it was closed. */
+async function ensureMainWindow(): Promise<BrowserWindow> {
+  await startupReady;
+  if (!mainWindow || mainWindow.isDestroyed()) mainWindow = await createMainWindow();
+  return mainWindow;
+}
+
+// The hidden p2p worker window keeps 'window-all-closed' from ever firing, so quit when the
+// last user window closes instead — otherwise the app lingers headless holding the
+// single-instance lock and every later launch silently exits.
+// This listener is attached before the worker's own 'closed' handler, so the id is still registered.
+app.on('browser-window-created', (_event, win) => {
+  const id = win.id;
+  win.on('closed', () => {
+    if (process.platform === 'darwin' || isWorkerWindowId(id)) return;
+    if (userWindows().length === 0) app.quit();
+  });
+});
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', async () => {
   if (process.platform === 'darwin') await startupReady;
-  if (BrowserWindow.getAllWindows().length === 0) mainWindow = await createMainWindow();
+  if (userWindows().length === 0) mainWindow = await createMainWindow();
 });

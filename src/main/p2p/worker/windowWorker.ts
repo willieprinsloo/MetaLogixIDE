@@ -6,6 +6,13 @@ import type { WorkerCommand, WorkerEvent } from './peerEngine';
 
 const here = typeof __dirname === 'string' ? __dirname : dirname(fileURLToPath(import.meta.url));
 
+const workerWindowIds = new Set<number>();
+
+/** True for the hidden worker window, so app lifecycle checks don't count it as a user window. */
+export function isWorkerWindowId(id: number): boolean {
+  return workerWindowIds.has(id);
+}
+
 /**
  * Spawns a hidden BrowserWindow hosting p2pWorker.html and returns a
  * TransportWorker that drives it over IPC (p2p:worker:cmd / reply / event).
@@ -23,6 +30,9 @@ export function createWindowWorker(): TransportWorker {
       backgroundThrottling: false,
     },
   });
+  const winId = win.id;
+  workerWindowIds.add(winId);
+  win.on('closed', () => workerWindowIds.delete(winId));
   const wc = win.webContents;
   wc.on('will-navigate', (e) => e.preventDefault());
   wc.setWindowOpenHandler(() => ({ action: 'deny' }));
