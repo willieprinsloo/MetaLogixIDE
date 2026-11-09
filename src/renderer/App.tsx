@@ -10,6 +10,8 @@ import { CHROME_TESTIDS } from './chrome-testids';
 import { SIDEBAR_WIDTH, useSidebarWidth } from './sidebar-width';
 import { ShellTab } from './components/ShellTab';
 import { FilesTab } from './components/FilesTab';
+import { ActivityTab } from './components/ActivityTab';
+import { FleetView } from './components/FleetView';
 import { ChatTab } from './components/ChatTab';
 import { GitPanel } from './components/GitPanel';
 import { Settings } from './components/Settings';
@@ -43,6 +45,7 @@ import { usePersistedState } from './hooks/usePersistedState';
 import { usePoppedShells } from './hooks/usePoppedShells';
 import { useProjectShells } from './hooks/useProjectShells';
 import { useGitStatus } from './hooks/useGitStatus';
+import { useWindowFullscreen } from './hooks/useWindowFullscreen';
 import { terminalFocus, useWindowTerminalFocus } from './hooks/useWindowTerminalFocus';
 import { useReportViewedShells } from './hooks/useReportViewedShells';
 import { Tooltip } from './components/Tooltip';
@@ -159,8 +162,13 @@ function MainApp() {
   // useEffect with an empty dep list) always reads the current project.
   const selectedRef = useRef<Project | null>(null);
   useEffect(() => { selectedRef.current = selected; }, [selected]);
+  const activeShellIndexRef = useRef<number>(0);
+  const [fullscreen, toggleFullscreen] = useWindowFullscreen();
+  const toggleFullscreenRef = useRef<() => void>(() => undefined);
+  useEffect(() => { toggleFullscreenRef.current = toggleFullscreen; }, [toggleFullscreen]);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [aliveCount, setAliveCount] = useState(0);
+  const [localAliveShells, setLocalAliveShells] = useState<Array<{ projectId: number; projectName: string; projectPath: string; shellIndex: number; launchArgv: string[] }>>([]);
   const [mainTab, setMainTab] = usePersistedState<MainTab>('metaide.mainTab', 'shell', isMainTab);
   const mainTabRef = useRef(mainTab);
   mainTabRef.current = mainTab;
@@ -177,7 +185,7 @@ function MainApp() {
   const [activeView, setActiveView] = usePersistedState<ActivityView>(
     'metaide.activeView',
     'projects',
-    (v): v is ActivityView => v === 'projects' || v === 'chat' || v === 'git' || v === 'tasks',
+    (v): v is ActivityView => v === 'projects' || v === 'chat' || v === 'git' || v === 'tasks' || v === 'fleet',
   );
   // Live-ref of the active view so the metaproject subscriber can decide
   // whether to bump the badge without re-subscribing on every switch.
@@ -224,6 +232,7 @@ function MainApp() {
   const projectKey = selected?.id != null ? String(selected.id) : null;
   const projectState = projectKey ? projectStates[projectKey] : undefined;
   const activeShellIndex = projectState?.activeShellIndex ?? 0;
+  useEffect(() => { activeShellIndexRef.current = activeShellIndex; }, [activeShellIndex]);
   const rightShellIndex = projectState?.rightShellIndex ?? null;
   const splitRatio = sanitizeRatio(projectState?.splitRatio);
   const patchProjectState = useCallback((patch: Partial<ProjectUiState>) => {
@@ -245,6 +254,14 @@ function MainApp() {
     }));
   }, [setProjectStates]);
   const allProjectShells = useProjectShells(selected?.id ?? null);
+  // Label shown in the status bar for the visible shell's agent. Read from
+  // the same alive-shells list the tab chips use, so the two stay in sync.
+  const activeShellAgentLabel: string | null = useMemo(() => {
+    const row = allProjectShells.find((s) => s.shellIndex === activeShellIndex);
+    return row?.launchName ?? null;
+  }, [allProjectShells, activeShellIndex]);
+  const activeShellAgentState = useShellAgentState(selected?.id ?? -1, activeShellIndex).state;
+  const activeShellAgentStateLabel = activeShellAgentLabel ? activeShellAgentState : null;
   const [sidebarOpen, setSidebarOpen] = usePersistedState<boolean>(
     'metaide.sidebarOpen',
     true,
@@ -342,6 +359,14 @@ function MainApp() {
   const refreshAlive = useCallback(async () => {
     const { shells } = await api.invoke('shells:alive-list', undefined as never);
     setAliveCount(shells.length);
+    // Also expose the full list for the Fleet view (self-row shells).
+    setLocalAliveShells(shells.map((r) => ({
+      projectId: r.projectId,
+      projectName: r.projectName,
+      projectPath: r.projectPath,
+      shellIndex: r.shellIndex,
+      launchArgv: r.launchArgv,
+    })));
   }, []);
 
   useEffect(() => { void refreshAlive(); }, [refreshAlive]);
@@ -492,6 +517,25 @@ function MainApp() {
           }
         })();
       }
+      if (mod && e.shiftKey && (e.key === 'Enter' || e.key === 'Return')) {
+        // ⌘⇧Enter (Ctrl+Shift+Enter on Windows/Linux) → toggle native fullscreen.
+        e.preventDefault();
+        toggleFullscreenRef.current();
+      }
+      if (mod && e.key.toLowerCase() === 'w' && !e.shiftKey && !e.altKey) {
+        // ⌘W → close the active shell tab in the current project.
+        const p = selectedRef.current;
+        if (!p) return;
+        e.preventDefault();
+        const idx = activeShellIndexRef.current;
+        (async () => {
+          try {
+            await api.invoke('shells:kill', { projectId: p.id, shellIndex: idx });
+          } catch (err) {
+            toast('Failed to close tab', { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') });
+          }
+        })();
+      }
       if (e.key === 'Escape')                            { setSettingsOpen(false); setFinderOpen(false); setNewProjectOpen(false); setPaletteOpen(false); setHelpOpen(false); setSearchOpen(false); setPromptsOpen(false); setScrollbackOpen(false); }
     }
     window.addEventListener('keydown', onKey);
@@ -595,6 +639,8 @@ function MainApp() {
             openRelPath={openInFiles?.relPath ?? null}
             openLine={openInFiles?.line ?? null}
             onOpenRelPathConsumed={() => setOpenInFiles(null)}
+            isFullscreen={fullscreen}
+            onFullscreenToggle={toggleFullscreen}
           />
         );
       case 'diff':
@@ -612,6 +658,8 @@ function MainApp() {
             }}
           />
         );
+      case 'activity':
+        return <ActivityTab key={project.id} projectId={project.id} />;
     }
   }
 
@@ -900,6 +948,7 @@ function MainApp() {
                 </span>
               )}
             </TabButton>
+            <TabButton active={mainTab === 'activity'} onClick={() => setMainTab('activity')}>Activity</TabButton>
             <div className="ml-auto flex items-center gap-1.5 pr-2">
               {selected && (
                 <>
@@ -986,14 +1035,31 @@ function MainApp() {
                 onToggleSplit={() => (rightShellIndex != null ? split.closeSplit() : void openSplit())}
               />
             )}
-            {remotePane
+            {activeView === 'fleet'
+              ? <FleetView
+                  localShells={localAliveShells}
+                  onOpenLocal={(projectId, shellIndex) => {
+                    setActiveView('projects');
+                    void api.invoke('projects:open', { id: projectId }).then(() => {
+                      setMainTab('shell');
+                      setActiveShellIndexFor(projectId, shellIndex);
+                    });
+                  }}
+                  onOpenRemote={(req) => { setActiveView('projects'); setRemotePane(req); }}
+                />
+              : remotePane
               ? <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId} projectName={remotePane.projectName} onClose={() => setRemotePane(null)} />
               : selected ? mainBody(selected) : <EmptyState />}
           </div>
         </main>
       </div>
 
-      <StatusBar project={remotePane ? null : selected} aliveCount={aliveCount} />
+      <StatusBar
+        project={remotePane ? null : selected}
+        aliveCount={aliveCount}
+        activeAgent={activeShellAgentLabel}
+        activeAgentState={activeShellAgentStateLabel}
+      />
       <ProjectSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} onPick={pick} />
       <Settings
         open={settingsOpen}
@@ -1074,6 +1140,7 @@ function PopoutShell({ projectId, shellIndex }: PopoutInfo) {
   const [tab, setTab] = useState<'shell' | 'files'>('shell');
   const [openInFiles, setOpenInFiles] = useState<{ relPath: string; line: number | null } | null>(null);
   const [projectName, setProjectName] = useState<string>('');
+  const [fullscreen, toggleFullscreen] = useWindowFullscreen();
   useWindowTerminalFocus(false);
   useEffect(() => {
     terminalFocus.requestFocus({ projectId, shellIndex });
@@ -1141,6 +1208,8 @@ function PopoutShell({ projectId, shellIndex }: PopoutInfo) {
             openRelPath={openInFiles?.relPath ?? null}
             openLine={openInFiles?.line ?? null}
             onOpenRelPathConsumed={() => setOpenInFiles(null)}
+            isFullscreen={fullscreen}
+            onFullscreenToggle={toggleFullscreen}
           />
         )}
       </div>
@@ -1176,9 +1245,10 @@ function TabButton({ active, onClick, testId, ariaLabel, children }: TabButtonPr
 
 const SHORTCUT_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
   { title: 'Go',       items: [['⌘K', 'Project switcher'], ['⌘P', 'Find file in project'], ['⌘⇧F', 'Find in project']] },
-  { title: 'Views',    items: [['⌘B', 'Toggle sidebar'], ['⌘,', 'Settings'], ['⌘/', 'This cheat sheet']] },
+  { title: 'Views',    items: [['⌘B', 'Toggle sidebar'], ['⌘⇧Enter', 'Toggle fullscreen'], ['⌘,', 'Settings'], ['⌘/', 'This cheat sheet']] },
   { title: 'Palette',  items: [['⌘⇧P', 'Command palette'], ['⌘⇧N', 'New project']] },
-  { title: 'Shell',    items: [['⌘F', 'Find in terminal'], ['⌘⇧O', 'Search all shells'], ['⌘⇧K', 'Prompt library'], ['⌘=', 'Zoom in'], ['⌘-', 'Zoom out'], ['⌘0', 'Reset zoom']] },
+  { title: 'Shell',    items: [['⌘T', 'New shell tab'], ['⌘W', 'Close active tab'], ['⌘F', 'Find in terminal'], ['⌘⇧O', 'Search all shells'], ['⌘⇧K', 'Prompt library'], ['⌘=', 'Zoom in'], ['⌘-', 'Zoom out'], ['⌘0', 'Reset zoom']] },
+  { title: 'Files',    items: [['⌘=', 'Zoom in (md / image / pdf)'], ['⌘-', 'Zoom out'], ['⌘0', 'Reset zoom'], ['PageUp/PageDown', 'PDF page nav']] },
 ];
 
 function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () => void }) {

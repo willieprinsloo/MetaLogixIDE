@@ -89,7 +89,7 @@ describe('ClaudeHookReceiver — authorised events', () => {
     expect(res).toEqual({ status: 204, body: '' });
     await tick();
     expect(listener).toHaveBeenCalledTimes(1);
-    expect(listener).toHaveBeenCalledWith({ sessionId: ID, shell: SHELL, event: { hookEventName: 'Stop', notificationType: null, message: null, backgroundTaskCount: 0 } });
+    expect(listener).toHaveBeenCalledWith({ sessionId: ID, shell: SHELL, event: { hookEventName: 'Stop', notificationType: null, message: null, backgroundTaskCount: 0, toolName: null, toolTarget: null, toolOk: null } });
   });
 
   it('accepts a JSON content type with parameters', async () => {
@@ -122,7 +122,7 @@ describe('ClaudeHookReceiver — authorised events', () => {
     const res = await send(port, { headers: goodHeaders(port), body });
     expect(res).toEqual({ status: 204, body: '' });
     await tick();
-    expect(listener).toHaveBeenCalledWith({ sessionId: ID, shell: SHELL, event: { hookEventName: 'PermissionRequest', notificationType: null, message: null, backgroundTaskCount: 0 } });
+    expect(listener).toHaveBeenCalledWith({ sessionId: ID, shell: SHELL, event: { hookEventName: 'PermissionRequest', notificationType: null, message: null, backgroundTaskCount: 0, toolName: 'Bash', toolTarget: 'rm -rf /', toolOk: null } });
   });
 
   it('still answers 204 when the listener throws (AC23)', async () => {
@@ -264,7 +264,7 @@ describe('ClaudeHookReceiver — rejections never reach the listener (AC24)', ()
     await tick();
     const logged = spies.flatMap((sp) => sp.mock.calls.flatMap((c) => c.map((arg) => inspect(arg, { depth: 10 })))).join('\n');
     for (const sp of spies) sp.mockRestore();
-    expect(listener).toHaveBeenCalledWith({ sessionId: ID, shell: SHELL, event: { hookEventName: 'Stop', notificationType: null, message: null, backgroundTaskCount: 1 } });
+    expect(listener).toHaveBeenCalledWith({ sessionId: ID, shell: SHELL, event: { hookEventName: 'Stop', notificationType: null, message: null, backgroundTaskCount: 1, toolName: null, toolTarget: null, toolOk: null } });
     expect(logged).not.toMatch(/TASK-|CRON-/);
   });
 

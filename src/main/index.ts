@@ -13,6 +13,7 @@ import { buildAppMenu } from './menu';
 import { installClaudeNotifications } from './notifications/install';
 import { installAgentStatus } from './agent-status/install';
 import { createHookFanout } from './claude-hooks/hook-fanout';
+import { wireActivityLog } from './activity/wire';
 import { rescanRootsAtBoot } from './startup/boot-rescan';
 import { startDoneNotifier } from './startup/done-notifier';
 import { startReceivers } from './startup/receivers';
@@ -161,6 +162,23 @@ function wireExternalLinks(win: BrowserWindow): void {
   });
 }
 
+/**
+ * Broadcasts `window:fullscreen-changed` whenever the window enters or leaves
+ * native fullscreen — from the IPC toggle, Ctrl+Cmd+F / F11, or the green
+ * traffic light. Lets the renderer hide IDE chrome in lock-step. Cross-platform:
+ * Electron fires enter/leave-full-screen on mac, Windows and Linux alike.
+ */
+function wireFullscreenEvents(win: BrowserWindow): void {
+  const notify = (fullscreen: boolean) => {
+    if (win.isDestroyed()) return;
+    const wc = win.webContents;
+    if (!wc || wc.isDestroyed() || wc.isCrashed()) return;
+    try { wc.send('window:fullscreen-changed', { windowId: win.id, fullscreen }); } catch { /* frame disposed */ }
+  };
+  win.on('enter-full-screen', () => notify(true));
+  win.on('leave-full-screen', () => notify(false));
+}
+
 async function createMainWindow(): Promise<BrowserWindow> {
   const win = new BrowserWindow({
     width: 1400,
@@ -173,6 +191,7 @@ async function createMainWindow(): Promise<BrowserWindow> {
   win.once('ready-to-show', () => win.show());
   wireExternalLinks(win);
   applyPersistedOpacity(win);
+  wireFullscreenEvents(win);
   // Detect renderer crashes ("blank screen" symptom) and auto-recover by
   // reloading the window. Without this, an OOM / WebGL context loss / stray
   // exception leaves the user with a blank webview and nothing else to do.
@@ -212,6 +231,7 @@ export async function createPopoutWindow(projectId: number, shellIndex: number):
   });
   wireExternalLinks(win);
   applyPersistedOpacity(win);
+  wireFullscreenEvents(win);
   if (process.env.ELECTRON_RENDERER_URL) await win.loadURL(`${process.env.ELECTRON_RENDERER_URL}?${query}`);
   else await win.loadFile(join(__dirname, '../renderer/index.html'), { search: `?${query}` });
   win.once('ready-to-show', () => {
@@ -376,10 +396,14 @@ function registerMainIpc(services: Services): void {
   });
 }
 
-/** Wires Claude hook events to OS notifications, resolving target windows from this module's state. */
+/** Wires Claude hook events to OS notifications and the project activity log, resolving target windows from this module's state. */
 function installNotifications(services: Services): void {
+  // One fanout feeds BOTH the notifier and the activity log. Receiver.onHook
+  // is single-listener, so a second direct subscription would silently
+  // replace the first — the fanout is what makes multi-consumer safe.
+  const hooks = createHookFanout(services.hookReceiver);
   installClaudeNotifications({
-    hooks: createHookFanout(services.hookReceiver),
+    hooks,
     history: services.hookHistory,
     sessions: services.hookSessions,
     ptyManager: services.ptyManager,
@@ -393,6 +417,11 @@ function installNotifications(services: Services): void {
       focused: () => BrowserWindow.getFocusedWindow(),
     },
     broadcast,
+  });
+  wireActivityLog({
+    hooks,
+    projects: services.projects,
+    broadcast: (projectId, entry) => broadcast('activity:changed', { projectId, entry }),
   });
 }
 

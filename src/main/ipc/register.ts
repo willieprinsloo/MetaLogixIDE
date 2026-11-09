@@ -43,9 +43,26 @@ import { readDiffSides } from '@main/git/diff-sides';
 import { dropHandlers } from '@main/drops/handlers';
 import { isInsideRoot, resolveInsideRoot } from '@main/domain/path-containment';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { readRecentActivity } from '@main/activity/log';
+import { ACTIVITY_PAGE_MAX } from '@shared/activity';
+import { readMetaIdeEnv, readMetaIdeCliProfiles } from '@main/domain/metaide-conf';
 
 const GIT_DIFF_KINDS: ReadonlySet<GitDiffKind> = new Set(['staged', 'unstaged', 'untracked']);
 const execFileAsync = promisify(execFile);
+
+/** MIME lookup for the binary-byte reader. Ships what the image + PDF viewers need. */
+const MIME_BY_EXT: Record<string, string> = {
+  pdf: 'application/pdf',
+  png: 'image/png',
+  jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  svg: 'image/svg+xml',
+  webp: 'image/webp',
+  avif: 'image/avif',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+  tif: 'image/tiff', tiff: 'image/tiff',
+};
 
 /** Spawn env overlay for a non-template spawn site: `templateEnv` ⊕ the project's interpolated variables. */
 function projectSpawnEnv(
@@ -54,7 +71,8 @@ function projectSpawnEnv(
   templateEnv: Record<string, string>,
 ): Record<string, string> {
   const appEnv = s.settings.get('app_env');
-  return resolveSpawnEnv({ project, templateEnv, inherited: process.env, homeDir: s.homeDir, appEnv }).env;
+  const metaIdeEnv = readMetaIdeEnv(project.path);
+  return resolveSpawnEnv({ project, templateEnv, inherited: process.env, homeDir: s.homeDir, appEnv, metaIdeEnv }).env;
 }
 
 /**
@@ -591,12 +609,16 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     const project = s.projects.get(projectId);
     if (!project) throw new Error(`no project ${projectId}`);
     const projectProfiles = project.config.cliProfiles ?? [];
+    // `.metaide/cli-profiles.json` — shared project convention; sits between
+    // the per-user project settings (above) and the global catalog (below).
+    const metaIdeProfiles = readMetaIdeCliProfiles(project.path);
     const globalProfiles = s.settings.get('default_cli_profiles');
-    // Project overrides shadow same-name globals.
     const projectNames = new Set(projectProfiles.map(p => p.name));
+    const projectAndMeta = new Set([...projectProfiles, ...metaIdeProfiles].map(p => p.name));
     const flat = [
       ...projectProfiles.map(p => ({ ...p, scope: 'project' as const })),
-      ...globalProfiles.filter(p => !projectNames.has(p.name)).map(p => ({ ...p, scope: 'global' as const })),
+      ...metaIdeProfiles.filter(p => !projectNames.has(p.name)).map(p => ({ ...p, scope: 'project' as const })),
+      ...globalProfiles.filter(p => !projectAndMeta.has(p.name)).map(p => ({ ...p, scope: 'global' as const })),
     ];
     return { profiles: flat };
   },
@@ -881,6 +903,14 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
       if (!w.isDestroyed()) w.setOpacity(clamped / 100);
     }
     return { ok: true } as const;
+  },
+
+  'window:toggle-fullscreen': async (_s, _req, event) => {
+    const w = event ? BrowserWindow.fromWebContents(event.sender) : BrowserWindow.getFocusedWindow();
+    if (!w || w.isDestroyed()) return { fullscreen: false } as const;
+    const next = !w.isFullScreen();
+    w.setFullScreen(next);
+    return { fullscreen: next } as const;
   },
 
   'settings:set-frost-chrome': async (s, { enabled }) => {
@@ -1458,6 +1488,30 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
       if (isBinary) return { content: '', kind: 'binary' as const, sizeBytes: st.size };
     }
     return { content: buf.toString('utf8'), kind: 'text' as const, sizeBytes: st.size };
+  },
+
+  'files:read-bytes': async (s, { projectId, relPath }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    const abs = resolveInsideRoot(p.path, relPath);
+    const st = statSync(abs);
+    if (st.isDirectory()) throw new Error(`${relPath} is a directory`);
+    if (st.size > 50_000_000) throw new Error(`file too large (${st.size} bytes) — 50 MB cap`);
+    const buf = readFileSync(abs);
+    // Serialize as plain Uint8Array over the structured clone — Electron
+    // preserves the buffer without a UTF-8 round-trip.
+    const bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    const ext = relPath.slice(relPath.lastIndexOf('.') + 1).toLowerCase();
+    const mime = MIME_BY_EXT[ext] ?? 'application/octet-stream';
+    return { bytes, mime, sizeBytes: st.size };
+  },
+
+  'activity:list': async (s, { projectId, limit }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    const cap = Math.max(1, Math.min(ACTIVITY_PAGE_MAX, limit ?? 100));
+    const entries = readRecentActivity(p.path, cap);
+    return { entries };
   },
 
   ...dropHandlers,

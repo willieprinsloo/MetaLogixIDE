@@ -166,6 +166,20 @@ export interface IpcContract {
   // files (read-only)
   'files:tree':      { request: { projectId: number; relPath?: string };                    response: { entries: Array<{ name: string; isDir: boolean; relPath: string }> } };
   'files:read':      { request: { projectId: number; relPath: string; forceText?: boolean }; response: { content: string; kind: 'text' | 'binary'; sizeBytes: number } };
+  /**
+   * Raw bytes of a project-root file, for binary viewers (image, PDF).
+   * mime is a best-effort content-type derived from extension, used as the
+   * Blob type in the renderer. Capped at 50 MB — above that, an image or
+   * PDF belongs in the native OS viewer.
+   */
+  'files:read-bytes': { request: { projectId: number; relPath: string }; response: { bytes: Uint8Array; mime: string; sizeBytes: number } };
+
+  /**
+   * Shared agent-memory log — one entry per tool call, prompt, notification
+   * or turn-end from a CLI agent running in this project. Reader for the
+   * Activity tab; pairs with `activity:changed` for live tailing.
+   */
+  'activity:list': { request: { projectId: number; limit?: number }; response: { entries: import('./activity').ActivityEntry[] } };
   'files:list-all':  { request: { projectId: number; limit?: number; filter?: string };     response: { files: Array<{ relPath: string; name: string }>; total: number; truncated: boolean } };
   'files:write':     { request: { projectId: number; relPath: string; content: string };    response: { ok: true; sizeBytes: number } };
   'files:mkdir':     { request: { projectId: number; relPath: string };                     response: { ok: true } };
@@ -237,6 +251,15 @@ export interface IpcContract {
 
   /** Set every open window's opacity. percent: 30..100. */
   'app:set-window-opacity': { request: { percent: number }; response: { ok: true } };
+  /**
+   * Toggle the focused BrowserWindow into native fullscreen. Cross-platform:
+   * uses setFullScreen, which is macOS Mission-Control fullscreen on mac and
+   * borderless F11-style fullscreen on Windows/Linux. The renderer also hides
+   * IDE chrome (sidebar + tab strips) while fullscreen is on, driven by the
+   * `window:fullscreen-changed` event so the two stay in sync even when the
+   * user toggles via Ctrl+Cmd+F / F11 / green traffic light.
+   */
+  'window:toggle-fullscreen': { request: undefined; response: { fullscreen: boolean } };
   'settings:set-frost-chrome': { request: { enabled: boolean }; response: { ok: true } | { ok: false; error: 'invalid' } };
   'settings:set-chrome-frost-level': { request: { level: ChromeFrostLevel }; response: { ok: true } | { ok: false; error: 'invalid' } };
   'settings:set-terminal-frost-level': { request: { level: TerminalFrostLevel }; response: { ok: true } | { ok: false; error: 'invalid' } };
@@ -435,5 +458,14 @@ export interface IpcEvents {
   'app:open-file-request':  { path: string };
   /** Pushed stream events from a remote device (`closed` when the stream or its connection ends). */
   'p2p:rpc-event':          { deviceId: string; streamId: number; data?: unknown; closed?: true; reason?: string };
+  /**
+   * Fired whenever any BrowserWindow enters or leaves fullscreen — from the
+   * IPC toggle, the OS shortcut (Ctrl+Cmd+F on mac, F11 on Windows/Linux),
+   * or the window chrome. windowId lets the renderer ignore events for
+   * popped-out shell windows it doesn't own.
+   */
+  'window:fullscreen-changed': { windowId: number; fullscreen: boolean };
+  /** A new activity entry was appended to this project's log; renderers that are tailing refresh. */
+  'activity:changed': { projectId: number; entry: import('./activity').ActivityEntry };
 }
 export type IpcEventName = keyof IpcEvents;

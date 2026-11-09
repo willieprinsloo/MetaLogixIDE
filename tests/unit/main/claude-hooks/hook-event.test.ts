@@ -21,19 +21,22 @@ describe('parseHookEvent', () => {
       notificationType: 'permission_prompt',
       message: 'Claude needs your permission',
       backgroundTaskCount: 0,
+      toolName: null,
+      toolTarget: null,
+      toolOk: null,
     });
   });
 
   it('parses a real Stop payload, stripping unknown fields such as last_assistant_message', () => {
     const raw = { ...common, hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'secret reply', background_tasks: [] };
     const parsed = parseHookEvent(raw);
-    expect(parsed).toEqual({ hookEventName: 'Stop', notificationType: null, message: null, backgroundTaskCount: 0 });
+    expect(parsed).toEqual({ hookEventName: 'Stop', notificationType: null, message: null, backgroundTaskCount: 0, toolName: null, toolTarget: null, toolOk: null });
     expect(JSON.stringify(parsed)).not.toContain('secret reply');
   });
 
   it('parses a UserPromptSubmit payload without carrying the prompt', () => {
     const parsed = parseHookEvent({ ...common, hook_event_name: 'UserPromptSubmit', prompt: 'do the thing' });
-    expect(parsed).toEqual({ hookEventName: 'UserPromptSubmit', notificationType: null, message: null, backgroundTaskCount: 0 });
+    expect(parsed).toEqual({ hookEventName: 'UserPromptSubmit', notificationType: null, message: null, backgroundTaskCount: 0, toolName: null, toolTarget: null, toolOk: null });
   });
 
   it.each([
@@ -52,7 +55,7 @@ describe('parseHookEvent', () => {
 
   it('treats an explicit null message or notification_type as absent', () => {
     expect(parseHookEvent({ hook_event_name: 'Notification', message: null, notification_type: null }))
-      .toEqual({ hookEventName: 'Notification', notificationType: null, message: null, backgroundTaskCount: 0 });
+      .toEqual({ hookEventName: 'Notification', notificationType: null, message: null, backgroundTaskCount: 0, toolName: null, toolTarget: null, toolOk: null });
   });
 });
 
@@ -61,8 +64,8 @@ describe('parseHookEvent — background_tasks (AC24, AC27, AC28)', () => {
 
   it('keeps only a count of background tasks, never their content (AC28)', () => {
     const parsed = parseHookEvent({ ...common, hook_event_name: 'Stop', background_tasks: [task] });
-    expect(parsed).toEqual({ hookEventName: 'Stop', notificationType: null, message: null, backgroundTaskCount: 1 });
-    expect(Object.keys(parsed!)).toEqual(['hookEventName', 'notificationType', 'message', 'backgroundTaskCount']);
+    expect(parsed).toEqual({ hookEventName: 'Stop', notificationType: null, message: null, backgroundTaskCount: 1, toolName: null, toolTarget: null, toolOk: null });
+    expect(Object.keys(parsed!)).toEqual(['hookEventName', 'notificationType', 'message', 'backgroundTaskCount', 'toolName', 'toolTarget', 'toolOk']);
     expect(JSON.stringify(parsed)).not.toMatch(/SECRET|bash_1|shell/);
   });
 

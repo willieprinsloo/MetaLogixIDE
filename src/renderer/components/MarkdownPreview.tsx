@@ -13,6 +13,8 @@ import { useDocumentTheme } from '@renderer/hooks/useDocumentTheme';
 
 interface Props {
   source: string;
+  /** Font-scale multiplier; 1 = baseline. Propagated via a CSS custom property so headings, inline code, and prose all scale together. */
+  zoom?: number;
 }
 
 function onPreviewClick(e: MouseEvent<HTMLDivElement>): void {
@@ -28,14 +30,17 @@ function onPreviewClick(e: MouseEvent<HTMLDivElement>): void {
 }
 
 /** Preview of Markdown `source`; mount only while the file is not being edited. */
-export function MarkdownPreview({ source }: Props): JSX.Element {
+export function MarkdownPreview({ source, zoom = 1 }: Props): JSX.Element {
   const html = useMemo(() => renderMarkdown(source), [source]);
   const ref = useRef<HTMLDivElement>(null);
   useMermaidDiagrams(ref, html, useDocumentTheme());
+  // Base is 16px; scaling via fontSize lets every em-sized child (headings,
+  // code, lists, blockquotes) ride along without touching the markdown CSS.
   return (
     <div
       ref={ref}
       className="markdown p-6 max-w-3xl mx-auto"
+      style={{ fontSize: `${16 * zoom}px` }}
       data-testid={MARKDOWN_PREVIEW_TESTID}
       onClick={onPreviewClick}
       dangerouslySetInnerHTML={{ __html: html }}

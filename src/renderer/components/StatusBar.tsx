@@ -13,7 +13,16 @@ interface LiveShell {
   launchName: string; hanging: boolean;
 }
 
-export function StatusBar({ project, aliveCount }: { project: Project | null; aliveCount: number }) {
+export function StatusBar({
+  project, aliveCount, activeAgent, activeAgentState,
+}: {
+  project: Project | null;
+  aliveCount: number;
+  /** Label of the currently visible shell's agent (e.g. "Claude", "Codex", "Terminal"). */
+  activeAgent?: string | null;
+  /** Agent state for the visible shell — "idle" / "thinking" / "needs-input" / "finished". */
+  activeAgentState?: string | null;
+}) {
   const { status: git } = useGitStatus(project?.id ?? null);
   const ports = usePorts(project?.id ?? null);
   // App version shown at the far right so users know exactly which build
@@ -29,6 +38,12 @@ export function StatusBar({ project, aliveCount }: { project: Project | null; al
         <span className={`inline-block w-1.5 h-1.5 rounded-full ${project ? 'bg-[--accent]' : 'bg-[--text-muted]/50'}`} />
         {project ? project.name : 'no project'}
       </span>
+      {activeAgent && (
+        <span className="flex items-center gap-1.5" title={activeAgentState ? `${activeAgent} — ${activeAgentState}` : activeAgent}>
+          <AgentStateDot state={activeAgentState} />
+          <span className="text-[--text]">{activeAgent}</span>
+        </span>
+      )}
       {git.isRepo && (
         <span className="flex items-center gap-1" title={
           `${git.branch ?? 'detached'}${git.ahead ? ` · ahead ${git.ahead}` : ''}${git.behind ? ` · behind ${git.behind}` : ''}${git.dirty ? ` · ${Object.keys(git.files).length} changed` : ''}`
@@ -221,6 +236,15 @@ function fmtDuration(ms: number): string {
   if (m < 60) return `${m}m ${s % 60}s`;
   const h = Math.floor(m / 60);
   return `${h}h ${m % 60}m`;
+}
+
+function AgentStateDot({ state }: { state?: string | null }) {
+  const color =
+    state === 'needs-input' ? 'bg-amber-500'   :
+    state === 'thinking'    ? 'bg-[--accent] animate-pulse' :
+    state === 'finished'    ? 'bg-green-500'   :
+    'bg-[--text-muted]/60';
+  return <span className={`inline-block w-1.5 h-1.5 rounded-full ${color}`} />;
 }
 
 function BranchIcon() {
