@@ -148,14 +148,17 @@ test('Env tab journey: empty state, notices, save, tab switch, plain shell sees 
   await openProject(win, PROJECT_A);
   const idA = await projectId(win, PROJECT_A);
 
-  // AC1: the Env tab sits next to Shell and Files, with no header button or modal.
+  // AC1: there is no separate Env tab; the editor is a section of the Settings tab, with no header button or modal.
   await expect(win.getByRole('button', { name: 'Shell', exact: true })).toBeVisible();
   await expect(win.getByRole('button', { name: 'Files', exact: true })).toBeVisible();
-  await expect(envTab(win)).toHaveText(ENV_COPY.tabLabel);
+  await expect(envTab(win)).toHaveText(PROJECT_SETTINGS_COPY.tab);
+  await expect(win.getByRole('button', { name: 'Env', exact: true })).toHaveCount(0);
+  await expect(win.getByTestId(ENV_TESTIDS.panel)).toHaveCount(0);
   await expect(win.getByRole('dialog')).toHaveCount(0);
 
   // AC2 (empty state), AC6 (all three notices + tokens, visible without hover).
   const panel = await openEnvTab(win);
+  await expect(win.getByTestId(PROJECT_SETTINGS_TESTIDS.view).getByTestId(ENV_TESTIDS.panel), 'the editor lives inside the Settings view').toBeVisible();
   await expect(panel.getByText(ENV_COPY.panelTitle, { exact: true })).toBeVisible();
   await expect(panel.getByTestId(ENV_TESTIDS.empty)).toHaveText(ENV_COPY.emptyState);
   await expect(panel.getByTestId(ENV_TESTIDS.row)).toHaveCount(0);
@@ -284,9 +287,10 @@ test('drafts survive tab and project switches and are marked as unsaved (AC3, D1
   const back = await openEnvTab(win);
   await expect(back.getByLabel(ENV_COPY.valueLabel(1), { exact: true })).toHaveValue('draft');
   await expect(win.getByTestId(ENV_TESTIDS.unsaved)).toBeVisible();
-  // The new adjacent non-Shell tab must preserve Env's draft and dirty marker too.
-  await win.getByRole('button', { name: PROJECT_SETTINGS_COPY.tab, exact: true }).click();
-  await expect(win.getByTestId(PROJECT_SETTINGS_TESTIDS.view)).toBeVisible();
+  // The marker sits on the Settings tab itself; leaving for Shell keeps the draft and the marker.
+  await expect(envTab(win).getByTestId(ENV_TESTIDS.unsaved)).toBeVisible();
+  await clickTab(win, 'Shell');
+  await expect(win.getByTestId(PROJECT_SETTINGS_TESTIDS.view)).toHaveCount(0);
   await expect(panelOf(win)).toHaveCount(0);
   await expect(envTab(win)).toHaveAttribute('aria-label', ENV_COPY.tabUnsavedLabel);
   const afterSettings = await openEnvTab(win);
@@ -418,7 +422,7 @@ test('running shells keep old values; new shells get new; other projects stay em
   expect(outB).not.toContain('new-value');
 });
 
-test('sidebar item selects the project and shows its Env tab; Env to Shell does not focus the terminal (AC1, AC18)', async ({}, testInfo) => {
+test('sidebar item selects the project and shows its Settings env section; Settings to Shell does not focus the terminal (AC1, AC18)', async ({}, testInfo) => {
   testInfo.setTimeout(60_000);
   h = await launch([PROJECT_A, PROJECT_B]);
   const { win } = h;
@@ -439,6 +443,8 @@ test('sidebar item selects the project and shows its Env tab; Env to Shell does 
   await expect.poll(() => win.title(), { timeout: 10000 }).toBe(`${PROJECT_B} — MetaLogix IDE`);
   const panel = panelOf(win);
   await expect(panel).toBeVisible();
+  await expect(win.getByTestId(PROJECT_SETTINGS_TESTIDS.view).getByTestId(ENV_TESTIDS.panel), 'the menu opens Settings with the env section').toBeVisible();
+  await expect(panel, 'the env section is scrolled into view').toBeInViewport();
   // Control: the panel is B's (empty) and the terminal is unmounted on the Env tab.
   await expect(panel.getByTestId(ENV_TESTIDS.empty)).toBeVisible();
   await expect(win.locator('[data-testid="shell-tab"]')).toHaveCount(0);

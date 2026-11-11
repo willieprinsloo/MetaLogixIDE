@@ -69,10 +69,16 @@ test('chrome regions draw no borders', async () => {
     ['activity bar', '[data-testid="activity-bar"]'],
     ['sidebar', 'aside[data-view="projects"]'],
     ['main tab bar', '[data-testid="main-tab-bar"]'],
-    ['status bar', '[data-testid="status-bar"]'],
   ] as const) {
     expect(await borderWidth(win, selector), `${name} border width`).toBe(0);
   }
+  // The status bar sits inside the main sheet and keeps a deliberate 1px hairline on its top edge only.
+  const status = win.getByTestId('status-bar');
+  const sides = await status.evaluate((el) => {
+    const cs = getComputedStyle(el);
+    return ['top', 'right', 'bottom', 'left'].map((s) => parseFloat(cs.getPropertyValue(`border-${s}-width`)) || 0);
+  });
+  expect(sides, 'status bar border widths (top, right, bottom, left)').toEqual([1, 0, 0, 0]);
 });
 
 test('active main tab wears the accent tint; inactive tabs are clear', async () => {
