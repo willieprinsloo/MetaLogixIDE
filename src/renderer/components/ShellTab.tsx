@@ -577,14 +577,14 @@ export function ShellTab({
     (c) => streamHandlersRef.current.exit(c),
   );
 
-  // After an exit we always restart with the "first" launch parameters —
-  // whatever broke the previous session (bad --continue, corrupt state, auth
-  // drift) is most reliably avoided by a clean start.
+  // After an exit, relaunch the normal way so the agent resumes its session.
+  // A missing session falls back to a fresh start in main; a corrupted one has
+  // its own overlay (repair / start fresh).
   const relaunch = useCallback(async () => {
     if (relaunching) return;
     setRelaunching(true);
     try {
-      await api.invoke('shells:launch', { projectId, forceFirst: true });
+      await api.invoke('shells:launch', { projectId });
       setExitInfo(null);
     } catch (e) {
       toast('Re-launch failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
@@ -633,9 +633,8 @@ export function ShellTab({
   }, [projectId, shellIndex, relaunching]);
 
   // Kill the currently running (but stuck) shell then re-launch it, optionally with a specific profile.
-  // The default-path relaunch forces the "first" variant: if the shell is stuck
-  // it's almost always because --continue picked up a bad session, so starting
-  // clean is the recovery that works.
+  // The default-path relaunch resumes the session like any other launch; the
+  // corrupted-session overlay offers repair or a fresh start when that is the cause.
   const killAndRelaunch = useCallback(async (profileName?: string) => {
     if (relaunching) return;
     setRelaunching(true);
@@ -646,7 +645,7 @@ export function ShellTab({
       if (profileName) {
         await api.invoke('shells:launch-cli', { projectId, profileName, argv: [], env: {}, save: false });
       } else {
-        await api.invoke('shells:launch', { projectId, forceFirst: true });
+        await api.invoke('shells:launch', { projectId });
       }
     } catch (e) {
       toast('Re-launch failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });

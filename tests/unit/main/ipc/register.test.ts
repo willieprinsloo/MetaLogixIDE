@@ -1162,7 +1162,7 @@ describe('registerIpc', () => {
  * Real projects/shells/settings repos on a temp db, a spy ptyManager and two
  * projects on disk, for exercising project env at every spawn site.
  */
-function envRig() {
+function envRig(opts: { homeDir?: string } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'reg-env-'));
   const db = openDb(join(dir, 'db'));
   runMigrations(db, migrationsDir);
@@ -1188,7 +1188,7 @@ function envRig() {
     shells,
     ptyManager,
     listMise,
-    homeDir: '/home/u',
+    homeDir: opts.homeDir ?? '/home/u',
   } as unknown as Parameters<typeof registerIpc>[1];
   registerIpc(ipc as unknown as IpcMain, services, ((channel: string) => {
     events.push(channel);
@@ -1214,6 +1214,28 @@ function envRig() {
     pathA,
   };
 }
+
+describe('fresh Claude start keeps earlier sessions', () => {
+  it('forceFirst launches the first command and leaves the project\'s saved Claude sessions in place', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'reg-home-'));
+    const rig = envRig({ homeDir: home });
+    try {
+      rig.projects.setFirstLaunched(rig.a.id, new Date());
+      rig.settings.set('default_launch_cmd.first', { argv: ['claude'], env: {} });
+      rig.settings.set('default_launch_cmd.subsequent', { argv: ['claude', '--continue'], env: {} });
+      const sessionDir = join(home, '.claude', 'projects', rig.pathA.replace(/[/ ]/g, '-'));
+      mkdirSync(sessionDir, { recursive: true });
+      writeFileSync(join(sessionDir, 'abc.jsonl'), '{}\n');
+      await rig.call('shells:launch', { projectId: rig.a.id, forceFirst: true });
+      expect(rig.spawned(0).argv).toEqual(['claude']);
+      expect(readdirSync(sessionDir), 'no session is renamed aside').toEqual(['abc.jsonl']);
+    } finally {
+      rig.db.close();
+      rmSync(rig.dir, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('primary shell tab publication (no wait on resume checks)', () => {
   function rig() {
