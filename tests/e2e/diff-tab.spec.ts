@@ -3,7 +3,6 @@ import { mkdirSync, rmSync, symlinkSync, writeFileSync, appendFileSync } from 'n
 import { join } from 'node:path';
 import { DIFF_COPY, DIFF_TESTIDS } from '../../src/renderer/diff-tab-copy';
 import { PALETTE_COPY, PALETTE_TESTIDS } from '../../src/renderer/command-palette-contract';
-import { ENV_TESTIDS } from '../../src/renderer/project-env-copy';
 import { PROJECT_SETTINGS_COPY, PROJECT_SETTINGS_TESTIDS } from '../../src/renderer/project-settings-contract';
 import {
   baseEnv, hookCredentials, installNotificationSpy, launch, notifications, openProject, postRawHook, projectId,

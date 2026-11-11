@@ -5,7 +5,6 @@ import { join, resolve } from 'node:path';
 import { CHROME_TESTIDS } from '../../src/renderer/chrome-testids';
 import { SIDEBAR_WIDTH } from '../../src/renderer/sidebar-width';
 import { DIFF_TESTIDS } from '../../src/renderer/diff-tab-copy';
-import { ENV_TESTIDS } from '../../src/renderer/project-env-copy';
 import { PROJECT_SETTINGS_COPY, PROJECT_SETTINGS_TESTIDS } from '../../src/renderer/project-settings-contract';
 import { AGENT_DOT } from '../../src/shared/agent-state';
 import { PALETTE_COPY } from '../../src/renderer/command-palette-contract';
