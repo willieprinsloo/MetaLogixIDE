@@ -340,7 +340,7 @@
 
 :root[data-platform][data-chrome-frost="strong"],
 :root[data-platform][data-theme="dark"][data-chrome-frost="strong"] {
-  --chrome-glass-alpha: 0.40;
+  --chrome-glass-alpha: 0.32;
   --terminal-glass-alpha: 0.27522;
   --terminal-pane-alpha: 0;
   --terminal-medium-glass-alpha: 0.13826;
@@ -349,7 +349,7 @@
   --terminal-strong-pane-alpha: 0;
   --chrome-text: var(--text-base);
   --chrome-accent-mark: color-mix(in oklab, var(--accent) 75%, #ffffff);
-  --chrome-text-muted: color-mix(in oklab, #9aa3ac 58%, #ffffff);
+  --chrome-text-muted: color-mix(in oklab, #9aa3ac 48%, #ffffff);
   --chrome-chip-text: #78aaf8;
   --terminal-text-muted: color-mix(in oklab, #99a2ab 89.9%, #ffffff);
   --terminal-medium-text-muted: color-mix(in oklab, #99a2ab 81.5%, #ffffff);
@@ -412,7 +412,7 @@
 }
 
 :root[data-platform][data-palette="catppuccin"][data-chrome-frost="strong"] {
-  --chrome-glass-alpha: 0.40;
+  --chrome-glass-alpha: 0.32;
   --terminal-glass-alpha: 0.23887;
   --terminal-pane-alpha: 0;
   --terminal-medium-glass-alpha: 0.12;
@@ -484,7 +484,7 @@
 }
 
 :root[data-platform][data-palette="rose-pine"][data-chrome-frost="strong"] {
-  --chrome-glass-alpha: 0.40;
+  --chrome-glass-alpha: 0.32;
   --terminal-glass-alpha: 0.24346;
   --terminal-pane-alpha: 0;
   --terminal-medium-glass-alpha: 0.12231;
