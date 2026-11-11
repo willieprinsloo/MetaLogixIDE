@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { isClaudeArgv } from '@main/domain/claude-permission-mode';
-import { isOmpArgv, OMP_SPAWN_ENV } from '@main/agent-status/omp-launch';
 import type { AgentKind } from '@shared/agent-state';
 import { EventEmitter } from 'node:events';
 import type { IPty } from 'node-pty';
@@ -127,7 +126,7 @@ export class PtyManager extends EventEmitter {
     });
     const entry: Entry = {
       projectId, shellIndex, pty, pid: pty.pid, cols, rows,
-      generation: randomUUID(), agent: isClaudeArgv(launch.argv) ? 'claude' : isOmpArgv(launch.argv) ? 'omp' : null,
+      generation: randomUUID(), agent: isClaudeArgv(launch.argv) ? 'claude' : null,
       startedAt: Date.now(), earlyBuffer: '', bufferOpen: true,
       scrollback: new RollingScrollback(), screen: new ScreenMirror(cols, rows),
       cmdStartedAt: null, lastDataAt: Date.now(), cmdNotified: false,
@@ -147,7 +146,7 @@ export class PtyManager extends EventEmitter {
       }
       this.emit('exit', { projectId, shellIndex, generation: entry.generation, code: exitCode, uptimeMs, earlyOutput: captured });
     });
-    this.emit('spawn', { projectId, shellIndex, pid: pty.pid, generation: entry.generation, agent: entry.agent, ompSpawn: entry.agent === 'omp' ? effective.env[OMP_SPAWN_ENV] : undefined });
+    this.emit('spawn', { projectId, shellIndex, pid: pty.pid, generation: entry.generation, agent: entry.agent });
     return { pid: pty.pid };
   }
 

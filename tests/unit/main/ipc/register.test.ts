@@ -53,7 +53,7 @@ function realSettings(): SettingsRepo {
 
 /** Minimal ptyManager stand-in: every method is a spy, so a test can assert nothing was spawned. */
 function fakePtyManager() {
-  return { on: vi.fn(), off: vi.fn(), spawn: vi.fn(async () => {}), kill: vi.fn(async () => {}), stopIfGeneration: vi.fn<(_: number, __: string) => 'stopped' | 'gone' | 'replaced'>(() => 'gone'), liveShell: vi.fn<(_: number, __: number) => { pid: number; generation: string; agent: 'claude' | 'omp' | null } | null>(() => null), isAlive: vi.fn(() => false), resize: vi.fn(), write: vi.fn(), getScrollback: vi.fn(() => ''), getSnapshot: vi.fn(async () => ''), allPorts: vi.fn(() => []), liveShells: vi.fn(() => []) };
+  return { on: vi.fn(), off: vi.fn(), spawn: vi.fn(async () => {}), kill: vi.fn(async () => {}), stopIfGeneration: vi.fn<(_: number, __: string) => 'stopped' | 'gone' | 'replaced'>(() => 'gone'), liveShell: vi.fn<(_: number, __: number) => { pid: number; generation: string; agent: 'claude' | null } | null>(() => null), isAlive: vi.fn(() => false), resize: vi.fn(), write: vi.fn(), getScrollback: vi.fn(() => ''), getSnapshot: vi.fn(async () => ''), allPorts: vi.fn(() => []), liveShells: vi.fn(() => []) };
 }
 
 describe('registerIpc', () => {
@@ -78,7 +78,7 @@ describe('registerIpc', () => {
     const ipc = fakeIpcMain();
     const shells = [
       { projectId: 1, shellIndex: 0, agent: 'claude', state: 'idle' },
-      { projectId: 2, shellIndex: 3, agent: 'omp', state: 'blocked' },
+      { projectId: 2, shellIndex: 3, agent: 'claude', state: 'blocked' },
     ];
     const list = vi.fn(() => shells);
     const services = { agentStatus: { list } } as unknown as Parameters<typeof registerIpc>[1];
@@ -133,7 +133,7 @@ describe('registerIpc', () => {
       const ipc = fakeIpcMain();
       const ptyManager = fakePtyManager();
       const shells = { remove: vi.fn() };
-      const list = vi.fn((): Array<{ projectId: number; shellIndex: number; agent: 'claude' | 'omp'; state: 'idle' | 'busy' | 'blocked' }> => []);
+      const list = vi.fn((): Array<{ projectId: number; shellIndex: number; agent: 'claude'; state: 'idle' | 'busy' | 'blocked' }> => []);
       const readForGuard = vi.fn((projectId: number, shellIndex: number, generation: string) => {
         if (ptyManager.liveShell(projectId, shellIndex)?.generation !== generation)
           throw new Error('agent status unavailable');
@@ -152,8 +152,8 @@ describe('registerIpc', () => {
       ptyManager.liveShell.mockReturnValue({ pid: 31, generation: 'first', agent: 'claude' });
       list.mockReturnValue([
         { projectId: 4, shellIndex: 0, agent: 'claude', state: 'idle' },
-        { projectId: 4, shellIndex: 1, agent: 'omp', state: 'busy' },
-        { projectId: 5, shellIndex: 0, agent: 'omp', state: 'blocked' },
+        { projectId: 4, shellIndex: 1, agent: 'claude', state: 'busy' },
+        { projectId: 5, shellIndex: 0, agent: 'claude', state: 'blocked' },
       ]);
       await expect(call('shells:inspect-primary', { projectId: 4 })).resolves.toEqual({
         kind: 'live', generation: 'first', agent: 'claude', state: 'idle',
@@ -171,14 +171,14 @@ describe('registerIpc', () => {
 
     it.each(['busy', 'blocked'] as const)('inspects shell-zero %s without sibling attribution', async (state) => {
       const { ptyManager, list, call } = rig();
-      ptyManager.liveShell.mockReturnValue({ pid: 31, generation: 'target', agent: 'omp' });
+      ptyManager.liveShell.mockReturnValue({ pid: 31, generation: 'target', agent: 'claude' });
       list.mockReturnValue([
         { projectId: 4, shellIndex: 1, agent: 'claude', state: 'busy' },
-        { projectId: 7, shellIndex: 0, agent: 'omp', state: 'blocked' },
-        { projectId: 4, shellIndex: 0, agent: 'omp', state },
+        { projectId: 7, shellIndex: 0, agent: 'claude', state: 'blocked' },
+        { projectId: 4, shellIndex: 0, agent: 'claude', state },
       ]);
       await expect(call('shells:inspect-primary', { projectId: 4 })).resolves.toEqual({
-        kind: 'live', generation: 'target', agent: 'omp', state,
+        kind: 'live', generation: 'target', agent: 'claude', state,
       });
     });
 
@@ -272,8 +272,8 @@ describe('registerIpc', () => {
 
     it('allows acknowledged busy work and refuses gone shells without changing persistence', async () => {
       const { ptyManager, list, shells, call } = rig();
-      ptyManager.liveShell.mockReturnValue({ pid: 31, generation: 'first', agent: 'omp' });
-      list.mockReturnValue([{ projectId: 4, shellIndex: 0, agent: 'omp', state: 'busy' }]);
+      ptyManager.liveShell.mockReturnValue({ pid: 31, generation: 'first', agent: 'claude' });
+      list.mockReturnValue([{ projectId: 4, shellIndex: 0, agent: 'claude', state: 'busy' }]);
       ptyManager.stopIfGeneration.mockReturnValue('stopped');
       await expect(call('shells:stop-primary', { projectId: 4, generation: 'first', acknowledgedWorkRisk: true })).resolves.toEqual({ kind: 'stopped' });
       ptyManager.liveShell.mockReturnValue(null);
@@ -294,8 +294,8 @@ describe('registerIpc', () => {
 
     it('does not remove shell persistence or report success when signalling fails', async () => {
       const { ptyManager, list, shells, call } = rig();
-      ptyManager.liveShell.mockReturnValue({ pid: 31, generation: 'first', agent: 'omp' });
-      list.mockReturnValue([{ projectId: 4, shellIndex: 0, agent: 'omp', state: 'idle' }]);
+      ptyManager.liveShell.mockReturnValue({ pid: 31, generation: 'first', agent: 'claude' });
+      list.mockReturnValue([{ projectId: 4, shellIndex: 0, agent: 'claude', state: 'idle' }]);
       ptyManager.stopIfGeneration.mockImplementation(() => { throw new Error('stop failed'); });
       await expect(call('shells:stop-primary', { projectId: 4, generation: 'first', acknowledgedWorkRisk: false })).rejects.toThrow('stop failed');
       expect(shells.remove).not.toHaveBeenCalled();
@@ -1388,6 +1388,40 @@ describe('shells:set-default-cli — project default-agent boundary', () => {
     expect(r.projects.get(r.a.id)).toStrictEqual(before);
     expect(r.ptyManager.kill).not.toHaveBeenCalled();
     expect(r.ptyManager.write).not.toHaveBeenCalled();
+    r.db.close();
+  });
+});
+
+describe('agent session resume across launches', () => {
+  it('a default Codex agent starts fresh once, then resumes its last session on the next launch', async () => {
+    const r = envRig();
+    r.projects.updateConfig(r.a.id, { defaultCliName: 'OpenAI Codex' });
+    await r.call('shells:launch', { projectId: r.a.id });
+    expect(r.spawned(0).argv).toEqual(['codex']);
+    expect(r.projects.get(r.a.id)?.config.resumableAgents).toEqual(['codex']);
+    await r.call('shells:launch', { projectId: r.a.id });
+    expect(r.spawned(1).argv).toEqual(['codex', 'resume', '--last']);
+    r.db.close();
+  });
+
+  it('an opencode tab resumes after it has run, but not while another opencode shell is live', async () => {
+    const r = envRig();
+    await r.call('shells:launch-cli', { projectId: r.a.id, profileName: 'opencode' });
+    expect(r.spawned(0).argv).toEqual(['opencode']);
+    r.ptyManager.isAlive.mockImplementation((...args: unknown[]) => args[1] === 0);
+    await r.call('shells:launch-cli', { projectId: r.a.id, profileName: 'opencode' });
+    expect(r.spawned(1).argv).toEqual(['opencode']);
+    r.ptyManager.isAlive.mockImplementation(() => false);
+    await r.call('shells:launch-cli', { projectId: r.a.id, profileName: 'opencode' });
+    expect(r.spawned(2).argv).toEqual(['opencode', '--continue']);
+    r.db.close();
+  });
+
+  it('a one-off inline command never resumes', async () => {
+    const r = envRig();
+    r.projects.updateConfig(r.a.id, { resumableAgents: ['claude'] });
+    await r.call('shells:launch-cli', { projectId: r.a.id, argv: ['claude'] });
+    expect(r.spawned(0).argv).toEqual(['claude']);
     r.db.close();
   });
 });

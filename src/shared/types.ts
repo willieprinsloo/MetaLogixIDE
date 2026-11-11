@@ -1,3 +1,4 @@
+import type { AgentHarness } from './agent-harness';
 import type { ClaudePermissionMode } from './claude-permission-mode';
 import type { ChromeFrostLevel, TerminalFrostLevel, VibrancyMaterial } from './frosted-glass';
 
@@ -59,6 +60,12 @@ export interface ProjectConfig {
    * take precedence until an explicit default choice replaces them.
    */
   defaultCliName?: string | null;
+  /**
+   * Agent harnesses that have run in this project. A later launch of one of
+   * them resumes its most recent session instead of starting a new one.
+   * Written by the main process when an agent shell spawns.
+   */
+  resumableAgents?: AgentHarness[];
 }
 
 export interface Project {

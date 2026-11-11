@@ -7,34 +7,21 @@ describe('startReceivers', () => {
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   beforeEach(() => warn.mockClear());
 
-  function makeServices(hookStart: () => Promise<void>, ompStart: () => Promise<void>) {
-    const order: string[] = [];
-    return {
-      order,
-      services: {
-        hookRuntime: { start: vi.fn(async () => { order.push('hook:start'); await hookStart(); order.push('hook:done'); }) },
-        ompReceiver: { start: vi.fn(async () => { order.push('omp:start'); await ompStart(); }) },
-      } as unknown as ReceiverServices,
-    };
+  function makeServices(hookStart: () => Promise<void>) {
+    const start = vi.fn(hookStart);
+    return { start, services: { hookRuntime: { start } } as unknown as ReceiverServices };
   }
 
-  it('starts the Claude hook receiver to completion before the OMP receiver', async () => {
-    const { services, order } = makeServices(async () => undefined, async () => undefined);
+  it('starts the Claude hook receiver', async () => {
+    const { services, start } = makeServices(async () => undefined);
     await startReceivers(services);
-    expect(order).toEqual(['hook:start', 'hook:done', 'omp:start']);
+    expect(start).toHaveBeenCalledTimes(1);
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it('degrades when the Claude hook receiver fails and still starts OMP', async () => {
-    const { services, order } = makeServices(async () => { throw new Error('port in use'); }, async () => undefined);
+  it('degrades when the Claude hook receiver fails', async () => {
+    const { services } = makeServices(async () => { throw new Error('port in use'); });
     await expect(startReceivers(services)).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalledWith('[metaide] Claude hook receiver unavailable; Claude hook notifications disabled');
-    expect(order).toEqual(['hook:start', 'omp:start']);
-  });
-
-  it('degrades when the OMP receiver fails', async () => {
-    const { services } = makeServices(async () => undefined, async () => { throw new Error('socket'); });
-    await expect(startReceivers(services)).resolves.toBeUndefined();
-    expect(warn).toHaveBeenCalledWith('[metaide] OMP status receiver unavailable; OMP launches remain runnable without status integration');
   });
 });

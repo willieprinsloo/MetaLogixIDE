@@ -25,7 +25,7 @@ window creation must not move ahead of `registerIpc`.
 |---|---|---|
 | Composition | `src/main/index.ts` | `startApp` runs the startup steps in order. It owns the module state: the main window, popout windows, and the window-setting readers. It reads the environment and app paths. |
 | Composition | `src/main/startup/crash-observability.ts` | Runs at module load, before `app.whenReady()`. Logs uncaught exceptions, unhandled rejections and `child-process-gone`/`render-process-gone` events to `main.log`. Starts the crash reporter with uploads off, so minidumps stay in `app.getPath('crashDumps')`. Logs `[metaide] started` with the pid, version, log file and dump directory, and `[metaide] clean exit` on `will-quit`. A `started` pid with no `clean exit` line for the same pid means that run crashed. Match the lines by pid: a second instance writes `started`, fails the single-instance lock, quits and writes `clean exit`, all while the first instance is still running. |
-| Composition | `src/main/startup/receivers.ts` | Starts the Claude hook receiver, then the OMP receiver. A failure in either is logged and does not stop startup. |
+| Composition | `src/main/startup/receivers.ts` | Starts the Claude hook receiver. A failure is logged and does not stop startup. |
 | Composition | `src/main/startup/boot-rescan.ts` | Rescans every registered root at boot and prunes projects whose folder is gone. A failure is logged. |
 | Logic and adapter | `src/main/startup/done-notifier.ts` | Polls finished long-running commands every 500 ms. `planDoneNotice` decides, for one finished command, whether to notify and how. Each command is planned and shown before the next. The wiring shows the native notification and routes its click to the main window or a popout. |
 
@@ -103,35 +103,43 @@ stay cheap and must never wait on a child process.
 
 ### Coding-agent CLI profiles
 
-The shell tab bar's **+** menu offers **Pi** (`pi`) and **oh-my-pi** (`omp`)
-alongside Claude, OpenAI Codex, and the other built-in CLI profiles.
+The IDE supports three agent harnesses: **Claude** (`claude`), **OpenAI Codex**
+(`codex`) and **opencode** (`opencode`). `src/main/repos/settings-repo.ts`
+seeds one global profile for each. Its name-based merge adds a missing one to
+an existing installation. Startup removes the built-in profiles of harnesses
+the IDE no longer ships (Pi, oh-my-pi, ChatGPT, Gemini, Ollama, Amp, Cody,
+Qwen, Aider, Cursor Agent) only while they still match their seeded command,
+so an edited copy stays. Custom profiles can run any command.
 Install and configure each agent separately; the IDE starts its executable through the user's PATH.
-The IDE does not install agents or supply their provider credentials.
-
-`src/main/repos/settings-repo.ts` seeds the profiles on new installations.
-Its existing name-based merge also adds missing built-in profiles to existing installations.
-Profiles with the same name retain their custom command and environment.
-
-The Pi and oh-my-pi profiles use official SVG icons bundled with the renderer.
-Startup fills missing icons on existing global profiles without replacing
-custom icons, commands, environments, or profile order
-(`src/main/repos/settings-repo.ts:65-85`).
-Pi's monochrome mark follows the app text color; omp retains its gradient.
-The build emits these icons as local files because the CSP blocks data URLs
-(`electron.vite.config.ts:62-63`).
-Icon sources: [Pi favicon](https://pi.dev/favicon.svg) and
-[omp favicon](https://omp.sh/favicon.svg).
-Project profiles override global profiles (`src/main/domain/launch.ts:14-18`).
+Project profiles override global profiles (`src/main/domain/launch.ts`).
 
 Click a profile to open a new terminal tab.
 Use its star button to select the project's default agent.
 Clear the star to use the global launch commands.
-The existing shell launch, environment, tab, and popout paths apply to these agents.
-Pi and oh-my-pi use bare `pi` and `omp` commands on both first and subsequent launches.
-They do not receive Claude-specific permission flags or hooks.
 
-Upstream CLI references: [Pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent)
-and [oh-my-pi](https://github.com/can1357/oh-my-pi/blob/main/docs/cli-reference.md).
+#### Session resume
+
+An agent shell continues its most recent conversation in the project folder
+instead of starting a new one (`src/shared/agent-harness.ts`,
+`src/main/domain/launch.ts`):
+
+| Harness | Resume form |
+| --- | --- |
+| Claude | `claude … --continue` |
+| Codex | `codex resume --last …` |
+| opencode | `opencode … --continue` |
+
+- The harness is identified by the executable's base name, so profiles with
+  extra flags or a full path still resume. A command that already resumes is
+  left alone, and `codex exec …` is never rewritten.
+- A launch spawned by the IDE records its harness in the project's
+  `config.resumableAgents`. Only a harness recorded there is resumed, so a
+  first run never asks an agent for a session that does not exist.
+- A shell that runs a harness while another live shell of the same project runs
+  it starts a new session, so two processes never share one conversation.
+- One-off inline commands (Custom command…) are launched exactly as typed.
+- The built-in global launch without a default agent keeps its
+  `claude`/`claude --continue` pair and the same live-shell guard.
 
 ### Project settings and default agent
 
@@ -142,7 +150,6 @@ The sidebar's **Project settings…** context action can target an inactive proj
 (`src/renderer/App.tsx`, `src/renderer/components/Sidebar.tsx`).
 
 The field uses the merged project and global CLI profile catalog.
-This includes **Pi** (`pi`) and **oh-my-pi** (`omp`).
 Project profiles shadow global profiles with the same name.
 **Use global default** selects no named profile.
 It uses the current global first-launch or subsequent-launch command, not a fixed profile
@@ -697,8 +704,7 @@ Rules:
   otherwise.
 - A close control is the shared `XIcon`, never a `✕` text glyph. Other text
   glyphs (`▸`, `▶`, `›`, `↑`, `↓`, `+`, `−`) and emoji stay text.
-- The Pi and oh-my-pi marks in the new-shell menu render at 16 px, centred in
-  a 20 px slot. Emoji profile icons are not resized.
+- New-shell menu profile icons are text or emoji in a 20 px slot and are not resized.
 - Chat icons live in `src/renderer/components/chat-icons.tsx`, so they can be
   unit tested.
 
@@ -1033,23 +1039,20 @@ Rules:
   releases the shell's session and closes its notification, unless a
   respawn has already replaced that PTY.
 
-### Claude and OMP status dots
+### Claude status dots
 
 The main process derives one status for each live agent shell. Claude status
 comes from the current terminal title and bounded bottom viewport after xterm
-parses PTY output. OMP status comes from lifecycle events in the app-owned
-extension. Neither Claude hooks nor a renderer's scroll position control
-status dots.
+parses PTY output. Neither Claude hooks nor a renderer's scroll position
+control status dots. Codex and opencode shells show no status dot.
 
 | Layer | File | Responsibility |
 |---|---|---|
-| Contract | `src/shared/agent-state.ts`, `src/shared/omp-report.ts` | Define agent identity, three states, accessible labels and a versioned OMP report. |
+| Contract | `src/shared/agent-state.ts` | Define agent identity, three states and accessible labels. |
 | Adapter | `src/main/pty/{manager,screen-mirror}.ts` | Preserve original launch identity and PTY generation. Sample the active terminal's bottom twelve physical rows, join xterm-wrapped fragments, and capture OSC 0/2 title changes. |
 | Adapter | `src/main/agent-status/foreground-posix.ts` | Check process ancestry and the foreground process group for a manually started Claude on macOS or Linux. |
-| Adapter | `src/main/agent-status/omp-receiver.ts` | Receive bounded reports on loopback. Authenticate the current OMP spawn and reject stale reports. |
-| Adapter | `src/main/agent-status/omp-launch.ts`, `resources/omp-status-extension.js` | Add an explicit app-owned extension to direct OMP launches. Report root-session lifecycle without prompt or tool arguments. |
-| Service | `src/main/agent-status/{claude-screen,omp-session,state-tracker}.ts` | Classify Claude's current title, working rows, and live confirmation forms; apply ordered OMP events and publish changed shell states. |
-| Composition | `src/main/agent-status/install.ts`, `src/main/startup/receivers.ts`, `src/main/index.ts` | Start the receiver before any launch, subscribe to PTY lifecycle, and sample Claude status every 250 ms. |
+| Service | `src/main/agent-status/{claude-screen,state-tracker}.ts` | Classify Claude's current title, working rows, and live confirmation forms, and publish changed shell states. |
+| Composition | `src/main/agent-status/install.ts`, `src/main/index.ts` | Subscribe to PTY lifecycle and sample Claude status every 250 ms. |
 | Transport | `src/main/ipc/register.ts`, `src/shared/ipc-contract.ts` | Send `agent-state:list` snapshots, including recognized idle agents, and `agent-state:changed` deltas to all windows. |
 | Renderer | `src/renderer/agent-state.ts`, `src/renderer/hooks/useAgentStates.ts` | Keep the current shell map, apply snapshots and deltas, and compute project/global severity. |
 | Presentation | `src/renderer/components/{StatusDot,ShellTabDot}.tsx`, `src/renderer/styles.css` | Show agent-specific shell labels, generic aggregate labels, the existing three colours and inactive grey tabs. |
@@ -1065,20 +1068,9 @@ Rules:
   including a spinner above the persistent input box. A known current approval
   or confirmation form takes precedence and shows blocked. Unknown or stale
   text remains idle. The sampler never reads scrollback or a user-scrolled viewport.
-- A direct app-launched OMP loads `resources/omp-status-extension.js` with
-  `-e` alongside user extensions. It clears an inherited `OMPCODE=1`
-  nesting flag for this app-owned root shell. If the receiver or extension
-  is unavailable, or `--trusted-extension` conflicts, OMP still starts
-  and its status remains idle.
-- The OMP receiver accepts only bounded versioned reports for the current
-  spawn credential, PTY generation, session and increasing sequence. During
-  a root session, the extension sends current turn and blocker counts every
-  250 ms. A later heartbeat repairs a lost transition. After 1,500 ms
-  without an accepted report, the tracker returns a live OMP shell to idle.
-  A shell exit or replacement revokes its credential. OMP sends no OS notification.
 - The IPC payload carries only `projectId`, `shellIndex`, `agent` and
   `state`. An exit clears the renderer entry. Every recognized individual
-  shell label names Claude or OMP, including idle. Project and global
+  shell label names Claude, including idle. Project and global
   labels use generic text. Severity is blocked, then busy, then idle.
 
 ### Local primary-session unload
@@ -1441,12 +1433,9 @@ links outside a diagram open through the `app:open-external` IPC channel.
    Claude shell's active screen after the parser drains. On macOS and
    Linux, it first checks the foreground process for manually started
    Claude. Unknown screen content or missing process evidence stays idle.
-3. A direct OMP launch loads the packaged extension. Its root session
-   sends versioned, ordered lifecycle reports to the local receiver.
-   The receiver accepts only credentials bound to the live PTY generation.
-4. The tracker sends changed identity or state through
+3. The tracker sends changed identity or state through
    `agent-state:changed`. A new window reads `agent-state:list`.
-   An exit revokes OMP credentials and removes the renderer entry.
+   An exit removes the renderer entry.
 
 ### Project and app-wide environment variables at spawn
 
@@ -1540,12 +1529,6 @@ in the PTY environment, not in argv, settings or logs. Child processes
 inherit it and can raise notifications for that shell, but cannot change
 status dots. Released sessions stop authenticating. The receiver
 authenticates before it buffers the request body.
-
-The OMP receiver binds only to `127.0.0.1`. It limits input size, concurrent
-connections and report rate. It checks a per-spawn secret, PTY generation,
-active session and increasing report sequence
-(`src/main/agent-status/omp-receiver.ts:13-36,62-101,104-145`).
-Only a process with the live shell's current credential can report its OMP status.
 
 The `agent-state:list` reply and `agent-state:changed` event carry only
 `projectId`, `shellIndex`, `agent` and `state`. No hook message, prompt,
@@ -1772,9 +1755,7 @@ the whole side falls back to escaped plain text.
   notifications use authenticated `Notification`, `Stop` and
   `UserPromptSubmit` hooks. Status dots use the live terminal title and
   bounded current screen of a recognized Claude PTY. A plain terminal's text
-  cannot establish Claude identity. OMP dots use authenticated lifecycle reports
-  from the app-owned extension. A reporter heartbeat repairs a missed
-  transition; its lease returns stale busy or blocked status to idle.
+  cannot establish Claude identity.
 - **A `Stop` with background tasks is not the end of the work.** Claude
   Code fires `Stop` when the main agent stops responding, also while
   background shells, subagents or teammates still run. The `background_tasks`

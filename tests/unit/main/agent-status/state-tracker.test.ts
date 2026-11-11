@@ -50,10 +50,6 @@ describe('Agent status transitions', () => {
     await tracker.refresh();
     expect(tracker.list()).toEqual([]);
     expect(observed).not.toHaveBeenCalled();
-    generation = 'g2';
-    tracker.spawn({ ...identity, generation: 'g2', agent: 'omp' });
-    tracker.ompReport(shell, 'g1', 'blocked');
-    expect(tracker.list()).toEqual([{ ...shell, agent: 'omp', state: 'idle' }]);
   });
   it('manual POSIX Claude appears only while it owns the foreground and stale samples cannot revive it', async () => {
     let foreground = true;
@@ -68,26 +64,6 @@ describe('Agent status transitions', () => {
     expect(tracker.list()).toEqual([]);
     expect(observe).toHaveBeenCalledWith(10);
   });
-  it('expires an unrefreshed OMP report while a live generation remains, then recovers from a fresh report', async () => {
-    vi.useFakeTimers();
-    try {
-      const liveShell = () => ({ pid: 10, generation: 'g1', agent: 'omp' as const });
-      const tracker = new AgentStatusTracker({ liveShell, liveStatus: async () => ({ rows: [], title: '' }) }, async () => false);
-      tracker.spawn({ ...identity, agent: 'omp' });
-      tracker.ompReport(shell, 'g1', 'blocked');
-      await vi.advanceTimersByTimeAsync(1600);
-      await tracker.refresh();
-      expect(tracker.list()).toEqual([{ ...shell, agent: 'omp', state: 'idle' }]);
-      tracker.ompReport(shell, 'g1', 'busy');
-      expect(tracker.list()[0]?.state).toBe('busy');
-      tracker.exit({ ...identity, agent: 'omp' });
-      tracker.ompReport(shell, 'g1', 'blocked');
-      expect(tracker.list()).toEqual([]);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it('fails guarded reads only for a failed sample and restores them after a successful sample', async () => {
     let unavailable = true;
     const tracker = new AgentStatusTracker({

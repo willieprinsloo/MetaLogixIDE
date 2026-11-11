@@ -23,10 +23,8 @@ interface Entry {
   identity: SpawnIdentity;
   agent: AgentKind | null;
   state: AgentState;
-  lastOmpReportAt: number | null;
   unavailable: boolean;
 }
-const OMP_LEASE_MS = 1500;
 const key = (shell: ShellKey): string => `${shell.projectId}:${shell.shellIndex}`;
 
 /** Publishes only changes and includes recognized idle shells in initial snapshots. */
@@ -49,7 +47,6 @@ export class AgentStatusTracker {
       identity,
       agent: identity.agent,
       state: 'idle',
-      lastOmpReportAt: null,
       unavailable: identity.agent === 'claude' || (identity.agent === null && this.platform !== 'win32'),
     });
     if (identity.agent) this.publish(identity, identity.agent, 'idle');
@@ -61,20 +58,6 @@ export class AgentStatusTracker {
     if (!existing || existing.identity.generation !== identity.generation) return;
     this.entries.delete(key(identity));
     this.publish(identity, null, 'idle');
-  }
-
-  /** Accepts an authenticated OMP session state only while its PTY generation is current. */
-  ompReport(shell: ShellKey, generation: string, state: AgentState): void {
-    const current = this.entries.get(key(shell));
-    if (
-      !current ||
-      current.identity.generation !== generation ||
-      current.identity.agent !== 'omp' ||
-      !this.current(current)
-    )
-      return;
-    current.lastOmpReportAt = Date.now();
-    this.set(current, 'omp', state);
   }
 
   /** Reads a current snapshot including recognized idle shells. */
@@ -114,17 +97,6 @@ export class AgentStatusTracker {
       [...this.entries.values()].map(async (entry) => {
         const k = key(entry.identity);
         if (this.pending.has(k)) return;
-        if (entry.identity.agent === 'omp') {
-          if (
-            this.current(entry) &&
-            entry.lastOmpReportAt !== null &&
-            Date.now() - entry.lastOmpReportAt >= OMP_LEASE_MS
-          ) {
-            entry.lastOmpReportAt = null;
-            this.set(entry, 'omp', 'idle');
-          }
-          return;
-        }
         this.pending.add(k);
         try {
           await this.refreshOne(entry);

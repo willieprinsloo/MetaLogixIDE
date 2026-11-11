@@ -11,10 +11,9 @@ Built on Electron 32 + React 18 + TypeScript.
 ## What it does
 
 ### Terminal-first project workspace
-- Multi-tab shells per project, each running the CLI of your choice from a
-  catalog of 12 seeded profiles (Claude, OpenAI Codex, Pi, oh-my-pi,
-  ChatGPT (sgpt), Gemini, Ollama, Amp, Cody, Qwen, Aider, Cursor Agent)
-  plus custom commands you save per-project.
+- Multi-tab shells per project, each running Claude, OpenAI Codex or
+  opencode, or a custom command you save per-project. Agent shells resume
+  their last session in the project when reopened.
 - Project switcher, file finder, prompt library, cross-shell scrollback
   search, port detection, hot/hanging shell watchdog.
 - Shared agent memory: every CLI tool call, user prompt, and turn-end is

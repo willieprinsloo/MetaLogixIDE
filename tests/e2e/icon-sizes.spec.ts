@@ -91,8 +91,6 @@ test.beforeAll(async () => {
     await api.invoke('settings:set', {
       key: 'default_cli_profiles',
       value: [
-        { name: 'PiMark', argv: ['/bin/sh'], icon: 'builtin:pi' },
-        { name: 'OmpMark', argv: ['/bin/sh'], icon: 'builtin:omp' },
         { name: 'EmojiMark', argv: ['/bin/sh'], icon: '🦙' },
       ],
     });
@@ -344,7 +342,7 @@ test('AC7: the status-bar branch icon and the Git-panel branch icon both render 
 
 /* ─────────────────────────────── AC9: CLI marks ─────────────────────────────── */
 
-test('AC9: the Pi and oh-my-pi marks render 16x16 centred in an unchanged 20x20 slot; an emoji mark is unaffected', async () => {
+test('AC9: an emoji CLI mark renders in an unchanged 20x20 slot', async () => {
   await win.getByTestId('tabbar-new-shell').click();
   const menu = win.locator('[data-new-shell-menu="1"]');
   await expect(menu).toBeVisible();
@@ -352,18 +350,6 @@ test('AC9: the Pi and oh-my-pi marks render 16x16 centred in an unchanged 20x20 
 
   const slotOf = (name: string): Locator =>
     menu.locator('div.group', { hasText: name }).locator('button').first().locator('span[aria-hidden="true"]').first();
-
-  const piSlot = slotOf('PiMark');
-  await expectIconSize(piSlot, 20, 'Pi mark slot (unchanged)');
-  const piMark = piSlot.locator('> span');
-  await expectIconSize(piMark, 16, 'Pi mark');
-  await expectCentred(piMark, piSlot, 'Pi mark');
-
-  const ompSlot = slotOf('OmpMark');
-  await expectIconSize(ompSlot, 20, 'oh-my-pi mark slot (unchanged)');
-  const ompMark = ompSlot.locator('img');
-  await expectIconSize(ompMark, 16, 'oh-my-pi mark');
-  await expectCentred(ompMark, ompSlot, 'oh-my-pi mark');
 
   // Positive control: the emoji profile's slot box is unchanged and still renders its emoji text.
   const emojiSlot = slotOf('EmojiMark');

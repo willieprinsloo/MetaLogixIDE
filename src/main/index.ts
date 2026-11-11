@@ -364,12 +364,8 @@ function registerWindowsAppId(): void {
 
 /** Builds the service graph from the app's install paths and the test-mode drop directory env. */
 function createServices(): Services {
-  const ompExtensionPath = app.isPackaged
-    ? join(process.resourcesPath, 'omp-status-extension.js')
-    : resolve(app.getAppPath(), 'resources/omp-status-extension.js');
   return buildServices({
     migrationsDir: resolve(app.getAppPath(), 'migrations'),
-    ompExtensionPath,
     dropDir: testModeDropDir(process.env, app.getPath('userData')),
   });
 }
@@ -378,7 +374,6 @@ function createServices(): Services {
 function attachAgentStatus(services: Services): ReturnType<typeof installAgentStatus> {
   const agentStatus = installAgentStatus({
     ptyManager: services.ptyManager,
-    receiver: services.ompReceiver,
     broadcast,
   });
   services.agentStatus = agentStatus.tracker;
@@ -480,7 +475,6 @@ function stopOnQuit(services: Services, donePoll: NodeJS.Timeout, agentStatus: R
     clearInterval(donePoll);
     agentStatus.stop();
     services.keepAwake?.dispose();
-    services.ompReceiver.stop();
     void services.hookRuntime.stop();
     void stopP2P();
   });

@@ -1,5 +1,5 @@
 /** Public per-shell status sent by main; no terminal content or credentials cross IPC. */
-export type AgentKind = 'claude' | 'omp';
+export type AgentKind = 'claude';
 export type AgentState = 'idle' | 'busy' | 'blocked';
 
 /** `agent` is null only when no recognized live agent owns the shell. */
@@ -18,7 +18,6 @@ export const AGENT_STATE_LABEL: Readonly<Record<AgentKind, Readonly<Record<Agent
       busy: 'Claude is working',
       blocked: 'Claude needs your input',
     },
-    omp: { idle: 'OMP is idle', busy: 'OMP is working', blocked: 'OMP needs your input' },
   };
 
 export const AGGREGATE_STATE_LABEL: Readonly<Record<AgentState, string>> = {
