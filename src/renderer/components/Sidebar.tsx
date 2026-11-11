@@ -106,7 +106,7 @@ export function Sidebar({ selectedProjectId, onSelect, onUnloadSession, onNewPro
         />
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7">
+      <div className="flex-initial min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7">
         <MachinesSection onOpenPane={onOpenPane} />
 
         {inUse.length > 0 && (
@@ -165,6 +165,8 @@ export function Sidebar({ selectedProjectId, onSelect, onUnloadSession, onNewPro
           ))}
         </Section>
       </div>
+      {/* Empty space below the list (and the gap above it) drags the window. */}
+      <div aria-hidden className="drag flex-1 min-h-0 -mt-7 -mb-5" data-testid="sidebar-drag-fill" />
       <RenameProjectDialog
         project={renameTarget}
         onClose={() => setRenameTarget(null)}

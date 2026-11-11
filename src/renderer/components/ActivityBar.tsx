@@ -28,7 +28,7 @@ export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, ch
   const platform = useShortcutPlatform();
   return (
     <nav
-      className="w-14 shrink-0 h-full flex flex-col items-center pb-3 gap-2"
+      className="drag w-14 shrink-0 h-full flex flex-col items-center pb-3 gap-2"
       data-testid="activity-bar"
     >
       {/* Keeps the first icon where it sat under the old 44px title bar; on macOS the strip also holds the traffic lights and drags the window. */}

@@ -1043,7 +1043,7 @@ function MainApp() {
           className={`flex flex-1 flex-col min-h-0 min-w-0 bg-[--surface-sheet] rounded-[14px] rounded-t-none ${showStatusBar ? '' : 'rounded-b-none'}`}
           data-sheet-content={mainSheetContent}
         >
-          <div className={`flex-wrap items-center gap-1.5 px-3 pt-2.5 pb-1.5 text-xs shrink-0 ${remotePane ? 'hidden' : 'flex'}`} data-testid={DIFF_TESTIDS.tabBar}>
+          <div className={`drag flex-wrap items-center gap-1.5 px-3 pt-2.5 pb-1.5 text-xs shrink-0 ${remotePane ? 'hidden' : 'flex'}`} data-testid={DIFF_TESTIDS.tabBar}>
             <TabButton active={mainTab === 'shell'} onClick={() => setMainTab('shell')}>Shell</TabButton>
             <TabButton active={mainTab === 'files'} onClick={() => setMainTab('files')}>Files</TabButton>
             <TabButton
