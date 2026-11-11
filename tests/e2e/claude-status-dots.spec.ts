@@ -60,6 +60,9 @@ test('AC8/AC9: ChatTab and unopened project keep their original unrelated indica
     const chat = h.win.locator('[data-view="chat"]');
     await expect(chat).toBeVisible();
     await expect(chat.getByTestId(AGENT_DOT.testId)).toHaveCount(0);
+    // Chat replaces the project list in the sidebar column; go back to it for the row checks.
+    await expect(h.win.locator('aside[data-view="projects"]')).toHaveCount(0);
+    await h.win.getByTestId('ab-projects').click();
     const unopened = h.win
       .locator('[data-testid="project-row"][data-alive="0"]')
       .filter({ has: h.win.getByText('untouched', { exact: true }) })

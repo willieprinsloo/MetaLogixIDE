@@ -236,6 +236,25 @@ test('empty chrome drags the window: rail, sidebar below the list and the top ta
   await win.keyboard.press('Escape');
 });
 
+test('Chat, Git and Tasks open in the sidebar column in place of the project list, not as a second column', async () => {
+  const projects = win.locator('aside[data-view="projects"]');
+  await expect(projects, 'positive control: the project list shows first').toBeVisible();
+  const sidebarX = (await box(projects)).x;
+  try {
+    for (const view of ['git', 'tasks', 'chat'] as const) {
+      await win.getByTestId(`ab-${view}`).click();
+      const panel = win.locator(`[data-view="${view}"]`);
+      await expect(panel).toBeVisible();
+      await expect(projects, `${view}: the project list is replaced`).toHaveCount(0);
+      expect((await box(panel)).x, `${view}: same column as the project list`).toBe(sidebarX);
+      expect(await win.locator('[data-view]').filter({ visible: true }).count(), `${view}: one sidebar column`).toBe(1);
+    }
+  } finally {
+    await win.getByTestId('ab-projects').click();
+  }
+  await expect(projects).toBeVisible();
+});
+
 test('the status bar sits inside the main sheet at its bottom; hiding it gives the space to the content', async () => {
   const setStatusBar = (value: boolean) => win.evaluate(async (v: boolean) => {
     const api = (window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<unknown> } }).api;
