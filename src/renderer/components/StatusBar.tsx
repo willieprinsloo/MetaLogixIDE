@@ -49,7 +49,7 @@ export function StatusBar({ project, aliveCount, onOpenPalette, keepAwake, activ
     void api.invoke('app:get-version', undefined as never).then(({ version }) => setVersion(version)).catch(() => {});
   }, []);
   return (
-    <div className="h-[34px] shrink-0 px-3 text-xs text-[--text-muted] flex items-center gap-4 tabular-nums" data-testid="status-bar">
+    <div className="h-[34px] shrink-0 px-3 border-t border-[--border] text-xs text-[--text-muted] flex items-center gap-4 tabular-nums" data-testid="status-bar">
       <span className="flex items-center gap-1.5">
         <span className={`inline-block w-1.5 h-1.5 rounded-full ${label ? 'bg-[color:var(--accent-mark,var(--accent))]' : 'bg-[--text-muted]/50'}`} />
         {label ?? 'no project'}

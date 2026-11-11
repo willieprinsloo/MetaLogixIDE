@@ -236,17 +236,23 @@ test('empty chrome drags the window: rail, sidebar below the list and the top ta
   await win.keyboard.press('Escape');
 });
 
-test('hiding the status bar removes it and stretches the main sheet to the bottom of the window', async () => {
+test('the status bar sits inside the main sheet at its bottom; hiding it gives the space to the content', async () => {
   const setStatusBar = (value: boolean) => win.evaluate(async (v: boolean) => {
     const api = (window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<unknown> } }).api;
     await api.invoke('settings:set', { key: 'show_status_bar', value: v });
   }, value);
   await expect(win.getByTestId('status-bar'), 'positive control: shown by default').toBeVisible();
+  const main = win.locator('main').first();
+  const height = await win.evaluate(() => window.innerHeight);
+  await expect(main.getByTestId('status-bar'), 'rendered inside the main sheet').toBeVisible();
+  const m = await box(main);
+  const bar = await box(win.getByTestId('status-bar'));
+  expect([bar.x, Math.round(bar.width)], 'spans only the main sheet').toEqual([m.x, Math.round(m.width)]);
+  expect(Math.round(bar.y + bar.height), 'at the bottom of the window').toBe(height);
+  expect(Math.round(m.y + m.height)).toBe(height);
   try {
     await setStatusBar(false);
     await expect(win.getByTestId('status-bar')).toHaveCount(0);
-    const height = await win.evaluate(() => window.innerHeight);
-    const main = win.locator('main').first();
     await expect.poll(async () => { const b = await box(main); return Math.round(b.y + b.height); }).toBe(height);
     expect(await radii(main), 'square on every window edge').toEqual(['0px', '0px', '0px', '0px']);
   } finally {
@@ -384,7 +390,7 @@ test('AC1/AC3/AC10–AC13/AC15/AC25–AC28: chrome dimensions, badges and branch
 
         // AC25
         const main = win.locator('main').first();
-        expect(await radii(main), `${at} sheet radius (square where it meets the window edges)`).toEqual(['0px', '0px', '14px', '14px']);
+        expect(await radii(main), `${at} sheet radius (square: it meets the window edges and the rail)`).toEqual(['0px', '0px', '0px', '0px']);
         expect(await css(main, 'margin-right'), `${at} sheet right margin`).toBe('0px');
 
         // AC26: compact tabs (28px, 8px side padding) with more room around and between them.

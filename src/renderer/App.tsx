@@ -1040,7 +1040,7 @@ function MainApp() {
           )}
         </AnimatePresence>
         <main
-          className={`flex flex-1 flex-col min-h-0 min-w-0 bg-[--surface-sheet] rounded-[14px] rounded-t-none ${showStatusBar ? '' : 'rounded-b-none'}`}
+          className="flex flex-1 flex-col min-h-0 min-w-0 bg-[--surface-sheet]"
           data-sheet-content={mainSheetContent}
         >
           <div className={`drag flex-wrap items-center gap-1.5 px-3 pt-2.5 pb-1.5 text-xs shrink-0 ${remotePane ? 'hidden' : 'flex'}`} data-testid={DIFF_TESTIDS.tabBar}>
@@ -1185,17 +1185,17 @@ function MainApp() {
                   </section>
               : selected ? mainBody(selected) : <EmptyState />}
           </div>
+          {showStatusBar && <StatusBar
+            project={remotePane ? null : selected}
+            aliveCount={aliveCount}
+            activeAgent={activeShellAgentLabel}
+            activeAgentState={activeShellAgentStateLabel}
+            onOpenPalette={() => openPalette('')}
+            keepAwake={keepAwake}
+          />}
         </main>
       </div>
 
-      {showStatusBar && <StatusBar
-        project={remotePane ? null : selected}
-        aliveCount={aliveCount}
-        activeAgent={activeShellAgentLabel}
-        activeAgentState={activeShellAgentStateLabel}
-        onOpenPalette={() => openPalette('')}
-        keepAwake={keepAwake}
-      />}
       {unloadTarget && <UnloadSessionDialog key={unloadTarget.id} project={unloadTarget}
         visible={isPrimaryVisible(unloadTarget.id, { selectedProjectId: selected?.id ?? null, mainTab, activeShellIndex, rightShellIndex })}
         onClose={closeUnloadSession}
