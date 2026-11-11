@@ -537,7 +537,7 @@ describe('paired sessions', () => {
       const pty = host.services.ptyManager;
       vi.spyOn(pty, 'isAlive').mockReturnValue(true);
       vi.spyOn(pty, 'getSnapshot').mockResolvedValue('snapshot');
-      const r = (await viewer.p2p.api.rpcCall(idOf(host), 'shells.attach', { projectId: 1, shellIndex: 0 })) as { streamId: number };
+      await viewer.p2p.api.rpcCall(idOf(host), 'shells.attach', { projectId: 1, shellIndex: 0 });
       await waitFor(() => viewer.events.length >= 1);
       viewer.clients.filter((c) => c.cfg.role === 'viewer').at(-1)!.status = status;
       reg.all.find((t) => t.role === 'viewer' && !t.closed)!.emit('close');

@@ -41,7 +41,7 @@ const handle = {
   onExit(cb: (c: number | null) => void) { handle.exit = cb; },
 };
 const openRemoteShell = vi.fn(() => handle);
-vi.mock('@renderer/p2p/remoteShellBridge', () => ({ openRemoteShell: (...a: unknown[]) => (openRemoteShell as any)(...a) }));
+vi.mock('@renderer/p2p/remoteShellBridge', () => ({ openRemoteShell: (...a: unknown[]) => (openRemoteShell as unknown as (...args: unknown[]) => unknown)(...a) }));
 
 import { ShellTab } from '../../components/ShellTab';
 
@@ -51,8 +51,8 @@ beforeEach(() => {
   invoke.mockResolvedValue({ output: '', profiles: [] });
   openRemoteShell.mockClear();
   handle.exit = undefined;
-  (globalThis as any).ResizeObserver ??= class { observe() {} disconnect() {} unobserve() {} };
-  (window as any).matchMedia ??= () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver ??= class { observe() {} disconnect() {} unobserve() {} };
+  (window as unknown as { matchMedia?: unknown }).matchMedia ??= () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
 });
 
 describe('ShellTab remote source', () => {

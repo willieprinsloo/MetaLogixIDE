@@ -29,7 +29,8 @@ beforeEach(() => {
   invoke.mockImplementation(async (ch: string, a: { method?: string }) => {
     if (ch === 'p2p:fleet-list') return { fleet };
     if (a?.method === 'projects.list') return { result: remoteProjects };
-    if (a?.method === 'shells.list') return { result: [{ shellIndex: 0 }, { shellIndex: 1 }] };
+    if (a?.method === 'roots.list') return { result: [{ id: 1, path: '/work' }] };
+    if (a?.method === 'shells.alive') return { result: [{ projectId: 7, shellIndex: 0 }, { projectId: 7, shellIndex: 1 }] };
     if (a?.method === 'shells.launch') return { result: { shellIndex: 2 } };
     return {};
   });
@@ -61,7 +62,9 @@ describe('Sidebar Machines section', () => {
 
     fireEvent.click(screen.getByText('B'));
     expect(screen.queryByText(/0 projects/)).toBeNull();
-    await screen.findByText(/1 project · 2 live shells/);
+    // The expanded machine lists its live project under In use (MachineExpanded has no summary line).
+    expect(await screen.findByTestId('machine-b-in-use')).toBeTruthy();
+    expect(screen.getAllByText('alpha').length).toBeGreaterThan(0);
     const projectCalls = rpcMethods().filter((m) => m.method === 'projects.list');
     expect(projectCalls).toHaveLength(1);
     expect(rpcMethods().every((m) => m.deviceId === 'b')).toBe(true);
@@ -72,7 +75,7 @@ describe('Sidebar Machines section', () => {
     const onOpenPane = vi.fn();
     render(<Sidebar {...base} onOpenPane={onOpenPane} />);
     fireEvent.click(await screen.findByText('Tower'));
-    fireEvent.click(await screen.findByText('alpha'));
+    fireEvent.click((await screen.findAllByText('alpha'))[0]!);
     expect(onOpenPane).toHaveBeenCalledWith(expect.objectContaining({
       source: { kind: 'remote', deviceId: 'tower' }, projectId: 7,
     }));
