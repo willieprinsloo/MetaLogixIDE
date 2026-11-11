@@ -19,9 +19,9 @@ import {
  */
 export const MAIN_TRAFFIC_LIGHTS = { x: 12, y: 16 } as const;
 
-/** Resolves an untrusted stored or renderer-supplied value to an approved vibrancy material, falling back to `'sidebar'` for anything outside the allow-list (AC18). */
+/** Resolves an untrusted stored or renderer-supplied value to an approved vibrancy material, falling back to the default material for anything outside the allow-list (AC18). */
 export function resolveMaterial(material: unknown): VibrancyMaterial {
-  return isVibrancyMaterial(material) ? material : 'sidebar';
+  return isVibrancyMaterial(material) ? material : FROSTED_GLASS_DEFAULTS.vibrancyMaterial;
 }
 
 /**

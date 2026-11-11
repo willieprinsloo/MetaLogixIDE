@@ -499,3 +499,12 @@
     --surface-pane: var(--pane-solid);
   }
 }
+
+/* Strong is the Zen-style glass: hover, selected and field pills are translucent washes over the wallpaper, not opaque chips; Reduce transparency keeps the opaque chips above. */
+@media (prefers-reduced-transparency: no-preference) {
+  :root[data-platform][data-chrome-frost="strong"] [data-chrome-root] {
+    --surface-hover: color-mix(in oklab, var(--text) 9%, transparent);
+    --surface-active: color-mix(in oklab, var(--text) 14%, transparent);
+    --surface-field: color-mix(in oklab, var(--text) 11%, transparent);
+  }
+}

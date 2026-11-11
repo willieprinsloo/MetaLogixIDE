@@ -36,9 +36,9 @@ export const FROSTED_GLASS_KEYS = {
 
 export const FROSTED_GLASS_DEFAULTS = {
   frostChrome: true,
-  chromeFrostLevel: 'subtle',
+  chromeFrostLevel: 'strong',
   terminalFrostLevel: 'off',
-  vibrancyMaterial: 'sidebar',
+  vibrancyMaterial: 'under-window',
 } as const satisfies {
   frostChrome: boolean;
   chromeFrostLevel: ChromeFrostLevel;
