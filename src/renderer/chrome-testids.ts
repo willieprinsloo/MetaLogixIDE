@@ -1,7 +1,4 @@
-/** Test ids for the main window's title bar. */
+/** Test ids for the main window's chrome. */
 export const CHROME_TESTIDS = {
-  titleGroup: 'title-group',
-  titleName: 'title-name',
-  titleBranch: 'title-branch',
   titleButtons: 'title-buttons',
 } as const;

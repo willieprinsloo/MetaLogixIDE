@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ActivityBar } from '@renderer/components/ActivityBar';
+import { ActivityBar, ABButton } from '@renderer/components/ActivityBar';
 
 const noop = () => {};
 function render(props: { chatUnread?: number; gitDirty?: number; taskCount?: number; active?: 'projects' | 'chat' | 'git' | 'tasks' | 'fleet' } = {}) {
@@ -93,5 +93,30 @@ describe('ActivityBar badges (AC11-AC14)', () => {
   });
   it('hides the badge on the active view', () => {
     expect(badgeOf(render({ ...all, active: 'git' }), 'ab-git')).toBeNull();
+  });
+});
+
+describe('ActivityBar footer', () => {
+  const withFooter = () => renderToStaticMarkup(
+    <ActivityBar active="projects" onSelect={noop} onToggleSidebar={noop} sidebarOpen
+      footer={<ABButton label="Settings" onClick={noop} active={false} data-testid="settings-open"><i /></ABButton>} />,
+  );
+  it('pins footer buttons below a flexible spacer, inside the title-buttons group, after the nav buttons', () => {
+    const html = withFooter();
+    const spacer = html.indexOf('class="flex-1"');
+    expect(spacer).toBeGreaterThan(html.indexOf('data-testid="ab-fleet"'));
+    expect(html.indexOf('data-testid="title-buttons"')).toBeGreaterThan(spacer);
+    expect(html.indexOf('data-testid="settings-open"')).toBeGreaterThan(html.indexOf('data-testid="title-buttons"'));
+  });
+  it('footer buttons keep the 44px rail style and accessible name', () => {
+    const tag = buttons(withFooter()).find((b) => b.includes('settings-open')) ?? '';
+    expect(classesOf(tag)).toEqual(expect.arrayContaining(['w-11', 'h-11']));
+    expect(tag).toContain('aria-label="Settings"');
+  });
+  it('renders no footer group without footer', () => {
+    expect(render()).not.toContain('title-buttons');
+  });
+  it('reserves a draggable strip at the top on mac for the traffic lights', () => {
+    expect(render()).toMatch(/class="drag h-9[^"]*"[^>]*data-testid="ab-drag-region"/);
   });
 });

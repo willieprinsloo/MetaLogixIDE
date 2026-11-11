@@ -1651,6 +1651,7 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
   // Wired separately below: these channels emit keyed `settings:changed`
   // events that the fixed per-channel payload cannot express.
   const CUSTOM_EMIT_CHANNELS: Partial<Record<IpcChannelName, true>> = {
+    'settings:set': true,
     'settings:set-font': true,
     'settings:set-terminal-font-size': true,
     'settings:set-terminal-font-weight': true,
@@ -1672,6 +1673,12 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
       return result;
     });
   }
+
+  ipcMain.handle('settings:set', async (_e, req: IpcRequest<'settings:set'>) => {
+    const result = await handlers['settings:set'](services, req);
+    sendEvent('settings:changed', { key: req.key });
+    return result;
+  });
 
   ipcMain.handle('settings:set-font', async (_e, req: IpcRequest<'settings:set-font'>) => {
     const result = await handlers['settings:set-font'](services, req);

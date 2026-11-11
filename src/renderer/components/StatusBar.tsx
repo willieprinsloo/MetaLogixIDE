@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Project } from '@shared/types';
 import { useGitStatus } from '@renderer/hooks/useGitStatus';
 import { usePorts } from '@renderer/hooks/usePorts';
+import { useShowStatusBarPorts } from '@renderer/hooks/useShowStatusBarPorts';
 import { api } from '@renderer/api';
 import { toast } from '@renderer/hooks/useToasts';
 import { PALETTE_COPY, PALETTE_TESTIDS } from '@renderer/command-palette-contract';
@@ -36,7 +37,8 @@ interface StatusBarProps {
 export function StatusBar({ project, aliveCount, onOpenPalette, keepAwake, activeAgent, activeAgentState }: StatusBarProps): React.JSX.Element {
   const { status: localGit } = useGitStatus(project?.id ?? null);
   const git = { ...localGit, changedCount: Object.keys(localGit.files).length };
-  const ports = usePorts(project?.id ?? null);
+  const showPorts = useShowStatusBarPorts();
+  const ports = usePorts(project?.id ?? null, showPorts);
   const label = project?.name ?? null;
   const platform = useShortcutPlatform();
   // App version shown at the far right so users know exactly which build

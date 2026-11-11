@@ -132,6 +132,8 @@ export type SettingsMap = {
   'notify_claude_needs_input':     boolean;
   /** Show an OS notification when a Claude shell finishes its turn and waits for the next prompt. */
   'notify_claude_finished':        boolean;
+  /** Show listening-port chips in the status bar. Default on. */
+  'show_status_bar_ports':         boolean;
   /** macOS and Linux: frosted chrome on/off. Write via settings:set-frost-chrome only. */
   'frost_chrome':                  boolean;
   /** macOS and Linux: chrome frost strength. Write via settings:set-chrome-frost-level only. */
