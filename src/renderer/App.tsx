@@ -5,8 +5,6 @@ import { UnloadSessionDialog } from './components/UnloadSessionDialog';
 import { RemoteProjectPane } from './components/RemoteProjectPane';
 import type { OpenPaneRequest } from './components/MachinesSection';
 import { StatusBar } from './components/StatusBar';
-import { TitleGroup } from './components/TitleGroup';
-import { CHROME_TESTIDS } from './chrome-testids';
 import { SIDEBAR_WIDTH, useSidebarWidth } from './sidebar-width';
 import { ShellTab } from './components/ShellTab';
 import { FilesTab } from './components/FilesTab';
@@ -20,7 +18,7 @@ import { PROJECT_SETTINGS_COPY, PROJECT_SETTINGS_TESTIDS, type ProjectSettingsTa
 import type { SettingsSection } from './components/settings/nav-icons';
 import { ResizeHandle } from './components/ResizeHandle';
 import { NewProjectDialog } from './components/NewProjectDialog';
-import { ActivityBar, type ActivityView } from './components/ActivityBar';
+import { ActivityBar, ABButton, type ActivityView } from './components/ActivityBar';
 import { CommandPalette } from './components/CommandPalette';
 import { ShortcutsHelp } from './components/ShortcutsHelp';
 import type { PaletteRequest, PaletteSeed } from './command-palette-contract';
@@ -887,6 +885,13 @@ function MainApp() {
     setSelected((current) => current?.id === project.id ? project : current);
   }
 
+  async function tileWindows() {
+    try {
+      const { arranged } = await api.invoke('windows:tile-all', undefined as never);
+      toast(`Tiled ${arranged} window${arranged === 1 ? '' : 's'}`, { kind: 'success', timeoutMs: 1200 });
+    } catch (e) { toast('Tile failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
+  }
+
   function unloadCurrent(event: React.MouseEvent<HTMLButtonElement>) {
     if (selected && primaryAlive) openUnloadSession(selected, event.currentTarget);
   }
@@ -895,49 +900,6 @@ function MainApp() {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-[--surface-chrome]" data-chrome-root>
-      {/* Native-feeling drag region for hidden-inset title bar. pr-[3px] puts the
-          last button's 14px glyph 12px from the right edge, mirroring the traffic lights' inset. */}
-      <div className="drag relative h-11 flex items-center pl-[76px] pr-[3px] shrink-0">
-        <div className="absolute inset-y-0 left-[130px] right-[130px] flex items-center justify-center min-w-0 pointer-events-none">
-          <TitleGroup
-            projectName={activeView === 'fleet' ? 'Fleet' : remotePane ? `${remotePane.projectName} on ${remotePane.deviceName}` : selected?.name ?? null}
-            branch={!remotePane && activeView !== 'fleet' && git.isRepo ? (git.branch ?? 'HEAD') : null}
-          />
-        </div>
-        <div className="ml-auto flex items-center gap-0.5 no-drag" data-testid={CHROME_TESTIDS.titleButtons}>
-          <button
-            onClick={cycleTheme}
-            className="text-[--text-muted] hover:text-[--text] w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[--panel-strong]"
-            title={`Theme: ${themeMode}${themeMode === 'system' ? ` (following OS — currently ${effectiveTheme})` : ''}. Click to toggle.`}
-            data-testid="theme-toggle"
-            data-theme-mode={themeMode}
-          >
-            <ThemeIcon mode={themeMode} effective={effectiveTheme} />
-          </button>
-          <button
-            onClick={async () => {
-              try {
-                const { arranged } = await api.invoke('windows:tile-all', undefined as never);
-                toast(`Tiled ${arranged} window${arranged === 1 ? '' : 's'}`, { kind: 'success', timeoutMs: 1200 });
-              } catch (e) { toast('Tile failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
-            }}
-            className="text-[--text-muted] hover:text-[--text] w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[--panel-strong]"
-            title="Tile all our windows on the screen"
-            data-testid="tile-windows"
-          >
-            <TileIcon />
-          </button>
-          <button
-            onClick={() => setSettingsOpen(true)}
-            className="text-[--text-muted] hover:text-[--text] w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[--panel-strong]"
-            title={SHORTCUT_COPY.settingsTitle(platform)}
-            data-testid="settings-open"
-          >
-            <GearIcon />
-          </button>
-        </div>
-      </div>
-
       <div className="flex-1 flex min-h-0">
         <ActivityBar
           active={activeView}
@@ -950,6 +912,25 @@ function MainApp() {
           onToggleSidebar={() => toggleSidebar(true)}
           sidebarOpen={sidebarOpen}
           chatUnread={chatUnread}
+          footer={(
+            <>
+              <ABButton
+                label={`Theme: ${themeMode}${themeMode === 'system' ? ` (following OS — currently ${effectiveTheme})` : ''}. Click to toggle.`}
+                onClick={cycleTheme}
+                active={false}
+                data-testid="theme-toggle"
+                data-theme-mode={themeMode}
+              >
+                <ThemeIcon mode={themeMode} effective={effectiveTheme} />
+              </ABButton>
+              <ABButton label="Tile all our windows on the screen" onClick={tileWindows} active={false} data-testid="tile-windows">
+                <TileIcon />
+              </ABButton>
+              <ABButton label={SHORTCUT_COPY.settingsTitle(platform)} onClick={() => setSettingsOpen(true)} active={false} data-testid="settings-open">
+                <GearIcon />
+              </ABButton>
+            </>
+          )}
           gitDirty={git.dirty ? Object.keys(git.files).length : undefined}
           taskCount={taskCount || undefined}
         />
@@ -1569,7 +1550,7 @@ function TileIcon() {
   // Three tall bars side-by-side — matches how tileAllOurWindows lays
   // shells out in a chatbot-style row of columns.
   return (
-    <svg width={ICON_SIZE.md} height={ICON_SIZE.md} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3"  y="3" width="4.5" height="18" rx="1" />
       <rect x="9.75"  y="3" width="4.5" height="18" rx="1" />
       <rect x="16.5" y="3" width="4.5" height="18" rx="1" />
@@ -1579,7 +1560,7 @@ function TileIcon() {
 
 function GearIcon() {
   return (
-    <svg width={ICON_SIZE.md} height={ICON_SIZE.md} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
     </svg>
@@ -1590,7 +1571,7 @@ function ThemeIcon({ mode, effective }: { mode: ThemeMode; effective: 'light' | 
   // system → half moon over sun (auto), light → sun, dark → moon
   if (mode === 'system') {
     return (
-      <svg width={ICON_SIZE.md} height={ICON_SIZE.md} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="12" cy="12" r="4" />
         <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" opacity={effective === 'dark' ? 0.4 : 1} />
         <path d="M12 8a4 4 0 0 0 0 8" fill="currentColor" opacity={effective === 'dark' ? 1 : 0} />
@@ -1599,14 +1580,14 @@ function ThemeIcon({ mode, effective }: { mode: ThemeMode; effective: 'light' | 
   }
   if (mode === 'light') {
     return (
-      <svg width={ICON_SIZE.md} height={ICON_SIZE.md} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="12" cy="12" r="4" />
         <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
       </svg>
     );
   }
   return (
-    <svg width={ICON_SIZE.md} height={ICON_SIZE.md} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
     </svg>
   );

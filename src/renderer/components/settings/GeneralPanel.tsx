@@ -55,6 +55,8 @@ export function GeneralPanel({
         cap={board.cap}
         scanDepth={board.scanDepth}
         maxWatched={board.maxWatched}
+        showPorts={board.showPorts}
+        onShowPorts={(v) => board.update('show_status_bar_ports', v)}
         onCap={(v) => board.update('keep_alive_cap', v)}
         onScanDepth={(v) => board.update('scan_depth', v)}
         onMaxWatched={(v) => board.update('max_watched_paths', v)}
@@ -74,7 +76,8 @@ type BoardKey =
   | 'scan_depth'
   | 'max_watched_paths'
   | 'notify_claude_needs_input'
-  | 'notify_claude_finished';
+  | 'notify_claude_finished'
+  | 'show_status_bar_ports';
 
 interface BoardValues {
   readonly cap: number | null;
@@ -83,6 +86,7 @@ interface BoardValues {
   readonly opacity: number;
   readonly notifyNeedsInput: boolean;
   readonly notifyFinished: boolean;
+  readonly showPorts: boolean;
 }
 
 const INITIAL: BoardValues = {
@@ -92,6 +96,7 @@ const INITIAL: BoardValues = {
   opacity: 100,
   notifyNeedsInput: true,
   notifyFinished: true,
+  showPorts: true,
 };
 
 const FIELD: Readonly<Record<BoardKey, keyof BoardValues>> = {
@@ -100,17 +105,19 @@ const FIELD: Readonly<Record<BoardKey, keyof BoardValues>> = {
   max_watched_paths: 'maxWatched',
   notify_claude_needs_input: 'notifyNeedsInput',
   notify_claude_finished: 'notifyFinished',
+  show_status_bar_ports: 'showPorts',
 };
 
-/** Loads the General board's six settings keys in one batch. */
+/** Loads the General board's seven settings keys in one batch. */
 export async function loadBoard(): Promise<BoardValues> {
-  const [c, d, w, o, ni, nf] = await Promise.all([
+  const [c, d, w, o, ni, nf, sp] = await Promise.all([
     api.invoke('settings:get', { key: 'keep_alive_cap' }),
     api.invoke('settings:get', { key: 'scan_depth' }),
     api.invoke('settings:get', { key: 'max_watched_paths' }),
     api.invoke('settings:get', { key: 'window_opacity' }),
     api.invoke('settings:get', { key: 'notify_claude_needs_input' }),
     api.invoke('settings:get', { key: 'notify_claude_finished' }),
+    api.invoke('settings:get', { key: 'show_status_bar_ports' }),
   ]);
   return {
     cap: c.value as number,
@@ -119,10 +126,11 @@ export async function loadBoard(): Promise<BoardValues> {
     opacity: (o.value as number) ?? 100,
     notifyNeedsInput: (ni.value as boolean) ?? true,
     notifyFinished: (nf.value as boolean) ?? true,
+    showPorts: (sp.value as boolean) ?? true,
   };
 }
 
-/** Board settings state: loads the six keys once, `update` sets a value locally and saves it, `applyOpacity` clamps to 30..100 and applies window opacity. The Frosted glass group owns its own four settings through `useFrostedGlassSettings`. */
+/** Board settings state: loads the seven keys once, `update` sets a value locally and saves it, `applyOpacity` clamps to 30..100 and applies window opacity. The Frosted glass group owns its own four settings through `useFrostedGlassSettings`. */
 export function useBoardSettings() {
   const [values, setValues] = useState<BoardValues>(INITIAL);
 
@@ -186,6 +194,8 @@ function WorkspaceSection({
   cap,
   scanDepth,
   maxWatched,
+  showPorts,
+  onShowPorts,
   onCap,
   onScanDepth,
   onMaxWatched,
@@ -193,6 +203,8 @@ function WorkspaceSection({
   readonly cap: number | null;
   readonly scanDepth: number | null;
   readonly maxWatched: number | null;
+  readonly showPorts: boolean;
+  readonly onShowPorts: (on: boolean) => void;
   readonly onCap: (v: number) => void;
   readonly onScanDepth: (v: number) => void;
   readonly onMaxWatched: (v: number) => void;
@@ -200,6 +212,13 @@ function WorkspaceSection({
   const id = useId();
   return (
     <SettingsSection title="Workspace">
+      <Switch
+        label="Show ports in the status bar"
+        ariaLabel="Show ports in the status bar"
+        testId="show-status-bar-ports-toggle"
+        checked={showPorts}
+        onChange={onShowPorts}
+      />
       <SettingRow label="Keep-alive cap" hint="Shells kept running at once; the oldest is closed first." htmlFor={`${id}-cap`}>
         <WorkspaceNumber id={`${id}-cap`} value={cap} min={1} max={20} onChange={onCap} />
       </SettingRow>

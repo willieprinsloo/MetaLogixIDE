@@ -687,7 +687,6 @@ function chromeLabels(t: Tree): [string, Colour, Colour[]][] {
       token(t, '--hue-orange-soft-text'),
       chip(t, '--hue-orange-soft'),
     ],
-    ['title-bar branch name (--hue-pink)', token(t, '--hue-pink'), composites(t)],
     ...GIT_LETTERS.map((s): [string, Colour, Colour[]] => [
       `Git panel status letter ${s}`,
       evalColour(gitLetterExpr(s), t.scope),
@@ -815,21 +814,6 @@ const CLAUDE_DOTS = ['--agent-idle', '--agent-busy', '--agent-blocked'] as const
  * the chat column, with the classes that paint it, so the source scan below can prove nothing is left out.
  */
 const CHROME_PAINT: readonly ChromePaint[] = [
-  paint('text', 'TitleGroup.tsx', 'title-bar project name', 'var(--text)', ['text-[--text]']),
-  paint('text', 'TitleGroup.tsx', 'title-bar branch name', 'var(--hue-pink)', [
-    'text-[--hue-pink]',
-  ]),
-  paint('graphic', 'App.tsx#title', 'title-bar button icon', 'var(--text-muted)', [
-    'text-[--text-muted]',
-  ]),
-  paint(
-    'graphic',
-    'App.tsx#title',
-    'title-bar button icon, hovered',
-    'var(--text)',
-    ['hover:text-[--text]', 'hover:bg-[--panel-strong]'],
-    [RAISED],
-  ),
   paint('graphic', 'ActivityBar.tsx', 'activity-bar icon', 'var(--text-muted)', [
     'text-[--text-muted]',
   ]),
@@ -1214,10 +1198,8 @@ function between(src: string, from: string, to: string): string {
   return src.slice(start, end);
 }
 
-/** The chrome markup of each source: whole component files, the title-bar and popout slices of App.tsx, and StatusBar without its popover. */
+/** The chrome markup of each source: whole component files, the popout slice of App.tsx, and StatusBar without its popover. */
 function chromeSource(src: string): string {
-  if (src === 'App.tsx#title')
-    return between(APP, 'data-testid={CHROME_TESTIDS.titleButtons}', '<main');
   if (src === 'App.tsx#popout')
     return between(
       APP,

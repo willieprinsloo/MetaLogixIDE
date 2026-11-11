@@ -15,7 +15,7 @@ import { badgeContrast, colourDistance, elementColour, fmtColour, isFrostedChrom
 import { closeApp, guardedLaunch } from './helpers/claude-harness';
 
 /**
- * Shell chrome dimensions and the centred title
+ * Shell chrome dimensions; the main window has no title bar (its icons live at the bottom of the activity bar)
  * (docs/specs/2026-10-06-shell-chrome-cleanup.md AC1–AC15, AC25–AC28, AC31).
  *
  * One app, three projects under one root:
@@ -26,14 +26,12 @@ import { closeApp, guardedLaunch } from './helpers/claude-harness';
  *   - `plain`: not a repository (package.json marker only).
  * Every seeded fact is asserted at seed time (`seed`).
  *
- * Tests run in file order and share the app: the no-project title is read
- * before any project is opened, and the width-migration test reloads, so it
+ * Tests run in file order and share the app: the width-migration test reloads, so it
  * runs last.
  */
 
 const PALETTES = ['default', 'catppuccin', 'rose-pine'] as const;
 const THEMES: readonly EffectiveTheme[] = ['dark', 'light'];
-const LONG_BRANCH = `feature/${'x'.repeat(192)}`;
 /** The migration marker named in plan §2.8; not exported by the contract, so named here. */
 const WIDTH_KEY = 'metaide.sidebarWidth';
 const MIGRATED_KEY = 'metaide.sidebarWidth.migrated';
@@ -133,7 +131,7 @@ function projectRow(name: string): Locator {
 
 async function selectProject(name: string): Promise<void> {
   await projectRow(name).click();
-  await expect(win.getByTestId(CHROME_TESTIDS.titleName)).toHaveText(name);
+  await expect(win.getByTestId('status-bar')).toContainText(name);
 }
 
 async function box(l: Locator): Promise<{ x: number; y: number; width: number; height: number }> {
@@ -171,26 +169,6 @@ function statusBranch(page: Page): Promise<string | null> {
   });
 }
 
-function titleBranch(): Locator {
-  return win.getByTestId(CHROME_TESTIDS.titleBranch);
-}
-
-/** Midpoint of the title group minus the window's centre. */
-async function titleOffCentre(): Promise<number> {
-  const g = await box(win.getByTestId(CHROME_TESTIDS.titleGroup));
-  const inner = await win.evaluate(() => window.innerWidth);
-  return g.x + g.width / 2 - inner / 2;
-}
-
-async function expectCentredAt(widths: number[]): Promise<void> {
-  for (const w of widths) {
-    await resizeMain(w, 900);
-    await expect.poll(async () => Math.abs(await titleOffCentre()), { message: `title group centred at width ${w}` })
-      .toBeLessThanOrEqual(2);
-  }
-  await resizeMain(1440, 900);
-}
-
 async function setLook(page: Page, palette: string, theme: EffectiveTheme): Promise<void> {
   await page.evaluate(({ palette, theme }) => {
     document.documentElement.setAttribute('data-palette', palette);
@@ -215,146 +193,104 @@ async function restoreLook(page: Page, look: { palette: string | null; theme: st
   }, look);
 }
 
-async function projectId(name: string): Promise<number> {
-  return win.evaluate(async (n) => {
-    const api = (window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<{ projects: { id: number; name: string }[] }> } }).api;
-    const { projects } = await api.invoke('projects:list', undefined);
-    const p = projects.find((x) => x.name === n);
-    if (!p) throw new Error(`no project ${n}`);
-    return p.id;
-  }, name);
-}
+/* ─────────────────────────────── no title bar ─────────────────────────────── */
 
-/* ─────────────────────────────── title ─────────────────────────────── */
-
-test('AC5/AC6/AC2: with no project the title reads "MetaLogix IDE", has no branch, and is centred', async () => {
-  const name = win.getByTestId(CHROME_TESTIDS.titleName);
-  await expect(name, 'positive control: the title renders').toHaveText('MetaLogix IDE');
-  await expect(win.getByTestId('status-bar'), 'no project is selected').toContainText('no project');
-  await expect(titleBranch()).toHaveCount(0);
-  expect(await css(name, 'font-size')).toBe('12.5px');
-  await expectCentredAt([1440, 1000]);
+test('no title bar: the title group is gone and the shell area starts at the top of the window', async () => {
+  await expect(win.getByTestId('activity-bar'), 'positive control: the chrome renders').toBeVisible();
+  await expect(win.getByTestId('title-group')).toHaveCount(0);
+  await expect(win.getByTestId('title-name')).toHaveCount(0);
+  const bar = await box(win.getByTestId('activity-bar'));
+  const main = await box(win.locator('main').first());
+  expect(bar.y, 'activity bar fills from the top edge').toBe(0);
+  expect(main.y, 'main sheet is not pushed down by a 44px title bar').toBeLessThan(44);
 });
 
-test('AC6/AC31/AC3/AC4/AC2: a git project shows its name and branch, matches the status bar, and stays centred', async () => {
+test('the project name and branch still show in the status bar and the OS window title', async () => {
   await selectProject('chromed');
   await expect(win.locator('[data-testid="shell-tab"]')).toBeVisible({ timeout: 5000 });
   expect(await win.title(), 'document title format is unchanged').toBe('chromed — MetaLogix IDE');
-  await expect(titleBranch()).toHaveText('main', { timeout: 10000 });
-  await expect.poll(() => statusBranch(win), { message: 'status bar shows the same branch' }).toBe('main');
-  expect(await css(win.getByTestId(CHROME_TESTIDS.titleName), 'font-size')).toBe('12.5px');
-  await expectCentredAt([1440, 1000]);
+  await expect.poll(() => statusBranch(win), { timeout: 10000 }).toBe('main');
 });
 
-test('AC5: a non-repo project shows its name, no branch, and stays centred', async () => {
-  const id = await projectId('plain');
-  const status = await win.evaluate(async (projectId) => {
-    const api = (window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<{ isRepo: boolean }> } }).api;
-    return api.invoke('git:status', { projectId });
-  }, id);
-  expect(status.isRepo, 'input state: the app sees plain as a non-repo').toBe(false);
-
-  await selectProject('plain');
-  await expect(win.getByTestId('status-bar'), 'positive control: the status bar switched to plain').toContainText('plain');
-  await expect(titleBranch()).toHaveCount(0);
-  await expectCentredAt([1440, 1000]);
-});
-
-test('AC4/AC14: the branch follows a checkout and detached HEAD in title and status bar; a clean repo shows no git badge', async () => {
+test('AC4/AC14: the status bar branch follows a checkout and detached HEAD; a clean repo shows no git badge', async () => {
   const dir = join(demoRoot, 'branchy');
   await selectProject('branchy');
-  await expect(titleBranch()).toHaveText('main', { timeout: 10000 });
+  await expect.poll(() => statusBranch(win), { timeout: 10000 }).toBe('main');
   await expect(win.locator('[data-testid="ab-tasks"] [data-tone]'), 'positive control: the tasks badge renders').toHaveText('1');
   await expect(win.locator('[data-testid="ab-git"] [data-tone]'), 'clean tree (0 changes): no git badge').toHaveCount(0);
 
   git(dir, ['checkout', '-q', '-b', 'feature/title-bar']);
-  await expect.poll(async () => [await titleBranch().textContent(), await statusBranch(win)], { timeout: 10000 })
-    .toEqual(['feature/title-bar', 'feature/title-bar']);
+  await expect.poll(() => statusBranch(win), { timeout: 10000 }).toBe('feature/title-bar');
 
   git(dir, ['checkout', '-q', '--detach']);
-  await expect.poll(async () => [await titleBranch().textContent(), await statusBranch(win)], { timeout: 10000 })
-    .toEqual(['HEAD', 'HEAD']);
+  await expect.poll(() => statusBranch(win), { timeout: 10000 }).toBe('HEAD');
 });
 
-test('AC7: a 200-character branch truncates with an ellipsis and stays clear of the traffic lights and buttons at 1000px', async () => {
-  const dir = join(demoRoot, 'branchy');
-  expect(LONG_BRANCH).toHaveLength(200);
-  git(dir, ['checkout', '-q', '-b', LONG_BRANCH]);
-  await selectProject('branchy');
-  await resizeMain(1000, 900);
-  try {
-    await expect(titleBranch()).toHaveText(LONG_BRANCH, { timeout: 10000 });
-    const group = await box(win.getByTestId(CHROME_TESTIDS.titleGroup));
-    const buttons = await box(win.getByTestId(CHROME_TESTIDS.titleButtons));
-    const name = await box(win.getByTestId(CHROME_TESTIDS.titleName));
-    expect(name.width, 'positive control: the project name is still shown').toBeGreaterThan(0);
-    expect(group.x, 'title group clears the traffic-light zone').toBeGreaterThanOrEqual(76);
-    expect(group.x + group.width, 'title group ends before the title buttons').toBeLessThanOrEqual(buttons.x);
-    const overflow = await titleBranch().evaluate((el) => ({
-      scroll: el.scrollWidth, client: el.clientWidth, ellipsis: getComputedStyle(el).textOverflow,
-    }));
-    expect(overflow.scroll, 'branch text overflows its box').toBeGreaterThan(overflow.client);
-    expect(overflow.ellipsis).toBe('ellipsis');
-  } finally {
-    await resizeMain(1440, 900);
-  }
-});
-
-test('AC8: title-bar buttons are 32x32 with an 8px radius, in the title-buttons group', async () => {
-  const group = win.getByTestId(CHROME_TESTIDS.titleButtons);
+test('AC8: the theme, tile and settings buttons sit at the bottom of the activity bar, 44x44 with a 10px radius', async () => {
+  const bar = win.getByTestId('activity-bar');
+  const group = bar.getByTestId(CHROME_TESTIDS.titleButtons);
+  const barBox = await box(bar);
+  const fleet = await box(bar.getByTestId('ab-fleet'));
+  let previousBottom = fleet.y + fleet.height;
   for (const id of ['theme-toggle', 'tile-windows', 'settings-open']) {
     const b = group.getByTestId(id);
     await expect(b, `${id} sits in the title-buttons group`).toBeVisible();
     const r = await box(b);
-    expect([r.width, r.height], `${id} size`).toEqual([32, 32]);
-    expect(await radii(b), `${id} radius`).toEqual(['8px', '8px', '8px', '8px']);
+    expect([r.width, r.height], `${id} size`).toEqual([44, 44]);
+    expect(await radii(b), `${id} radius`).toEqual(['10px', '10px', '10px', '10px']);
+    expect(r.y, `${id} is below the previous button`).toBeGreaterThanOrEqual(previousBottom);
+    previousBottom = r.y + r.height;
+    expect(await b.getAttribute('aria-label'), `${id} has an accessible name`).toBeTruthy();
   }
-  // AC8a: the last button's glyph ends 12px from the window's right edge.
-  const glyph = await box(group.getByTestId('settings-open').locator('svg'));
-  const inner = await win.evaluate(() => window.innerWidth);
-  expect(Math.abs(inner - (glyph.x + glyph.width) - 12), `gear glyph right inset ${inner - (glyph.x + glyph.width)}px`).toBeLessThanOrEqual(1);
-  expect(await css(win.locator('.drag').first(), 'padding-right')).toBe('3px');
+  expect(barBox.y + barBox.height - previousBottom, 'settings is pinned to the bottom with the rail padding').toBeLessThanOrEqual(16);
+  const gapAboveFooter = (await box(group.getByTestId('theme-toggle'))).y - (fleet.y + fleet.height);
+  expect(gapAboveFooter, 'a flexible spacer separates the footer from the nav buttons').toBeGreaterThan(40);
 });
 
-test('AC10a: the activity bar has no Settings button; Settings stays reachable from the title-bar gear', async () => {
-  await expect(win.getByTestId('activity-bar').locator('button'), 'positive control: the activity bar renders').toHaveCount(5);
+test('the top of the activity bar is a draggable strip (traffic-light room on macOS) and the footer buttons are not draggable', async () => {
+  const platform = await app.evaluate(() => process.platform);
+  const strip = win.getByTestId('ab-drag-region');
+  if (platform === 'darwin') {
+    expect((await box(strip)).height).toBe(36);
+    expect(await css(strip, '-webkit-app-region')).toBe('drag');
+  } else {
+    await expect(strip).toHaveCount(0);
+  }
+  expect(await css(win.getByTestId(CHROME_TESTIDS.titleButtons), '-webkit-app-region')).toBe('no-drag');
+});
+
+test('AC10a: the activity bar has six rail buttons plus the three footer buttons, and no ab-settings button', async () => {
+  await expect(win.getByTestId('activity-bar').locator('button'), 'positive control: the activity bar renders').toHaveCount(9);
   await expect(win.getByTestId('ab-settings')).toHaveCount(0);
-  await expect(win.getByTestId(CHROME_TESTIDS.titleButtons).getByTestId('settings-open')).toBeVisible();
+  await expect(win.getByTestId('activity-bar').getByTestId('settings-open')).toBeVisible();
 });
 
 /* ─────────────────────────────── palette x theme matrix ─────────────────────────────── */
 
 test('AC1/AC3/AC10–AC13/AC15/AC25–AC28: chrome dimensions, badges and branch colour hold in every palette and theme', async () => {
   await selectProject('chromed');
-  await expect(titleBranch()).toHaveText('main', { timeout: 10000 });
+  await expect.poll(() => statusBranch(win), { timeout: 10000 }).toBe('main');
   const gitBadge = win.locator('[data-testid="ab-git"] [data-tone]');
   const taskBadge = win.locator('[data-testid="ab-tasks"] [data-tone]');
   await expect(gitBadge, 'AC14: 150 changes cap at 99+').toHaveText('99+', { timeout: 10000 });
   await expect(taskBadge).toHaveText('3');
 
   const look = await currentLook(win);
-  // Frosted chrome on, macOS or Linux (presence-gated cascade, shared by both;
-  // docs/specs/linux-wayland-frosted-glass.md AC21). Every frosted branch in
-  // this file is CSS-only, so none is darwin-guarded.
-  const frosted = await isFrostedChrome(win);
   try {
     for (const palette of PALETTES) {
       for (const theme of THEMES) {
         const at = `${palette}/${theme}`;
         await setLook(win, palette, theme);
 
-        // AC1
-        expect((await box(win.locator('.drag').first())).height, `${at} title bar height`).toBe(44);
-
         // AC10
         const bar = win.getByTestId('activity-bar');
         expect((await box(bar)).width, `${at} activity bar width`).toBe(56);
         const buttons = bar.locator('button');
-        expect(await buttons.count(), `${at} AC10a: five activity bar buttons`).toBe(5);
+        expect(await buttons.count(), `${at} AC10a: six rail buttons and three footer buttons`).toBe(9);
         for (const b of await buttons.all()) {
           const label = await b.getAttribute('aria-label');
           const r = await box(b);
-          expect([r.width, r.height], `${at} ${label} size`).toEqual([36, 36]);
+          expect([r.width, r.height], `${at} ${label} size`).toEqual([44, 44]);
           expect(await radii(b), `${at} ${label} radius`).toEqual(['10px', '10px', '10px', '10px']);
           const icon = await box(b.locator('svg').first());
           expect([icon.width, icon.height], `${at} ${label} icon`).toEqual([16, 16]);
@@ -391,18 +327,6 @@ test('AC1/AC3/AC10–AC13/AC15/AC25–AC28: chrome dimensions, badges and branch
           // Soft, so one run reports every palette x theme that falls short.
           expect.soft(c.ratio, `${what} contrast (text ${fmtColour(c.text)} on fill ${fmtColour(c.fill)} over ${c.under.map(fmtColour).join(' > ')})`)
             .toBeGreaterThanOrEqual(4.5);
-        }
-
-        // AC3. The token is resolved beside the branch, so on macOS it reads the
-        // chrome's D16 lift (docs/specs/macos-frosted-chrome.md); off mac nothing
-        // overrides it and this equals the root value.
-        const branchColour = await elementColour(win, titleBranch(), 'color');
-        const pink = await resolveToken(win, '--hue-pink', titleBranch().locator('xpath=..'));
-        expect(colourDistance(branchColour, pink), `${at} branch ${fmtColour(branchColour)} is --hue-pink ${fmtColour(pink)}`).toBeLessThanOrEqual(1);
-        if (frosted) {
-          // Positive control: on mac the chrome pink is lifted away from the root (working-area) pink.
-          const rootPink = await resolveToken(win, '--hue-pink');
-          expect(colourDistance(pink, rootPink), `${at} control: chrome --hue-pink ${fmtColour(pink)} is lifted from root ${fmtColour(rootPink)}`).toBeGreaterThan(1);
         }
 
         // AC15 (fresh HOME, no stored width)
