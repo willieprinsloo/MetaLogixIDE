@@ -22,7 +22,7 @@ describe('platformChrome (AC19, AC20, AC26)', () => {
   it('darwin: carries the resolved material as vibrancy, every other baseline option unchanged', () => {
     expect(platformChrome('darwin', 'hud')).toEqual({
       titleBarStyle: 'hiddenInset',
-      trafficLightPosition: { x: 4, y: 14 },
+      trafficLightPosition: { x: 12, y: 14 },
       vibrancy: 'hud',
       visualEffectState: 'followWindow',
       roundedCorners: true,

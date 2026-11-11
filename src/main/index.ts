@@ -27,6 +27,7 @@ import {
   FROSTED_GLASS_FALLBACK,
   applyVibrancy,
   platformChrome,
+  MAIN_TRAFFIC_LIGHTS,
   readStoredFrostedGlass,
   rendererQuery,
   type StoredFrostedGlass,
@@ -192,6 +193,7 @@ async function createMainWindow(): Promise<BrowserWindow> {
     show: false,
     backgroundColor: '#00000000',
     ...platformChrome(process.platform, readFrostedGlass().vibrancyMaterial),
+    ...(process.platform === 'darwin' ? { trafficLightPosition: MAIN_TRAFFIC_LIGHTS } : {}),
     webPreferences: baseWebPreferences(),
   });
   win.once('ready-to-show', () => win.show());
