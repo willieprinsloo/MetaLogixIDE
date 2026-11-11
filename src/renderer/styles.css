@@ -778,6 +778,22 @@ input::placeholder, textarea::placeholder {
   -webkit-app-region: no-drag;
 }
 
+/* Inside a drag region only the empty space moves the window: controls stay clickable. */
+.drag :is(button, input, select, textarea, a, label, [role="button"], [role="tab"], [tabindex]) {
+  -webkit-app-region: no-drag;
+}
+
+/* Chromium only carves no-drag holes for elements that ask for them, so anything floating over a
+ * drag region (modals, menus, popovers, tooltips) must opt out or it would swallow its own clicks. */
+.fixed,
+.absolute[class*="z-"],
+[role="dialog"],
+[role="menu"],
+[role="listbox"],
+[role="tooltip"] {
+  -webkit-app-region: no-drag;
+}
+
 /* Subtle in-app scrollbar: overlay-style, doesn't steal layout width.
  * Thumb colour is theme-scoped via --scrollbar-thumb so the light palette
  * gets a darker thumb (readable on white) and the dark palette gets a

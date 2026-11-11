@@ -216,6 +216,26 @@ test('the sidebar keeps its 48px top inset from the old title bar, level with th
   expect(firstIcon.y).toBe(48);
 });
 
+test('empty chrome drags the window: rail, sidebar below the list and the top tab row; controls and overlays do not', async () => {
+  const region = (l: Locator) => css(l, '-webkit-app-region');
+  expect(await region(win.getByTestId('activity-bar'))).toBe('drag');
+  expect(await region(win.getByTestId('activity-bar').locator('button').first())).toBe('no-drag');
+  const fill = win.getByTestId('sidebar-drag-fill');
+  expect(await region(fill)).toBe('drag');
+  const aside = await box(win.locator('aside[data-view="projects"]'));
+  const f = await box(fill);
+  expect(Math.round(f.y + f.height), 'the drag fill reaches the bottom of the sidebar').toBe(Math.round(aside.y + aside.height));
+  expect(await region(win.getByPlaceholder(/filter projects/i)), 'the filter field is not a drag region').not.toBe('drag');
+  const tabBar = win.getByTestId(DIFF_TESTIDS.tabBar);
+  expect(await region(tabBar)).toBe('drag');
+  expect(await region(tabBar.getByRole('button', { name: 'Shell', exact: true }))).toBe('no-drag');
+  await win.getByTestId('settings-open').click();
+  const dialog = win.getByRole('dialog').first();
+  await expect(dialog).toBeVisible();
+  expect(await region(dialog), 'a modal over the drag band stays clickable').toBe('no-drag');
+  await win.keyboard.press('Escape');
+});
+
 test('hiding the status bar removes it and stretches the main sheet to the bottom of the window', async () => {
   const setStatusBar = (value: boolean) => win.evaluate(async (v: boolean) => {
     const api = (window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<unknown> } }).api;
