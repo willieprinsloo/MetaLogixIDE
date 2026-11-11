@@ -4,7 +4,7 @@ import { PALETTE_COPY, type PaletteCommand } from '@renderer/command-palette-con
 import { SETTINGS_NAV_ITEMS } from '@renderer/components/settings/nav-icons';
 import { KEEP_AWAKE_COPY, KEEP_AWAKE_PRESETS } from '@shared/keep-awake-contract';
 
-type DepFn = Exclude<keyof PaletteCommandDeps, 'hasProject' | 'hasPrimary' | 'sidebarOpen' | 'platform' | 'keepAwake'>;
+type DepFn = Exclude<keyof PaletteCommandDeps, 'hasProject' | 'hasPrimary' | 'sidebarOpen' | 'statusBarVisible' | 'platform' | 'keepAwake'>;
 
 function deps(over: Partial<PaletteCommandDeps> = {}) {
   const fns = {
@@ -14,6 +14,7 @@ function deps(over: Partial<PaletteCommandDeps> = {}) {
     openPrompts: vi.fn(),
     showTasks: vi.fn(),
     toggleSidebar: vi.fn(),
+    toggleStatusBar: vi.fn(),
     showTab: vi.fn(),
     openHelp: vi.fn(),
     openNewProject: vi.fn(),
@@ -25,7 +26,7 @@ function deps(over: Partial<PaletteCommandDeps> = {}) {
     setThemePalette: vi.fn(),
     openSettings: vi.fn(),
   } satisfies Record<DepFn, unknown>;
-  return { fns, deps: { hasProject: true, hasPrimary: true, sidebarOpen: true, ...fns, ...over } };
+  return { fns, deps: { hasProject: true, hasPrimary: true, sidebarOpen: true, statusBarVisible: true, ...fns, ...over } };
 }
 
 function byId(list: readonly PaletteCommand[], id: string): PaletteCommand {
@@ -42,6 +43,7 @@ const LEGACY: ReadonlyArray<readonly [string, string, string, string | undefined
   ['shell.prompts', 'Shell', 'Open prompt library', '⌘⇧K'],
   ['view.tasks', 'View', 'Show tasks panel', undefined],
   ['view.sidebar', 'View', 'Hide sidebar', '⌘B'],
+  ['view.status-bar', 'View', 'Hide status bar', undefined],
   ['view.shell', 'View', 'Switch to Shell tab', undefined],
   ['view.files', 'View', 'Switch to Files tab', undefined],
   ['view.diff', 'View', 'Switch to Diff tab', undefined],
@@ -84,6 +86,7 @@ const EFFECTS: ReadonlyArray<readonly [string, DepFn, readonly unknown[]]> = [
   ['shell.prompts', 'openPrompts', []],
   ['view.tasks', 'showTasks', []],
   ['view.sidebar', 'toggleSidebar', []],
+  ['view.status-bar', 'toggleStatusBar', []],
   ['view.shell', 'showTab', ['shell']],
   ['view.files', 'showTab', ['files']],
   ['view.diff', 'showTab', ['diff']],
@@ -123,6 +126,7 @@ describe('buildPaletteCommands', () => {
 
   it('titles the sidebar command after the current sidebar state', () => {
     expect(byId(buildPaletteCommands(deps({ sidebarOpen: false }).deps), 'view.sidebar').title).toBe('Show sidebar');
+    expect(byId(buildPaletteCommands(deps({ statusBarVisible: false }).deps), 'view.status-bar').title).toBe('Show status bar');
   });
 
   it.each(EFFECTS)('runs %s through %s', async (id, fn, args) => {

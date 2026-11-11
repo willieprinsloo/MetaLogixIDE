@@ -55,6 +55,8 @@ export function GeneralPanel({
         cap={board.cap}
         scanDepth={board.scanDepth}
         maxWatched={board.maxWatched}
+        showStatusBar={board.showStatusBar}
+        onShowStatusBar={(v) => board.update('show_status_bar', v)}
         showPorts={board.showPorts}
         onShowPorts={(v) => board.update('show_status_bar_ports', v)}
         onCap={(v) => board.update('keep_alive_cap', v)}
@@ -77,6 +79,7 @@ type BoardKey =
   | 'max_watched_paths'
   | 'notify_claude_needs_input'
   | 'notify_claude_finished'
+  | 'show_status_bar'
   | 'show_status_bar_ports';
 
 interface BoardValues {
@@ -86,6 +89,7 @@ interface BoardValues {
   readonly opacity: number;
   readonly notifyNeedsInput: boolean;
   readonly notifyFinished: boolean;
+  readonly showStatusBar: boolean;
   readonly showPorts: boolean;
 }
 
@@ -96,6 +100,7 @@ const INITIAL: BoardValues = {
   opacity: 100,
   notifyNeedsInput: true,
   notifyFinished: true,
+  showStatusBar: true,
   showPorts: true,
 };
 
@@ -105,12 +110,13 @@ const FIELD: Readonly<Record<BoardKey, keyof BoardValues>> = {
   max_watched_paths: 'maxWatched',
   notify_claude_needs_input: 'notifyNeedsInput',
   notify_claude_finished: 'notifyFinished',
+  show_status_bar: 'showStatusBar',
   show_status_bar_ports: 'showPorts',
 };
 
-/** Loads the General board's seven settings keys in one batch. */
+/** Loads the General board's eight settings keys in one batch. */
 export async function loadBoard(): Promise<BoardValues> {
-  const [c, d, w, o, ni, nf, sp] = await Promise.all([
+  const [c, d, w, o, ni, nf, sp, sb] = await Promise.all([
     api.invoke('settings:get', { key: 'keep_alive_cap' }),
     api.invoke('settings:get', { key: 'scan_depth' }),
     api.invoke('settings:get', { key: 'max_watched_paths' }),
@@ -118,6 +124,7 @@ export async function loadBoard(): Promise<BoardValues> {
     api.invoke('settings:get', { key: 'notify_claude_needs_input' }),
     api.invoke('settings:get', { key: 'notify_claude_finished' }),
     api.invoke('settings:get', { key: 'show_status_bar_ports' }),
+    api.invoke('settings:get', { key: 'show_status_bar' }),
   ]);
   return {
     cap: c.value as number,
@@ -127,10 +134,11 @@ export async function loadBoard(): Promise<BoardValues> {
     notifyNeedsInput: (ni.value as boolean) ?? true,
     notifyFinished: (nf.value as boolean) ?? true,
     showPorts: (sp.value as boolean) ?? true,
+    showStatusBar: (sb.value as boolean) ?? true,
   };
 }
 
-/** Board settings state: loads the seven keys once, `update` sets a value locally and saves it, `applyOpacity` clamps to 30..100 and applies window opacity. The Frosted glass group owns its own four settings through `useFrostedGlassSettings`. */
+/** Board settings state: loads the eight keys once, `update` sets a value locally and saves it, `applyOpacity` clamps to 30..100 and applies window opacity. The Frosted glass group owns its own four settings through `useFrostedGlassSettings`. */
 export function useBoardSettings() {
   const [values, setValues] = useState<BoardValues>(INITIAL);
 
@@ -194,6 +202,8 @@ function WorkspaceSection({
   cap,
   scanDepth,
   maxWatched,
+  showStatusBar,
+  onShowStatusBar,
   showPorts,
   onShowPorts,
   onCap,
@@ -203,6 +213,8 @@ function WorkspaceSection({
   readonly cap: number | null;
   readonly scanDepth: number | null;
   readonly maxWatched: number | null;
+  readonly showStatusBar: boolean;
+  readonly onShowStatusBar: (on: boolean) => void;
   readonly showPorts: boolean;
   readonly onShowPorts: (on: boolean) => void;
   readonly onCap: (v: number) => void;
@@ -212,6 +224,13 @@ function WorkspaceSection({
   const id = useId();
   return (
     <SettingsSection title="Workspace">
+      <Switch
+        label="Show the status bar"
+        ariaLabel="Show the status bar"
+        testId="show-status-bar-toggle"
+        checked={showStatusBar}
+        onChange={onShowStatusBar}
+      />
       <Switch
         label="Show ports in the status bar"
         ariaLabel="Show ports in the status bar"

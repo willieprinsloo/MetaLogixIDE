@@ -35,6 +35,8 @@ export interface PaletteCommandDeps {
   readonly openPrompts: () => void;
   readonly showTasks: () => void;
   readonly toggleSidebar: () => void;
+  readonly statusBarVisible: boolean;
+  readonly toggleStatusBar: () => void;
   readonly showTab: (tab: PaletteTab) => void;
   readonly openHelp: () => void;
   readonly openNewProject: () => void;
@@ -79,6 +81,7 @@ export function buildPaletteCommands(d: PaletteCommandDeps): PaletteCommand[] {
     { id: 'shell.prompts', category: 'Shell', title: 'Open prompt library', hint: hint(SHORTCUTS.prompts), run: d.openPrompts },
     { id: 'view.tasks', category: 'View', title: 'Show tasks panel', run: d.showTasks },
     { id: 'view.sidebar', category: 'View', title: d.sidebarOpen ? 'Hide sidebar' : 'Show sidebar', hint: hint(SHORTCUTS.sidebar), run: d.toggleSidebar },
+    { id: 'view.status-bar', category: 'View', title: d.statusBarVisible ? 'Hide status bar' : 'Show status bar', run: d.toggleStatusBar },
     { id: 'view.shell', category: 'View', title: 'Switch to Shell tab', needsProject: true, run: () => d.showTab('shell') },
     { id: 'view.files', category: 'View', title: 'Switch to Files tab', needsProject: true, run: () => d.showTab('files') },
     { id: 'view.diff', category: 'View', title: DIFF_COPY.paletteTitle, needsProject: true, run: () => d.showTab('diff') },

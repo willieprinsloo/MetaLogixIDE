@@ -24,6 +24,7 @@ export const DEFAULT_SETTINGS: SettingsMap = {
   'claude_permission_mode':        null,
   'notify_claude_needs_input':     true,
   'notify_claude_finished':        true,
+  'show_status_bar':               true,
   'show_status_bar_ports':         true,
   'frost_chrome':                  true,
   'chrome_frost_level':            'subtle',

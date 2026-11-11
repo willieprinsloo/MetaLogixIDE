@@ -159,6 +159,7 @@ describe('loadBoard — seven keys, no frost_terminal (AC34 renderer half)', () 
       'notify_claude_needs_input',
       'notify_claude_finished',
       'show_status_bar_ports',
+      'show_status_bar',
     ]);
     expect(seen).not.toContain('frost_terminal');
   });
