@@ -93,8 +93,9 @@ const SCOPES = {
     emptyState: ENV_COPY.emptyState,
     panelTestId: ENV_TESTIDS.panel,
     emptyTestId: ENV_TESTIDS.empty,
-    section: 'flex-1 min-h-0 overflow-y-auto',
-    body: 'max-w-3xl mx-auto p-5 space-y-4',
+    // A section of the project Settings page, which owns the scrolling and page padding.
+    section: 'scroll-mt-4',
+    body: 'space-y-4',
     heading: 'font-semibold text-[--text]',
     subtitle: 'text-xs text-[--text-muted] truncate mt-0.5',
   },

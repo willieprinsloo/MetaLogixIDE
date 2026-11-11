@@ -1,10 +1,10 @@
-/** Exact user-facing strings and test ids for the per-project environment variables editor (the Env tab). */
+/** Exact user-facing strings and test ids for the per-project environment variables editor (a section of the project Settings tab). */
 export const ENV_COPY = {
   tabLabel: 'Env',
-  tabUnsavedLabel: 'Env, unsaved changes', // aria-label when a draft differs
+  tabUnsavedLabel: 'Settings, unsaved environment changes', // Settings tab aria-label when a draft differs
   tabUnsavedMarker: '•', // visible, aria-hidden
   contextMenuItem: 'Environment variables…',
-  panelTitle: 'Environment variables', // heading inside the tab
+  panelTitle: 'Environment variables', // section heading in the Settings tab
   emptyState: 'No environment variables for this project.',
   noticeNewShells:
     'Changes apply to newly opened shells only. Shells that are already running keep their current environment.',

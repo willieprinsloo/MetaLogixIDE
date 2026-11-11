@@ -22,7 +22,7 @@ export interface PaletteKeepAwake {
   readonly darkenNow: () => void;
 }
 
-export type PaletteTab = 'shell' | 'files' | 'diff' | 'env';
+export type PaletteTab = 'shell' | 'files' | 'diff' | 'settings';
 
 /** The App actions the commands run, plus the two facts that shape the list. */
 export interface PaletteCommandDeps {
@@ -85,7 +85,7 @@ export function buildPaletteCommands(d: PaletteCommandDeps): PaletteCommand[] {
     { id: 'view.shell', category: 'View', title: 'Switch to Shell tab', needsProject: true, run: () => d.showTab('shell') },
     { id: 'view.files', category: 'View', title: 'Switch to Files tab', needsProject: true, run: () => d.showTab('files') },
     { id: 'view.diff', category: 'View', title: DIFF_COPY.paletteTitle, needsProject: true, run: () => d.showTab('diff') },
-    { id: 'view.env', category: 'View', title: 'Switch to Env tab', needsProject: true, run: () => d.showTab('env') },
+    { id: 'view.env', category: 'View', title: 'Edit environment variables', needsProject: true, run: () => d.showTab('settings') },
     { id: 'view.help', category: 'View', title: 'Show keyboard shortcut cheat sheet', hint: hint(SHORTCUTS.help), run: d.openHelp },
     { id: 'proj.new', category: 'Project', title: 'New project…', hint: hint(SHORTCUTS.newProject), run: d.openNewProject },
     { id: 'shell.unload', category: 'Shell', title: 'Unload current session', needsProject: true, run: d.unloadSession },
