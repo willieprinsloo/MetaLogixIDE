@@ -213,7 +213,8 @@ test('the sidebar keeps its 48px top inset from the old title bar, level with th
   const firstIcon = await box(win.getByTestId('activity-bar').locator('button').first());
   const main = await box(win.locator('main').first());
   expect(Math.round(main.x + main.width), 'main sheet has no right margin').toBe(await win.evaluate(() => window.innerWidth));
-  expect(firstIcon.y).toBe(48);
+  const filter = await box(win.getByTestId('sidebar-filter').locator('xpath=..'));
+  expect(firstIcon.y + firstIcon.height / 2, 'the sidebar toggle centres on the filter field').toBe(filter.y + filter.height / 2);
 });
 
 test('empty chrome drags the window: rail, sidebar below the list and the top tab row; controls and overlays do not', async () => {
@@ -246,13 +247,43 @@ test('Chat, Git and Tasks open in the sidebar column in place of the project lis
       const panel = win.locator(`[data-view="${view}"]`);
       await expect(panel).toBeVisible();
       await expect(projects, `${view}: the project list is replaced`).toHaveCount(0);
-      expect((await box(panel)).x, `${view}: same column as the project list`).toBe(sidebarX);
+      await expect.poll(async () => Math.round((await box(panel)).x), `${view}: same column as the project list`).toBe(Math.round(sidebarX));
       expect(await win.locator('[data-view]').filter({ visible: true }).count(), `${view}: one sidebar column`).toBe(1);
     }
   } finally {
     await win.getByTestId('ab-projects').click();
   }
   await expect(projects).toBeVisible();
+});
+
+test('switching the sidebar view animates the column to that view\'s width; dragging follows the pointer without lag', async () => {
+  const column = win.getByTestId('sidebar-column');
+  expect(await css(column, 'transition-property')).toContain('width');
+  expect(await css(column, 'transition-duration')).toBe('0.2s');
+  await win.waitForTimeout(300); // let an earlier view switch finish animating
+  const projectsW = (await box(column)).width;
+  try {
+    await win.getByTestId('ab-chat').click();
+    const target = await win.evaluate(() => Number(localStorage.getItem('metaide.chatPanelWidth') ?? 400) || 400);
+    test.skip(Math.round(target) === Math.round(projectsW), 'both views share a width');
+    const samples: number[] = [];
+    for (let i = 0; i < 6; i++) { samples.push((await box(column)).width); await win.waitForTimeout(25); }
+    expect(samples.some((w) => Math.round(w) !== Math.round(projectsW) && Math.round(w) !== Math.round(target)), `an in-between width while animating: ${samples.join(', ')}`).toBe(true);
+    await expect.poll(async () => Math.round((await box(column)).width)).toBe(Math.round(target));
+  } finally {
+    await win.getByTestId('ab-projects').click();
+  }
+  await expect.poll(async () => Math.round((await box(column)).width)).toBe(Math.round(projectsW));
+  const handle = win.locator('[data-testid="sidebar-column"] + [data-testid="resize-handle"]');
+  const h = await box(handle);
+  await handle.hover({ position: { x: h.width / 2, y: 200 } });
+  await win.mouse.down();
+  await win.mouse.move(h.x + 40, h.y + 200, { steps: 4 });
+  await expect(handle, 'positive control: the handle is mid-drag').toHaveClass(/(^| )bg-\[color:var\(--accent\)\]/);
+  await expect.poll(() => css(column, 'transition-duration'), 'no width transition mid-drag').toBe('0s');
+  await win.mouse.up();
+  await handle.dblclick();
+  await win.waitForTimeout(300); // the reset width animates; let it land before the next test measures
 });
 
 test('the status bar sits inside the main sheet at its bottom; hiding it gives the space to the content', async () => {
@@ -326,7 +357,7 @@ test('the top of the activity bar is a draggable strip (traffic-light room on ma
   const platform = await app.evaluate(() => process.platform);
   const strip = win.getByTestId('ab-drag-region');
   if (platform === 'darwin') {
-    expect((await box(strip)).height).toBe(40);
+    expect((await box(strip)).height).toBe(36);
     expect(await css(strip, '-webkit-app-region')).toBe('drag');
   } else {
     await expect(strip).toHaveCount(0);
@@ -594,7 +625,7 @@ test('AC15: a stored 288 migrates once to 260, other widths are kept, and reset 
 
   // Reset on the resize handle.
   // Reset on the resize handle, with a real mouse: the handle must be hittable.
-  await win.locator('aside[data-view="projects"] + [data-testid="resize-handle"]').dblclick();
+  await win.locator('[data-testid="sidebar-column"] + [data-testid="resize-handle"]').dblclick();
   await expect.poll(async () => (await box(aside)).width).toBe(SIDEBAR_WIDTH.default);
   await expect.poll(stored).toBe(String(SIDEBAR_WIDTH.default));
 });

@@ -117,6 +117,6 @@ describe('ActivityBar footer', () => {
     expect(render()).not.toContain('title-buttons');
   });
   it('reserves a draggable strip at the top on mac for the traffic lights', () => {
-    expect(render()).toMatch(/class="drag h-10[^"]*"[^>]*data-testid="ab-drag-region"/);
+    expect(render()).toMatch(/class="drag h-9[^"]*"[^>]*data-testid="ab-drag-region"/);
   });
 });
