@@ -128,6 +128,24 @@ function rememberResumable(s: Services, projectId: number, argv: readonly string
   if (harness) rememberResumableHarness(s, projectId, harness);
 }
 
+/** True for a subsequent Claude launch that continues a session (`--continue`/`-c` before any `--`): only that can fail with "no conversation found". */
+function isClaudeContinuation(launch: { variant: 'first' | 'subsequent'; argv: readonly string[] }): boolean {
+  if (launch.variant !== 'subsequent' || harnessOf(launch.argv) !== 'claude') return false;
+  for (const arg of launch.argv.slice(1)) {
+    if (arg === '--') return false;
+    if (arg === '--continue' || arg === '-c') return true;
+  }
+  return false;
+}
+
+/** Records the live primary shell and tells renderers right after spawn, so its tab and status dot appear without waiting on resume checks. A shell that already exited is not recorded. */
+function publishPrimary(s: Services, projectId: number, argv: string[]): void {
+  if (!s.ptyManager.isAlive(projectId, 0)) return;
+  const nowIso = new Date().toISOString().slice(0, 19).replace('T', ' ');
+  s.shells.upsert({ projectId, shellIndex: 0, model: null, launchArgv: argv, startedAt: nowIso, lastActiveAt: nowIso, pinned: false });
+  emitAliveShellsChanged();
+}
+
 /** Validates a local guarded-unload target before reading PTY or tracker state. */
 function primaryProjectId(request: unknown): number {
   if (typeof request !== 'object' || request === null || !('projectId' in request) ||
@@ -510,12 +528,15 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     let launch = resolveLaunch(project, s.settings, s.homeDir, process.env, launchOptions);
     let fallbackApplied = false;
 
-    // If subsequent variant (--continue) exits within ~3s with "no
+    // If a Claude continuation (--continue) exits within ~2.5s with "no
     // conversation found", retry using the first variant instead. This
-    // handles the case where the on-disk claude session was cleared.
-    if (launch.variant === 'subsequent') {
+    // handles the case where the on-disk claude session was cleared. The
+    // shell is published as soon as it spawns, so the tab label and status
+    // dot never wait on this check; other launches skip it entirely.
+    if (isClaudeContinuation(launch)) {
       const settlement = await new Promise<'ok' | 'no-session' | { error: string }>((resolveP) => {
-        const timer = setTimeout(() => resolveP('ok'), 2500);
+        // The settle timer must also drop the exit listener, or one leaks per relaunch.
+        const timer = setTimeout(() => { s.ptyManager.off('exit', onExit); resolveP('ok'); }, 2500);
         const onExit = (ev: { projectId: number; shellIndex: number; generation: string; code: number | null; uptimeMs?: number; earlyOutput?: string }) => {
           if (ev.projectId !== projectId || ev.shellIndex !== 0) return;
           const live = s.ptyManager.liveShell(projectId, 0);
@@ -532,7 +553,7 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
         s.ptyManager.on('exit', onExit);
         // Surface spawn failures instead of swallowing them — a missing
         // `claude` binary used to end up as a blank terminal with no cause.
-        void s.ptyManager.spawn(projectId, 0, launch).catch((err: unknown) => {
+        void s.ptyManager.spawn(projectId, 0, launch).then(() => publishPrimary(s, projectId, launch.argv)).catch((err: unknown) => {
           clearTimeout(timer);
           s.ptyManager.off('exit', onExit);
           resolveP({ error: err instanceof Error ? err.message : String(err) });
@@ -551,16 +572,15 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
         launch = resolveLaunch(reProject, s.settings, s.homeDir, process.env, launchOptions);
         fallbackApplied = true;
         await s.ptyManager.spawn(projectId, 0, launch);
+        publishPrimary(s, projectId, launch.argv);
       }
     } else {
       await s.ptyManager.spawn(projectId, 0, launch);
+      publishPrimary(s, projectId, launch.argv);
     }
 
     if (!project.firstLaunchedAt) s.projects.setFirstLaunched(projectId, new Date());
     rememberResumable(s, projectId, launch.argv);
-    const now = new Date();
-    const nowIso = `${now.getUTCFullYear()}-${String(now.getUTCMonth()+1).padStart(2,'0')}-${String(now.getUTCDate()).padStart(2,'0')} ${String(now.getUTCHours()).padStart(2,'0')}:${String(now.getUTCMinutes()).padStart(2,'0')}:${String(now.getUTCSeconds()).padStart(2,'0')}`;
-    s.shells.upsert({ projectId, shellIndex: 0, model: null, launchArgv: launch.argv, startedAt: nowIso, lastActiveAt: nowIso, pinned: false });
     void fallbackApplied; // future: return this to renderer as a toast reason
     return { shellIndex: 0 };
   },

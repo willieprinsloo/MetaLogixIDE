@@ -1215,6 +1215,139 @@ function envRig() {
   };
 }
 
+describe('primary shell tab publication (no wait on resume checks)', () => {
+  function rig() {
+    const r = envRig();
+    const emitter = new EventEmitter();
+    for (const call of r.ptyManager.on.mock.calls) {
+      const name: unknown = call[0];
+      const listener: unknown = call[1];
+      if (typeof name === 'string' && typeof listener === 'function') emitter.on(name, (event: unknown) => listener(event));
+    }
+    expect(emitter.listenerCount('exit'), 'the real IPC exit cleanup is wired').toBe(1);
+    let alive = false;
+    r.ptyManager.on.mockImplementation((name: string, listener: (event: unknown) => void) => emitter.on(name, listener));
+    r.ptyManager.off.mockImplementation((name: string, listener: (event: unknown) => void) => emitter.off(name, listener));
+    r.ptyManager.isAlive.mockImplementation(() => alive);
+    r.ptyManager.spawn.mockImplementation(async () => { alive = true; });
+    const exit = (output: string) => {
+      alive = false;
+      emitter.emit('exit', { projectId: r.a.id, shellIndex: 0, generation: 'g', code: 1, uptimeMs: 100, earlyOutput: output });
+    };
+    const close = () => { r.db.close(); rmSync(r.dir, { recursive: true, force: true }); };
+    return { ...r, emitter, exit, close };
+  }
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it.each<[string, string[]]>([
+    ['Codex resume', ['codex', 'resume', '--last']],
+    ['opencode continue', ['opencode', '--continue']],
+    ['Claude without continuation', ['claude']],
+    ['Claude prompt after option terminator', ['claude', '--', '--continue']],
+  ])('%s repeat launch publishes the tab and returns without a resume wait', async (_name, argv) => {
+    const r = rig();
+    r.projects.setFirstLaunched(r.a.id, new Date());
+    r.settings.set('default_launch_cmd.subsequent', { argv, env: {} });
+    let completed = false;
+    const pending = r.call('shells:launch', { projectId: r.a.id }).then(() => { completed = true; });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(completed).toBe(true);
+      expect(r.shells.list().map((row) => row.launchArgv)).toEqual([argv]);
+      expect(r.events).toContain('alive-shells:changed');
+      expect(vi.getTimerCount(), 'no watchdog').toBe(0);
+    } finally {
+      await vi.runAllTimersAsync();
+      await pending;
+      r.close();
+    }
+  });
+
+  it.each(['--continue', '-c'])('Claude %s shows its live tab before the resume check settles, then releases the watchdog', async (flag) => {
+    const r = rig();
+    r.projects.setFirstLaunched(r.a.id, new Date());
+    r.settings.set('default_launch_cmd.subsequent', { argv: ['claude', flag], env: {} });
+    let completed = false;
+    const pending = r.call('shells:launch', { projectId: r.a.id }).then(() => { completed = true; });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(completed, 'the resume check is still running').toBe(false);
+      expect(r.shells.list().map((row) => row.launchArgv)).toEqual([['claude', flag]]);
+      expect(r.events, 'renderers are told before the handler returns').toEqual(['alive-shells:changed']);
+      await vi.advanceTimersByTimeAsync(2500);
+      await pending;
+      expect(completed).toBe(true);
+      expect(r.emitter.listenerCount('exit')).toBe(1);
+    } finally {
+      await vi.runAllTimersAsync();
+      await pending;
+      r.close();
+    }
+  });
+
+  it('missing-session fallback replaces the failed tab with the first-launch command', async () => {
+    const r = rig();
+    r.projects.setFirstLaunched(r.a.id, new Date());
+    r.settings.set('default_launch_cmd.first', { argv: ['claude'], env: {} });
+    r.settings.set('default_launch_cmd.subsequent', { argv: ['claude', '--continue'], env: {} });
+    const pending = r.call('shells:launch', { projectId: r.a.id });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(r.shells.list().map((row) => row.launchArgv)).toEqual([['claude', '--continue']]);
+      r.exit('No conversation found to continue');
+      await pending;
+      expect(r.shells.list().map((row) => row.launchArgv)).toEqual([['claude']]);
+      expect(r.emitter.listenerCount('exit')).toBe(1);
+    } finally {
+      await vi.runAllTimersAsync();
+      await pending;
+      r.close();
+    }
+  });
+
+  it('an ordinary early exit does not recreate a dead primary tab', async () => {
+    const r = rig();
+    r.projects.setFirstLaunched(r.a.id, new Date());
+    r.settings.set('default_launch_cmd.subsequent', { argv: ['claude', '--continue'], env: {} });
+    const pending = r.call('shells:launch', { projectId: r.a.id });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      r.exit('Exiting');
+      await pending;
+      expect(r.shells.list()).toEqual([]);
+      expect(r.emitter.listenerCount('exit')).toBe(1);
+    } finally {
+      await vi.runAllTimersAsync();
+      await pending;
+      r.close();
+    }
+  });
+
+  it.each(['first', 'subsequent'])('a failed %s spawn leaves no tab or watchdog', async (stage) => {
+    const r = rig();
+    if (stage === 'subsequent') {
+      r.projects.setFirstLaunched(r.a.id, new Date());
+      r.settings.set('default_launch_cmd.subsequent', { argv: ['claude', '--continue'], env: {} });
+    }
+    r.ptyManager.spawn.mockRejectedValueOnce(new Error('spawn ENOENT'));
+    const observed = r.call('shells:launch', { projectId: r.a.id }).catch((failure: unknown) => failure);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await observed).toMatchObject({ message: expect.stringContaining('spawn ENOENT') });
+      expect(r.shells.list()).toEqual([]);
+      expect(r.events).not.toContain('alive-shells:changed');
+      expect(r.emitter.listenerCount('exit')).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await vi.runAllTimersAsync();
+      await observed;
+      r.close();
+    }
+  });
+});
+
 describe('shells:set-default-cli — project default-agent boundary', () => {
   const legacy: ProjectConfig = {
     defaultCliName: 'Agent',
@@ -1541,11 +1674,12 @@ describe('project env at every spawn site (AC10, AC11, AC14–AC16)', () => {
     const rig = envRig();
     rig.projects.setFirstLaunched(rig.a.id, new Date());
     rig.ptyManager.liveShell.mockReturnValue({ pid: 42, generation: 'successor', agent: 'claude' });
+    // The successor is live once spawned; only the predecessor's stale exit arrives.
+    rig.ptyManager.isAlive.mockImplementation(() => rig.ptyManager.spawn.mock.calls.length > 0);
     rig.ptyManager.spawn.mockImplementationOnce(async () => {
       const onExit = rig.ptyManager.on.mock.calls.filter((call) => call[0] === 'exit').at(-1)?.[1];
       if (!onExit) throw new Error('missing launch exit listener');
       onExit({ projectId: rig.a.id, shellIndex: 0, generation: 'predecessor', code: 1, uptimeMs: 100, earlyOutput: 'No conversation found to continue' });
-      onExit({ projectId: rig.a.id, shellIndex: 0, generation: 'successor', code: 0, uptimeMs: 10_000, earlyOutput: '' });
     });
     await rig.call('shells:launch', { projectId: rig.a.id });
     expect(rig.ptyManager.spawn).toHaveBeenCalledTimes(1);

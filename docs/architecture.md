@@ -141,6 +141,15 @@ instead of starting a new one (`src/shared/agent-harness.ts`,
 - One-off inline commands (Custom command…) are launched exactly as typed.
 - The built-in global launch without a default agent keeps its
   `claude`/`claude --continue` pair and the same live-shell guard.
+- The primary shell is recorded and `alive-shells:changed` is sent as soon as
+  it spawns, so the tab label and status dot never wait on resume checking
+  (`publishPrimary` in `src/main/ipc/register.ts`).
+- Only a subsequent Claude launch with `--continue`/`-c` (before any `--`)
+  enters the 2.5-second missing-session check; Codex, opencode and other
+  commands skip it. If Claude exits early with "no conversation found", its
+  record is dropped and the first-launch command is spawned and published in
+  its place. The check removes its timer and exit listener when it settles
+  (`isClaudeContinuation` in `src/main/ipc/register.ts`).
 
 ### Project settings and default agent
 
