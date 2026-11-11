@@ -191,9 +191,9 @@ describe('frosted-chrome.css and frosted-glass-levels.css', () => {
     expect(CSS).not.toMatch(new RegExp(`${FROST_ATTR.platform}\\s*[~|^$*]?=`));
   });
 
-  it('uses only the light colour-scheme and Reduce transparency media queries', () => {
+  it('uses only the light colour-scheme and Reduce transparency (reduce and no-preference) media queries', () => {
     const queries = new Set(RULES.flatMap((r) => r.media));
-    expect([...queries].sort()).toEqual(['(prefers-color-scheme: light)', RT].sort());
+    expect([...queries].sort()).toEqual(['(prefers-color-scheme: light)', '(prefers-reduced-transparency: no-preference)', RT].sort());
   });
 
   it('keys on the exact FROST_ATTR strings and no other data attribute besides theme, palette and the chat view', () => {

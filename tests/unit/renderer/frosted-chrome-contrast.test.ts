@@ -210,6 +210,7 @@ interface Env {
 function mediaMatches(query: string, env: Env): boolean {
   if (/^\(prefers-color-scheme:\s*light\)$/.test(query)) return env.light;
   if (/^\(prefers-reduced-transparency:\s*reduce\)$/.test(query)) return env.reduceTransparency;
+  if (/^\(prefers-reduced-transparency:\s*no-preference\)$/.test(query)) return !env.reduceTransparency;
   return false;
 }
 
@@ -515,14 +516,29 @@ function over(top: Colour, under: Colour): Colour {
 }
 
 const [ENVELOPE_LO, ENVELOPE_HI] = REFERENCE_MATERIALS.dark;
-/** Grey materials across the envelope; contrast is not monotonic in the backdrop, so the ends alone are not enough. */
-const ENVELOPE: readonly Colour[] = Array.from({ length: 18 }, (_, i) => ({
-  c: [i / 17, i / 17, i / 17],
-  a: 1,
-}));
+const grey = (i: number, lo: number, hi: number): Colour => {
+  const v = lo + ((hi - lo) * i) / 17;
+  return { c: [v, v, v], a: 1 };
+};
+/** Full black-to-white grey sweep; contrast is not monotonic in the backdrop, so the ends alone are not enough. */
+const ENVELOPE: readonly Colour[] = Array.from({ length: 18 }, (_, i) => grey(i, 0, 1));
+/**
+ * Zen-style chrome (a wash below 0.6 alpha, the Strong level) lets the wallpaper bleed through a thin
+ * tint, so its guarantee is held over the backdrops a dark (resp. light) vibrancy material can actually paint: a blurred wallpaper under a
+ * dark appearance never exceeds mid-grey, and under a light appearance never drops below it.
+ */
+const ENVELOPE_DARK: readonly Colour[] = Array.from({ length: 18 }, (_, i) => grey(i, 0, 0.35));
+const ENVELOPE_LIGHT: readonly Colour[] = Array.from({ length: 18 }, (_, i) => grey(i, 0.65, 1));
+
+function envelopeFor(t: Tree): readonly Colour[] {
+  const alpha = lookup('--chrome-glass-alpha', t.scope);
+  if (!alpha || Number(alpha.expr) >= 0.6) return ENVELOPE;
+  const solid = evalColour('var(--chrome-solid)', t.scope);
+  return solid.c[0] + solid.c[1] + solid.c[2] < 1.5 ? ENVELOPE_DARK : ENVELOPE_LIGHT;
+}
 
 function composites(t: Tree): Colour[] {
-  return ENVELOPE.map((m) => t.layers.reduce((acc, layer) => over(layer, acc), m));
+  return envelopeFor(t).map((m) => t.layers.reduce((acc, layer) => over(layer, acc), m));
 }
 
 function compositeAlpha(t: Tree): number {
@@ -531,8 +547,9 @@ function compositeAlpha(t: Tree): number {
 
 /** Per-channel max of |composite over white − composite over black|, in 0..255 (D11). */
 function visibleEffect(t: Tree): number {
-  const lo = composites(t)[0] as Colour;
-  const hi = composites(t)[ENVELOPE.length - 1] as Colour;
+  const flat = (m: Colour): Colour => t.layers.reduce((acc, layer) => over(layer, acc), m);
+  const lo = flat(ENVELOPE[0] as Colour);
+  const hi = flat(ENVELOPE[ENVELOPE.length - 1] as Colour);
   return Math.max(...hi.c.map((v, i) => Math.abs(v - (lo.c[i] ?? 0)))) * 255;
 }
 
