@@ -109,8 +109,7 @@ function fakePty() {
 }
 
 /** Installs notification history independently of the dot tracker. */
-function installSetup<P extends ExitSource>(ptyManager: P, sessions = new SessionRegistry(),
-  forwardToFleet?: (shell: ShellKey, notice: { kind: string; body: string }) => boolean) {
+function installSetup<P extends ExitSource>(ptyManager: P, sessions = new SessionRegistry()) {
   FakeNotification.instances = [];
   const tracker = new ClaudeHookHistory({ sessions, lastOutputAt: () => null, now: () => 0 });
   const main = fakeWindow();
@@ -127,34 +126,15 @@ function installSetup<P extends ExitSource>(ptyManager: P, sessions = new Sessio
     notificationClass: FakeNotification,
     windows: { main: () => main, popout: () => null, focused: () => null },
     broadcast,
-    ...(forwardToFleet ? { forwardToFleet } : {}),
   });
   return { emit: (h: ReceivedHook) => handle(h), sessions, ptyManager, broadcast, main, tracker };
 }
 
 const ev = (hookEventName: string, extra: { notificationType?: string; backgroundTaskCount?: number } = {}) =>
-  ({ hookEventName, notificationType: null, message: null, backgroundTaskCount: 0, ...extra });
+  ({ hookEventName, notificationType: null, message: null, backgroundTaskCount: 0, toolName: null, toolTarget: null, toolOk: null, ...extra });
 const NEEDS_INPUT = ev('Notification', { notificationType: 'permission_prompt' });
 
 describe('installClaudeNotifications', () => {
-  it('hands each notice to the Fleet forwarder and skips the local one when a peer took it', () => {
-    const forward = vi.fn(() => true);
-    const { emit, sessions } = installSetup(fakePty(), new SessionRegistry(), forward);
-    const s = sessions.issue(K);
-    emit({ sessionId: s.id, shell: K, event: NEEDS_INPUT });
-    expect(forward).toHaveBeenCalledWith(K, { kind: 'needs-input', body: 'Claude needs your input' });
-    expect(FakeNotification.instances).toHaveLength(0);
-  });
-
-  it('notifies locally when the Fleet forwarder reports no controlling peer', () => {
-    const forward = vi.fn(() => false);
-    const { emit, sessions } = installSetup(fakePty(), new SessionRegistry(), forward);
-    const s = sessions.issue(K);
-    emit({ sessionId: s.id, shell: K, event: NEEDS_INPUT });
-    expect(forward).toHaveBeenCalledTimes(1);
-    expect(FakeNotification.instances).toHaveLength(1);
-  });
-
   it('routes applied hooks to OS notifications that navigate on click', () => {
     const { emit, sessions, broadcast, main } = installSetup(fakePty());
     const s = sessions.issue(K);

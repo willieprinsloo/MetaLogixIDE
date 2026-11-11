@@ -7,9 +7,9 @@ import type { TerminalFontWeight } from './terminal-font-weight';
 import type { ProjectDefaultAgentRequest, ScopedCliProfile } from './project-default-agent';
 import type { AppFileDragPayload, ClipboardImageResult, ResolveAppFileResult, StageFileRequest, StageResult } from './terminal-drop-contract';
 import type { TasksDiscovery } from './tasks-contract';
-import type { FleetGitStatus, FleetShellRef, FleetState, FleetStatus, FleetTerminalEvent } from './fleet-contract';
 import type { KeepAwakeDarkenResult, KeepAwakeStartRequest, KeepAwakeStartResult, KeepAwakeState } from './keep-awake-contract';
 import type { PrimarySessionInspection, StopPrimarySessionRequest, StopPrimarySessionResult } from './unload-session-contract';
+import type { FleetEntry, P2PSettings, P2PSettingsView } from './p2p-contract';
 
 /**
  * Single-character git status codes we bubble up. The two-position
@@ -172,6 +172,20 @@ export interface IpcContract {
   // files (read-only)
   'files:tree':      { request: { projectId: number; relPath?: string };                    response: { entries: Array<{ name: string; isDir: boolean; relPath: string }> } };
   'files:read':      { request: { projectId: number; relPath: string; forceText?: boolean }; response: { content: string; kind: 'text' | 'binary'; sizeBytes: number } };
+  /**
+   * Raw bytes of a project-root file, for binary viewers (image, PDF).
+   * mime is a best-effort content-type derived from extension, used as the
+   * Blob type in the renderer. Capped at 50 MB — above that, an image or
+   * PDF belongs in the native OS viewer.
+   */
+  'files:read-bytes': { request: { projectId: number; relPath: string }; response: { bytes: Uint8Array; mime: string; sizeBytes: number } };
+
+  /**
+   * Shared agent-memory log — one entry per tool call, prompt, notification
+   * or turn-end from a CLI agent running in this project. Reader for the
+   * Activity tab; pairs with `activity:changed` for live tailing.
+   */
+  'activity:list': { request: { projectId: number; limit?: number }; response: { entries: import('./activity').ActivityEntry[] } };
   'files:list-all':  { request: { projectId: number; limit?: number; filter?: string };     response: { files: Array<{ relPath: string; name: string }>; total: number; truncated: boolean } };
   'files:write':     { request: { projectId: number; relPath: string; content: string };    response: { ok: true; sizeBytes: number } };
   'files:mkdir':     { request: { projectId: number; relPath: string };                     response: { ok: true } };
@@ -243,6 +257,15 @@ export interface IpcContract {
 
   /** Set every open window's opacity. percent: 30..100. */
   'app:set-window-opacity': { request: { percent: number }; response: { ok: true } };
+  /**
+   * Toggle the focused BrowserWindow into native fullscreen. Cross-platform:
+   * uses setFullScreen, which is macOS Mission-Control fullscreen on mac and
+   * borderless F11-style fullscreen on Windows/Linux. The renderer also hides
+   * IDE chrome (sidebar + tab strips) while fullscreen is on, driven by the
+   * `window:fullscreen-changed` event so the two stay in sync even when the
+   * user toggles via Ctrl+Cmd+F / F11 / green traffic light.
+   */
+  'window:toggle-fullscreen': { request: undefined; response: { fullscreen: boolean } };
   'settings:set-frost-chrome': { request: { enabled: boolean }; response: { ok: true } | { ok: false; error: 'invalid' } };
   'settings:set-chrome-frost-level': { request: { level: ChromeFrostLevel }; response: { ok: true } | { ok: false; error: 'invalid' } };
   'settings:set-terminal-frost-level': { request: { level: TerminalFrostLevel }; response: { ok: true } | { ok: false; error: 'invalid' } };
@@ -390,44 +413,25 @@ export interface IpcContract {
     };
   };
 
-  /** Fleet transport and trust live only in main; the renderer sees approved peer state. */
-  'fleet:get-state':   { request: undefined; response: FleetState };
-  'fleet:set-enabled': { request: { enabled: boolean }; response: FleetState };
-  'fleet:set-port':    { request: { port: number }; response: FleetState };
-  'fleet:reset-identity': { request: undefined; response: FleetState };
-  'fleet:pair':        { request: { peerId: string }; response: { ok: true } };
-  'fleet:approve':     { request: { peerId: string; verificationCode: string }; response: { ok: true } };
-  'fleet:revoke':      { request: { peerId: string }; response: { ok: true } };
-  'fleet:status':      { request: { peerId: string }; response: FleetStatus };
-  'fleet:launch':      { request: { peerId: string; projectId: number }; response: { shellIndex: number } };
-  /** Launches or reattaches Claude using the remote host's existing project policy. */
-  'fleet:launch-claude': { request: { peerId: string; projectId: number }; response: { shellIndex: number } };
-  /** Lists only display metadata from the remote host's project and global CLI catalog. */
-  'fleet:profiles': { request: { peerId: string; projectId: number };
-    response: { profiles: readonly { name: string; scope: 'project' | 'global'; icon?: string }[]; defaultCliName: string | null } };
-  /** Launches a saved remote CLI or a bounded inline command without transmitting environment values. */
-  'fleet:launch-cli': { request: { peerId: string; projectId: number; profileName?: string; argv?: string[]; save?: boolean };
-    response: { shellIndex: number } };
-  'fleet:set-default-cli': { request: { peerId: string; projectId: number; name: string | null };
-    response: { defaultCliName: string | null } };
-  'fleet:remove-cli-profile': { request: { peerId: string; projectId: number; name: string }; response: { ok: true } };
-  /** One active terminal attachment streams a full screen snapshot, then live PTY output. */
-  'fleet:subscribe': { request: { peerId: string; projectId: number; shellIndex: number }; response: { subscriptionId: string } };
-  'fleet:unsubscribe': { request: { peerId: string; subscriptionId: string }; response: { ok: true } };
-  'fleet:resize': { request: { peerId: string; projectId: number; shellIndex: number; cols: number; rows: number }; response: { ok: true } };
-  'fleet:stop':        { request: { peerId: string; projectId: number; shellIndex: number }; response: { ok: true } };
-  'fleet:write':       { request: { peerId: string; projectId: number; shellIndex: number; data: string }; response: { ok: true } };
-  'fleet:snapshot':    { request: { peerId: string; projectId: number; shellIndex: number }; response: { output: string; alive: boolean } };
-  /** Git summary of a remote project, read on the peer that hosts it. */
-  'fleet:git-status':  { request: { peerId: string; projectId: number }; response: FleetGitStatus };
-  /** The remote shell this window shows, or null; Fleet notices for it are held back. */
-  'fleet:viewing':     { request: { shell: FleetShellRef | null }; response: { ok: true } };
-
   // keep-awake (macOS only; off darwin start/darken return 'unsupported')
   'keep-awake:get':    { request: undefined; response: KeepAwakeState };
   'keep-awake:start':  { request: KeepAwakeStartRequest; response: KeepAwakeStartResult };
   'keep-awake:stop':   { request: undefined; response: KeepAwakeState };
   'keep-awake:darken': { request: undefined; response: KeepAwakeDarkenResult };
+
+  /* ─── P2P remote access (fleet) ─── */
+  'p2p:fleet-list':         { request: undefined; response: { fleet: FleetEntry[] } };
+  'p2p:settings-get':       { request: undefined; response: P2PSettingsView };
+  /** Accepts any subset of the editable settings (not the fingerprint). */
+  'p2p:settings-set':       { request: Partial<P2PSettings>; response: { ok: true } };
+  'p2p:pair-generate-code': { request: undefined; response: { code: string; expiresAt: number } };
+  /** Viewer side: redeems a code shown on the host. Failure carries the reason (e.g. code_consumed, attempts_exceeded, handshake_failed). */
+  'p2p:pair-redeem-code':   { request: { code: string }; response: { ok: true } | { ok: false; error: string } };
+  'p2p:revoke-device':      { request: { deviceId: string }; response: { ok: true } };
+  'p2p:reconnect-device':   { request: { deviceId: string }; response: { ok: true } };
+  /** Renderer to main dispatch of an RPC method on a paired device; stream methods return `{ streamId }` and push `p2p:rpc-event`. */
+  'p2p:rpc-call':           { request: { deviceId: string; method: string; params?: unknown }; response: { result: unknown } };
+  'p2p:rpc-close-stream':   { request: { streamId: number }; response: { ok: true } };
 
   // health / dev
   'app:ping':    { request: undefined; response: 'pong' };
@@ -464,13 +468,20 @@ export interface IpcEvents {
    * add the file's parent as a new root if nothing matches.
    */
   'app:open-file-request':  { path: string };
-  'fleet:changed':         FleetState;
-  'fleet:terminal':        FleetTerminalEvent;
-  /** A Fleet notice was clicked: open this remote shell. */
-  'fleet:focus-remote-shell': FleetShellRef;
   /** Keep-awake state changed (start, re-start, stop, expiry, quit); sent to every window. */
   'keep-awake:changed':     KeepAwakeState;
   /** Both darken actions (`pmset displaysleepnow`, ScreenSaverEngine) failed; keep-awake stays on. */
   'keep-awake:darken-failed': Record<string, never>;
+  /** Pushed stream events from a remote device (`closed` when the stream or its connection ends). */
+  'p2p:rpc-event':          { deviceId: string; streamId: number; data?: unknown; closed?: true; reason?: string };
+  /**
+   * Fired whenever any BrowserWindow enters or leaves fullscreen — from the
+   * IPC toggle, the OS shortcut (Ctrl+Cmd+F on mac, F11 on Windows/Linux),
+   * or the window chrome. windowId lets the renderer ignore events for
+   * popped-out shell windows it doesn't own.
+   */
+  'window:fullscreen-changed': { windowId: number; fullscreen: boolean };
+  /** A new activity entry was appended to this project's log; renderers that are tailing refresh. */
+  'activity:changed': { projectId: number; entry: import('./activity').ActivityEntry };
 }
 export type IpcEventName = keyof IpcEvents;

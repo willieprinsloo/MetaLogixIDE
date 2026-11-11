@@ -45,182 +45,19 @@ runtime, not resumable terminals. Cleanup removes pinned and unpinned records
 but preserves projects and settings. Previous-run records cannot consume the
 keep-alive cap or block the first terminal after restart.
 
-### LAN fleet
+### Fleet (P2P)
 
-Fleet is off until the user enables discovery in Settings → Fleet.
-The main process starts `FleetService` before the first window and stops it
-on quit (`src/main/index.ts`).
-An enabled instance announces only its certificate fingerprint, device name,
-and TLS port by IPv4 multicast on `239.255.43.71:43871`.
-The multicast TTL is one hop. A peer expires after 15 seconds without a
-beacon (`src/main/fleet/discovery.ts:6-7,64-74,109-118`).
-Both devices must allow multicast discovery and TCP connections on the
-listener's assigned port. Fleet does not discover peers across routed networks.
-
-Each device keeps its TLS private key in the OS credential store
-(`src/main/fleet/identity.ts:138-296`).
-Values written through keytar are stored as `b64v1:` plus base64
-(`src/main/credential-encoding.ts`). A plaintext gnome-keyring writes a
-secret raw but unescapes `\n` and `\\` when it reads it. A stored value
-with a backslash or control character therefore changes after a login,
-and the next save can make the whole keyring file unreadable. An identity
-stored before this encoding still loads: raw control characters are
-re-escaped, the certificate and key are validated as usual, and the entry
-is rewritten encoded. The Metaproject password uses the same encoding.
-The owner-only trust file records the opt-in setting, trusted certificate
-fingerprints, and revoked fingerprints in at most 1 MiB
-(`src/main/fleet/identity.ts:81-135,299-360`).
-The user requests a link on one device. Both devices then display a
-12-digit comparison code from their TLS identities and fresh session nonces.
-The user must compare and approve the code on **both** devices.
-A dial has a 10-second TLS connection deadline. An established connection
-does not expire because it is idle. An unfinished pairing expires after
-90 seconds (`src/main/fleet/service.ts`).
-If both devices request a link at once, they keep the same TLS connection
-according to their certificate identities. A newly preferred connection
-cannot replace an existing channel while its trust save is pending; the
-original comparison code and request gate remain active until persistence
-succeeds, or the channel closes on failure
-(`src/main/fleet/service.ts`).
-No peer can run an operation before both approvals are saved.
-Revocation closes the active channel and blocks future pairing with that
-fingerprint while the trust file is intact (`src/main/fleet/service.ts`).
-If saving revocation fails, Fleet closes all connections and attempts to
-persist disabled trust without any approved peers. If even that fails, it
-removes the old trust file so a restart cannot restore trusted connections;
-previous revocation history is then lost. If storage cannot be written **or**
-removed, Fleet reports an error and cannot guarantee durable revocation until
-the storage fault is repaired (`src/main/fleet/service.ts`).
-
-A linked peer can read root and project display names, live shell labels,
-agent status, pin/timestamp metadata, and remote CLI profile names, scopes and
-icons. It can launch or reattach the remote machine's configured primary
-Claude command, launch a plain shell or saved CLI profile, submit a bounded
-custom command, change a folder's default CLI, remove a folder profile, and
-control a terminal. The remote machine enforces its project-path checks,
-Claude permission mode and shell limit. Plain shells start at index 1 so
-they cannot occupy the primary slot. Status travels in bounded pages from
-one captured snapshot; inventories over 256 roots, projects or live shells
-are rejected (`src/main/fleet/service.ts`, `src/main/ipc/register.ts`).
-Profile lists never include executable arguments or environment values.
-A linked peer cannot request full root or project paths, environment values
-or unrelated IPC operations. It **can** run bounded custom argv directly
-or send commands through PTY input: **only link devices you trust**.
-
-The Projects sidebar lists linked and offline machines below local folders.
-Each machine has its own collapsible heading with the same styling as the
-Projects heading. An online machine publishes its root folder display names
-and groups projects beneath each root. The remote root headings show project
-counts and collapse independently. Full paths remain on the driven machine.
-Selecting a remote project reattaches an existing remote shell, or starts
-its primary Claude command if there are no live shells. The header uses the
-local Shell tab styling, project pill and shell tab strip; each tab reflects
-the driven machine's live shell and agent state. The add-shell menu lists
-that machine's CLI profiles and supports profile launches, custom commands,
-plain shells, folder defaults and removal of saved folder profiles. A tab
-switch keeps the previous attachment subscribed until the replacement
-reports its parsed DOM viewport ready. During handoff, both terminal panes
-are hidden and input-disabled, and no shell is reported as shown; this
-prevents a command typed for the selected new tab from reaching the old PTY.
-The old stream detaches only when the new pane is ready. Other remote PTYs
-remain alive. A failed replacement returns to the previous tab
-(`src/renderer/components/RemoteTerminal.tsx:266-289,326-350,432-439`;
-`src/renderer/components/RemoteTerminalPane.tsx:247-292,386-392`).
-Stopping a tab terminates its remote PTY. Remote Split launches a plain
-shell in the right pane and keeps it out of the tab strip. **To tab** makes
-that shell the selected tab; closing the split stops it
-(`src/renderer/components/RemoteTerminal.tsx:85-121,398-443`).
-Files, Diff, Env, project-settings and popout remain local-only.
-Selecting a local folder restores its workspace; local and remote numeric
-project IDs remain separate.
-The selected remote machine refreshes its status while visible. The Fleet
-activity opens a side sheet beside the workspace, not over its terminal.
-Opening and closing the sheet does not detach the terminal or close the peer
-connection. The Fleet sheet offers discovery on/off, pairing and revocation.
-Discovery on/off also remains in Settings → Fleet
-(`src/renderer/App.tsx`, `src/renderer/components/Sidebar.tsx`,
-`src/renderer/components/FleetPanel.tsx`, `RemoteTerminal.tsx`).
-
-Terminal attachment sends an ordered serialized screen snapshot, then a ready
-marker, live PTY output and exit events. The stream is authenticated against
-the linked peer and a per-attachment identifier. The controlling instance
-fits its xterm to the visible viewport and sends dimensions after attachment.
-The driven machine allows only one remote controller per shell. Its local
-terminal view displays the trusted controller's name instead of mounting a
-competing xterm. Its local resize cannot override the controller's dimensions;
-the local view returns when the attachment ends or the link closes. Input
-and resize are bounded. Unsubscribe, terminal exit, link loss or revocation
-release PTY listeners and clear the control notice. Frames are limited to
-16 KiB, paced at 50 per second per peer, with at most four active
-attachments in each direction per connection. An initial or replacement
-screen over 4 MiB ends only that attachment; its exit frame waits for socket
-headroom. When pending live output exceeds 262,144 bytes, Fleet discards the
-pending output for that attachment and captures the current screen again.
-It sends a terminal reset before a valid replacement snapshot, then sends
-later output in order. A second burst during capture starts another capture;
-if replay has begun, Fleet finishes that screen before capturing a newer one.
-An exit or failed capture while replay is in progress still sends the
-remaining screen before ending the attachment. If the PTY exits during a
-pending capture, or is stopped and its snapshot is no longer available
-before exit notification, Fleet keeps the controller's last complete screen
-instead of sending an empty reset. This bounds memory without dropping the
-peer link (`src/main/fleet/service.ts`).
-`FleetChannel.send` accepts a temporary socket write stall. Node buffers that
-write and delivers it when the socket drains. Fleet waits to send terminal
-frames until its 65,536-byte socket write budget has one full frame of
-headroom. The channel still closes if any frame exceeds 16 KiB or any
-write exceeds the socket budget (`src/main/fleet/service.ts`,
-`src/main/fleet/channel.ts`).
-
-On remote attachment, xterm parses the initial snapshot, then waits until
-its DOM scroll area exists and reflects the parsed buffer before revealing
-the pane or releasing the previous attachment. It starts at the active
-buffer's bottom unless the user deliberately scrolled up during replay;
-in that case it preserves the selected position. Later output and resizing
-do not force a scroll
-(`src/renderer/components/RemoteTerminalPane.tsx:156-158,189-215,382-389`).
-The local terminal also hides its host while snapshot and initially queued
-PTY output finish parsing. It scrolls the active buffer to the bottom, then
-waits for xterm's DOM scroll area and scroll position to match the parsed
-buffer before revealing the host and transferring focus. This avoids painting
-the traversal through older scrollback on reopen
-(`src/renderer/components/ShellTab.tsx:353-402`;
-`tests/e2e/terminal-project-switch-focus.spec.ts:477-557`).
-
-Fleet writes connection transitions to the existing application `main.log`.
-Entries start with `[fleet]` and use `reason=` and `peer=` fields. Look for
-`listener-ready`, `discovery-ready`, `dial-failed`, `pairing-approved`,
-`channel-closed`, and `reconnect-outcome` to trace a connection. A
-`reconnect-outcome reason=skipped` entry means the dial was cancelled or an
-already-active session made that socket redundant; it does not report a new
-connection. `dial-failed reason=tls-mismatch` means certificate identity did
-not match discovery; `reason=rate-limit` means an authenticated connection
-exceeded the per-address attempt limit. `channel-closed reason=unknown` means
-Fleet did not identify why the peer closed the socket. `reason=pressure` means
-a frame or socket write exceeded the channel budget. A terminal output burst
-alone does not close the channel. Logs use a validated
-certificate fingerprint for known peers and `anonymous` for events without
-one. They do not contain pairing codes, credentials, terminal output or input
-(`src/main/fleet/service.ts:175-178,579-667,686-763`,
-`src/main/fleet/channel.ts:25-34,51-65`).
-
-The active log path comes from `app:get-log-path`; `app:reveal-log-file`
-opens its folder. The crash screen also has a **reveal log file** button
-(`src/main/ipc/register.ts:959-963`,
-`src/renderer/components/ErrorBoundary.tsx:66-74`). Default locations are
-`~/Library/Logs/<app name>/main.log` on macOS,
-`~/.config/<app name>/logs/main.log` on Linux, and
-`%USERPROFILE%\AppData\Roaming\<app name>\logs\main.log` on Windows.
-Use the resolved application path rather than assuming a default
-(`src/main/index.ts:34-45`).
-
-If credentials or multicast fail on restart, the rest of the app opens and
-the Fleet panel shows an error. Disable and re-enable Fleet after fixing
-the network or credential store (`src/main/fleet/service.ts`).
-If the stored identity is unreadable, or is missing while trusted or
-revoked peers exist, the panel offers a two-step Reset identity. Reset
-creates a new identity, clears trusted peers, keeps revocations, and leaves
-Fleet disabled. Paired devices must pair again.
+Fleet connects paired machines peer to peer through the MetaConnect
+signaling relay. The main process starts it after IPC registration and it
+never blocks startup (`src/main/index.ts`, `src/main/p2p/index.ts`). Pairing,
+relay and device settings live in Settings → P2P
+(`src/renderer/components/settings/P2PSettings.tsx`). Paired machines appear
+in the sidebar's Machines section and in the Fleet view; a remote project
+opens in `RemoteProjectPane`, whose terminals are `ShellTab` with a remote
+source (`src/renderer/components/MachinesSection.tsx`, `FleetView.tsx`,
+`RemoteProjectPane.tsx`). See
+`docs/superpowers/specs/2026-10-26-metaide-p2p-design.md` for the protocol,
+identity and pairing design.
 
 ### Main-process responsiveness
 
@@ -1280,7 +1117,7 @@ The dialog makes the app chrome inert and blocks app-wide shortcuts while open
 `src/renderer/App.tsx:366-370`). `ToastStack` renders outside that inert chrome,
 so notifications remain announced and dismissible
 (`src/renderer/components/ToastStack.tsx:51-88`). Individual shell-tab stops
-and Fleet stops remain separate actions.
+remain a separate action.
 
 ### Project and app-wide environment variables
 

@@ -150,7 +150,7 @@ describe('buildPaletteCommands', () => {
       'Settings: Launch commands',
       'Settings: Environment',
       'Settings: Metaproject',
-      'Settings: Fleet',
+      'Settings: P2P',
     ]);
     for (const [i, row] of rows.entries()) {
       await row.run();
@@ -158,14 +158,14 @@ describe('buildPaletteCommands', () => {
     }
   });
 
-  it('opens the Fleet settings section from its command-palette entry', async () => {
+  it('opens the P2P settings section from its command-palette entry', async () => {
     const { fns, deps: commandDeps } = deps({ hasProject: false });
     const command = buildPaletteCommands(commandDeps).find(
-      (item) => item.category === 'Settings' && item.title === 'Settings: Fleet',
+      (item) => item.category === 'Settings' && item.title === 'Settings: P2P',
     );
     expect(command).toBeDefined();
     await command?.run();
-    expect(fns.openSettings).toHaveBeenCalledWith('fleet');
+    expect(fns.openSettings).toHaveBeenCalledWith('p2p');
   });
 
   it('marks and hides the project-dependent commands when no project is selected (AC12)', () => {

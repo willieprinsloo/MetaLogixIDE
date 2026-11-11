@@ -2,7 +2,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { isValidElement, type ReactNode } from 'react';
 import type * as ReactModule from 'react';
-import type { FleetState } from '@shared/fleet-contract';
 
 const runtime = vi.hoisted(() => {
   type Effect = { deps?: readonly unknown[]; cleanup?: () => void; run?: () => unknown };
@@ -151,7 +150,6 @@ vi.mock('@renderer/components/ContextMenu', () => ({ ContextMenu: () => null }))
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@renderer/api', () => ({ api: { invoke, on: () => () => undefined } }));
 
-const fleet = { enabled: true, peers: [], port: 43872, controls: [] } satisfies FleetState;
 const frameCallbacks: Array<FrameRequestCallback> = [];
 const viewport = { attached: true, clientHeight: 480, scrollHeight: 480, scrollTop: 0 };
 const flush = async () => { for (let index = 0; index < 12; index++) await Promise.resolve(); };
@@ -176,14 +174,9 @@ function attachRefs(node: ReactNode): void {
 vi.stubGlobal('self', globalThis);
 const { ShellTab } = await import('@renderer/components/ShellTab');
 async function mount(snapshot: Promise<{ output: string }>): Promise<TerminalProbe> {
-  invoke.mockImplementation((channel: string) => channel === 'fleet:get-state' ? Promise.resolve(fleet)
-    : channel === 'shells:snapshot' ? snapshot : Promise.resolve(undefined));
-  runtime.render('shell', () => ShellTab({ projectId: 5, shellIndex: 0 }), () => undefined);
-  await flush();
-  const local = runtime.render('shell', () => ShellTab({ projectId: 5, shellIndex: 0 }), () => undefined);
-  if (typeof local.type !== 'function') throw new Error('Local shell did not mount');
+  invoke.mockImplementation((channel: string) => channel === 'shells:snapshot' ? snapshot : Promise.resolve(undefined));
   runtime.render('local', () => {
-    const tree: unknown = Reflect.apply(local.type, undefined, [local.props]);
+    const tree: unknown = ShellTab({ projectId: 5, shellIndex: 0 });
     if (!isValidElement(tree)) throw new Error('Local terminal did not render');
     return tree;
   }, attachRefs);

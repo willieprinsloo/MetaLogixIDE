@@ -315,7 +315,7 @@ export class PtyManager extends EventEmitter {
     return 'stopped';
   }
 
-  /** Retains the existing index-based stop for individual shell and Fleet workflows. */
+  /** Retains the existing index-based stop for individual shell workflows. */
   async kill(projectId: number, shellIndex: number): Promise<void> {
     const k = key(projectId, shellIndex);
     const entry = this.entries.get(k);

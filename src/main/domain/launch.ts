@@ -2,6 +2,7 @@ import type { Project, LaunchCmd, LaunchVariant, CliProfile } from '@shared/type
 import type { SettingsRepo } from '@main/repos/settings-repo';
 import { interpolateArgv, interpolateEnv } from '@shared/interpolate';
 import { resolveSpawnEnv } from '@main/domain/spawn-env';
+import { readMetaIdeEnv, readMetaIdeCliProfiles } from '@main/domain/metaide-conf';
 import { basename } from 'node:path';
 
 export interface ResolvedLaunch { argv: string[]; env: Record<string, string>; cwd: string; variant: LaunchVariant }
@@ -14,6 +15,10 @@ export interface ResolvedLaunch { argv: string[]; env: Record<string, string>; c
 export function findCliProfile(project: Project, settings: Pick<SettingsRepo, 'get'>, name: string): CliProfile | null {
   const projectHit = (project.config.cliProfiles ?? []).find((p) => p.name === name);
   if (projectHit) return projectHit;
+  // `.metaide/cli-profiles.json` sits between per-user project config (above)
+  // and global defaults (below): checked into the repo, per-project, shared.
+  const metaIdeHit = readMetaIdeCliProfiles(project.path).find((p) => p.name === name);
+  if (metaIdeHit) return metaIdeHit;
   const globalHit  = settings.get('default_cli_profiles').find((p) => p.name === name);
   return globalHit ?? null;
 }
@@ -57,7 +62,8 @@ export function resolveLaunch(
     env: { ...(project.config.env ?? {}), ...(template.env ?? {}) },
   });
   const appEnv = settings.get('app_env');
-  const { env, lookup } = resolveSpawnEnv({ project, templateEnv, inherited, homeDir, appEnv });
+  const metaIdeEnv = readMetaIdeEnv(project.path);
+  const { env, lookup } = resolveSpawnEnv({ project, templateEnv, inherited, homeDir, appEnv, metaIdeEnv });
 
   return {
     argv: interpolateArgv(template.argv, { ...paths, env: lookup }),

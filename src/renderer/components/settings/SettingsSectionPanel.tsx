@@ -2,9 +2,9 @@
 import type { FontDiscoveryState } from '@renderer/components/FontControl';
 import { EnvironmentPanel } from '@renderer/components/settings/EnvironmentPanel';
 import { GeneralPanel } from '@renderer/components/settings/GeneralPanel';
-import { FleetSettingsPanel } from '@renderer/components/settings/FleetSettingsPanel';
 import { LaunchPanel } from '@renderer/components/settings/LaunchPanel';
 import { MetaprojectPanel } from '@renderer/components/settings/MetaprojectPanel';
+import { P2PSettings } from '@renderer/components/settings/P2PSettings';
 import { RootsPanel } from '@renderer/components/settings/RootsPanel';
 import type { SettingsSection } from '@renderer/components/settings/nav-icons';
 import type { EnvDrafts } from '@renderer/hooks/useEnvDrafts';
@@ -16,7 +16,7 @@ interface Props {
   readonly onLoadInstalledFonts: () => Promise<void>;
 }
 
-/** Renders the active section; app-wide Fleet discovery stays separate from Fleet pairing controls. */
+/** Renders the active section in the settings dialog. */
 export function SettingsSectionPanel({
   section,
   envDrafts,
@@ -32,7 +32,7 @@ export function SettingsSectionPanel({
       {section === 'launch' && <LaunchPanel />}
       {section === 'env' && <EnvironmentPanel drafts={envDrafts} />}
       {section === 'metaproject' && <MetaprojectPanel />}
-      {section === 'fleet' && <FleetSettingsPanel />}
+      {section === 'p2p' && <P2PSettings />}
     </div>
   );
 }

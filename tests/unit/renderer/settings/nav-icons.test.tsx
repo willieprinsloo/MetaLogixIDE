@@ -7,7 +7,7 @@ import {
 } from '@renderer/components/settings/nav-icons';
 import { APP_ENV_COPY, APP_ENV_TESTIDS, ENV_COPY } from '@renderer/project-env-copy';
 
-const SECTIONS: readonly SettingsSection[] = ['general', 'roots', 'launch', 'env', 'metaproject', 'fleet'];
+const SECTIONS: readonly SettingsSection[] = ['general', 'roots', 'launch', 'env', 'metaproject', 'p2p'];
 
 const ENV_GLYPH = 'M8 4H7a2 2 0 0 0-2 2v4l-2 2 2 2v4a2 2 0 0 0 2 2h1';
 
@@ -51,7 +51,7 @@ describe('NavIcon', () => {
     ['launch', 'M4 17l6-5-6-5M12 19h8'],
     ['env', ENV_GLYPH],
     ['metaproject', '<rect x="3" y="4" width="18" height="16" rx="2">'],
-    ['fleet', '<rect x="3" y="4" width="18" height="12" rx="2">'],
+    ['p2p', '<circle cx="5" cy="12" r="2">'],
   ] as const)('draws the agreed glyph for %s', (section, glyph) => {
     const html = renderToStaticMarkup(<NavIcon section={section} />);
     expect(html).toContain(glyph);
@@ -83,7 +83,7 @@ describe('SectionButton', () => {
     ['launch', 'Launch commands'],
     ['env', 'Environment'],
     ['metaproject', 'Metaproject'],
-    ['fleet', 'Fleet'],
+    ['p2p', 'P2P'],
   ] as const)('names the %s item exactly "%s"', (section, label) => {
     const html = renderItem(section, false, label);
     expect(textOf(html)).toBe(label);

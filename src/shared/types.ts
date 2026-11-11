@@ -135,6 +135,4 @@ export type SettingsMap = {
   'vibrancy_material':             VibrancyMaterial;
   /** App-wide env variables applied to every spawn; project variables override. Write via settings:set-app-env only. */
   'app_env':                       Record<string, string>;
-  /** TCP port of the Fleet TLS listener (1024..65535). Write via fleet:set-port only. */
-  'fleet_port':                    number;
 };

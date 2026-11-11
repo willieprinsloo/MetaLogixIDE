@@ -7,7 +7,7 @@
 import { APP_ENV_COPY, APP_ENV_TESTIDS, ENV_COPY } from '@renderer/project-env-copy';
 import { ICON_SIZE, ICON_STROKE } from '../icon-size';
 
-export type SettingsSection = 'general' | 'roots' | 'launch' | 'env' | 'metaproject' | 'fleet';
+export type SettingsSection = 'general' | 'roots' | 'launch' | 'env' | 'metaproject' | 'p2p';
 
 /** Settings sections in nav order with their labels; the Settings nav and the command palette both read this. */
 export const SETTINGS_NAV_ITEMS: readonly { readonly section: SettingsSection; readonly label: string }[] = [
@@ -16,7 +16,7 @@ export const SETTINGS_NAV_ITEMS: readonly { readonly section: SettingsSection; r
   { section: 'launch', label: 'Launch commands' },
   { section: 'env', label: APP_ENV_COPY.navLabel },
   { section: 'metaproject', label: 'Metaproject' },
-  { section: 'fleet', label: 'Fleet' },
+  { section: 'p2p', label: 'P2P' },
 ];
 
 const ICON_HUES: Record<SettingsSection, string> = {
@@ -25,7 +25,7 @@ const ICON_HUES: Record<SettingsSection, string> = {
   launch: 'text-[--hue-purple]',
   env: 'text-[--hue-orange]',
   metaproject: 'text-[--hue-cyan]',
-  fleet: 'text-[--hue-cyan]',
+  p2p: 'text-[--hue-pink]',
 };
 
 const ICON_SHAPES: Record<SettingsSection, React.JSX.Element> = {
@@ -48,10 +48,12 @@ const ICON_SHAPES: Record<SettingsSection, React.JSX.Element> = {
       <path d="M9 4v16M15 4v16" />
     </>
   ),
-  fleet: (
+  p2p: (
     <>
-      <rect x="3" y="4" width="18" height="12" rx="2" />
-      <path d="M8 20h8M12 16v4M7 9h2M15 9h2" />
+      <circle cx="5" cy="12" r="2" />
+      <circle cx="19" cy="6" r="2" />
+      <circle cx="19" cy="18" r="2" />
+      <path d="M7 11l10-4M7 13l10 4" />
     </>
   ),
 };

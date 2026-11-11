@@ -2,8 +2,6 @@ import type { IpcMain } from 'electron';
 import { app, dialog, nativeImage, nativeTheme, shell, BrowserWindow } from 'electron';
 import log from 'electron-log/main';
 import type { Services } from '@main/services';
-import type { FleetOperations } from '@main/fleet/service';
-import type { FleetGitStatus } from '@shared/fleet-contract';
 import type { GitDiffKind, IpcChannelName, IpcRequest, IpcResponse, IpcEventName, IpcEvents } from '@shared/ipc-contract';
 import { discoverProjects } from '@main/domain/discovery';
 import { pruneMissingProjects } from '@main/domain/prune-missing';
@@ -22,6 +20,7 @@ import { defaultShellArgv, defaultShellBin } from '@main/domain/shell';
 import { chooseEvictee } from '@main/pty/keep-alive';
 import { applyClaudePermissionMode } from '@main/domain/claude-permission-mode';
 import { isClaudePermissionMode } from '@shared/claude-permission-mode';
+import type { P2PApi } from '../p2p/types';
 import { isFontSettingKey, parseFontFamilyPreference } from '@shared/font-settings';
 import { TERMINAL_FONT_SIZE_KEY, parseTerminalFontSize } from '@shared/terminal-font-size';
 import {
@@ -33,7 +32,6 @@ import {
   resolveTerminalWeights,
 } from '@shared/terminal-font-weight';
 import { parseViewedShells } from '@main/notifications/viewed-shells';
-import { parseFleetViewing } from '@main/notifications/fleet-notices';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, renameSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -49,9 +47,26 @@ import { isInsideRoot, resolveInsideRoot } from '@main/domain/path-containment';
 import { decodeStoredSecret, encodeStoredSecret } from '@main/credential-encoding';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { StopPrimarySessionRequest } from '@shared/unload-session-contract';
+import { readRecentActivity } from '@main/activity/log';
+import { ACTIVITY_PAGE_MAX } from '@shared/activity';
+import { readMetaIdeEnv, readMetaIdeCliProfiles } from '@main/domain/metaide-conf';
 
 const GIT_DIFF_KINDS: ReadonlySet<GitDiffKind> = new Set(['staged', 'unstaged', 'untracked']);
 const execFileAsync = promisify(execFile);
+
+/** MIME lookup for the binary-byte reader. Ships what the image + PDF viewers need. */
+const MIME_BY_EXT: Record<string, string> = {
+  pdf: 'application/pdf',
+  png: 'image/png',
+  jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  svg: 'image/svg+xml',
+  webp: 'image/webp',
+  avif: 'image/avif',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+  tif: 'image/tiff', tiff: 'image/tiff',
+};
 
 /** Spawn env overlay for a non-template spawn site: `templateEnv` ⊕ the project's interpolated variables. */
 function projectSpawnEnv(
@@ -60,7 +75,8 @@ function projectSpawnEnv(
   templateEnv: Record<string, string>,
 ): Record<string, string> {
   const appEnv = s.settings.get('app_env');
-  return resolveSpawnEnv({ project, templateEnv, inherited: process.env, homeDir: s.homeDir, appEnv }).env;
+  const metaIdeEnv = readMetaIdeEnv(project.path);
+  return resolveSpawnEnv({ project, templateEnv, inherited: process.env, homeDir: s.homeDir, appEnv, metaIdeEnv }).env;
 }
 
 /**
@@ -222,60 +238,13 @@ function peekFile({ abs, root, projectId }: PeekCandidate, maxLines: number): Ip
   }
 }
 
-/** Reads one field from an untrusted IPC payload; null, non-objects and missing fields yield undefined. */
-function requestField(req: unknown, key: string): unknown {
-  return typeof req === 'object' && req !== null && key in req
-    ? (req as Record<string, unknown>)[key]
-    : undefined;
+function p2pApi(s: Services): P2PApi {
+  if (!s.p2p) throw new Error('p2p_not_started');
+  return s.p2p.api;
 }
 
-function needFleet(services: Services): NonNullable<Services['fleet']> {
-  if (!services.fleet) throw new Error('Fleet is not available');
-  return services.fleet;
-}
-
-const SAFE_FLEET_ERRORS: readonly string[] = [
-  'Fleet port must be an integer between 1024 and 65535',
-  'Fleet identity reset is not available',
-  'Fleet service not started',
-  'Peer is not linked and online',
-  'Peer refused fleet operation',
-  'Choose a Claude permission mode on the remote machine first',
-  'Claude is unavailable on the remote machine',
-  'Remote shell limit reached; unpin a shell or raise the cap',
-  'Remote project folder is unavailable',
-  'Peer disconnected',
-  'Fleet request timed out',
-  'Fleet channel backpressure limit',
-  'Invalid project ID',
-  'Invalid shell identity',
-  'Invalid shell input',
-  'Invalid terminal dimensions',
-  'Invalid CLI launch',
-  'Invalid peer shell',
-  'Invalid peer output',
-  'Invalid peer subscription',
-  'Invalid peer status',
-  'Invalid peer status page',
-  'Invalid peer profiles',
-  'Invalid peer git status',
-  'No active pairing',
-  'Verification code mismatch',
-  'Peer not available for pairing',
-  'Peer not discovered',
-  'Invalid peer identity',
-];
-/** Returns only known fixed Fleet diagnostics to the renderer, not adapter or peer exception text. */
-function fleetIpcFailure(error: unknown): Error {
-  if (error instanceof Error && /^Fleet port (?:[1-9]\d{3,4}) is already in use$/.test(error.message))
-    return new Error('Fleet port is already in use');
-  if (error instanceof Error && error.message.startsWith('invalid fleet:viewing:'))
-    return new Error('invalid fleet:viewing');
-  return new Error(error instanceof Error && SAFE_FLEET_ERRORS.includes(error.message)
-    ? error.message : 'Fleet operation unavailable');
-}
-
-const handlers: { [C in IpcChannelName]: Handler<C> } = {
+/** Exported so the P2P hub can call the same implementations directly (no ipcMain round-trip). */
+export const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'dialogs:pick-directory': async (_s, _req, event) => {
     if (process.env.METAIDE_TEST_MODE === '1') {
       return { path: null };
@@ -293,50 +262,6 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
   },
 
   'app:ping': async () => 'pong',
-  'fleet:get-state': async (s) => needFleet(s).state(),
-  'fleet:set-enabled': async (s, { enabled }) => needFleet(s).setEnabled(enabled),
-  'fleet:set-port': async (s, req) => needFleet(s).setPort(requestField(req, 'port')),
-  'fleet:reset-identity': async (s) => needFleet(s).resetIdentity(),
-  'fleet:pair': async (s, { peerId }) => { await needFleet(s).pair(peerId); return { ok: true }; },
-  'fleet:approve': async (s, { peerId, verificationCode }) => {
-    await needFleet(s).approve(peerId, verificationCode);
-    return { ok: true };
-  },
-  'fleet:revoke': async (s, { peerId }) => { await needFleet(s).revoke(peerId); return { ok: true }; },
-  'fleet:status': async (s, { peerId }) => needFleet(s).status(peerId),
-  'fleet:launch': async (s, { peerId, projectId }) => needFleet(s).launch(peerId, projectId),
-  'fleet:launch-claude': async (s, { peerId, projectId }) => needFleet(s).launchClaude(peerId, projectId),
-  'fleet:profiles': async (s, { peerId, projectId }) => needFleet(s).profiles(peerId, projectId),
-  'fleet:launch-cli': async (s, { peerId, projectId, profileName, argv, save }) =>
-    needFleet(s).launchCli(peerId, projectId, { ...(profileName !== undefined ? { profileName } : {}),
-      ...(argv !== undefined ? { argv } : {}), ...(save !== undefined ? { save } : {}) }),
-  'fleet:set-default-cli': async (s, { peerId, projectId, name }) => needFleet(s).setDefaultCli(peerId, projectId, name),
-  'fleet:remove-cli-profile': async (s, { peerId, projectId, name }) => needFleet(s).removeCliProfile(peerId, projectId, name),
-  'fleet:subscribe': async (s, { peerId, projectId, shellIndex }) => needFleet(s).subscribe(peerId, projectId, shellIndex),
-  'fleet:unsubscribe': async (s, { peerId, subscriptionId }) => {
-    await needFleet(s).unsubscribe(peerId, subscriptionId);
-    return { ok: true };
-  },
-  'fleet:resize': async (s, { peerId, projectId, shellIndex, cols, rows }) => {
-    await needFleet(s).resize(peerId, projectId, shellIndex, cols, rows);
-    return { ok: true };
-  },
-  'fleet:stop': async (s, { peerId, projectId, shellIndex }) => {
-    await needFleet(s).stopShell(peerId, projectId, shellIndex);
-    return { ok: true };
-  },
-  'fleet:write': async (s, { peerId, projectId, shellIndex, data }) => {
-    await needFleet(s).write(peerId, projectId, shellIndex, data);
-    return { ok: true };
-  },
-  'fleet:snapshot': async (s, { peerId, projectId, shellIndex }) =>
-    needFleet(s).snapshot(peerId, projectId, shellIndex),
-  'fleet:git-status': async (s, { peerId, projectId }) => needFleet(s).gitStatus(peerId, projectId),
-  // Renderer-supplied view data: validated here; a forged view can at worst hold back the user's own notices.
-  'fleet:viewing': async (s, req) => {
-    needFleet(s).setViewing(parseFleetViewing(req));
-    return { ok: true } as const;
-  },
 
 
   'roots:list':   async (s) => ({ roots: s.roots.list() }),
@@ -706,12 +631,16 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     const project = s.projects.get(projectId);
     if (!project) throw new Error(`no project ${projectId}`);
     const projectProfiles = project.config.cliProfiles ?? [];
+    // `.metaide/cli-profiles.json` — shared project convention; sits between
+    // the per-user project settings (above) and the global catalog (below).
+    const metaIdeProfiles = readMetaIdeCliProfiles(project.path);
     const globalProfiles = s.settings.get('default_cli_profiles');
-    // Project overrides shadow same-name globals.
     const projectNames = new Set(projectProfiles.map(p => p.name));
+    const projectAndMeta = new Set([...projectProfiles, ...metaIdeProfiles].map(p => p.name));
     const flat = [
       ...projectProfiles.map(p => ({ ...p, scope: 'project' as const })),
-      ...globalProfiles.filter(p => !projectNames.has(p.name)).map(p => ({ ...p, scope: 'global' as const })),
+      ...metaIdeProfiles.filter(p => !projectNames.has(p.name)).map(p => ({ ...p, scope: 'project' as const })),
+      ...globalProfiles.filter(p => !projectAndMeta.has(p.name)).map(p => ({ ...p, scope: 'global' as const })),
     ];
     return { profiles: flat };
   },
@@ -813,8 +742,7 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     return { repaired: 1, blocksStripped, backup: backupPath } as const;
   },
   'shells:resize': async (s, { projectId, shellIndex, cols, rows }) => {
-    if (!s.fleet?.isRemotelyControlled(projectId, shellIndex))
-      s.ptyManager.resize(projectId, shellIndex, cols, rows);
+    s.ptyManager.resize(projectId, shellIndex, cols, rows);
     return { ok: true } as const;
   },
   'shells:write':  async (s, { projectId, shellIndex, data }) => { s.ptyManager.write(projectId, shellIndex, data); s.shells.touch(projectId, shellIndex, new Date()); return { ok: true } as const; },
@@ -1021,6 +949,14 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
       if (!w.isDestroyed()) w.setOpacity(clamped / 100);
     }
     return { ok: true } as const;
+  },
+
+  'window:toggle-fullscreen': async (_s, _req, event) => {
+    const w = event ? BrowserWindow.fromWebContents(event.sender) : BrowserWindow.getFocusedWindow();
+    if (!w || w.isDestroyed()) return { fullscreen: false } as const;
+    const next = !w.isFullScreen();
+    w.setFullScreen(next);
+    return { fullscreen: next } as const;
   },
 
   'settings:set-frost-chrome': async (s, { enabled }) => {
@@ -1460,6 +1396,17 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     return { matches, filesScanned, truncated };
   },
 
+  /* ─── P2P (fleet) — implementations live behind Services.p2p.api, attached by startP2P ─── */
+  'p2p:fleet-list':         async (s) => ({ fleet: s.p2p ? await s.p2p.api.fleetList() : [] }),
+  'p2p:settings-get':       async (s) => p2pApi(s).getSettings(),
+  'p2p:settings-set':       async (s, patch) => { await p2pApi(s).setSettings(patch); return { ok: true } as const; },
+  'p2p:pair-generate-code': async (s) => p2pApi(s).generatePairCode(),
+  'p2p:pair-redeem-code':   async (s, { code }) => p2pApi(s).redeemPairCode(code),
+  'p2p:revoke-device':      async (s, { deviceId }) => { await p2pApi(s).revokeDevice(deviceId); return { ok: true } as const; },
+  'p2p:reconnect-device':   async (s, { deviceId }) => { await p2pApi(s).reconnectDevice(deviceId); return { ok: true } as const; },
+  'p2p:rpc-call':           async (s, { deviceId, method, params }) => ({ result: await p2pApi(s).rpcCall(deviceId, method, params ?? {}) }),
+  'p2p:rpc-close-stream':   async (s, { streamId }) => { p2pApi(s).rpcCloseStream(streamId); return { ok: true } as const; },
+
   /* ─── Prompt library ─── */
   'prompts:list':   async (s, { projectId }) => ({ prompts: s.prompts.list(projectId) }),
   'prompts:save':   async (s, { prompt }) => {
@@ -1590,132 +1537,34 @@ const handlers: { [C in IpcChannelName]: Handler<C> } = {
     return { content: buf.toString('utf8'), kind: 'text' as const, sizeBytes: st.size };
   },
 
+  'files:read-bytes': async (s, { projectId, relPath }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    const abs = resolveInsideRoot(p.path, relPath);
+    const st = statSync(abs);
+    if (st.isDirectory()) throw new Error(`${relPath} is a directory`);
+    if (st.size > 50_000_000) throw new Error(`file too large (${st.size} bytes) — 50 MB cap`);
+    const buf = readFileSync(abs);
+    // Serialize as plain Uint8Array over the structured clone — Electron
+    // preserves the buffer without a UTF-8 round-trip.
+    const bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    const ext = relPath.slice(relPath.lastIndexOf('.') + 1).toLowerCase();
+    const mime = MIME_BY_EXT[ext] ?? 'application/octet-stream';
+    return { bytes, mime, sizeBytes: st.size };
+  },
+
+  'activity:list': async (s, { projectId, limit }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    const cap = Math.max(1, Math.min(ACTIVITY_PAGE_MAX, limit ?? 100));
+    const entries = readRecentActivity(p.path, cap);
+    return { entries };
+  },
+
   ...dropHandlers,
   ...keepAwakeHandlers,
 };
 
-function fleetName(name: string): string {
-  const clean = name.includes('\0') ? name.replaceAll('\0', '') : name;
-  if (Buffer.byteLength(clean, 'utf8') <= 160) return clean || 'Unnamed project';
-  const encoded = Buffer.from(clean, 'utf8');
-  let end = 156;
-  while ((encoded[end]! & 0xc0) === 0x80) end--;
-  return encoded.toString('utf8', 0, end);
-}
-
-/** Bounds a local git status for a peer: branch, counts and dirty flag only, never paths. */
-export function fleetGitSummary(status: { isRepo: boolean; branch: string | null; ahead: number; behind: number; dirty: boolean; files: Record<string, unknown> }): FleetGitStatus {
-  if (!status.isRepo) return { isRepo: false, branch: null, dirty: false, ahead: 0, behind: 0, changedCount: 0 };
-  const count = (value: number): number => Math.min(Math.max(Math.trunc(value) || 0, 0), 1_000_000);
-  return {
-    isRepo: true,
-    branch: fleetBranch(status.branch),
-    dirty: status.dirty,
-    ahead: count(status.ahead),
-    behind: count(status.behind),
-    changedCount: count(Object.keys(status.files).length),
-  };
-}
-
-function fleetBranch(branch: string | null): string | null {
-  if (!branch || /\p{Cc}/u.test(branch)) return null;
-  const encoded = Buffer.from(branch, 'utf8');
-  if (encoded.length <= 255) return branch;
-  let end = 255;
-  while ((encoded[end]! & 0xc0) === 0x80) end--;
-  return encoded.toString('utf8', 0, end);
-}
-
-/** Restricts peer operations to existing local shell handlers and an explicit status allow-list. */
-export function createFleetOperations(services: Services): FleetOperations {
-  return {
-    status: () => {
-      const rootRows = services.roots.list();
-      const projectRows = services.projects.list();
-      const live = services.ptyManager.liveShells();
-      if (rootRows.length > 256 || projectRows.length > 256 || live.length > 256)
-        throw new Error('Fleet status exceeds the 256-root/project/shell limit');
-      const roots = rootRows.map(({ id, path }) => ({ id, name: fleetName(basename(path)) }));
-      const projects = projectRows.map(({ id, rootId, name }) => ({
-        id, rootId, name: fleetName(name.replaceAll('\\', '/').split('/').at(-1) ?? ''),
-      }));
-      const visibleProjects = new Set(projectRows.map(({ id }) => id));
-      const agents = new Map(
-        (services.agentStatus?.list() ?? []).map((entry) =>
-          [`${entry.projectId}:${entry.shellIndex}`, entry]),
-      );
-      const shellRows = new Map(services.shells.list().map(row => [`${row.projectId}:${row.shellIndex}`, row]));
-      const shells = live.filter(({ projectId }) => visibleProjects.has(projectId))
-        .map(({ projectId, shellIndex }) => {
-          const agent = agents.get(`${projectId}:${shellIndex}`);
-          const row = shellRows.get(`${projectId}:${shellIndex}`);
-          const bin = row?.launchArgv?.[0] ?? '';
-          const base = bin.replace(/.*\//, '');
-          const launchName = base === '$SHELL' || /^(zsh|bash|sh|fish)$/.test(base)
-            ? 'Terminal' : base ? base[0]!.toUpperCase() + base.slice(1) : `Shell ${shellIndex}`;
-          return { projectId, shellIndex, agent: agent?.agent ?? null, state: agent?.state ?? 'idle' as const,
-            launchName: fleetName(launchName.replaceAll('\\', '/').split('/').at(-1) ?? ''),
-            pinned: !!row?.pinned, startedAt: row?.startedAt ?? null, lastActiveAt: row?.lastActiveAt ?? null };
-        });
-      return { roots, projects, shells };
-    },
-    launch: (projectId) => handlers['shells:launch-plain'](services, { projectId }),
-    launchClaude: (projectId) => handlers['shells:launch'](services, { projectId }),
-    profiles: async (projectId) => {
-      const { profiles } = await handlers['shells:cli-profiles-list'](services, { projectId });
-      return { profiles: profiles.map(({ name, scope, icon }) =>
-        ({ name, scope, ...(icon !== undefined ? { icon } : {}) })),
-        defaultCliName: services.projects.get(projectId)?.config.defaultCliName ?? null };
-    },
-    launchCli: (projectId, options) => handlers['shells:launch-cli'](services, { projectId, ...options }),
-    setDefaultCli: async (projectId, name) => {
-      const { project } = await handlers['shells:set-default-cli'](services, { projectId, name });
-      return { defaultCliName: project.config.defaultCliName ?? null };
-    },
-    removeCliProfile: (projectId, name) =>
-      handlers['shells:cli-profiles-remove'](services, { projectId, name }),
-    hasProject: (projectId) => Boolean(services.projects.get(projectId)),
-    isAlive: (projectId, shellIndex) =>
-      Boolean(services.projects.get(projectId)) && services.ptyManager.isAlive(projectId, shellIndex),
-    terminalSnapshot: (projectId, shellIndex) => services.ptyManager.getSnapshot(projectId, shellIndex),
-    watch: (projectId, shellIndex, onData, onExit) => {
-      const data = (event: { projectId: number; shellIndex: number; data: string }): void => {
-        if (event.projectId === projectId && event.shellIndex === shellIndex) onData(event.data);
-      };
-      const generation = services.ptyManager.liveShell(projectId, shellIndex)?.generation;
-      const exit = (event: { projectId: number; shellIndex: number; generation: string }): void => {
-        if (event.projectId === projectId && event.shellIndex === shellIndex && event.generation === generation) onExit();
-      };
-      services.ptyManager.on('data', data);
-      services.ptyManager.on('exit', exit);
-      return () => {
-        services.ptyManager.off('data', data);
-        services.ptyManager.off('exit', exit);
-      };
-    },
-    resize: async (projectId, shellIndex, cols, rows) => {
-      services.ptyManager.resize(projectId, shellIndex, cols, rows);
-    },
-    stop: async (projectId, shellIndex) => {
-      await handlers['shells:kill'](services, { projectId, shellIndex });
-    },
-    write: async (projectId, shellIndex, data) => {
-      await handlers['shells:write'](services, { projectId, shellIndex, data });
-    },
-    snapshot: async (projectId, shellIndex) => {
-      const result = await handlers['shells:snapshot'](services, { projectId, shellIndex });
-      if (Buffer.byteLength(result.output, 'utf8') <= 8192) return result;
-      const encoded = Buffer.from(result.output, 'utf8');
-      let start = encoded.length - 8188;
-      while ((encoded[start]! & 0xc0) === 0x80) start++;
-      return { alive: result.alive, output: encoded.toString('utf8', start) };
-    },
-    gitStatus: async (projectId) => {
-      if (!services.projects.list().some(({ id }) => id === projectId)) throw new Error(`no project ${projectId}`);
-      return fleetGitSummary(await handlers['git:status'](services, { projectId }));
-    },
-  };
-}
 
 /** Events broadcast after a channel's handler resolves; exported for the CHANNEL_EMITS guard test. */
 export const CHANNEL_EMITS: Partial<Record<IpcChannelName, IpcEventName[]>> = {
@@ -1747,8 +1596,15 @@ function eventPayload<E extends IpcEventName>(name: E): IpcEvents[E] {
   return {} as IpcEvents[E];
 }
 
+let broadcastEvent: SendEvent | null = null;
+
+/** Broadcast for in-process callers (p2p hub) that bypass the ipcMain wrapper's CHANNEL_EMITS. No-op before registerIpc. */
+export function emitAliveShellsChanged(): void { broadcastEvent?.('alive-shells:changed', {}); }
+export function emitProjectsChanged(): void { broadcastEvent?.('projects:changed', { kind: 'updated' }); }
+
 /** Registers IPC handlers and forwards PTY exits only when no newer generation owns the shell. */
 export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: SendEvent, windowHooks?: WindowHooks): void {
+  broadcastEvent = sendEvent;
   if (services.ptyManager) {
     services.ptyManager.on('data', (ev: IpcEvents['pty:data']) => sendEvent('pty:data', ev));
     services.ptyManager.on('exit', (ev: IpcEvents['pty:exit'] & { generation: string }) => {
@@ -1789,14 +1645,9 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
     if (WINDOW_CHANNELS.has(channel) || CUSTOM_EMIT_CHANNELS[channel]) continue; // wired below
     ipcMain.handle(channel, async (event, req) => {
       const fn = handlers[channel] as (s: Services, req: unknown, e?: Electron.IpcMainInvokeEvent) => Promise<unknown>;
-      try {
-        const result = await fn(services, req, event);
-        for (const evt of CHANNEL_EMITS[channel] ?? []) sendEvent(evt, eventPayload(evt));
-        return result;
-      } catch (error) {
-        if (channel.startsWith('fleet:')) throw fleetIpcFailure(error);
-        throw error;
-      }
+      const result = await fn(services, req, event);
+      for (const evt of CHANNEL_EMITS[channel] ?? []) sendEvent(evt, eventPayload(evt));
+      return result;
     });
   }
 

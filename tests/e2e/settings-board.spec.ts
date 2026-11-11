@@ -45,7 +45,7 @@ const ROW_HINTS = {
   'Max watched paths': 'File-watcher limit across all roots.',
 } as const;
 const FONTS_HINT = 'Pick an installed font or type an exact family name.';
-const NAV = ['General', 'Root directories', 'Launch commands', 'Environment', 'Metaproject', 'Fleet'] as const;
+const NAV = ['General', 'Root directories', 'Launch commands', 'Environment', 'Metaproject', 'P2P'] as const;
 const SECTIONS = ['Appearance', 'Fonts', 'Workspace', 'Notifications'] as const;
 const SWITCHES = [
   { testId: 'notify-needs-input-toggle', label: 'When Claude needs input', key: 'notify_claude_needs_input' },
@@ -420,7 +420,7 @@ test('AC5, AC6: nav geometry, icons, names, aria-current; every label on one lin
     }
     const iconColour = (name: string) => item(name).locator('svg').evaluate((e) => getComputedStyle(e).color);
     expect(await iconColour('General'), `${at} General icon`).toBe(await style(item('General'), 'color'));
-    for (const [name, hue] of [['Root directories', '--hue-yellow'], ['Launch commands', '--hue-purple'], ['Metaproject', '--hue-cyan'], ['Fleet', '--hue-cyan']] as const) {
+    for (const [name, hue] of [['Root directories', '--hue-yellow'], ['Launch commands', '--hue-purple'], ['Metaproject', '--hue-cyan'], ['P2P', '--hue-pink']] as const) {
       const expected = await resolveIn(nav(), 'color', `var(${hue})`);
       expect(await iconColour(name), `${at} ${name} icon`).toBe(expected);
       // Positive control: the hue is not just the inherited item text colour.

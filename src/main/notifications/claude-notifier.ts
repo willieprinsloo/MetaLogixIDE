@@ -8,18 +8,11 @@ import type { NotificationHandle, NotificationsPort } from './os-notifications';
 /** The two toggles the notifier reads. */
 export type ClaudeNotifyToggle = 'notify_claude_needs_input' | 'notify_claude_finished';
 
-/** A classified Claude notification as a controlling Fleet peer receives it. */
-export interface ClaudeNotice {
-  kind: 'needs-input' | 'finished';
-  body: string;
-}
-
-/** Injected ports; `forward` returns true once a controlling Fleet peer took the notice, which skips the local one. */
+/** Injected ports. */
 export interface ClaudeNotifierDeps {
   notifications: NotificationsPort;
   isViewing: (shell: ShellKey) => boolean;
   navigate: (shell: ShellKey) => void;
-  forward: (shell: ShellKey, notice: ClaudeNotice) => boolean;
   settings: { get(key: ClaudeNotifyToggle): boolean };
   projectName: (projectId: number) => string | null;
 }
@@ -41,16 +34,11 @@ function isFinishedTurn(event: HookEvent, from: AgentState, to: AgentState): boo
   return event.backgroundTaskCount === 0 && from === 'busy' && to === 'idle';
 }
 
-function contentFor({ hook: { event }, from, to }: AppliedHook): ClaudeNotice | null {
+function contentFor({ hook: { event }, from, to }: AppliedHook): { toggle: ClaudeNotifyToggle; body: string } | null {
   const kind = classifyHookEvent(event);
-  if (kind === 'needs-input' && to === 'blocked') return { kind, body: needsInputBody(event.message) };
-  if (kind === 'finished' && isFinishedTurn(event, from, to)) return { kind, body: FINISHED_BODY };
+  if (kind === 'needs-input' && to === 'blocked') return { toggle: 'notify_claude_needs_input', body: needsInputBody(event.message) };
+  if (kind === 'finished' && isFinishedTurn(event, from, to)) return { toggle: 'notify_claude_finished', body: FINISHED_BODY };
   return null;
-}
-
-/** The setting that enables local or remote notices of this kind. */
-export function toggleFor(kind: ClaudeNotice['kind']): ClaudeNotifyToggle {
-  return kind === 'needs-input' ? 'notify_claude_needs_input' : 'notify_claude_finished';
 }
 
 /** Shows Claude needs-input / finished notifications; see the module docblock. */
@@ -63,8 +51,7 @@ export class ClaudeNotifier {
   handle(applied: AppliedHook): void {
     const { hook } = applied;
     const content = contentFor(applied);
-    if (!content || this.deps.forward(hook.shell, content)) return;
-    if (!this.deps.settings.get(toggleFor(content.kind))) return;
+    if (!content || !this.deps.settings.get(content.toggle)) return;
     if (!this.deps.notifications.isSupported() || this.deps.isViewing(hook.shell)) return;
     this.show(hook.shell, content.body);
   }

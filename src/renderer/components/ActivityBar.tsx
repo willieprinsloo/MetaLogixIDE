@@ -16,10 +16,12 @@ interface Props {
   gitDirty?: number;
   /** Discovered task count for the tiny "N" pip on the Tasks icon. */
   taskCount?: number;
+  /** Number of paired devices currently online (self excluded). Shows a pip when > 0. */
+  fleetOnline?: number;
 }
 
-/** The far-left icon rail: sidebar toggle, project tools, and opt-in fleet access. */
-export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, chatUnread, gitDirty, taskCount }: Props) {
+/** The far-left icon rail: sidebar toggle, project tools, and fleet access. */
+export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, chatUnread, gitDirty, taskCount, fleetOnline }: Props) {
   const platform = useShortcutPlatform();
   return (
     <nav
@@ -72,14 +74,26 @@ export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, ch
         <TasksIcon />
       </ABButton>
       <ABButton
-        label="Fleet"
+        label={fleetOnline ? `Fleet — ${fleetOnline} paired machines online` : 'Fleet'}
         active={active === 'fleet'}
         onClick={() => onSelect('fleet')}
         data-testid="ab-fleet"
+        badge={active === 'fleet' ? 0 : fleetOnline}
       >
         <FleetIcon />
       </ABButton>
     </nav>
+  );
+}
+
+function FleetIcon() {
+  // Three stacked tiles — reads as "many machines" at 16 px.
+  return (
+    <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3"  y="4"  width="8" height="7" rx="1.5" />
+      <rect x="13" y="4"  width="8" height="7" rx="1.5" />
+      <rect x="8"  y="13" width="8" height="7" rx="1.5" />
+    </svg>
   );
 }
 
@@ -165,16 +179,6 @@ function TasksIcon() {
     <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3" y="3" width="18" height="18" rx="3" />
       <polygon points="10,8 16,12 10,16" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
-
-function FleetIcon() {
-  return (
-    <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="2.5" y="9" width="7" height="7" rx="1.5" />
-      <rect x="14.5" y="9" width="7" height="7" rx="1.5" />
-      <path d="M6 7V4h12v3M10 12.5h4" />
     </svg>
   );
 }

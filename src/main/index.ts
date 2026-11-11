@@ -3,17 +3,19 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
-import { homedir, hostname } from 'node:os';
+import { homedir } from 'node:os';
 import log from 'electron-log/main';
+import { startP2P, stopP2P } from './p2p';
+import { isWorkerWindowId } from './p2p/worker/windowWorker';
 import { buildServices, type Services } from './services';
 import { DROP_MAX_AGE_MS, testModeDropDir } from './drops/staging';
 import { installKeepAwake } from './keep-awake/install';
-import { createFleetOperations, registerIpc } from './ipc/register';
+import { registerIpc } from './ipc/register';
 import { buildAppMenu } from './menu';
 import { installClaudeNotifications } from './notifications/install';
-import { installFleetNotices } from './notifications/fleet-notices';
 import { installAgentStatus } from './agent-status/install';
 import { createHookFanout } from './claude-hooks/hook-fanout';
+import { wireActivityLog } from './activity/wire';
 import { rescanRootsAtBoot } from './startup/boot-rescan';
 import { startDoneNotifier } from './startup/done-notifier';
 import { startReceivers } from './startup/receivers';
@@ -21,7 +23,6 @@ import { installCrashObservability } from './startup/crash-observability';
 import { withoutHookConfirmed } from './notifications/claude-notifier';
 import { resolveLoginShellPath } from './domain/login-shell-path';
 import { computeTileLayout } from './window-tiling';
-import { FleetService } from './fleet/service';
 import {
   FROSTED_GLASS_FALLBACK,
   applyVibrancy,
@@ -119,10 +120,10 @@ if (!gotLock) {
 } else {
   app.on('second-instance', (_event, argv) => {
     scanArgvForFiles(argv);
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show(); mainWindow.focus();
-    }
+    void ensureMainWindow().then((win) => {
+      if (win.isMinimized()) win.restore();
+      win.show(); win.focus();
+    });
   });
 }
 
@@ -167,6 +168,23 @@ function wireExternalLinks(win: BrowserWindow): void {
   });
 }
 
+/**
+ * Broadcasts `window:fullscreen-changed` whenever the window enters or leaves
+ * native fullscreen — from the IPC toggle, Ctrl+Cmd+F / F11, or the green
+ * traffic light. Lets the renderer hide IDE chrome in lock-step. Cross-platform:
+ * Electron fires enter/leave-full-screen on mac, Windows and Linux alike.
+ */
+function wireFullscreenEvents(win: BrowserWindow): void {
+  const notify = (fullscreen: boolean) => {
+    if (win.isDestroyed()) return;
+    const wc = win.webContents;
+    if (!wc || wc.isDestroyed() || wc.isCrashed()) return;
+    try { wc.send('window:fullscreen-changed', { windowId: win.id, fullscreen }); } catch { /* frame disposed */ }
+  };
+  win.on('enter-full-screen', () => notify(true));
+  win.on('leave-full-screen', () => notify(false));
+}
+
 async function createMainWindow(): Promise<BrowserWindow> {
   const win = new BrowserWindow({
     width: 1400,
@@ -179,6 +197,7 @@ async function createMainWindow(): Promise<BrowserWindow> {
   win.once('ready-to-show', () => win.show());
   wireExternalLinks(win);
   applyPersistedOpacity(win);
+  wireFullscreenEvents(win);
   // Detect renderer crashes ("blank screen" symptom) and auto-recover by
   // reloading the window. Without this, an OOM / WebGL context loss / stray
   // exception leaves the user with a blank webview and nothing else to do.
@@ -218,6 +237,7 @@ export async function createPopoutWindow(projectId: number, shellIndex: number):
   });
   wireExternalLinks(win);
   applyPersistedOpacity(win);
+  wireFullscreenEvents(win);
   if (process.env.ELECTRON_RENDERER_URL) await win.loadURL(`${process.env.ELECTRON_RENDERER_URL}?${query}`);
   else await win.loadFile(join(__dirname, '../renderer/index.html'), { search: `?${query}` });
   win.once('ready-to-show', () => {
@@ -385,15 +405,6 @@ function attachKeepAwake(services: Services): void {
 
 /** Registers the renderer IPC surface, with window operations bound to this module's windows. */
 function registerMainIpc(services: Services): void {
-  services.fleet = new FleetService({
-    name: hostname(),
-    storageDir: join(services.homeDir, '.metaide', 'fleet'),
-    operations: createFleetOperations(services),
-    getPort: () => services.settings.get('fleet_port'),
-    savePort: (port) => services.settings.set('fleet_port', port),
-  });
-  services.fleet.onChanged((state) => broadcast('fleet:changed', state));
-  services.fleet.onTerminal((event) => broadcast('fleet:terminal', event));
   registerIpc(ipcMain, services, broadcast, {
     createPopoutWindow: async (projectId, shellIndex) => (await createPopoutWindow(projectId, shellIndex)).id,
     returnPopoutWindow: (projectId, shellIndex) => returnPopoutWindow(projectId, shellIndex),
@@ -403,19 +414,14 @@ function registerMainIpc(services: Services): void {
   });
 }
 
-/** Wires Claude hook events to OS notifications or controlling Fleet peers, and Fleet notices to OS notifications. */
+/** Wires Claude hook events to OS notifications and the project activity log, resolving target windows from this module's state. */
 function installNotifications(services: Services): void {
-  const fleet = services.fleet;
-  if (fleet) installFleetNotices({
-    fleet,
-    settings: services.settings,
-    notificationClass: Notification,
-    windows: { main: () => mainWindow, focused: () => BrowserWindow.getFocusedWindow() },
-    broadcast,
-  });
+  // One fanout feeds BOTH the notifier and the activity log. Receiver.onHook
+  // is single-listener, so a second direct subscription would silently
+  // replace the first — the fanout is what makes multi-consumer safe.
+  const hooks = createHookFanout(services.hookReceiver);
   installClaudeNotifications({
-    forwardToFleet: (shell, notice) => (fleet?.sendNotice({ ...shell, ...notice }) ?? 0) > 0,
-    hooks: createHookFanout(services.hookReceiver),
+    hooks,
     history: services.hookHistory,
     sessions: services.hookSessions,
     ptyManager: services.ptyManager,
@@ -429,6 +435,11 @@ function installNotifications(services: Services): void {
       focused: () => BrowserWindow.getFocusedWindow(),
     },
     broadcast,
+  });
+  wireActivityLog({
+    hooks,
+    projects: services.projects,
+    broadcast: (projectId, entry) => broadcast('activity:changed', { projectId, entry }),
   });
 }
 
@@ -471,14 +482,14 @@ function stopOnQuit(services: Services, donePoll: NodeJS.Timeout, agentStatus: R
     services.keepAwake?.dispose();
     services.ompReceiver.stop();
     void services.hookRuntime.stop();
-    void services.fleet?.stop();
+    void stopP2P();
   });
 }
 
 /**
  * App startup once Electron is ready, in a fixed order: login-shell PATH, cold-launch argv scan
  * (after ready so `existsSync` sees the app-relative CWD), Windows app id, services, receivers,
- * agent status, boot rescan, window settings, Fleet registration, IPC, Fleet startup,
+ * agent status, boot rescan, window settings, IPC, P2P startup,
  * Claude notifications, main window, done notifier, ports fan-out, quit teardown.
  */
 async function startApp(): Promise<void> {
@@ -492,7 +503,8 @@ async function startApp(): Promise<void> {
   bindWindowSettings(services);
   attachKeepAwake(services);
   registerMainIpc(services);
-  await services.fleet?.start();
+  // P2P needs the IPC broadcaster (rpc stream events) and must never block or fail app startup.
+  void startP2P(services, { emit: broadcast }).catch((err: unknown) => log.warn('[p2p] start failed', err));
   installNotifications(services);
   await openMainWindow(services);
   const donePoll = startCommandDoneNotifier(services);
@@ -502,8 +514,31 @@ async function startApp(): Promise<void> {
 
 const startupReady = app.whenReady().then(startApp);
 
+/** Open windows the user can see or close; excludes the hidden p2p worker. */
+function userWindows(): BrowserWindow[] {
+  return BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed() && !isWorkerWindowId(w.id));
+}
+
+/** Returns the live main window, recreating it once startup has finished if it was closed. */
+async function ensureMainWindow(): Promise<BrowserWindow> {
+  await startupReady;
+  if (!mainWindow || mainWindow.isDestroyed()) mainWindow = await createMainWindow();
+  return mainWindow;
+}
+
+// The hidden p2p worker window keeps 'window-all-closed' from ever firing, so quit when the
+// last user window closes instead — otherwise the app lingers headless holding the
+// single-instance lock and every later launch silently exits.
+// This listener is attached before the worker's own 'closed' handler, so the id is still registered.
+app.on('browser-window-created', (_event, win) => {
+  const id = win.id;
+  win.on('closed', () => {
+    if (process.platform === 'darwin' || isWorkerWindowId(id)) return;
+    if (userWindows().length === 0) app.quit();
+  });
+});
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', async () => {
   if (process.platform === 'darwin') await startupReady;
-  if (BrowserWindow.getAllWindows().length === 0) mainWindow = await createMainWindow();
+  if (userWindows().length === 0) mainWindow = await createMainWindow();
 });

@@ -47,7 +47,6 @@ vi.mock('@renderer/api', () => ({
         return { kind: 'stopped' };
       }
       if (channel === 'shells:launch-plain') return { shellIndex: 3 };
-      if (channel === 'fleet:get-state') return { enabled: false, peers: [] };
       return {};
     },
   },

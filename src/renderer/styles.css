@@ -1065,8 +1065,4 @@ kbd {
     width: 100% !important;
   }
   .fleet-projects-pane [data-testid="resize-handle"] { display: none; }
-  .fleet-projects-pane.fleet-sheet-open {
-    background: rgb(from var(--surface-chrome) r g b / 1);
-  }
-  .fleet-projects-pane.fleet-sheet-open aside[data-view="projects"] { display: none; }
 }

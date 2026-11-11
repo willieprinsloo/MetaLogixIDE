@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { IpcMain } from 'electron';
-import { createFleetOperations, registerIpc } from '@main/ipc/register';
+import { registerIpc } from '@main/ipc/register';
 import { openDb } from '@main/db/connection';
 import { runMigrations } from '@main/db/migrator';
 import { SettingsRepo } from '@main/repos/settings-repo';
@@ -125,21 +125,6 @@ describe('registerIpc', () => {
       expect(sendEvent).toHaveBeenNthCalledWith(1, 'pty:exit', { projectId: 4, shellIndex: 2, code: 7 });
       expect(sendEvent).toHaveBeenNthCalledWith(2, 'alive-shells:changed', {});
     });
-  });
-  it('does not close a Fleet terminal watching the successor when the predecessor exits', () => {
-    const source = new EventEmitter();
-    const ptyManager = fakePtyManager();
-    ptyManager.on.mockImplementation((event: string, listener: (...args: unknown[]) => void) => source.on(event, listener));
-    ptyManager.off.mockImplementation((event: string, listener: (...args: unknown[]) => void) => source.off(event, listener));
-    ptyManager.liveShell.mockReturnValue({ pid: 42, generation: 'successor', agent: null });
-    const watch = createFleetOperations({ ptyManager } as unknown as Parameters<typeof createFleetOperations>[0]).watch;
-    const onExit = vi.fn();
-    const unsubscribe = watch(4, 0, vi.fn(), onExit);
-    source.emit('exit', { projectId: 4, shellIndex: 0, generation: 'predecessor' });
-    expect(onExit).not.toHaveBeenCalled();
-    source.emit('exit', { projectId: 4, shellIndex: 0, generation: 'successor' });
-    expect(onExit).toHaveBeenCalledTimes(1);
-    unsubscribe();
   });
 
 

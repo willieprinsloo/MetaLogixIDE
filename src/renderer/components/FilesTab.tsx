@@ -6,6 +6,9 @@ import { ICON_SIZE, ICON_STROKE } from './icon-size';
 import { AnimatePresence } from 'motion/react';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 import { MarkdownPreview } from './MarkdownPreview';
+import { ImageViewer } from './ImageViewer';
+import { PdfViewer } from './PdfViewer';
+import { useDocumentZoom } from '@renderer/hooks/useDocumentZoom';
 import { langForPath } from '@renderer/diff/highlight-lang';
 import { usePersistedNumber } from '@renderer/hooks/usePersistedNumber';
 import { useGitStatus } from '@renderer/hooks/useGitStatus';
@@ -26,7 +29,8 @@ interface OpenFile {
 }
 
 const MD_EXT   = new Set(['md', 'markdown', 'mdx']);
-const IMG_EXT  = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp']);
+const IMG_EXT  = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'avif', 'bmp', 'ico']);
+const PDF_EXT  = new Set(['pdf']);
 
 function extOf(name: string): string {
   const i = name.lastIndexOf('.');
@@ -38,11 +42,17 @@ export function FilesTab({
   openRelPath,
   openLine,
   onOpenRelPathConsumed,
+  isFullscreen = false,
+  onFullscreenToggle,
 }: {
   projectId: number;
   openRelPath?: string | null;
   openLine?: number | null;
   onOpenRelPathConsumed?: () => void;
+  /** True when the host window is in native fullscreen; toolbars render an exit affordance. */
+  isFullscreen?: boolean;
+  /** Fire the window-level fullscreen toggle IPC; wired from App.tsx so the hook lives at the top. */
+  onFullscreenToggle?: () => void;
 }) {
   const platform = useShortcutPlatform();
   const [pendingLine, setPendingLine] = useState<number | null>(null);
@@ -222,6 +232,7 @@ export function FilesTab({
           )}
           {!error && activeFile && (
             <FilePreview
+              projectId={projectId}
               file={activeFile}
               scrollToLine={pendingLine}
               onScrolled={() => setPendingLine(null)}
@@ -230,6 +241,8 @@ export function FilesTab({
               onSave={() => saveFile(activeFile.relPath)}
               dirty={activeFile.buffer !== activeFile.content}
               onForceText={() => void forceTextOn(activeFile.relPath)}
+              isFullscreen={isFullscreen}
+              onFullscreenToggle={() => onFullscreenToggle?.()}
             />
           )}
         </div>
@@ -539,8 +552,10 @@ function FileTreePane({
 }
 
 function FilePreview({
-  file, scrollToLine, onScrolled, onChange, onToggleEdit, onSave, dirty, onForceText,
+  projectId, file, scrollToLine, onScrolled, onChange, onToggleEdit, onSave, dirty, onForceText,
+  isFullscreen, onFullscreenToggle,
 }: {
+  projectId: number;
   file: OpenFile;
   scrollToLine: number | null;
   onScrolled: () => void;
@@ -550,21 +565,70 @@ function FilePreview({
   dirty: boolean;
   /** Escape hatch: user overrode the binary heuristic and wants to edit as text anyway. */
   onForceText?: () => void;
+  isFullscreen: boolean;
+  onFullscreenToggle: () => void;
 }) {
   const ext = extOf(file.relPath);
   const isMd = MD_EXT.has(ext);
   const isImg = IMG_EXT.has(ext);
+  const isPdf = PDF_EXT.has(ext);
   const editable = file.kind === 'text';
   const editing = file.editing && editable;
   const platform = useShortcutPlatform();
+  // Shared zoom for markdown editor + preview, persisted across restarts.
+  const { zoom: mdZoom, zoomIn: mdZoomIn, zoomOut: mdZoomOut, resetZoom: mdResetZoom } = useDocumentZoom('metaide.markdownZoom');
+  const previewRef = useRef<HTMLDivElement>(null);
+
+  // ⌘+/⌘-/⌘0 scoped to markdown preview; ⌘⇧Enter toggles fullscreen from
+  // any file preview including image and PDF (those have their own ⌘+/⌘-).
+  useEffect(() => {
+    const el = previewRef.current;
+    if (!el) return;
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.shiftKey && (e.key === 'Enter' || e.key === 'Return')) {
+        e.preventDefault();
+        onFullscreenToggle();
+        return;
+      }
+      if (!isMd) return;
+      if (mod && (e.key === '=' || e.key === '+')) { e.preventDefault(); mdZoomIn(); }
+      else if (mod && e.key === '-')              { e.preventDefault(); mdZoomOut(); }
+      else if (mod && e.key === '0')              { e.preventDefault(); mdResetZoom(); }
+    };
+    el.addEventListener('keydown', onKey);
+    return () => el.removeEventListener('keydown', onKey);
+  }, [isMd, mdZoomIn, mdZoomOut, mdResetZoom, onFullscreenToggle]);
+
+  // Image / PDF viewers handle their own toolbars + routing.
+  if (isImg) {
+    return <ImageViewer projectId={projectId} relPath={file.relPath} fullscreen={isFullscreen} onFullscreenToggle={onFullscreenToggle} />;
+  }
+  if (isPdf) {
+    return <PdfViewer projectId={projectId} relPath={file.relPath} fullscreen={isFullscreen} onFullscreenToggle={onFullscreenToggle} />;
+  }
 
   return (
-    <div className="h-full flex flex-col min-h-0" data-testid="file-preview">
+    <div ref={previewRef} tabIndex={-1} className="h-full flex flex-col min-h-0 focus:outline-none" data-testid="file-preview">
       <div className="px-3 py-1.5 border-b border-[--border] text-[11px] text-[--text-muted] font-mono flex items-center gap-2 overflow-hidden">
         <div className="flex-1 flex items-center gap-1 overflow-hidden">
           <Breadcrumbs relPath={file.relPath} />
           {dirty && <span className="text-[10px] text-[--accent] ml-1" title="Unsaved changes">●</span>}
         </div>
+        {isMd && (
+          <>
+            <button onClick={mdZoomOut} className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]" title="Zoom out (⌘-)">−</button>
+            <button onClick={mdResetZoom} className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong] font-mono tabular-nums min-w-[52px]" title="Reset zoom (⌘0)">{Math.round(mdZoom * 100)}%</button>
+            <button onClick={mdZoomIn} className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]" title="Zoom in (⌘=)">+</button>
+          </>
+        )}
+        <button
+          onClick={onFullscreenToggle}
+          className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]"
+          title={isFullscreen ? 'Exit fullscreen (⌘⇧Enter)' : 'Fullscreen (⌘⇧Enter)'}
+        >
+          {isFullscreen ? '⤡' : '⤢'}
+        </button>
         {editable && (
           <>
             <button
@@ -590,7 +654,7 @@ function FilePreview({
         )}
       </div>
       <div className="flex-1 overflow-auto min-h-0">
-        {file.kind === 'binary' && !isImg && (
+        {file.kind === 'binary' && (
           <div className="p-6 text-sm text-[--text-muted] space-y-3">
             <div>Binary file — no preview.</div>
             <div className="text-xs opacity-70">
@@ -605,14 +669,11 @@ function FilePreview({
             </button>
           </div>
         )}
-        {file.kind === 'binary' && isImg && (
-          <div className="p-4 text-sm text-[--text-muted]">Image preview is a Phase 2 feature.</div>
-        )}
         {file.kind === 'text' && editing && (
-          <EditorWithLineNumbers value={file.buffer} onChange={onChange} scrollToLine={scrollToLine} onScrolled={onScrolled} lang={langForPath(file.relPath)} />
+          <EditorWithLineNumbers value={file.buffer} onChange={onChange} scrollToLine={scrollToLine} onScrolled={onScrolled} lang={langForPath(file.relPath)} zoom={isMd ? mdZoom : 1} />
         )}
         {file.kind === 'text' && !editing && isMd && (
-          <MarkdownPreview source={file.buffer} />
+          <MarkdownPreview source={file.buffer} zoom={mdZoom} />
         )}
         {file.kind === 'text' && !editing && !isMd && (
           <SyntaxHighlightedPre content={file.buffer} lang={langForPath(file.relPath)} scrollToLine={scrollToLine} onScrolled={onScrolled} />
@@ -629,19 +690,25 @@ function FilePreview({
  * metrics so glyphs align pixel-perfect.
  */
 function EditorWithLineNumbers({
-  value, onChange, scrollToLine, onScrolled, lang,
+  value, onChange, scrollToLine, onScrolled, lang, zoom = 1,
 }: {
   value: string;
   onChange: (v: string) => void;
   scrollToLine: number | null;
   onScrolled: () => void;
   lang: string;
+  /** Font-scale multiplier; 1 = baseline (12px / 24px line height). */
+  zoom?: number;
 }) {
   const gutterRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
   const preRef = useRef<HTMLPreElement>(null);
   const lineCount = useMemo(() => (value.match(/\n/g)?.length ?? 0) + 1, [value]);
-  const gutterWidth = 12 + String(lineCount).length * 8;
+  const fontSize = 12 * zoom;
+  const lineHeightPx = 24 * zoom;
+  const digitPx = 8 * zoom;
+  const gutterWidth = 12 + String(lineCount).length * digitPx;
+  const fontStyle = { fontSize: `${fontSize}px`, lineHeight: `${lineHeightPx}px` } as const;
 
   // Defer highlighting until after typing settles. React's built-in
   // useDeferredValue keeps the textarea responsive because it lets React
@@ -678,13 +745,12 @@ function EditorWithLineNumbers({
     const end = lineEnd === -1 ? value.length : lineEnd;
     el.focus();
     el.setSelectionRange(idx, end);
-    const lineHeight = 24;
-    const target = Math.max(0, (line - 4) * lineHeight);
+    const target = Math.max(0, (line - 4) * lineHeightPx);
     el.scrollTop = target;
     if (preRef.current) preRef.current.scrollTop = target;
     if (gutterRef.current) gutterRef.current.scrollTop = target;
     onScrolled();
-  }, [scrollToLine, value, onScrolled]);
+  }, [scrollToLine, value, onScrolled, lineHeightPx]);
 
   function onScroll(e: React.UIEvent<HTMLTextAreaElement>) {
     const target = e.target as HTMLTextAreaElement;
@@ -700,8 +766,8 @@ function EditorWithLineNumbers({
       <div
         ref={gutterRef}
         aria-hidden
-        className="shrink-0 overflow-hidden text-right pr-2 pt-4 pb-4 pl-3 text-[12px] leading-6 font-mono text-[--text-muted]/70 select-none border-r border-[--border] bg-[--panel]/30"
-        style={{ width: gutterWidth }}
+        className="shrink-0 overflow-hidden text-right pr-2 pt-4 pb-4 pl-3 font-mono text-[--text-muted]/70 select-none border-r border-[--border] bg-[--panel]/30"
+        style={{ width: gutterWidth, ...fontStyle }}
       >
         {Array.from({ length: lineCount }, (_, i) => (
           <div key={i}>{i + 1}</div>
@@ -711,7 +777,8 @@ function EditorWithLineNumbers({
         <pre
           ref={preRef}
           aria-hidden
-          className="absolute inset-0 m-0 px-3 pt-4 pb-4 text-[12px] leading-6 font-mono whitespace-pre overflow-hidden pointer-events-none"
+          className="absolute inset-0 m-0 px-3 pt-4 pb-4 font-mono whitespace-pre overflow-hidden pointer-events-none"
+          style={fontStyle}
         >
           <code className={`hljs language-${lang || 'plaintext'}`} dangerouslySetInnerHTML={{ __html: highlighted }} />
         </pre>
@@ -722,7 +789,8 @@ function EditorWithLineNumbers({
           onScroll={onScroll}
           spellCheck={false}
           wrap="off"
-          className="absolute inset-0 bg-transparent px-3 pt-4 pb-4 text-[12px] leading-6 font-mono outline-none resize-none border-0 whitespace-pre overflow-auto text-transparent caret-[--text] selection:bg-[color:var(--accent)]/40"
+          className="absolute inset-0 bg-transparent px-3 pt-4 pb-4 font-mono outline-none resize-none border-0 whitespace-pre overflow-auto text-transparent caret-[--text] selection:bg-[color:var(--accent)]/40"
+          style={fontStyle}
         />
       </div>
     </div>

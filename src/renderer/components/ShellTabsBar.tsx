@@ -326,15 +326,14 @@ export function ShellTabsBar({
             >
               {renderDot ? renderDot(s, isActive) : <ShellTabDot projectId={projectId} shellIndex={s.shellIndex} isActive={isActive} />}
               <span className={`${isActive ? 'text-[--text] font-medium' : 'text-[--text-muted]'}`}>{label}</span>
-              {s.shellIndex !== 0 && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); onClose(s.shellIndex); }}
-                  className="ml-0.5 opacity-0 group-hover:opacity-70 hover:opacity-100 hover:text-[--danger] w-4 h-4 flex items-center justify-center rounded"
-                  title={`Close ${label}`}
-                >
-                  <XIcon />
-                </button>
-              )}
+              <button
+                onClick={(e) => { e.stopPropagation(); onClose(s.shellIndex); }}
+                className="ml-0.5 opacity-0 group-hover:opacity-70 hover:opacity-100 hover:text-[--danger] w-4 h-4 flex items-center justify-center rounded"
+                title={`Close ${label}`}
+                aria-label={`Close ${label}`}
+              >
+                <XIcon />
+              </button>
             </div>
           );
         })}

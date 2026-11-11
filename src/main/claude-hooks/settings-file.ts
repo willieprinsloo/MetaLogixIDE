@@ -19,7 +19,7 @@ export interface HookGroup {
 }
 
 /** Name of a hook event the app registers. */
-export type RegisteredHookEvent = 'Notification' | 'Stop' | 'UserPromptSubmit';
+export type RegisteredHookEvent = 'Notification' | 'Stop' | 'UserPromptSubmit' | 'PreToolUse' | 'PostToolUse';
 
 /** The settings document written to disk. */
 export interface HookSettings {
@@ -51,6 +51,10 @@ export function buildHookSettings(url: string): HookSettings {
       Notification: all(),
       Stop: unmatched(),
       UserPromptSubmit: unmatched(),
+      // Mirror every tool call into the activity log — this is the signal
+      // that lets a second shell see what the first agent is actually doing.
+      PreToolUse: all(),
+      PostToolUse: all(),
     },
   };
 }

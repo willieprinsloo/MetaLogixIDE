@@ -10,7 +10,7 @@ const WEB2: ShellKey = { projectId: 2, shellIndex: 2 };
 
 interface Shown { title: string; body: string; onClick: () => void; closed: boolean }
 
-function setup(opts: { supported?: boolean; viewing?: (s: ShellKey) => boolean; forward?: () => boolean } = {}) {
+function setup(opts: { supported?: boolean; viewing?: (s: ShellKey) => boolean } = {}) {
   const shown: Shown[] = [];
   const toggles = { notify_claude_needs_input: true, notify_claude_finished: true };
   const deps = {
@@ -24,7 +24,6 @@ function setup(opts: { supported?: boolean; viewing?: (s: ShellKey) => boolean; 
     },
     isViewing: vi.fn(opts.viewing ?? (() => false)),
     navigate: vi.fn(),
-    forward: vi.fn(opts.forward ?? (() => false)),
     settings: { get: vi.fn((k: keyof typeof toggles) => toggles[k]) },
     projectName: (id: number) => ({ 1: 'api', 2: 'web' } as Record<number, string>)[id] ?? null,
   };
@@ -34,7 +33,7 @@ function setup(opts: { supported?: boolean; viewing?: (s: ShellKey) => boolean; 
 /** A confirmed hook with its notification-history transition. */
 function applied(shell: ShellKey, event: Partial<HookEvent> & { hookEventName: string }, from: AgentState, to: AgentState): AppliedHook {
   const sessionId = shell === WEB2 ? 'sess-web' : 'sess-api';
-  return { hook: { sessionId, shell, event: { notificationType: null, message: null, backgroundTaskCount: 0, ...event } }, from, to };
+  return { hook: { sessionId, shell, event: { notificationType: null, message: null, backgroundTaskCount: 0, toolName: null, toolTarget: null, toolOk: null, ...event } as HookEvent }, from, to };
 }
 
 /** A Notification history applied; by default it left the shell blocked. */
@@ -292,44 +291,5 @@ describe('withoutHookConfirmed (AC18, AC19)', () => {
   it('keeps everything when nothing is confirmed', () => {
     const done = [{ ...API0, durationMs: 9000 }];
     expect(withoutHookConfirmed(done, () => false)).toEqual(done);
-  });
-});
-
-describe('ClaudeNotifier — forwarding to a controlling Fleet peer (AC3)', () => {
-  it('skips the local notification when the notice reached a controlling peer', () => {
-    const { notifier, deps, shown } = setup({ forward: () => true });
-    notifier.handle(notification(API0, 'permission_prompt', 'Allow\x07 Bash?'));
-    expect(deps.forward).toHaveBeenCalledWith(API0, { kind: 'needs-input', body: 'Allow Bash?' });
-    expect(shown).toEqual([]);
-  });
-
-  it('forwards the fixed finished body', () => {
-    const { notifier, deps, shown } = setup({ forward: () => true });
-    notifier.handle(stop(WEB2));
-    expect(deps.forward).toHaveBeenCalledWith(WEB2, { kind: 'finished', body: 'Claude finished and is waiting for you' });
-    expect(shown).toEqual([]);
-  });
-
-  it('shows locally, unchanged, when no peer received the notice', () => {
-    const { notifier, deps, shown } = setup({ forward: () => false });
-    notifier.handle(notification(API0, 'permission_prompt', 'Claude needs your permission to use Bash'));
-    expect(deps.forward).toHaveBeenCalledTimes(1);
-    expect(shown).toHaveLength(1);
-    expect(shown[0]).toMatchObject({ title: 'api — shell 0', body: 'Claude needs your permission to use Bash' });
-  });
-
-  it("forwards regardless of the host's own toggles and view, which belong to the host user", () => {
-    const { notifier, deps, toggles } = setup({ forward: () => true, viewing: () => true, supported: false });
-    toggles.notify_claude_needs_input = false;
-    notifier.handle(notification(API0, 'permission_prompt'));
-    expect(deps.forward).toHaveBeenCalledTimes(1);
-  });
-
-  it('never forwards an event that is not a needs-input or finished notification', () => {
-    const { notifier, deps } = setup({ forward: () => true });
-    notifier.handle(notification(API0, 'permission_prompt', 'stale', ['busy', 'busy']));
-    notifier.handle(applied(API0, { hookEventName: 'Stop', backgroundTaskCount: 1 }, 'busy', 'busy'));
-    notifier.handle(applied(API0, { hookEventName: 'PreToolUse' }, 'busy', 'busy'));
-    expect(deps.forward).not.toHaveBeenCalled();
   });
 });
