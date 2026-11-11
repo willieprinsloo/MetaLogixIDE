@@ -90,9 +90,11 @@ export function Sidebar({ selectedProjectId, onSelect, onUnloadSession, onNewPro
   return (
     <aside
       data-view="projects"
-      className="section-panel h-full flex flex-col gap-7 shrink-0 pt-1 pb-5 pl-2"
+      className="section-panel h-full flex flex-col gap-7 shrink-0 pt-12 pb-5 pl-2"
       style={{ width: width ?? SIDEBAR_WIDTH.default }}
     >
+      {/* The 44px band above the list is where the old title bar sat; it drags the window. */}
+      <div aria-hidden className="drag absolute inset-x-0 top-0 h-11" />
       <div className="pr-4">
         <SidebarHeader
           filter={filter}

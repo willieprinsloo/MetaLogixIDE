@@ -5,6 +5,7 @@ import { UnloadSessionDialog } from './components/UnloadSessionDialog';
 import { RemoteProjectPane } from './components/RemoteProjectPane';
 import type { OpenPaneRequest } from './components/MachinesSection';
 import { StatusBar } from './components/StatusBar';
+import { useShowStatusBar } from './hooks/useShowStatusBarPorts';
 import { SIDEBAR_WIDTH, useSidebarWidth } from './sidebar-width';
 import { ShellTab } from './components/ShellTab';
 import { FilesTab } from './components/FilesTab';
@@ -299,6 +300,7 @@ function MainApp() {
   }, [allProjectShells, activeShellIndex]);
   const activeShellAgentState = useShellAgentState(selected?.id ?? -1, activeShellIndex).state;
   const activeShellAgentStateLabel = activeShellAgentLabel ? activeShellAgentState : null;
+  const showStatusBar = useShowStatusBar();
   const [sidebarOpen, setSidebarOpen] = usePersistedState<boolean>(
     'metaide.sidebarOpen',
     true,
@@ -431,6 +433,8 @@ function MainApp() {
     openPrompts: () => setPromptsOpen(true),
     showTasks: () => setActiveView('tasks'),
     toggleSidebar: () => toggleSidebar(false),
+    statusBarVisible: showStatusBar,
+    toggleStatusBar: () => { void api.invoke('settings:set', { key: 'show_status_bar', value: !showStatusBar }); },
     showTab: setMainTab,
     openHelp: () => setHelpOpen(true),
     openNewProject: () => setNewProjectOpen(true),
@@ -452,7 +456,7 @@ function MainApp() {
     },
     keepAwake: paletteKeepAwake,
     platform,
-  }), [selected, remotePane, primaryAlive, openUnloadSession, sidebarOpen, openPalette, setActiveView, toggleSidebar, setMainTab, openNewTerminal, setThemeMode, setThemePalette, paletteKeepAwake, platform]);
+  }), [selected, remotePane, primaryAlive, openUnloadSession, sidebarOpen, openPalette, setActiveView, toggleSidebar, showStatusBar, setMainTab, openNewTerminal, setThemeMode, setThemePalette, paletteKeepAwake, platform]);
 
   const refreshAlive = useCallback(async () => {
     const { shells } = await api.invoke('shells:alive-list', undefined as never);
@@ -1036,10 +1040,10 @@ function MainApp() {
           )}
         </AnimatePresence>
         <main
-          className="flex flex-1 flex-col min-h-0 min-w-0 bg-[--surface-sheet] rounded-[14px] mr-2"
+          className={`flex flex-1 flex-col min-h-0 min-w-0 bg-[--surface-sheet] rounded-[14px] rounded-t-none ${showStatusBar ? '' : 'rounded-b-none'}`}
           data-sheet-content={mainSheetContent}
         >
-          <div className={`flex-wrap items-center gap-1 px-2 pt-1.5 pb-1 text-xs shrink-0 ${remotePane ? 'hidden' : 'flex'}`} data-testid={DIFF_TESTIDS.tabBar}>
+          <div className={`flex-wrap items-center gap-1.5 px-3 pt-2.5 pb-1.5 text-xs shrink-0 ${remotePane ? 'hidden' : 'flex'}`} data-testid={DIFF_TESTIDS.tabBar}>
             <TabButton active={mainTab === 'shell'} onClick={() => setMainTab('shell')}>Shell</TabButton>
             <TabButton active={mainTab === 'files'} onClick={() => setMainTab('files')}>Files</TabButton>
             <TabButton
@@ -1184,14 +1188,14 @@ function MainApp() {
         </main>
       </div>
 
-      <StatusBar
+      {showStatusBar && <StatusBar
         project={remotePane ? null : selected}
         aliveCount={aliveCount}
         activeAgent={activeShellAgentLabel}
         activeAgentState={activeShellAgentStateLabel}
         onOpenPalette={() => openPalette('')}
         keepAwake={keepAwake}
-      />
+      />}
       {unloadTarget && <UnloadSessionDialog key={unloadTarget.id} project={unloadTarget}
         visible={isPrimaryVisible(unloadTarget.id, { selectedProjectId: selected?.id ?? null, mainTab, activeShellIndex, rightShellIndex })}
         onClose={closeUnloadSession}
@@ -1375,7 +1379,7 @@ function TabButton({ active, onClick, testId, ariaLabel, children }: TabButtonPr
       data-testid={testId}
       aria-label={ariaLabel}
       aria-current={active ? 'page' : undefined}
-      className={`h-8 px-3 rounded-lg transition-colors ${
+      className={`h-7 px-2 rounded-lg transition-colors ${
         active
           ? 'bg-[--accent-soft] text-[--accent-soft-text] font-medium'
           : 'text-[--text-muted] hover:text-[--text] hover:bg-[--surface-hover]'

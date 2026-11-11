@@ -205,6 +205,36 @@ test('no title bar: the title group is gone and the shell area starts at the top
   expect(main.y, 'main sheet is not pushed down by a 44px title bar').toBeLessThan(44);
 });
 
+test('the sidebar keeps its 48px top inset from the old title bar, level with the first rail icon', async () => {
+  const sidebar = await box(win.locator('aside[data-view="projects"]'));
+  const firstChild = await box(win.locator('aside[data-view="projects"] > div:not([aria-hidden])').first());
+  expect(sidebar.y).toBe(0);
+  expect(firstChild.y - sidebar.y).toBe(48);
+  const firstIcon = await box(win.getByTestId('activity-bar').locator('button').first());
+  const main = await box(win.locator('main').first());
+  expect(Math.round(main.x + main.width), 'main sheet has no right margin').toBe(await win.evaluate(() => window.innerWidth));
+  expect(firstIcon.y).toBe(48);
+});
+
+test('hiding the status bar removes it and stretches the main sheet to the bottom of the window', async () => {
+  const setStatusBar = (value: boolean) => win.evaluate(async (v: boolean) => {
+    const api = (window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<unknown> } }).api;
+    await api.invoke('settings:set', { key: 'show_status_bar', value: v });
+  }, value);
+  await expect(win.getByTestId('status-bar'), 'positive control: shown by default').toBeVisible();
+  try {
+    await setStatusBar(false);
+    await expect(win.getByTestId('status-bar')).toHaveCount(0);
+    const height = await win.evaluate(() => window.innerHeight);
+    const main = win.locator('main').first();
+    await expect.poll(async () => { const b = await box(main); return Math.round(b.y + b.height); }).toBe(height);
+    expect(await radii(main), 'square on every window edge').toEqual(['0px', '0px', '0px', '0px']);
+  } finally {
+    await setStatusBar(true);
+  }
+  await expect(win.getByTestId('status-bar')).toBeVisible();
+});
+
 test('the project name and branch still show in the status bar and the OS window title', async () => {
   await selectProject('chromed');
   await expect(win.locator('[data-testid="shell-tab"]')).toBeVisible({ timeout: 5000 });
@@ -251,7 +281,7 @@ test('the top of the activity bar is a draggable strip (traffic-light room on ma
   const platform = await app.evaluate(() => process.platform);
   const strip = win.getByTestId('ab-drag-region');
   if (platform === 'darwin') {
-    expect((await box(strip)).height).toBe(36);
+    expect((await box(strip)).height).toBe(40);
     expect(await css(strip, '-webkit-app-region')).toBe('drag');
   } else {
     await expect(strip).toHaveCount(0);
@@ -334,11 +364,12 @@ test('AC1/AC3/AC10–AC13/AC15/AC25–AC28: chrome dimensions, badges and branch
 
         // AC25
         const main = win.locator('main').first();
-        expect(await radii(main), `${at} sheet radius`).toEqual(['14px', '14px', '14px', '14px']);
-        expect(await css(main, 'margin-right'), `${at} sheet right margin`).toBe('8px');
+        expect(await radii(main), `${at} sheet radius (square where it meets the window edges)`).toEqual(['0px', '0px', '14px', '14px']);
+        expect(await css(main, 'margin-right'), `${at} sheet right margin`).toBe('0px');
 
-        // AC26
+        // AC26: compact tabs (28px, 8px side padding) with more room around and between them.
         const tabBar = win.getByTestId(DIFF_TESTIDS.tabBar);
+        expect([await css(tabBar, 'padding-top'), await css(tabBar, 'padding-left'), await css(tabBar, 'column-gap')], `${at} tab bar spacing`).toEqual(['10px', '12px', '6px']);
         for (const [label, tab] of [
           ['Shell', tabBar.getByRole('button', { name: 'Shell', exact: true })],
           ['Files', tabBar.getByRole('button', { name: 'Files', exact: true })],
@@ -346,8 +377,8 @@ test('AC1/AC3/AC10–AC13/AC15/AC25–AC28: chrome dimensions, badges and branch
           ['Env', win.getByTestId(ENV_TESTIDS.tab)],
           [PROJECT_SETTINGS_COPY.tab, win.getByTestId(PROJECT_SETTINGS_TESTIDS.tab)],
         ] as const) {
-          expect((await box(tab)).height, `${at} ${label} tab height`).toBe(32);
-          expect([await css(tab, 'padding-left'), await css(tab, 'padding-right')], `${at} ${label} tab padding`).toEqual(['12px', '12px']);
+          expect((await box(tab)).height, `${at} ${label} tab height`).toBe(28);
+          expect([await css(tab, 'padding-left'), await css(tab, 'padding-right')], `${at} ${label} tab padding`).toEqual(['8px', '8px']);
           expect(await radii(tab), `${at} ${label} tab radius`).toEqual(['8px', '8px', '8px', '8px']);
         }
 
