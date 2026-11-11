@@ -297,7 +297,7 @@ async function tabFill(loc: Locator): Promise<string> {
 
 /* ═══════════════════════════════ 1. placement ═══════════════════════════════ */
 
-test('tab bar keeps existing tabs in order with Project settings immediately after Env; Diff activates with the shared active fill (AC1, AC2)', async () => {
+test('tab bar keeps existing tabs in order with Settings immediately after Diff and no Env tab; Diff activates with the shared active fill (AC1, AC2)', async () => {
   const win = await setup(['aTs'], { other: true });
   const tabBar = win.getByTestId(DIFF_TESTIDS.tabBar);
   const checkOrder = async () => {
@@ -306,9 +306,9 @@ test('tab bar keeps existing tabs in order with Project settings immediately aft
     await expect(buttons.nth(1)).toHaveText('Files');
     await expect(buttons.nth(2)).toHaveAttribute('data-testid', DIFF_TESTIDS.tab);
     await expect(buttons.nth(2)).toContainText(DIFF_COPY.tabLabel);
-    await expect(buttons.nth(3)).toHaveAttribute('data-testid', ENV_TESTIDS.tab);
-    await expect(buttons.nth(4)).toHaveAttribute('data-testid', PROJECT_SETTINGS_TESTIDS.tab);
-    await expect(buttons.nth(4)).toHaveText(PROJECT_SETTINGS_COPY.tab);
+    await expect(buttons.nth(3)).toHaveAttribute('data-testid', PROJECT_SETTINGS_TESTIDS.tab);
+    await expect(buttons.nth(3)).toHaveText(PROJECT_SETTINGS_COPY.tab);
+    await expect(tabBar.getByRole('button', { name: 'Env', exact: true })).toHaveCount(0);
   };
   await checkOrder();
 

@@ -6,8 +6,8 @@ export type ProjectSettingsTarget = Readonly<Pick<Project, 'id' | 'name' | 'path
 /** Shared accessible copy for project settings and the existing default-star shortcut. */
 export const PROJECT_SETTINGS_COPY = {
   contextMenuItem: 'Project settings…',
-  title: 'Project settings',
-  tab: 'Project settings',
+  title: 'Settings',
+  tab: 'Settings',
   noProject: 'Select a project to edit its settings.',
   defaultAgentLabel: 'Default agent',
   globalDefault: 'Use global default',

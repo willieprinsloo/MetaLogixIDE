@@ -323,6 +323,8 @@ function MainApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [projectSettingsTarget, setProjectSettingsTarget] = useState<ProjectSettingsTarget | null>(null);
   const settingsTarget = projectSettingsTarget ?? selected;
+  // Bumped by "Environment variables…" so the Settings tab scrolls its env section into view.
+  const [envFocusRequest, setEnvFocusRequest] = useState(0);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [openInFiles, setOpenInFiles] = useState<{ relPath: string; line: number | null } | null>(null);
@@ -696,14 +698,17 @@ function MainApp() {
   }
 
   function editEnv(p: Project) {
-    // Set synchronously so pick() sees 'env' and queues no terminal focus for a later Env -> Shell switch.
-    mainTabRef.current = 'env';
-    setMainTab('env');
+    // Set synchronously so pick() sees 'settings' and queues no terminal focus for a later Settings -> Shell switch.
+    setProjectSettingsTarget(null);
+    mainTabRef.current = 'settings';
+    setMainTab('settings');
+    setEnvFocusRequest((n) => n + 1);
     void pick(p);
   }
 
   /** Opens an explicit sidebar target without selecting its project or launching a shell. */
   function openProjectSettings(target: ProjectSettingsTarget): void {
+    setEnvFocusRequest(0);
     setRemotePane(null);
     setProjectSettingsTarget(target);
     mainTabRef.current = 'settings';
@@ -712,6 +717,7 @@ function MainApp() {
 
   /** The main tab always targets the selected project rather than a previous sidebar override. */
   function openSelectedProjectSettings(): void {
+    setEnvFocusRequest(0);
     setProjectSettingsTarget(null);
     mainTabRef.current = 'settings';
     setMainTab('settings');
@@ -768,19 +774,6 @@ function MainApp() {
         );
       case 'diff':
         return <DiffTab key={project.id} projectId={project.id} />;
-      case 'env':
-        return (
-          <ProjectEnvTab
-            key={project.id}
-            projectId={project.id}
-            projectName={project.name}
-            drafts={envDrafts}
-            onOpenAppEnv={() => {
-              setSettingsSection('env');
-              setSettingsOpen(true);
-            }}
-          />
-        );
       case 'activity':
         return <ActivityTab key={project.id} projectId={project.id} />;
     }
@@ -1021,24 +1014,17 @@ function MainApp() {
               )}
             </TabButton>
             <TabButton
-              active={mainTab === 'env'}
-              onClick={() => setMainTab('env')}
-              testId={ENV_TESTIDS.tab}
+              active={mainTab === 'settings'}
+              onClick={openSelectedProjectSettings}
+              testId={PROJECT_SETTINGS_TESTIDS.tab}
               ariaLabel={envDirty ? ENV_COPY.tabUnsavedLabel : undefined}
             >
-              {ENV_COPY.tabLabel}
+              {PROJECT_SETTINGS_COPY.tab}
               {envDirty && (
                 <span aria-hidden className="ml-1 text-[--accent]" data-testid={ENV_TESTIDS.unsaved}>
                   {ENV_COPY.tabUnsavedMarker}
                 </span>
               )}
-            </TabButton>
-            <TabButton
-              active={mainTab === 'settings'}
-              onClick={openSelectedProjectSettings}
-              testId={PROJECT_SETTINGS_TESTIDS.tab}
-            >
-              {PROJECT_SETTINGS_COPY.tab}
             </TabButton>
             <TabButton active={mainTab === 'activity'} onClick={() => setMainTab('activity')}>Activity</TabButton>
             <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 pr-2">
@@ -1139,7 +1125,19 @@ function MainApp() {
               ? <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId} projectName={remotePane.projectName} onClose={() => setRemotePane(null)} />
               : mainTab === 'settings'
               ? settingsTarget
-                ? <ProjectSettingsTab key={settingsTarget.id} target={settingsTarget} onSaved={applyDefaultAgentProject} />
+                ? <ProjectSettingsTab key={settingsTarget.id} target={settingsTarget} onSaved={applyDefaultAgentProject}>
+                    <ScrollIntoViewOnRequest request={envFocusRequest}>
+                      <ProjectEnvTab
+                        projectId={settingsTarget.id}
+                        projectName={settingsTarget.name}
+                        drafts={envDrafts}
+                        onOpenAppEnv={() => {
+                          setSettingsSection('env');
+                          setSettingsOpen(true);
+                        }}
+                      />
+                    </ScrollIntoViewOnRequest>
+                  </ProjectSettingsTab>
                 : <section aria-label={PROJECT_SETTINGS_COPY.title} data-testid={PROJECT_SETTINGS_TESTIDS.view}
                     className="flex-1 min-h-0 min-w-0 overflow-auto p-4 text-base text-[--text-muted] sm:p-6">
                     {PROJECT_SETTINGS_COPY.noProject}
@@ -1556,4 +1554,13 @@ function ThemeIcon({ mode, effective }: { mode: ThemeMode; effective: 'light' | 
       <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
     </svg>
   );
+}
+
+/** Scrolls its content into view whenever `request` changes to a non-zero value (and on mount if already non-zero). */
+function ScrollIntoViewOnRequest({ request, children }: { request: number; children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (request > 0) ref.current?.scrollIntoView({ block: 'start' });
+  }, [request]);
+  return <div ref={ref} className="scroll-mt-4">{children}</div>;
 }

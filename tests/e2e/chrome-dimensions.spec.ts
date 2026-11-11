@@ -450,7 +450,6 @@ test('AC1/AC3/AC10–AC13/AC15/AC25–AC28: chrome dimensions, badges and branch
           ['Shell', tabBar.getByRole('button', { name: 'Shell', exact: true })],
           ['Files', tabBar.getByRole('button', { name: 'Files', exact: true })],
           ['Diff', win.getByTestId(DIFF_TESTIDS.tab)],
-          ['Env', win.getByTestId(ENV_TESTIDS.tab)],
           [PROJECT_SETTINGS_COPY.tab, win.getByTestId(PROJECT_SETTINGS_TESTIDS.tab)],
         ] as const) {
           expect((await box(tab)).height, `${at} ${label} tab height`).toBe(28);

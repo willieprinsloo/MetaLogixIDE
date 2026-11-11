@@ -96,7 +96,7 @@ async function selectProject(win: Page, name: string): Promise<void> {
 }
 
 function envTab(win: Page): Locator {
-  return win.getByTestId(ENV_TESTIDS.tab);
+  return win.getByTestId(PROJECT_SETTINGS_TESTIDS.tab);
 }
 
 function panelOf(win: Page): Locator {
@@ -465,7 +465,7 @@ test('keyboard: Env tab reachable from Files, tab order through rows, Enter neit
   await win.keyboard.press('Tab');
   expect(await activeId(win), 'Tab from Files lands on the Diff tab button').toBe(`${DIFF_TESTIDS.tab}|`);
   await win.keyboard.press('Tab');
-  expect(await activeId(win), 'a second Tab lands on the Env tab button').toBe(`${ENV_TESTIDS.tab}|`);
+  expect(await activeId(win), 'a second Tab lands on the Env tab button').toBe(`${PROJECT_SETTINGS_TESTIDS.tab}|`);
   await win.keyboard.press('Enter');
   const panel = panelOf(win);
   await expect(panel).toBeVisible();
