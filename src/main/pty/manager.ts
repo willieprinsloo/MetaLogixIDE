@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { isClaudeArgv } from '@main/domain/claude-permission-mode';
+import { harnessOf } from '@shared/agent-harness';
 import type { AgentKind } from '@shared/agent-state';
 import { EventEmitter } from 'node:events';
 import type { IPty } from 'node-pty';
@@ -126,7 +126,7 @@ export class PtyManager extends EventEmitter {
     });
     const entry: Entry = {
       projectId, shellIndex, pty, pid: pty.pid, cols, rows,
-      generation: randomUUID(), agent: isClaudeArgv(launch.argv) ? 'claude' : null,
+      generation: randomUUID(), agent: harnessOf(launch.argv),
       startedAt: Date.now(), earlyBuffer: '', bufferOpen: true,
       scrollback: new RollingScrollback(), screen: new ScreenMirror(cols, rows),
       cmdStartedAt: null, lastDataAt: Date.now(), cmdNotified: false,

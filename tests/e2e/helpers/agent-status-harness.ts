@@ -27,7 +27,6 @@ import {
 } from './claude-harness';
 
 const MOCK_CLAUDE = resolve(process.cwd(), 'scripts/mock-claude.mjs');
-const MOCK_OMP = resolve(process.cwd(), 'scripts/mock-omp.mjs');
 const WINDOWS = process.platform === 'win32';
 
 /** Packaged runners pass METAIDE_PACKAGED_APP; local runs use the built Electron app. */
@@ -68,16 +67,15 @@ export interface StatusHarness {
   home: string;
   root: string;
   claude: string;
-  omp: string;
+  /** A fake `codex` on PATH (the mock agent under that name), for typing into a plain terminal. */
+  codex: string;
   close: () => Promise<void>;
 }
 
 export async function launchStatus(
   names: string[],
   opts: {
-    defaultAgent?: 'claude' | 'omp';
     unavailableHooks?: boolean;
-    inheritedOmp?: boolean;
   } = {},
 ): Promise<StatusHarness> {
   return guardedLaunch(async (scope) => {
@@ -87,15 +85,14 @@ export async function launchStatus(
       mkdirSync(join(root, name, '.git'), { recursive: true });
     }
     const claude = command(home, 'claude', MOCK_CLAUDE);
-    const omp = command(home, 'omp', MOCK_OMP);
+    const codex = command(home, 'codex', MOCK_CLAUDE);
     if (opts.unavailableHooks) {
       mkdirSync(join(home, '.metaide'), { recursive: true });
       writeFileSync(join(home, '.metaide', 'claude-hooks'), 'hook settings directory unavailable');
     }
-    const first = opts.defaultAgent === 'omp' ? omp : claude;
+    const first = claude;
     const env: NodeJS.ProcessEnv = {
       ...baseEnv(),
-      ...(opts.inheritedOmp ? { OMPCODE: '1' } : {}),
       HOME: home,
       ...(WINDOWS ? { USERPROFILE: home } : { SHELL: '/bin/bash' }),
       PATH: `${join(home, 'bin')}${delimiter}${process.env.PATH ?? ''}`,
@@ -118,9 +115,9 @@ export async function launchStatus(
       app,
       win,
       home,
+      codex,
       root,
       claude,
-      omp,
       close: async () => {
         await app.close();
         rmSync(home, { recursive: true, force: true });

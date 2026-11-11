@@ -10,7 +10,7 @@ import { isWorkerWindowId } from './p2p/worker/windowWorker';
 import { buildServices, type Services } from './services';
 import { DROP_MAX_AGE_MS, testModeDropDir } from './drops/staging';
 import { installKeepAwake } from './keep-awake/install';
-import { registerIpc } from './ipc/register';
+import { registerIpc, rememberResumableHarness } from './ipc/register';
 import { buildAppMenu } from './menu';
 import { installClaudeNotifications } from './notifications/install';
 import { installAgentStatus } from './agent-status/install';
@@ -377,6 +377,10 @@ function attachAgentStatus(services: Services): ReturnType<typeof installAgentSt
     broadcast,
   });
   services.agentStatus = agentStatus.tracker;
+  // A harness started by hand in a terminal counts as having run here: the project's next launch of it resumes.
+  agentStatus.tracker.onChange((entry) => {
+    if (entry.agent) rememberResumableHarness(services, entry.projectId, entry.agent);
+  });
   return agentStatus;
 }
 

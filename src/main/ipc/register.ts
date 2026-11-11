@@ -107,18 +107,25 @@ function validatedConfigPatch(config: unknown): Partial<ProjectConfig> {
 }
 
 
-/** True when a live shell of `projectId` (other than `exceptShell`) runs `harness`. */
+/** True when a live shell of `projectId` (other than `exceptShell`) runs `harness`, launched as it or started by hand in a terminal. */
 function harnessBusy(s: Services, projectId: number, harness: AgentHarness, exceptShell: number): boolean {
-  return s.shells.list().some((row) => row.projectId === projectId && row.shellIndex !== exceptShell &&
+  const launched = s.shells.list().some((row) => row.projectId === projectId && row.shellIndex !== exceptShell &&
     s.ptyManager.isAlive(projectId, row.shellIndex) && harnessOf(row.launchArgv) === harness);
+  return launched || (s.agentStatus?.list() ?? []).some((e) =>
+    e.projectId === projectId && e.shellIndex !== exceptShell && e.agent === harness);
+}
+
+/** Records that `harness` has run in the project, so its next launch there resumes the session. */
+export function rememberResumableHarness(s: Pick<Services, 'projects'>, projectId: number, harness: AgentHarness): void {
+  const project = s.projects.get(projectId);
+  if (!project || (project.config.resumableAgents ?? []).includes(harness)) return;
+  s.projects.updateConfig(projectId, { resumableAgents: [...(project.config.resumableAgents ?? []), harness] });
 }
 
 /** Records that `argv`'s harness has run in the project, so its next launch resumes the session. */
 function rememberResumable(s: Services, projectId: number, argv: readonly string[]): void {
   const harness = harnessOf(argv);
-  const project = s.projects.get(projectId);
-  if (!harness || !project || (project.config.resumableAgents ?? []).includes(harness)) return;
-  s.projects.updateConfig(projectId, { resumableAgents: [...(project.config.resumableAgents ?? []), harness] });
+  if (harness) rememberResumableHarness(s, projectId, harness);
 }
 
 /** Validates a local guarded-unload target before reading PTY or tracker state. */
