@@ -31,8 +31,8 @@ export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, ch
       className="drag w-14 shrink-0 h-full flex flex-col items-center pb-3 gap-2"
       data-testid="activity-bar"
     >
-      {/* Keeps the first icon where it sat under the old 44px title bar; on macOS the strip also holds the traffic lights and drags the window. */}
-      <div aria-hidden className={`${platform === 'mac' ? 'drag' : ''} h-10 w-full shrink-0`} data-testid="ab-drag-region" />
+      {/* Room for the traffic lights; sized so the sidebar toggle (44px) centres on the sidebar's 36px filter field, which starts 48px down. */}
+      <div aria-hidden className={`${platform === 'mac' ? 'drag' : ''} h-9 w-full shrink-0`} data-testid="ab-drag-region" />
       <ABButton
         label={SHORTCUT_COPY.toggleSidebarLabel(platform)}
         onClick={onToggleSidebar}

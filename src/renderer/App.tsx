@@ -314,6 +314,8 @@ function MainApp() {
     setSidebarOpen((v) => open ?? !v);
   }, [setSidebarOpen]);
   const sidebarFold = usePaneFold(sidebarOpen, sidebarAnimate);
+  const sheetInColumn = hasSheet(activeView) && !remotePane;
+  const [columnDragging, setColumnDragging] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useSidebarWidth();
   // Chat panel gets its own persisted width so the wider chat view doesn't
   // resize the projects list back to a tiny column when the user flips modes.
@@ -937,68 +939,64 @@ function MainApp() {
         <AnimatePresence initial={false} custom={sidebarFold.custom}>
           {sidebarOpen && (
             <FoldPane key="sidebar" size="intrinsic" anchor="end" className="fleet-projects-pane" custom={sidebarFold.custom} onFoldComplete={sidebarFold.onFoldComplete}>
-              {hasSheet(activeView) && !remotePane ? (
-                <>
-                  {/* Chat, Git and Tasks replace the project list in the same sidebar column. */}
-                  <div
-                    data-view={activeView}
-                    className="section-panel h-full flex flex-col shrink-0 pt-12"
-                    style={{ width: chatPanelWidth }}
-                  >
-                    <div aria-hidden className="drag absolute inset-x-0 top-0 h-11" />
-                    {activeView === 'chat' && (
-                      <ChatTab
-                        projectId={selected?.id ?? 0}
-                        metaprojectProjectId={selected ? (selected.config.linkedMetaprojectProjectId ?? selected.metaprojectProjectId ?? null) : null}
-                        compact
-                        onDismiss={() => setActiveView('projects')}
-                      />
-                    )}
-                    {activeView === 'git' && <GitPanel projectId={selected?.id ?? null} />}
-                    {activeView === 'tasks' && (
-                      <TasksPanel
-                        projectId={selected?.id ?? null}
-                        onLaunched={(shellIndex) => { setMainTab('shell'); setActiveShellIndex(shellIndex); }}
-                      />
-                    )}
-                  </div>
-                  <ResizeHandle
-                    value={chatPanelWidth}
-                    onChange={setChatPanelWidth}
-                    onReset={() => setChatPanelWidth(400)}
-                    min={280}
-                    max={640}
-                    side="left"
+              {/* One sidebar column whose width animates when its view (and so its remembered width) changes. */}
+              <div
+                className={`relative h-full shrink-0 overflow-hidden ${columnDragging ? '' : 'transition-[width] duration-200 ease-out motion-reduce:transition-none'}`}
+                style={{ width: sheetInColumn ? chatPanelWidth : sidebarWidth }}
+                data-testid="sidebar-column"
+              >
+                {/* Chat, Git and Tasks replace the project list in the same sidebar column. */}
+                {sheetInColumn ? (
+                    <div
+                      data-view={activeView}
+                      className="section-panel h-full flex flex-col shrink-0 pt-12"
+                      style={{ width: chatPanelWidth }}
+                    >
+                      <div aria-hidden className="drag absolute inset-x-0 top-0 h-11" />
+                      {activeView === 'chat' && (
+                        <ChatTab
+                          projectId={selected?.id ?? 0}
+                          metaprojectProjectId={selected ? (selected.config.linkedMetaprojectProjectId ?? selected.metaprojectProjectId ?? null) : null}
+                          compact
+                          onDismiss={() => setActiveView('projects')}
+                        />
+                      )}
+                      {activeView === 'git' && <GitPanel projectId={selected?.id ?? null} />}
+                      {activeView === 'tasks' && (
+                        <TasksPanel
+                          projectId={selected?.id ?? null}
+                          onLaunched={(shellIndex) => { setMainTab('shell'); setActiveShellIndex(shellIndex); }}
+                        />
+                      )}
+                    </div>
+                ) : (
+                    <Sidebar
+                    selectedProjectId={remotePane ? null : selected?.id ?? null}
+                    onUnloadSession={openUnloadSession}
+                    onSelect={(project) => {
+                      void pick(project);
+                      if (window.innerWidth < 640) toggleSidebar(false, false);
+                    }}
+                    onOpenPane={(req) => {
+                      openPane(req);
+                      if (window.innerWidth < 640) toggleSidebar(false, false);
+                    }}
+                    onNewProject={() => setNewProjectOpen(true)}
+                    onEditEnv={editEnv}
+                    onProjectSettings={openProjectSettings}
+                    width={sidebarWidth}
                   />
-                </>
-              ) : (
-                <>
-                <Sidebar
-                  selectedProjectId={remotePane ? null : selected?.id ?? null}
-                  onUnloadSession={openUnloadSession}
-                  onSelect={(project) => {
-                    void pick(project);
-                    if (window.innerWidth < 640) toggleSidebar(false, false);
-                  }}
-                  onOpenPane={(req) => {
-                    openPane(req);
-                    if (window.innerWidth < 640) toggleSidebar(false, false);
-                  }}
-                  onNewProject={() => setNewProjectOpen(true)}
-                  onEditEnv={editEnv}
-                  onProjectSettings={openProjectSettings}
-                  width={sidebarWidth}
-                />
-                  <ResizeHandle
-                    value={sidebarWidth}
-                    onChange={setSidebarWidth}
-                    onReset={() => setSidebarWidth(SIDEBAR_WIDTH.default)}
-                    min={SIDEBAR_WIDTH.min}
-                    max={SIDEBAR_WIDTH.max}
-                    side="left"
-                  />
-                </>
-              )}
+                )}
+              </div>
+              <ResizeHandle
+                value={sheetInColumn ? chatPanelWidth : sidebarWidth}
+                onChange={sheetInColumn ? setChatPanelWidth : setSidebarWidth}
+                onReset={() => (sheetInColumn ? setChatPanelWidth(400) : setSidebarWidth(SIDEBAR_WIDTH.default))}
+                min={sheetInColumn ? 280 : SIDEBAR_WIDTH.min}
+                max={sheetInColumn ? 640 : SIDEBAR_WIDTH.max}
+                side="left"
+                onDraggingChange={setColumnDragging}
+              />
             </FoldPane>
           )}
         </AnimatePresence>
