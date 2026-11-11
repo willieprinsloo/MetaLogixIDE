@@ -192,7 +192,7 @@ const PRE_PALETTE_COMMANDS: ReadonlyArray<{ title: string; category: PaletteGrou
   { title: 'Switch to Shell tab', category: 'View', needsProject: true },
   { title: 'Switch to Files tab', category: 'View', needsProject: true },
   { title: DIFF_COPY.paletteTitle, category: 'View', needsProject: true },
-  { title: 'Switch to Env tab', category: 'View', needsProject: true },
+  { title: 'Edit environment variables', category: 'View', needsProject: true },
   { title: 'Show keyboard shortcut cheat sheet', category: 'View', hint: '⌘/' },
   { title: 'New project…', category: 'Project', hint: '⌘⇧N' },
   { title: 'Unload current session', category: 'Shell', needsProject: true },
@@ -550,6 +550,11 @@ test.describe('commands', () => {
       await expect(win.locator('[data-testid="shell-tab"]'), 'the Diff tab replaced the Shell body').toHaveCount(0);
       await runCommand(win, 'Switch to Shell tab');
       await expect(win.locator('[data-testid="shell-tab"]').first(), 'back on the Shell tab').toBeVisible();
+      await runCommand(win, 'Edit environment variables');
+      await expect(win.getByTestId('project-settings-view'), 'the env command opens the Settings tab').toBeVisible();
+      await expect(win.getByTestId('project-env-panel'), 'with the environment section in it').toBeVisible();
+      await runCommand(win, 'Switch to Shell tab');
+      await expect(win.locator('[data-testid="shell-tab"]').first()).toBeVisible();
 
       expect(escMisses, 'overlays opened from the palette close on Esc, as when opened by their shortcut').toEqual([]);
     });

@@ -452,7 +452,7 @@ export interface IpcEvents {
   'popout:changed':         { popped: Array<{ projectId: number; shellIndex: number }> };
   'metaproject:event':      { event: string; payload: unknown };
   'ports:changed':          { projectId: number; shellIndex: number; ports: number[] };
-  /** An agent shell changed state; emitted after screen observation or an authenticated OMP report. */
+  /** An agent shell changed state; emitted after screen observation. */
   'agent-state:changed': AgentShellStateEntry;
   /**
    * Fired when the user clicks an OS notification for a live shell — the

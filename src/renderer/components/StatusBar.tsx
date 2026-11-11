@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Project } from '@shared/types';
 import { useGitStatus } from '@renderer/hooks/useGitStatus';
 import { usePorts } from '@renderer/hooks/usePorts';
+import { useShowStatusBarPorts } from '@renderer/hooks/useShowStatusBarPorts';
 import { api } from '@renderer/api';
 import { toast } from '@renderer/hooks/useToasts';
 import { PALETTE_COPY, PALETTE_TESTIDS } from '@renderer/command-palette-contract';
@@ -36,7 +37,8 @@ interface StatusBarProps {
 export function StatusBar({ project, aliveCount, onOpenPalette, keepAwake, activeAgent, activeAgentState }: StatusBarProps): React.JSX.Element {
   const { status: localGit } = useGitStatus(project?.id ?? null);
   const git = { ...localGit, changedCount: Object.keys(localGit.files).length };
-  const ports = usePorts(project?.id ?? null);
+  const showPorts = useShowStatusBarPorts();
+  const ports = usePorts(project?.id ?? null, showPorts);
   const label = project?.name ?? null;
   const platform = useShortcutPlatform();
   // App version shown at the far right so users know exactly which build
@@ -47,7 +49,7 @@ export function StatusBar({ project, aliveCount, onOpenPalette, keepAwake, activ
     void api.invoke('app:get-version', undefined as never).then(({ version }) => setVersion(version)).catch(() => {});
   }, []);
   return (
-    <div className="h-[34px] shrink-0 px-3 text-xs text-[--text-muted] flex items-center gap-4 tabular-nums" data-testid="status-bar">
+    <div className="h-[34px] shrink-0 px-3 border-t border-[--border] text-xs text-[--text-muted] flex items-center gap-4 tabular-nums" data-testid="status-bar">
       <span className="flex items-center gap-1.5">
         <span className={`inline-block w-1.5 h-1.5 rounded-full ${label ? 'bg-[color:var(--accent-mark,var(--accent))]' : 'bg-[--text-muted]/50'}`} />
         {label ?? 'no project'}

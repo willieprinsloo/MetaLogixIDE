@@ -361,7 +361,7 @@ test('AC21: ⌘⇧N opens the new-project dialog and the menu never shows', asyn
 
 /* ─────────────────────────────── sections ─────────────────────────────── */
 
-test('AC23: sections are 28px apart, 28px below the header; aside padding 4/0/20/8 with a 16px right inset on header and scroll content; headers 11px uppercase 0.06em', async () => {
+test('AC23: sections are 28px apart, 28px below the header; aside padding 48/0/20/8 with a 16px right inset on header and scroll content; headers 11px uppercase 0.06em', async () => {
   // In use (beta, alive) and Recents (alpha, opened then unloaded) both show.
   await seedSections();
   const inUse = win.getByTestId('section-in-use');
@@ -372,7 +372,7 @@ test('AC23: sections are 28px apart, 28px below the header; aside padding 4/0/20
     const cs = getComputedStyle(el);
     return [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft];
   });
-  expect(pad, 'aside padding: no right padding, the right inset lives inside').toEqual(['4px', '0px', '20px', '8px']);
+  expect(pad, 'aside padding: no right padding, the right inset lives inside').toEqual(['48px', '0px', '20px', '8px']);
 
   await markHeader();
   const header = await box(win.locator('[data-e2e="header-row"]'));

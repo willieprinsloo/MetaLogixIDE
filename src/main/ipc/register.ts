@@ -10,7 +10,8 @@ import { randomUUID } from 'node:crypto';
 import { parseMetaproject } from '@shared/parse-metaproject';
 import type { VibrancyMaterial } from '@shared/frosted-glass';
 import { isChromeFrostLevel, isTerminalFrostLevel, isVibrancyMaterial } from '@shared/frosted-glass';
-import { resolveLaunch } from '@main/domain/launch';
+import { profileLaunchArgv, resolveLaunch } from '@main/domain/launch';
+import { harnessOf, type AgentHarness } from '@shared/agent-harness';
 import { parseProjectDefaultAgent, setProjectDefaultAgent } from '@main/domain/project-default-agent';
 import { resolveSpawnEnv } from '@main/domain/spawn-env';
 import { parseProjectEnv, parseAppEnv } from '@shared/project-env';
@@ -105,6 +106,27 @@ function validatedConfigPatch(config: unknown): Partial<ProjectConfig> {
   return patch;
 }
 
+
+/** True when a live shell of `projectId` (other than `exceptShell`) runs `harness`, launched as it or started by hand in a terminal. */
+function harnessBusy(s: Services, projectId: number, harness: AgentHarness, exceptShell: number): boolean {
+  const launched = s.shells.list().some((row) => row.projectId === projectId && row.shellIndex !== exceptShell &&
+    s.ptyManager.isAlive(projectId, row.shellIndex) && harnessOf(row.launchArgv) === harness);
+  return launched || (s.agentStatus?.list() ?? []).some((e) =>
+    e.projectId === projectId && e.shellIndex !== exceptShell && e.agent === harness);
+}
+
+/** Records that `harness` has run in the project, so its next launch there resumes the session. */
+export function rememberResumableHarness(s: Pick<Services, 'projects'>, projectId: number, harness: AgentHarness): void {
+  const project = s.projects.get(projectId);
+  if (!project || (project.config.resumableAgents ?? []).includes(harness)) return;
+  s.projects.updateConfig(projectId, { resumableAgents: [...(project.config.resumableAgents ?? []), harness] });
+}
+
+/** Records that `argv`'s harness has run in the project, so its next launch resumes the session. */
+function rememberResumable(s: Services, projectId: number, argv: readonly string[]): void {
+  const harness = harnessOf(argv);
+  if (harness) rememberResumableHarness(s, projectId, harness);
+}
 
 /** Validates a local guarded-unload target before reading PTY or tracker state. */
 function primaryProjectId(request: unknown): number {
@@ -484,7 +506,8 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
       }
     }
 
-    let launch = resolveLaunch(project, s.settings, s.homeDir, process.env);
+    const launchOptions = { resumeBlocked: (harness: AgentHarness) => harnessBusy(s, projectId, harness, 0) };
+    let launch = resolveLaunch(project, s.settings, s.homeDir, process.env, launchOptions);
     let fallbackApplied = false;
 
     // If subsequent variant (--continue) exits within ~3s with "no
@@ -525,7 +548,7 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
         // in the resolved project view, re-resolve, then restart cleanly.
         s.projects.updateConfig(projectId, {}); // touch — no-op
         const reProject = { ...project, firstLaunchedAt: null };
-        launch = resolveLaunch(reProject, s.settings, s.homeDir, process.env);
+        launch = resolveLaunch(reProject, s.settings, s.homeDir, process.env, launchOptions);
         fallbackApplied = true;
         await s.ptyManager.spawn(projectId, 0, launch);
       }
@@ -534,6 +557,7 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     }
 
     if (!project.firstLaunchedAt) s.projects.setFirstLaunched(projectId, new Date());
+    rememberResumable(s, projectId, launch.argv);
     const now = new Date();
     const nowIso = `${now.getUTCFullYear()}-${String(now.getUTCMonth()+1).padStart(2,'0')}-${String(now.getUTCDate()).padStart(2,'0')} ${String(now.getUTCHours()).padStart(2,'0')}:${String(now.getUTCMinutes()).padStart(2,'0')}:${String(now.getUTCSeconds()).padStart(2,'0')}`;
     s.shells.upsert({ projectId, shellIndex: 0, model: null, launchArgv: launch.argv, startedAt: nowIso, lastActiveAt: nowIso, pinned: false });
@@ -615,13 +639,18 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
         throw new Error('all shells are pinned — unpin one or raise cap');
       }
     }
+    // A saved profile continues its harness's last session here; a one-off inline command starts fresh.
+    const launchArgv = argv && argv.length > 0
+      ? resolvedArgv
+      : profileLaunchArgv(project, resolvedArgv, 'subsequent', (harness) => harnessBusy(s, projectId, harness, idx));
     const launch = {
-      argv: resolvedArgv,
+      argv: launchArgv,
       cwd: project.path,
       env: projectSpawnEnv(s, project, resolvedEnv),
       variant: 'first' as const,
     };
     await s.ptyManager.spawn(projectId, idx, launch);
+    rememberResumable(s, projectId, launch.argv);
     const now = new Date();
     const nowIso = `${now.getUTCFullYear()}-${String(now.getUTCMonth()+1).padStart(2,'0')}-${String(now.getUTCDate()).padStart(2,'0')} ${String(now.getUTCHours()).padStart(2,'0')}:${String(now.getUTCMinutes()).padStart(2,'0')}:${String(now.getUTCSeconds()).padStart(2,'0')}`;
     s.shells.upsert({ projectId, shellIndex: idx, model: null, launchArgv: launch.argv, startedAt: nowIso, lastActiveAt: nowIso, pinned: false });
@@ -1629,6 +1658,7 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
   // Wired separately below: these channels emit keyed `settings:changed`
   // events that the fixed per-channel payload cannot express.
   const CUSTOM_EMIT_CHANNELS: Partial<Record<IpcChannelName, true>> = {
+    'settings:set': true,
     'settings:set-font': true,
     'settings:set-terminal-font-size': true,
     'settings:set-terminal-font-weight': true,
@@ -1650,6 +1680,12 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
       return result;
     });
   }
+
+  ipcMain.handle('settings:set', async (_e, req: IpcRequest<'settings:set'>) => {
+    const result = await handlers['settings:set'](services, req);
+    sendEvent('settings:changed', { key: req.key });
+    return result;
+  });
 
   ipcMain.handle('settings:set-font', async (_e, req: IpcRequest<'settings:set-font'>) => {
     const result = await handlers['settings:set-font'](services, req);

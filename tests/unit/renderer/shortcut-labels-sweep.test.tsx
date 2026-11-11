@@ -59,6 +59,8 @@ const paletteDeps: PaletteCommandDeps = {
   openPrompts: noop,
   showTasks: noop,
   toggleSidebar: noop,
+  statusBarVisible: true,
+  toggleStatusBar: noop,
   showTab: noop,
   openHelp: noop,
   openNewProject: noop,

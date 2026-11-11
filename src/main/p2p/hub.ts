@@ -175,7 +175,7 @@ function attachStream(
   pty.on('data', onData);
   pty.on('exit', onExit);
   // byte-based snapshot (RollingScrollback) is line-boundary-safe and strips dangling escape fragments —
-  // the right primitive for TUI replay (Claude, OMP).
+  // the right primitive for TUI replay (Claude).
   void pty.getSnapshot(projectId, shellIndex).then(
     (snap) => { queue.unshift(...chunks(snap).map((bytes) => ({ kind: 'out', bytes }))); ready = true; flush(); },
     () => { ready = true; flush(); },

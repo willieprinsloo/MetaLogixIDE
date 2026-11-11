@@ -142,8 +142,8 @@ describe('GeneralPanel — FrostedGlassGroup rendered inside Appearance, mac and
   });
 });
 
-describe('loadBoard — six keys, no frost_terminal (AC34 renderer half)', () => {
-  it('reads exactly the six General board keys', async () => {
+describe('loadBoard — seven keys, no frost_terminal (AC34 renderer half)', () => {
+  it('reads exactly the seven General board keys', async () => {
     const { api } = await import('@renderer/api');
     const seen: string[] = [];
     vi.mocked(api.invoke).mockImplementation(async (_channel: string, req: unknown) => {
@@ -158,6 +158,8 @@ describe('loadBoard — six keys, no frost_terminal (AC34 renderer half)', () =>
       'window_opacity',
       'notify_claude_needs_input',
       'notify_claude_finished',
+      'show_status_bar_ports',
+      'show_status_bar',
     ]);
     expect(seen).not.toContain('frost_terminal');
   });

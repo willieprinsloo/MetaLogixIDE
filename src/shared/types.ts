@@ -1,3 +1,4 @@
+import type { AgentHarness } from './agent-harness';
 import type { ClaudePermissionMode } from './claude-permission-mode';
 import type { ChromeFrostLevel, TerminalFrostLevel, VibrancyMaterial } from './frosted-glass';
 
@@ -59,6 +60,12 @@ export interface ProjectConfig {
    * take precedence until an explicit default choice replaces them.
    */
   defaultCliName?: string | null;
+  /**
+   * Agent harnesses that have run in this project. A later launch of one of
+   * them resumes its most recent session instead of starting a new one.
+   * Written by the main process when an agent shell spawns.
+   */
+  resumableAgents?: AgentHarness[];
 }
 
 export interface Project {
@@ -125,6 +132,9 @@ export type SettingsMap = {
   'notify_claude_needs_input':     boolean;
   /** Show an OS notification when a Claude shell finishes its turn and waits for the next prompt. */
   'notify_claude_finished':        boolean;
+  /** Show listening-port chips in the status bar. Default on. */
+  'show_status_bar':               boolean;
+  'show_status_bar_ports':         boolean;
   /** macOS and Linux: frosted chrome on/off. Write via settings:set-frost-chrome only. */
   'frost_chrome':                  boolean;
   /** macOS and Linux: chrome frost strength. Write via settings:set-chrome-frost-level only. */

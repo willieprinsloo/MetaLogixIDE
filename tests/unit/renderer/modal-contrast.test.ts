@@ -314,7 +314,11 @@ function macUnders(c: Case): { readonly label: string; readonly under: Colour }[
         ['medium', '--terminal-medium-glass-alpha', '--terminal-medium-pane-alpha'],
         ['strong', '--terminal-strong-glass-alpha', '--terminal-strong-pane-alpha'],
       ] as const;
-      return MATERIAL_SWEEP.flatMap((m, i) => {
+      const wash = alpha('--chrome-glass-alpha') < 0.6;
+      const [lo, hi] = !wash ? [0, 1] : chrome.c[0] + chrome.c[1] + chrome.c[2] < 1.5 ? [0, 0.35] : [0.65, 1];
+      return MATERIAL_SWEEP.flatMap((_, i) => {
+        const g = Math.round((lo + ((hi - lo) * i) / 17) * 255);
+        const m = rgba(g, g, g);
         const onChrome = over({ c: chrome.c, a: alpha('--chrome-glass-alpha') }, m);
         return [
           { label: `chrome ${level} over grey ${i * 15}`, under: onChrome },

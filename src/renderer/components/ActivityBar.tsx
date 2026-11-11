@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { SHORTCUT_COPY } from '@renderer/shortcut-copy';
 import { useShortcutPlatform } from '@renderer/shortcut-platform';
+import { CHROME_TESTIDS } from '@renderer/chrome-testids';
 import { ICON_SIZE } from './icon-size';
 
 export type ActivityView = 'projects' | 'chat' | 'git' | 'tasks' | 'fleet';
@@ -18,16 +19,20 @@ interface Props {
   taskCount?: number;
   /** Number of paired devices currently online (self excluded). Shows a pip when > 0. */
   fleetOnline?: number;
+  /** Utility buttons (theme, tile, settings) pinned to the bottom of the rail. */
+  footer?: ReactNode;
 }
 
 /** The far-left icon rail: sidebar toggle, project tools, and fleet access. */
-export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, chatUnread, gitDirty, taskCount, fleetOnline }: Props) {
+export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, chatUnread, gitDirty, taskCount, fleetOnline, footer }: Props) {
   const platform = useShortcutPlatform();
   return (
     <nav
-      className="w-14 shrink-0 h-full flex flex-col items-center pt-1 pb-3 gap-2"
+      className="drag w-14 shrink-0 h-full flex flex-col items-center pb-3 gap-2"
       data-testid="activity-bar"
     >
+      {/* Room for the traffic lights; sized so the sidebar toggle (44px) centres on the sidebar's 36px filter field, which starts 48px down. */}
+      <div aria-hidden className={`${platform === 'mac' ? 'drag' : ''} h-9 w-full shrink-0`} data-testid="ab-drag-region" />
       <ABButton
         label={SHORTCUT_COPY.toggleSidebarLabel(platform)}
         onClick={onToggleSidebar}
@@ -82,6 +87,12 @@ export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, ch
       >
         <FleetIcon />
       </ABButton>
+      <div aria-hidden className="flex-1" />
+      {footer && (
+        <div className="flex flex-col items-center gap-2 no-drag" data-testid={CHROME_TESTIDS.titleButtons}>
+          {footer}
+        </div>
+      )}
     </nav>
   );
 }
@@ -97,7 +108,7 @@ function FleetIcon() {
   );
 }
 
-function ABButton({
+export function ABButton({
   children, label, onClick, active, badge, badgeTone = 'accent', ...rest
 }: {
   children: ReactNode;

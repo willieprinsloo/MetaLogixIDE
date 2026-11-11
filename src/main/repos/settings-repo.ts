@@ -24,6 +24,8 @@ export const DEFAULT_SETTINGS: SettingsMap = {
   'claude_permission_mode':        null,
   'notify_claude_needs_input':     true,
   'notify_claude_finished':        true,
+  'show_status_bar':               true,
+  'show_status_bar_ports':         true,
   'frost_chrome':                  true,
   'chrome_frost_level':            'subtle',
   'terminal_frost_level':          'off',
@@ -36,20 +38,32 @@ export const DEFAULT_SETTINGS: SettingsMap = {
   // isn't installed the shell will still open and print "command not
   // found", which is a clearer signal than us silently hiding the entry.
   'default_cli_profiles': [
-    { name: 'Claude',       argv: ['claude'],                                   icon: '🤖' },
-    { name: 'OpenAI Codex', argv: ['codex'],                                    icon: '🧠' },
-    { name: 'Pi',           argv: ['pi'],                                       icon: 'builtin:pi' },
-    { name: 'oh-my-pi',     argv: ['omp'],                                      icon: 'builtin:omp' },
-    { name: 'ChatGPT',      argv: ['sgpt', '--repl', 'temp'],                   icon: '💬' },
-    { name: 'Gemini',       argv: ['gemini'],                                   icon: '✨' },
-    { name: 'Ollama',       argv: ['ollama', 'run', 'llama3'],                  icon: '🦙' },
-    { name: 'Amp',          argv: ['amp'],                                      icon: '⚡' },
-    { name: 'Cody',         argv: ['cody', 'chat'],                             icon: '🐦' },
-    { name: 'Qwen',         argv: ['qwen-code'],                                icon: '🐉' },
-    { name: 'Aider',        argv: ['aider'],                                    icon: '🛠' },
-    { name: 'Cursor Agent', argv: ['cursor-agent'],                             icon: '➤' },
+    { name: 'Claude',       argv: ['claude'],   icon: '🤖' },
+    { name: 'OpenAI Codex', argv: ['codex'],    icon: '🧠' },
+    { name: 'opencode',     argv: ['opencode'], icon: '⌬' },
   ],
 };
+
+/**
+ * Built-in profiles of harnesses the IDE no longer supports, exactly as earlier builds seeded
+ * them. Startup removes an entry only while it still matches, so a user-edited one survives.
+ */
+const RETIRED_CLI_PROFILES: readonly { name: string; argv: readonly string[] }[] = [
+  { name: 'Pi', argv: ['pi'] },
+  { name: 'oh-my-pi', argv: ['omp'] },
+  { name: 'ChatGPT', argv: ['sgpt', '--repl', 'temp'] },
+  { name: 'Gemini', argv: ['gemini'] },
+  { name: 'Ollama', argv: ['ollama', 'run', 'llama3'] },
+  { name: 'Amp', argv: ['amp'] },
+  { name: 'Cody', argv: ['cody', 'chat'] },
+  { name: 'Qwen', argv: ['qwen-code'] },
+  { name: 'Aider', argv: ['aider'] },
+  { name: 'Cursor Agent', argv: ['cursor-agent'] },
+];
+
+function isRetiredProfile(p: { name: string; argv: readonly string[] }): boolean {
+  return RETIRED_CLI_PROFILES.some((r) => r.name === p.name && r.argv.length === p.argv.length && r.argv.every((a, i) => a === p.argv[i]));
+}
 
 export class SettingsRepo {
   constructor(private readonly db: Database) {}
@@ -94,17 +108,11 @@ export class SettingsRepo {
     const row = this.db.prepare(`SELECT value FROM settings WHERE key = 'default_cli_profiles'`).get() as { value: string } | undefined;
     if (row) {
       const current = JSON.parse(row.value) as SettingsMap['default_cli_profiles'];
-      let iconsChanged = false;
-      const profiles = current.map(p => {
-        if (p.icon !== undefined) return p;
-        const icon = p.name === 'Pi' ? 'builtin:pi' : p.name === 'oh-my-pi' ? 'builtin:omp' : undefined;
-        if (icon === undefined) return p;
-        iconsChanged = true;
-        return { ...p, icon };
-      });
+      const profiles = current.filter(p => !isRetiredProfile(p));
+      const retired = profiles.length !== current.length;
       const have = new Set(current.map(p => p.name));
       const missing = DEFAULT_SETTINGS['default_cli_profiles'].filter(p => !have.has(p.name));
-      if (iconsChanged || missing.length > 0) {
+      if (retired || missing.length > 0) {
         const mode = this.get('claude_permission_mode');
         const seeded = mode === null
           ? missing

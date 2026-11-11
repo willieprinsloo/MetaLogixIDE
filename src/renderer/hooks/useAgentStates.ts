@@ -88,3 +88,8 @@ export function useProjectAgentState(projectId: number): AgentState {
 export function useOverallAgentState(): AgentState {
   return useSyncExternalStore(subscribe, overallSnapshotGetter(getMap));
 }
+
+/** The whole per-shell identity map, for views that label shells by the agent running in them. */
+export function useAgentStateMap(): AgentStateMap {
+  return useSyncExternalStore(subscribe, getMap);
+}

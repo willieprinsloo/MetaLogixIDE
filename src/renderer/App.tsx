@@ -5,8 +5,7 @@ import { UnloadSessionDialog } from './components/UnloadSessionDialog';
 import { RemoteProjectPane } from './components/RemoteProjectPane';
 import type { OpenPaneRequest } from './components/MachinesSection';
 import { StatusBar } from './components/StatusBar';
-import { TitleGroup } from './components/TitleGroup';
-import { CHROME_TESTIDS } from './chrome-testids';
+import { useShowStatusBar } from './hooks/useShowStatusBarPorts';
 import { SIDEBAR_WIDTH, useSidebarWidth } from './sidebar-width';
 import { ShellTab } from './components/ShellTab';
 import { FilesTab } from './components/FilesTab';
@@ -20,7 +19,7 @@ import { PROJECT_SETTINGS_COPY, PROJECT_SETTINGS_TESTIDS, type ProjectSettingsTa
 import type { SettingsSection } from './components/settings/nav-icons';
 import { ResizeHandle } from './components/ResizeHandle';
 import { NewProjectDialog } from './components/NewProjectDialog';
-import { ActivityBar, type ActivityView } from './components/ActivityBar';
+import { ActivityBar, ABButton, type ActivityView } from './components/ActivityBar';
 import { CommandPalette } from './components/CommandPalette';
 import { ShortcutsHelp } from './components/ShortcutsHelp';
 import type { PaletteRequest, PaletteSeed } from './command-palette-contract';
@@ -123,7 +122,7 @@ function readPopout(): PopoutInfo | null {
 }
 
 /** Selects the renderer shell and applies synchronized application typography. */
-/** Views that open an activity sheet beside the sidebar; Fleet takes over the main area instead. */
+/** Views shown in the sidebar column in place of the project list; Fleet takes over the main area instead. */
 function hasSheet(view: ActivityView): boolean {
   return view !== 'projects' && view !== 'fleet';
 }
@@ -301,6 +300,7 @@ function MainApp() {
   }, [allProjectShells, activeShellIndex]);
   const activeShellAgentState = useShellAgentState(selected?.id ?? -1, activeShellIndex).state;
   const activeShellAgentStateLabel = activeShellAgentLabel ? activeShellAgentState : null;
+  const showStatusBar = useShowStatusBar();
   const [sidebarOpen, setSidebarOpen] = usePersistedState<boolean>(
     'metaide.sidebarOpen',
     true,
@@ -314,9 +314,8 @@ function MainApp() {
     setSidebarOpen((v) => open ?? !v);
   }, [setSidebarOpen]);
   const sidebarFold = usePaneFold(sidebarOpen, sidebarAnimate);
-  // Only an activity-bar click folds the sheet; keyboard and palette paths switch it instantly.
-  const [sheetAnimate, setSheetAnimate] = useState(false);
-  const sheetFold = usePaneFold(activeView !== 'projects', sheetAnimate);
+  const sheetInColumn = hasSheet(activeView) && !remotePane;
+  const [columnDragging, setColumnDragging] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useSidebarWidth();
   // Chat panel gets its own persisted width so the wider chat view doesn't
   // resize the projects list back to a tiny column when the user flips modes.
@@ -324,6 +323,8 @@ function MainApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [projectSettingsTarget, setProjectSettingsTarget] = useState<ProjectSettingsTarget | null>(null);
   const settingsTarget = projectSettingsTarget ?? selected;
+  // Bumped by "Environment variables…" so the Settings tab scrolls its env section into view.
+  const [envFocusRequest, setEnvFocusRequest] = useState(0);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [openInFiles, setOpenInFiles] = useState<{ relPath: string; line: number | null } | null>(null);
@@ -433,6 +434,8 @@ function MainApp() {
     openPrompts: () => setPromptsOpen(true),
     showTasks: () => setActiveView('tasks'),
     toggleSidebar: () => toggleSidebar(false),
+    statusBarVisible: showStatusBar,
+    toggleStatusBar: () => { void api.invoke('settings:set', { key: 'show_status_bar', value: !showStatusBar }); },
     showTab: setMainTab,
     openHelp: () => setHelpOpen(true),
     openNewProject: () => setNewProjectOpen(true),
@@ -454,7 +457,7 @@ function MainApp() {
     },
     keepAwake: paletteKeepAwake,
     platform,
-  }), [selected, remotePane, primaryAlive, openUnloadSession, sidebarOpen, openPalette, setActiveView, toggleSidebar, setMainTab, openNewTerminal, setThemeMode, setThemePalette, paletteKeepAwake, platform]);
+  }), [selected, remotePane, primaryAlive, openUnloadSession, sidebarOpen, openPalette, setActiveView, toggleSidebar, showStatusBar, setMainTab, openNewTerminal, setThemeMode, setThemePalette, paletteKeepAwake, platform]);
 
   const refreshAlive = useCallback(async () => {
     const { shells } = await api.invoke('shells:alive-list', undefined as never);
@@ -695,14 +698,17 @@ function MainApp() {
   }
 
   function editEnv(p: Project) {
-    // Set synchronously so pick() sees 'env' and queues no terminal focus for a later Env -> Shell switch.
-    mainTabRef.current = 'env';
-    setMainTab('env');
+    // Set synchronously so pick() sees 'settings' and queues no terminal focus for a later Settings -> Shell switch.
+    setProjectSettingsTarget(null);
+    mainTabRef.current = 'settings';
+    setMainTab('settings');
+    setEnvFocusRequest((n) => n + 1);
     void pick(p);
   }
 
   /** Opens an explicit sidebar target without selecting its project or launching a shell. */
   function openProjectSettings(target: ProjectSettingsTarget): void {
+    setEnvFocusRequest(0);
     setRemotePane(null);
     setProjectSettingsTarget(target);
     mainTabRef.current = 'settings';
@@ -711,6 +717,7 @@ function MainApp() {
 
   /** The main tab always targets the selected project rather than a previous sidebar override. */
   function openSelectedProjectSettings(): void {
+    setEnvFocusRequest(0);
     setProjectSettingsTarget(null);
     mainTabRef.current = 'settings';
     setMainTab('settings');
@@ -767,19 +774,6 @@ function MainApp() {
         );
       case 'diff':
         return <DiffTab key={project.id} projectId={project.id} />;
-      case 'env':
-        return (
-          <ProjectEnvTab
-            key={project.id}
-            projectId={project.id}
-            projectName={project.name}
-            drafts={envDrafts}
-            onOpenAppEnv={() => {
-              setSettingsSection('env');
-              setSettingsOpen(true);
-            }}
-          />
-        );
       case 'activity':
         return <ActivityTab key={project.id} projectId={project.id} />;
     }
@@ -887,6 +881,13 @@ function MainApp() {
     setSelected((current) => current?.id === project.id ? project : current);
   }
 
+  async function tileWindows() {
+    try {
+      const { arranged } = await api.invoke('windows:tile-all', undefined as never);
+      toast(`Tiled ${arranged} window${arranged === 1 ? '' : 's'}`, { kind: 'success', timeoutMs: 1200 });
+    } catch (e) { toast('Tile failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
+  }
+
   function unloadCurrent(event: React.MouseEvent<HTMLButtonElement>) {
     if (selected && primaryAlive) openUnloadSession(selected, event.currentTarget);
   }
@@ -895,170 +896,108 @@ function MainApp() {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-[--surface-chrome]" data-chrome-root>
-      {/* Native-feeling drag region for hidden-inset title bar. pr-[3px] puts the
-          last button's 14px glyph 12px from the right edge, mirroring the traffic lights' inset. */}
-      <div className="drag relative h-11 flex items-center pl-[76px] pr-[3px] shrink-0">
-        <div className="absolute inset-y-0 left-[130px] right-[130px] flex items-center justify-center min-w-0 pointer-events-none">
-          <TitleGroup
-            projectName={activeView === 'fleet' ? 'Fleet' : remotePane ? `${remotePane.projectName} on ${remotePane.deviceName}` : selected?.name ?? null}
-            branch={!remotePane && activeView !== 'fleet' && git.isRepo ? (git.branch ?? 'HEAD') : null}
-          />
-        </div>
-        <div className="ml-auto flex items-center gap-0.5 no-drag" data-testid={CHROME_TESTIDS.titleButtons}>
-          <button
-            onClick={cycleTheme}
-            className="text-[--text-muted] hover:text-[--text] w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[--panel-strong]"
-            title={`Theme: ${themeMode}${themeMode === 'system' ? ` (following OS — currently ${effectiveTheme})` : ''}. Click to toggle.`}
-            data-testid="theme-toggle"
-            data-theme-mode={themeMode}
-          >
-            <ThemeIcon mode={themeMode} effective={effectiveTheme} />
-          </button>
-          <button
-            onClick={async () => {
-              try {
-                const { arranged } = await api.invoke('windows:tile-all', undefined as never);
-                toast(`Tiled ${arranged} window${arranged === 1 ? '' : 's'}`, { kind: 'success', timeoutMs: 1200 });
-              } catch (e) { toast('Tile failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
-            }}
-            className="text-[--text-muted] hover:text-[--text] w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[--panel-strong]"
-            title="Tile all our windows on the screen"
-            data-testid="tile-windows"
-          >
-            <TileIcon />
-          </button>
-          <button
-            onClick={() => setSettingsOpen(true)}
-            className="text-[--text-muted] hover:text-[--text] w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[--panel-strong]"
-            title={SHORTCUT_COPY.settingsTitle(platform)}
-            data-testid="settings-open"
-          >
-            <GearIcon />
-          </button>
-        </div>
-      </div>
-
       <div className="flex-1 flex min-h-0">
         <ActivityBar
           active={activeView}
           onSelect={(v) => {
             const next = sidebarOpen && activeView === v && v !== 'projects' ? 'projects' : v;
-            setSheetAnimate(hasSheet(next) !== hasSheet(activeView));
             setActiveView(next);
             if (!sidebarOpen) toggleSidebar(true, true);
           }}
           onToggleSidebar={() => toggleSidebar(true)}
           sidebarOpen={sidebarOpen}
           chatUnread={chatUnread}
+          footer={(
+            <>
+              <ABButton
+                label={`Theme: ${themeMode}${themeMode === 'system' ? ` (following OS — currently ${effectiveTheme})` : ''}. Click to toggle.`}
+                onClick={cycleTheme}
+                active={false}
+                data-testid="theme-toggle"
+                data-theme-mode={themeMode}
+              >
+                <ThemeIcon mode={themeMode} effective={effectiveTheme} />
+              </ABButton>
+              <ABButton label="Tile all our windows on the screen" onClick={tileWindows} active={false} data-testid="tile-windows">
+                <TileIcon />
+              </ABButton>
+              <ABButton label={SHORTCUT_COPY.settingsTitle(platform)} onClick={() => setSettingsOpen(true)} active={false} data-testid="settings-open">
+                <GearIcon />
+              </ABButton>
+            </>
+          )}
           gitDirty={git.dirty ? Object.keys(git.files).length : undefined}
           taskCount={taskCount || undefined}
         />
         <AnimatePresence initial={false} custom={sidebarFold.custom}>
           {sidebarOpen && (
             <FoldPane key="sidebar" size="intrinsic" anchor="end" className="fleet-projects-pane" custom={sidebarFold.custom} onFoldComplete={sidebarFold.onFoldComplete}>
-              <Sidebar
-                selectedProjectId={remotePane ? null : selected?.id ?? null}
-                onUnloadSession={openUnloadSession}
-                onSelect={(project) => {
-                  void pick(project);
-                  if (window.innerWidth < 640) toggleSidebar(false, false);
-                }}
-                onOpenPane={(req) => {
-                  openPane(req);
-                  if (window.innerWidth < 640) toggleSidebar(false, false);
-                }}
-                onNewProject={() => setNewProjectOpen(true)}
-                onEditEnv={editEnv}
-                onProjectSettings={openProjectSettings}
-                width={sidebarWidth}
-              />
-              <ResizeHandle
-                value={sidebarWidth}
-                onChange={setSidebarWidth}
-                onReset={() => setSidebarWidth(SIDEBAR_WIDTH.default)}
-                min={SIDEBAR_WIDTH.min}
-                max={SIDEBAR_WIDTH.max}
-                side="left"
-              />
-              <AnimatePresence initial={false} custom={sheetFold.custom}>
-                {hasSheet(activeView) && !remotePane && (
-                  <FoldPane key="sheet" size="intrinsic" anchor="end" className="sheet-fold" custom={sheetFold.custom} onFoldComplete={() => { sheetFold.onFoldComplete(); setSheetAnimate(false); }}>
-                    {activeView === 'chat' && (
-                      <>
-                        <div
-                          data-view="chat"
-                          className="section-panel h-full flex flex-col shrink-0"
-                          style={{ width: chatPanelWidth }}
-                        >
-                          <ChatTab
-                            projectId={selected?.id ?? 0}
-                            metaprojectProjectId={selected ? (selected.config.linkedMetaprojectProjectId ?? selected.metaprojectProjectId ?? null) : null}
-                            compact
-                            onDismiss={() => setActiveView('projects')}
-                          />
-                        </div>
-                        <ResizeHandle
-                          value={chatPanelWidth}
-                          onChange={setChatPanelWidth}
-                          onReset={() => setChatPanelWidth(400)}
-                          min={300}
-                          max={640}
-                          side="left"
+              {/* One sidebar column whose width animates when its view (and so its remembered width) changes. */}
+              <div
+                className={`relative h-full shrink-0 overflow-hidden ${columnDragging ? '' : 'transition-[width] duration-200 ease-out motion-reduce:transition-none'}`}
+                style={{ width: sheetInColumn ? chatPanelWidth : sidebarWidth }}
+                data-testid="sidebar-column"
+              >
+                {/* Chat, Git and Tasks replace the project list in the same sidebar column. */}
+                {sheetInColumn ? (
+                    <div
+                      data-view={activeView}
+                      className="section-panel h-full flex flex-col shrink-0 pt-12"
+                      style={{ width: chatPanelWidth }}
+                    >
+                      <div aria-hidden className="drag absolute inset-x-0 top-0 h-11" />
+                      {activeView === 'chat' && (
+                        <ChatTab
+                          projectId={selected?.id ?? 0}
+                          metaprojectProjectId={selected ? (selected.config.linkedMetaprojectProjectId ?? selected.metaprojectProjectId ?? null) : null}
+                          compact
+                          onDismiss={() => setActiveView('projects')}
                         />
-                      </>
-                    )}
-                    {activeView === 'git' && (
-                      <>
-                        <div
-                          data-view="git"
-                          className="section-panel h-full flex flex-col shrink-0"
-                          style={{ width: chatPanelWidth }}
-                        >
-                          <GitPanel projectId={selected?.id ?? null} />
-                        </div>
-                        <ResizeHandle
-                          value={chatPanelWidth}
-                          onChange={setChatPanelWidth}
-                          onReset={() => setChatPanelWidth(400)}
-                          min={280}
-                          max={640}
-                          side="left"
+                      )}
+                      {activeView === 'git' && <GitPanel projectId={selected?.id ?? null} />}
+                      {activeView === 'tasks' && (
+                        <TasksPanel
+                          projectId={selected?.id ?? null}
+                          onLaunched={(shellIndex) => { setMainTab('shell'); setActiveShellIndex(shellIndex); }}
                         />
-                      </>
-                    )}
-                    {activeView === 'tasks' && (
-                      <>
-                        <div
-                          data-view="tasks"
-                          className="section-panel h-full flex flex-col shrink-0"
-                          style={{ width: chatPanelWidth }}
-                        >
-                          <TasksPanel
-                            projectId={selected?.id ?? null}
-                            onLaunched={(shellIndex) => { setMainTab('shell'); setActiveShellIndex(shellIndex); }}
-                          />
-                        </div>
-                        <ResizeHandle
-                          value={chatPanelWidth}
-                          onChange={setChatPanelWidth}
-                          onReset={() => setChatPanelWidth(400)}
-                          min={280}
-                          max={640}
-                          side="left"
-                        />
-                      </>
-                    )}
-                  </FoldPane>
+                      )}
+                    </div>
+                ) : (
+                    <Sidebar
+                    selectedProjectId={remotePane ? null : selected?.id ?? null}
+                    onUnloadSession={openUnloadSession}
+                    onSelect={(project) => {
+                      void pick(project);
+                      if (window.innerWidth < 640) toggleSidebar(false, false);
+                    }}
+                    onOpenPane={(req) => {
+                      openPane(req);
+                      if (window.innerWidth < 640) toggleSidebar(false, false);
+                    }}
+                    onNewProject={() => setNewProjectOpen(true)}
+                    onEditEnv={editEnv}
+                    onProjectSettings={openProjectSettings}
+                    width={sidebarWidth}
+                  />
                 )}
-              </AnimatePresence>
+              </div>
+              <ResizeHandle
+                value={sheetInColumn ? chatPanelWidth : sidebarWidth}
+                onChange={sheetInColumn ? setChatPanelWidth : setSidebarWidth}
+                onReset={() => (sheetInColumn ? setChatPanelWidth(400) : setSidebarWidth(SIDEBAR_WIDTH.default))}
+                min={sheetInColumn ? 280 : SIDEBAR_WIDTH.min}
+                max={sheetInColumn ? 640 : SIDEBAR_WIDTH.max}
+                side="left"
+                onDraggingChange={setColumnDragging}
+              />
             </FoldPane>
           )}
         </AnimatePresence>
         <main
-          className="flex flex-1 flex-col min-h-0 min-w-0 bg-[--surface-sheet] rounded-[14px] mr-2"
+          className="flex flex-1 flex-col min-h-0 min-w-0 bg-[--surface-sheet]"
           data-sheet-content={mainSheetContent}
         >
-          <div className={`flex-wrap items-center gap-1 px-2 pt-1.5 pb-1 text-xs shrink-0 ${remotePane ? 'hidden' : 'flex'}`} data-testid={DIFF_TESTIDS.tabBar}>
+          <div className={`drag flex-wrap items-center gap-1.5 px-3 pt-2.5 pb-1.5 text-xs shrink-0 ${remotePane ? 'hidden' : 'flex'}`} data-testid={DIFF_TESTIDS.tabBar}>
             <TabButton active={mainTab === 'shell'} onClick={() => setMainTab('shell')}>Shell</TabButton>
             <TabButton active={mainTab === 'files'} onClick={() => setMainTab('files')}>Files</TabButton>
             <TabButton
@@ -1075,24 +1014,17 @@ function MainApp() {
               )}
             </TabButton>
             <TabButton
-              active={mainTab === 'env'}
-              onClick={() => setMainTab('env')}
-              testId={ENV_TESTIDS.tab}
+              active={mainTab === 'settings'}
+              onClick={openSelectedProjectSettings}
+              testId={PROJECT_SETTINGS_TESTIDS.tab}
               ariaLabel={envDirty ? ENV_COPY.tabUnsavedLabel : undefined}
             >
-              {ENV_COPY.tabLabel}
+              {PROJECT_SETTINGS_COPY.tab}
               {envDirty && (
                 <span aria-hidden className="ml-1 text-[--accent]" data-testid={ENV_TESTIDS.unsaved}>
                   {ENV_COPY.tabUnsavedMarker}
                 </span>
               )}
-            </TabButton>
-            <TabButton
-              active={mainTab === 'settings'}
-              onClick={openSelectedProjectSettings}
-              testId={PROJECT_SETTINGS_TESTIDS.tab}
-            >
-              {PROJECT_SETTINGS_COPY.tab}
             </TabButton>
             <TabButton active={mainTab === 'activity'} onClick={() => setMainTab('activity')}>Activity</TabButton>
             <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 pr-2">
@@ -1193,24 +1125,36 @@ function MainApp() {
               ? <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId} projectName={remotePane.projectName} onClose={() => setRemotePane(null)} />
               : mainTab === 'settings'
               ? settingsTarget
-                ? <ProjectSettingsTab key={settingsTarget.id} target={settingsTarget} onSaved={applyDefaultAgentProject} />
+                ? <ProjectSettingsTab key={settingsTarget.id} target={settingsTarget} onSaved={applyDefaultAgentProject}>
+                    <ScrollIntoViewOnRequest request={envFocusRequest}>
+                      <ProjectEnvTab
+                        projectId={settingsTarget.id}
+                        projectName={settingsTarget.name}
+                        drafts={envDrafts}
+                        onOpenAppEnv={() => {
+                          setSettingsSection('env');
+                          setSettingsOpen(true);
+                        }}
+                      />
+                    </ScrollIntoViewOnRequest>
+                  </ProjectSettingsTab>
                 : <section aria-label={PROJECT_SETTINGS_COPY.title} data-testid={PROJECT_SETTINGS_TESTIDS.view}
                     className="flex-1 min-h-0 min-w-0 overflow-auto p-4 text-base text-[--text-muted] sm:p-6">
                     {PROJECT_SETTINGS_COPY.noProject}
                   </section>
               : selected ? mainBody(selected) : <EmptyState />}
           </div>
+          {showStatusBar && <StatusBar
+            project={remotePane ? null : selected}
+            aliveCount={aliveCount}
+            activeAgent={activeShellAgentLabel}
+            activeAgentState={activeShellAgentStateLabel}
+            onOpenPalette={() => openPalette('')}
+            keepAwake={keepAwake}
+          />}
         </main>
       </div>
 
-      <StatusBar
-        project={remotePane ? null : selected}
-        aliveCount={aliveCount}
-        activeAgent={activeShellAgentLabel}
-        activeAgentState={activeShellAgentStateLabel}
-        onOpenPalette={() => openPalette('')}
-        keepAwake={keepAwake}
-      />
       {unloadTarget && <UnloadSessionDialog key={unloadTarget.id} project={unloadTarget}
         visible={isPrimaryVisible(unloadTarget.id, { selectedProjectId: selected?.id ?? null, mainTab, activeShellIndex, rightShellIndex })}
         onClose={closeUnloadSession}
@@ -1394,7 +1338,7 @@ function TabButton({ active, onClick, testId, ariaLabel, children }: TabButtonPr
       data-testid={testId}
       aria-label={ariaLabel}
       aria-current={active ? 'page' : undefined}
-      className={`h-8 px-3 rounded-lg transition-colors ${
+      className={`h-7 px-2 rounded-lg transition-colors ${
         active
           ? 'bg-[--accent-soft] text-[--accent-soft-text] font-medium'
           : 'text-[--text-muted] hover:text-[--text] hover:bg-[--surface-hover]'
@@ -1569,7 +1513,7 @@ function TileIcon() {
   // Three tall bars side-by-side — matches how tileAllOurWindows lays
   // shells out in a chatbot-style row of columns.
   return (
-    <svg width={ICON_SIZE.md} height={ICON_SIZE.md} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3"  y="3" width="4.5" height="18" rx="1" />
       <rect x="9.75"  y="3" width="4.5" height="18" rx="1" />
       <rect x="16.5" y="3" width="4.5" height="18" rx="1" />
@@ -1579,7 +1523,7 @@ function TileIcon() {
 
 function GearIcon() {
   return (
-    <svg width={ICON_SIZE.md} height={ICON_SIZE.md} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
     </svg>
@@ -1590,7 +1534,7 @@ function ThemeIcon({ mode, effective }: { mode: ThemeMode; effective: 'light' | 
   // system → half moon over sun (auto), light → sun, dark → moon
   if (mode === 'system') {
     return (
-      <svg width={ICON_SIZE.md} height={ICON_SIZE.md} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="12" cy="12" r="4" />
         <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" opacity={effective === 'dark' ? 0.4 : 1} />
         <path d="M12 8a4 4 0 0 0 0 8" fill="currentColor" opacity={effective === 'dark' ? 1 : 0} />
@@ -1599,15 +1543,24 @@ function ThemeIcon({ mode, effective }: { mode: ThemeMode; effective: 'light' | 
   }
   if (mode === 'light') {
     return (
-      <svg width={ICON_SIZE.md} height={ICON_SIZE.md} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="12" cy="12" r="4" />
         <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
       </svg>
     );
   }
   return (
-    <svg width={ICON_SIZE.md} height={ICON_SIZE.md} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
     </svg>
   );
+}
+
+/** Scrolls its content into view whenever `request` changes to a non-zero value (and on mount if already non-zero). */
+function ScrollIntoViewOnRequest({ request, children }: { request: number; children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (request > 0) ref.current?.scrollIntoView({ block: 'start' });
+  }, [request]);
+  return <div ref={ref} className="scroll-mt-4">{children}</div>;
 }

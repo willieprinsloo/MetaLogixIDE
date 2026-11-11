@@ -13,9 +13,15 @@ import {
   type VibrancyMaterial,
 } from '@shared/frosted-glass';
 
-/** Resolves an untrusted stored or renderer-supplied value to an approved vibrancy material, falling back to `'sidebar'` for anything outside the allow-list (AC18). */
+/**
+ * macOS traffic-light position for the main window: the standard 12pt inset, centred on the 48pt band
+ * above the sidebar and activity-rail icons (the window has no title bar).
+ */
+export const MAIN_TRAFFIC_LIGHTS = { x: 12, y: 16 } as const;
+
+/** Resolves an untrusted stored or renderer-supplied value to an approved vibrancy material, falling back to the default material for anything outside the allow-list (AC18). */
 export function resolveMaterial(material: unknown): VibrancyMaterial {
-  return isVibrancyMaterial(material) ? material : 'sidebar';
+  return isVibrancyMaterial(material) ? material : FROSTED_GLASS_DEFAULTS.vibrancyMaterial;
 }
 
 /**
@@ -30,7 +36,7 @@ export function platformChrome(platform: NodeJS.Platform, material: unknown): Pa
   if (frost === 'mac') {
     return {
       titleBarStyle: 'hiddenInset',
-      // y centres the lights on the 44px title bar shared by the main and popout windows.
+      // Centred on the popout's 44px title bar; the main window overrides y with MAIN_TRAFFIC_LIGHTS.
       trafficLightPosition: { x: 12, y: 14 },
       vibrancy: resolveMaterial(material),
       visualEffectState: 'followWindow',

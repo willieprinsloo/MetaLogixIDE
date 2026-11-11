@@ -15,8 +15,6 @@ import { SHORTCUT_COPY } from '@renderer/shortcut-copy';
 import { useShortcutPlatform } from '@renderer/shortcut-platform';
 import { ICON_SIZE } from './icon-size';
 
-const piIconUrl = new URL('../assets/cli-icons/pi.svg', import.meta.url).href;
-const ompIconUrl = new URL('../assets/cli-icons/omp.svg', import.meta.url).href;
 
 /** A remote peer exposes profile labels and icons, but never its command or environment. */
 export interface ShellMenuProfile {
@@ -183,25 +181,7 @@ export function NewShellMenu({
               title={p.argv?.join(' ') ?? p.name}
             >
               <span aria-hidden="true" className="w-5 h-5 shrink-0 flex items-center justify-center text-base leading-none">
-                {p.icon === 'builtin:pi' ? (
-                  <span
-                    className="w-4 h-4 bg-current"
-                    style={{
-                      maskImage: `url("${piIconUrl}")`,
-                      maskSize: 'contain',
-                      maskRepeat: 'no-repeat',
-                      maskPosition: 'center',
-                      WebkitMaskImage: `url("${piIconUrl}")`,
-                      WebkitMaskSize: 'contain',
-                      WebkitMaskRepeat: 'no-repeat',
-                      WebkitMaskPosition: 'center',
-                    }}
-                  />
-                ) : p.icon === 'builtin:omp' ? (
-                  <img src={ompIconUrl} alt="" className="w-4 h-4" />
-                ) : (
-                  p.icon ?? '▸'
-                )}
+                {p.icon ?? '▸'}
               </span>
               <span className="flex-1 truncate font-medium">{p.name}</span>
               {isDefault && <span className="text-[9px] uppercase text-[color:var(--accent)] px-1 py-0.5 rounded bg-[color:var(--accent)]/15 border border-[color:var(--accent)]/40">auto</span>}

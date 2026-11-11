@@ -1,3 +1,4 @@
+import { PROJECT_SETTINGS_TESTIDS } from '../../src/renderer/project-settings-contract';
 import { test, expect, _electron as electron, type Locator, type Page } from '@playwright/test';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -160,7 +161,7 @@ function projectPanel(win: Page): Locator {
 }
 
 async function openEnvTab(win: Page): Promise<Locator> {
-  await win.getByTestId(ENV_TESTIDS.tab).click();
+  await win.getByTestId(PROJECT_SETTINGS_TESTIDS.tab).click();
   await expect(projectPanel(win)).toBeVisible();
   return projectPanel(win);
 }

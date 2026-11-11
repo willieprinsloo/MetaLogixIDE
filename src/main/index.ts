@@ -10,7 +10,7 @@ import { isWorkerWindowId } from './p2p/worker/windowWorker';
 import { buildServices, type Services } from './services';
 import { DROP_MAX_AGE_MS, testModeDropDir } from './drops/staging';
 import { installKeepAwake } from './keep-awake/install';
-import { registerIpc } from './ipc/register';
+import { registerIpc, rememberResumableHarness } from './ipc/register';
 import { buildAppMenu } from './menu';
 import { installClaudeNotifications } from './notifications/install';
 import { installAgentStatus } from './agent-status/install';
@@ -27,6 +27,7 @@ import {
   FROSTED_GLASS_FALLBACK,
   applyVibrancy,
   platformChrome,
+  MAIN_TRAFFIC_LIGHTS,
   readStoredFrostedGlass,
   rendererQuery,
   type StoredFrostedGlass,
@@ -192,6 +193,7 @@ async function createMainWindow(): Promise<BrowserWindow> {
     show: false,
     backgroundColor: '#00000000',
     ...platformChrome(process.platform, readFrostedGlass().vibrancyMaterial),
+    ...(process.platform === 'darwin' ? { trafficLightPosition: MAIN_TRAFFIC_LIGHTS } : {}),
     webPreferences: baseWebPreferences(),
   });
   win.once('ready-to-show', () => win.show());
@@ -364,12 +366,8 @@ function registerWindowsAppId(): void {
 
 /** Builds the service graph from the app's install paths and the test-mode drop directory env. */
 function createServices(): Services {
-  const ompExtensionPath = app.isPackaged
-    ? join(process.resourcesPath, 'omp-status-extension.js')
-    : resolve(app.getAppPath(), 'resources/omp-status-extension.js');
   return buildServices({
     migrationsDir: resolve(app.getAppPath(), 'migrations'),
-    ompExtensionPath,
     dropDir: testModeDropDir(process.env, app.getPath('userData')),
   });
 }
@@ -378,10 +376,13 @@ function createServices(): Services {
 function attachAgentStatus(services: Services): ReturnType<typeof installAgentStatus> {
   const agentStatus = installAgentStatus({
     ptyManager: services.ptyManager,
-    receiver: services.ompReceiver,
     broadcast,
   });
   services.agentStatus = agentStatus.tracker;
+  // A harness started by hand in a terminal counts as having run here: the project's next launch of it resumes.
+  agentStatus.tracker.onChange((entry) => {
+    if (entry.agent) rememberResumableHarness(services, entry.projectId, entry.agent);
+  });
   return agentStatus;
 }
 
@@ -480,7 +481,6 @@ function stopOnQuit(services: Services, donePoll: NodeJS.Timeout, agentStatus: R
     clearInterval(donePoll);
     agentStatus.stop();
     services.keepAwake?.dispose();
-    services.ompReceiver.stop();
     void services.hookRuntime.stop();
     void stopP2P();
   });
