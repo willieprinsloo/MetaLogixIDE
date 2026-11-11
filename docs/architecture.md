@@ -151,6 +151,9 @@ The sidebar's **Project settings…** context action can target an inactive proj
 
 The field uses the merged project and global CLI profile catalog.
 Project profiles shadow global profiles with the same name.
+**Terminal (login shell)** is a built-in choice that opens the login shell,
+like a plain terminal tab; a CLI profile named `Terminal` takes its place
+(`src/shared/project-default-agent.ts`, `src/main/domain/launch.ts`).
 **Use global default** selects no named profile.
 It uses the current global first-launch or subsequent-launch command, not a fixed profile
 (`src/main/domain/launch.ts:14-18,36-52`).

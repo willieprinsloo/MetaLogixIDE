@@ -85,3 +85,18 @@ describe('resolveLaunch with a default agent', () => {
     expect(resolveLaunch(p, settings, '/home/u', {}, { resumeBlocked: (h) => h === 'claude' }).argv).toEqual(['claude']);
   });
 });
+
+describe('built-in Terminal default agent', () => {
+  it('launches the login shell on first and later launches, never resuming', async () => {
+    const { defaultShellArgv } = await import('@main/domain/shell');
+    for (const firstLaunchedAt of [null, LAUNCHED]) {
+      const p = project({ firstLaunchedAt, config: { defaultCliName: 'Terminal', resumableAgents: ['claude'] } });
+      expect(resolveLaunch(p, settings, '/home/u', {}).argv).toEqual(defaultShellArgv());
+    }
+  });
+
+  it('a CLI profile named Terminal still wins', () => {
+    const p = project({ config: { defaultCliName: 'Terminal', cliProfiles: [{ name: 'Terminal', argv: ['fish'] }] } });
+    expect(resolveLaunch(p, settings, '/home/u', {}).argv).toEqual(['fish']);
+  });
+});

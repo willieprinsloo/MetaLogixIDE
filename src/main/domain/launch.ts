@@ -5,6 +5,8 @@ import { resolveSpawnEnv } from '@main/domain/spawn-env';
 import { readMetaIdeEnv, readMetaIdeCliProfiles } from '@main/domain/metaide-conf';
 import { basename } from 'node:path';
 import { harnessOf, resumeArgv, type AgentHarness } from '@shared/agent-harness';
+import { TERMINAL_AGENT_NAME } from '@shared/project-default-agent';
+import { defaultShellArgv } from '@main/domain/shell';
 
 export interface ResolvedLaunch { argv: string[]; env: Record<string, string>; cwd: string; variant: LaunchVariant }
 
@@ -79,6 +81,9 @@ export function resolveLaunch(
     const profile = findCliProfile(project, settings, project.config.defaultCliName);
     if (profile) {
       template = { argv: profileLaunchArgv(project, profile.argv, variant, resumeBlocked), env: profile.env ?? {} };
+    } else if (project.config.defaultCliName === TERMINAL_AGENT_NAME) {
+      // Built-in "Terminal" default: the login shell, same as a plain terminal tab.
+      template = { argv: defaultShellArgv(), env: {} };
     } else {
       // Name resolved to nothing (profile was renamed/deleted after being
       // pinned). Fall through to the global default rather than crash.

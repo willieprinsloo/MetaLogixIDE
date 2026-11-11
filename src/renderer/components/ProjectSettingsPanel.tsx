@@ -4,6 +4,7 @@ import type { ProjectDefaultAgentSnapshot } from '@renderer/project-default-agen
 import { hasCustomLaunchCommands } from '@renderer/project-default-agent-store';
 import { PROJECT_SETTINGS_COPY as COPY, PROJECT_SETTINGS_TESTIDS as TESTIDS } from '@renderer/project-settings-contract';
 import { SettingRow } from './settings/primitives';
+import { TERMINAL_AGENT_NAME } from '@shared/project-default-agent';
 
 interface Props {
   readonly snapshot: ProjectDefaultAgentSnapshot;
@@ -36,7 +37,10 @@ function SessionFeedback({ snapshot }: { readonly snapshot: ReadySnapshot }) {
 function ReadyControl({ snapshot, onChoose, onReplaceCustomCommands }: Omit<Props, 'onRetry'> & { readonly snapshot: ReadySnapshot }) {
   const id = useId();
   const legacy = hasCustomLaunchCommands(snapshot.project);
-  const missing = snapshot.confirmedName !== null && !snapshot.profiles.some((profile) => profile.name === snapshot.confirmedName);
+  // The built-in Terminal choice is offered unless a CLI profile already uses that name.
+  const builtInTerminal = !snapshot.profiles.some((profile) => profile.name === TERMINAL_AGENT_NAME);
+  const missing = snapshot.confirmedName !== null && !(builtInTerminal && snapshot.confirmedName === TERMINAL_AGENT_NAME)
+    && !snapshot.profiles.some((profile) => profile.name === snapshot.confirmedName);
   const saving = snapshot.feedback.status === 'saving';
   const value = snapshot.pendingName === null ? GLOBAL_VALUE : `profile:${snapshot.pendingName}`;
   const describedBy = `${id}-notice${missing ? ` ${id}-missing` : ''}`;
@@ -49,11 +53,13 @@ function ReadyControl({ snapshot, onChoose, onReplaceCustomCommands }: Omit<Prop
       <select id={id} value={value} disabled={saving} aria-describedby={describedBy} aria-busy={saving}
         className={SELECT_CLASS} data-testid={TESTIDS.defaultAgent} onChange={(event) => {
           if (event.target.value === GLOBAL_VALUE) { onChoose(null); return; }
+          if (builtInTerminal && event.target.value === `profile:${TERMINAL_AGENT_NAME}`) { onChoose(TERMINAL_AGENT_NAME); return; }
           const profile = snapshot.profiles.find((item) => `profile:${item.name}` === event.target.value);
           if (profile) onChoose(profile.name);
         }}>
         <option value={GLOBAL_VALUE}>{COPY.globalDefault}</option>
         {missing && <option value={`profile:${snapshot.confirmedName}`} disabled>{COPY.unavailableProfile(snapshot.confirmedName ?? '')}</option>}
+        {builtInTerminal && <option value={`profile:${TERMINAL_AGENT_NAME}`}>{COPY.terminalAgent}</option>}
         {snapshot.profiles.map((profile) => <option key={profile.name} value={`profile:${profile.name}`}>{profile.name}</option>)}
       </select>
     </SettingRow>

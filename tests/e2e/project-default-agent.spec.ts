@@ -301,6 +301,7 @@ test('E2 merged choices deduplicate, match shell menu, retain custom sentinel na
   await expect(choice(h.win)).toBeEnabled();
   await expect(choice(h.win).locator('option')).toHaveText([
     COPY.globalDefault,
+    COPY.terminalAgent,
     PRIMARY,
     OTHER,
     'global',
@@ -350,7 +351,7 @@ test('E2 successful empty catalog retains enabled global fallback without missin
   try {
     await enterSettingsTab(h.win, a, true);
     await expect(choice(h.win)).toBeEnabled();
-    await expect(choice(h.win).locator('option')).toHaveText([COPY.globalDefault]);
+    await expect(choice(h.win).locator('option')).toHaveText([COPY.globalDefault, COPY.terminalAgent]);
     expect(await displayedChoice(h.win)).toBe(COPY.globalDefault);
     await expect(
       settingsView(h.win).getByText(COPY.nextLaunchNotice, { exact: true }),

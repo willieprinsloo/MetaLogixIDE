@@ -309,7 +309,7 @@ test('AC6: the toast dismiss X renders 12x12, deterministically triggered by a f
   try {
     await win.getByTestId('tabbar-new-shell').click();
     const menu = win.locator('[data-new-shell-menu="1"]');
-    const piRow = menu.locator('div.group', { hasText: 'PiMark' });
+    const piRow = menu.locator('div.group', { hasText: 'EmojiMark' });
     await piRow.getByRole('button', { name: /folder default/i }).click();
     const toast = win.getByTestId('toast').filter({ hasText: 'Could not set default' }).first();
     await expect(toast).toBeVisible({ timeout: 5000 });
@@ -427,17 +427,6 @@ test('AC13: icon-only buttons in AC4-AC6 keep their icon centred (±0.5px) in th
   const stClose = win.getByTestId('settings-close');
   await expectCentred(stClose.locator('svg'), stClose, 'settings close icon');
   await stClose.click();
-});
-
-test('AC13: the AC9 slot keeps the Pi mark centred (±0.5px) — repeated here against the live menu as the AC13-named case', async () => {
-  await win.getByTestId('tabbar-new-shell').click();
-  const menu = win.locator('[data-new-shell-menu="1"]');
-  await expect(menu).toBeVisible();
-  await settle(menu); // menuMotion opens with a 0.97 scale transition
-  const piSlot = menu.locator('div.group', { hasText: 'PiMark' }).locator('button').first().locator('span[aria-hidden="true"]').first();
-  await expectCentred(piSlot.locator('> span'), piSlot, 'Pi mark (AC13)');
-  await win.keyboard.press('Escape');
-  await expect(menu).toBeHidden();
 });
 
 /* ─────────────────────────────── AC14: accessibility kept ─────────────────────────────── */
