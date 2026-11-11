@@ -1,5 +1,5 @@
 /** Main-process wiring for PTY lifecycle and screen-derived Claude dots. */
-import type { AgentShellStateEntry } from '@shared/agent-state';
+import type { AgentKind, AgentShellStateEntry } from '@shared/agent-state';
 import { PosixForegroundObserver } from './foreground-posix';
 import { AgentStatusTracker, type SpawnIdentity, type StatusPtyPort } from './state-tracker';
 
@@ -16,7 +16,7 @@ export interface AgentStatusDeps {
   readonly ptyManager: PtyEvents;
   readonly broadcast: (channel: 'agent-state:changed', payload: AgentShellStateEntry) => void;
   readonly platform?: NodeJS.Platform;
-  readonly observeForeground?: (pid: number) => Promise<boolean>;
+  readonly observeForeground?: (pid: number) => Promise<AgentKind | null>;
 }
 
 /** Installs lifecycle listeners and a 250 ms bounded sampling tick; stop removes both. */
@@ -27,7 +27,7 @@ export function installAgentStatus(deps: AgentStatusDeps): {
   const platform = deps.platform ?? process.platform;
   const observer = platform === 'win32' ? null : new PosixForegroundObserver();
   const sample =
-    deps.observeForeground ?? ((pid: number) => observer?.hasClaude(pid) ?? Promise.resolve(false));
+    deps.observeForeground ?? ((pid: number) => observer?.harness(pid) ?? Promise.resolve(null));
   const tracker = new AgentStatusTracker(deps.ptyManager, sample, platform);
   const unsubscribe = tracker.onChange((entry) => deps.broadcast('agent-state:changed', entry));
   const spawned = (event: SpawnEvent): void => {

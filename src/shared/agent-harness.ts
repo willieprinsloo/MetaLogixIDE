@@ -3,6 +3,9 @@ export type AgentHarness = 'claude' | 'codex' | 'opencode';
 
 export const AGENT_HARNESSES: readonly AgentHarness[] = ['claude', 'codex', 'opencode'];
 
+/** Display names, used when a harness is detected running in a shell that was not launched as it. */
+export const HARNESS_LABEL: Readonly<Record<AgentHarness, string>> = { claude: 'Claude', codex: 'Codex', opencode: 'opencode' };
+
 /** Identifies the harness by the executable's base name (`/opt/bin/claude`, `codex.exe` → `codex`). */
 export function harnessOf(argv: readonly string[]): AgentHarness | null {
   const bin = argv[0];

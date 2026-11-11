@@ -133,10 +133,11 @@ instead of starting a new one (`src/shared/agent-harness.ts`,
   extra flags or a full path still resume. A command that already resumes is
   left alone, and `codex exec …` is never rewritten.
 - A launch spawned by the IDE records its harness in the project's
-  `config.resumableAgents`. Only a harness recorded there is resumed, so a
+  `config.resumableAgents`. So does a harness started by hand in a terminal
+  tab, once foreground detection (below) sees it. Only a harness recorded there is resumed, so a
   first run never asks an agent for a session that does not exist.
 - A shell that runs a harness while another live shell of the same project runs
-  it starts a new session, so two processes never share one conversation.
+  it (launched as it, or detected in a terminal) starts a new session, so two processes never share one conversation.
 - One-off inline commands (Custom command…) are launched exactly as typed.
 - The built-in global launch without a default agent keeps its
   `claude`/`claude --continue` pair and the same live-shell guard.
@@ -1053,7 +1054,7 @@ control status dots. Codex and opencode shells show no status dot.
 |---|---|---|
 | Contract | `src/shared/agent-state.ts` | Define agent identity, three states and accessible labels. |
 | Adapter | `src/main/pty/{manager,screen-mirror}.ts` | Preserve original launch identity and PTY generation. Sample the active terminal's bottom twelve physical rows, join xterm-wrapped fragments, and capture OSC 0/2 title changes. |
-| Adapter | `src/main/agent-status/foreground-posix.ts` | Check process ancestry and the foreground process group for a manually started Claude on macOS or Linux. |
+| Adapter | `src/main/agent-status/foreground-posix.ts` | Check process ancestry and the foreground process group for a manually started Claude, Codex or opencode on macOS or Linux. |
 | Service | `src/main/agent-status/{claude-screen,state-tracker}.ts` | Classify Claude's current title, working rows, and live confirmation forms, and publish changed shell states. |
 | Composition | `src/main/agent-status/install.ts`, `src/main/index.ts` | Subscribe to PTY lifecycle and sample Claude status every 250 ms. |
 | Transport | `src/main/ipc/register.ts`, `src/shared/ipc-contract.ts` | Send `agent-state:list` snapshots, including recognized idle agents, and `agent-state:changed` deltas to all windows. |
@@ -1067,6 +1068,10 @@ Rules:
   hooks. A manually started Claude requires foreground process evidence on
   macOS or Linux. Without that evidence, including on Windows, its dot
   remains idle.
+- The same foreground check recognises Codex and opencode typed into a
+  terminal (by executable name or argv[0]). The tab is then labelled as that
+  agent while it runs, and the project records it as resumable. Only Claude's
+  screen is classified, so Codex and opencode read idle while they run.
 - Claude shows busy for a working OSC title or recognized live activity,
   including a spinner above the persistent input box. A known current approval
   or confirmation form takes precedence and shows blocked. Unknown or stale

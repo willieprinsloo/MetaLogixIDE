@@ -28,7 +28,7 @@ describe('status installer', () => {
       const ptyManager = new FakePty();
       ptyManager.agent = null;
       ptyManager.rows = ['✳ Thinking…', 'esc to interrupt'];
-      const observeForeground = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+      const observeForeground = vi.fn().mockResolvedValueOnce('claude').mockResolvedValueOnce(null);
       const broadcast = vi.fn();
       const { tracker, stop } = installAgentStatus({
         ptyManager, broadcast, platform: 'darwin', observeForeground,

@@ -60,6 +60,7 @@ vi.mock('@renderer/hooks/useClaudePermissionMode', () => ({ useClaudePermissionM
 vi.mock('@renderer/hooks/useAgentStates', () => ({
   useProjectAgentState: () => 'idle',
   useShellAgentState: () => ({ state: bridge.state }),
+  useAgentStateMap: () => new Map(),
 }));
 vi.mock('@renderer/hooks/useWindowTerminalFocus', () => ({
   useWindowTerminalFocus: () => undefined,
