@@ -95,3 +95,34 @@ describe('usage service rate limiting', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('usage test-mode seam', () => {
+  it('outside test mode uses the real dependencies', async () => {
+    const { usageDepsFor } = await import('@main/usage/service');
+    expect(usageDepsFor('/h', {}).platform).toBe(process.platform);
+  });
+
+  it('in test mode with no fixture both providers are signed out and nothing is fetched', async () => {
+    const { usageDepsFor } = await import('@main/usage/service');
+    const d = usageDepsFor('/h', { METAIDE_TEST_MODE: '1' });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const snap = await new UsageService(d).get();
+    expect(snap).toEqual({ claude: { provider: 'claude', status: 'signed-out' }, codex: { provider: 'codex', status: 'signed-out' } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it('serves canned responses, including a 429 with Retry-After', async () => {
+    const { usageDepsFor } = await import('@main/usage/service');
+    const fixture = { claude: { status: 200, body: { seven_day: { utilization: 42 } } }, codex: { status: 429, retryAfter: '900' } };
+    const snap = await new UsageService(usageDepsFor('/h', { METAIDE_TEST_MODE: '1', METAIDE_USAGE_FIXTURE: JSON.stringify(fixture) })).get();
+    expect(snap.claude).toMatchObject({ status: 'ok', weekly: { usedPercent: 42 } });
+    expect(snap.codex).toMatchObject({ status: 'error', message: 'Rate limited by the provider' });
+  });
+
+  it('an invalid fixture falls back to signed out', async () => {
+    const { usageDepsFor } = await import('@main/usage/service');
+    const snap = await new UsageService(usageDepsFor('/h', { METAIDE_TEST_MODE: '1', METAIDE_USAGE_FIXTURE: '{nope' })).get();
+    expect(snap.claude.status).toBe('signed-out');
+  });
+});

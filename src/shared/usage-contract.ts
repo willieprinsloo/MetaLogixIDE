@@ -45,3 +45,18 @@ export const USAGE_TESTIDS = {
   popover: 'usage-popover',
   meter: (p: UsageProvider) => `usage-meter-${p}`,
 } as const;
+
+/**
+ * E2E seam, honoured only when `METAIDE_TEST_MODE=1`: JSON keyed by provider. A provider
+ * entry stands in for its usage endpoint's HTTP response; an absent or null entry means
+ * that CLI is signed out. In test mode without this variable both providers are signed
+ * out, so no test ever reads real credentials or calls a real endpoint.
+ */
+export const USAGE_FIXTURE_ENV = 'METAIDE_USAGE_FIXTURE';
+
+export interface UsageFixtureResponse {
+  readonly status: number;
+  readonly body?: unknown;
+  readonly retryAfter?: string;
+}
+export type UsageFixture = Partial<Record<UsageProvider, UsageFixtureResponse | null>>;

@@ -6,7 +6,7 @@
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { USAGE_CACHE_MS, USAGE_MIN_FORCE_MS, USAGE_RATE_LIMIT_BACKOFF_MS, type ProviderUsage, type UsageProvider, type UsageSnapshot } from '@shared/usage-contract';
+import { USAGE_FIXTURE_ENV, type UsageFixture, USAGE_CACHE_MS, USAGE_MIN_FORCE_MS, USAGE_RATE_LIMIT_BACKOFF_MS, type ProviderUsage, type UsageProvider, type UsageSnapshot } from '@shared/usage-contract';
 import { parseClaudeUsage, parseCodexUsage } from './parse';
 
 export interface UsageDeps {
@@ -183,4 +183,44 @@ export function nodeUsageDeps(homeDir: string): UsageDeps {
     fetch: (url, init) => fetch(url, init),
     now: () => Date.now(),
   };
+}
+
+/** Test-mode dependencies: fake sign-ins and canned HTTP responses from the fixture; never the keychain or network. */
+export function fixtureUsageDeps(homeDir: string, fixture: UsageFixture): UsageDeps {
+  const claudeCreds = join(homeDir, '.claude', '.credentials.json');
+  const codexAuthPath = join(process.env.CODEX_HOME || join(homeDir, '.codex'), 'auth.json');
+  return {
+    homeDir,
+    platform: 'linux',
+    keychain: async () => null,
+    readText: async (path) => {
+      if (path === claudeCreds && fixture.claude) return JSON.stringify({ claudeAiOauth: { accessToken: 'fixture' } });
+      if (path === codexAuthPath && fixture.codex) return JSON.stringify({ tokens: { access_token: 'fixture', account_id: 'fixture' } });
+      return null;
+    },
+    fetch: async (url) => {
+      const res = url === CLAUDE_USAGE_URL ? fixture.claude : url === CODEX_USAGE_URL ? fixture.codex : null;
+      if (!res) throw new Error(`no usage fixture for ${url}`);
+      return {
+        ok: res.status >= 200 && res.status < 300,
+        status: res.status,
+        headers: { get: (name: string) => (name.toLowerCase() === 'retry-after' ? res.retryAfter ?? null : null) },
+        json: async () => res.body ?? {},
+      };
+    },
+    now: () => Date.now(),
+  };
+}
+
+/** Picks real dependencies, or the fixture seam under `METAIDE_TEST_MODE=1` (signed out when unset or invalid). */
+export function usageDepsFor(homeDir: string, env: NodeJS.ProcessEnv = process.env): UsageDeps {
+  if (env.METAIDE_TEST_MODE !== '1') return nodeUsageDeps(homeDir);
+  let fixture: UsageFixture = {};
+  try {
+    const parsed: unknown = JSON.parse(env[USAGE_FIXTURE_ENV] ?? '{}');
+    if (parsed && typeof parsed === 'object') fixture = parsed as UsageFixture;
+  } catch {
+    console.warn(`[usage] ignoring invalid ${USAGE_FIXTURE_ENV}`);
+  }
+  return fixtureUsageDeps(homeDir, fixture);
 }

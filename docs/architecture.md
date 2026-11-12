@@ -1339,6 +1339,26 @@ Rules:
 - On a project switch the panel and the badge clear at once. A reply for a
   project the user has left is dropped.
 
+### AI usage meter
+
+The activity bar's bottom item shows Claude and OpenAI Codex subscription usage
+(`src/main/usage/`, `src/renderer/components/UsageMeter.tsx`). A thin bar per
+signed-in provider shows the weekly window; hovering opens a popover with the
+weekly and 5-hour windows and their reset countdowns.
+
+- Main reads each CLI's own sign-in, read-only and never refreshed: Claude Code's
+  `Claude Code-credentials` keychain item (or `~/.claude/.credentials.json`) and
+  `~/.codex/auth.json`. It calls `api.anthropic.com/api/oauth/usage` and
+  `chatgpt.com/backend-api/wham/usage`. Only percentages and reset times cross IPC
+  (`usage:get`).
+- Each provider is cached for 10 minutes; a click refresh fetches at most once a
+  minute. HTTP 429 starts a backoff (Retry-After, at least 10 minutes) that a
+  click cannot skip, and the last good figures stay on show with a note.
+- Under `METAIDE_TEST_MODE=1` the keychain and network are never touched:
+  `METAIDE_USAGE_FIXTURE` (JSON keyed by provider, each `{ status, body,
+  retryAfter }`) stands in for the endpoints, and without it both providers are
+  signed out. `tests/e2e/usage-meter.spec.ts` drives the meter this way.
+
 ### Keep awake (macOS)
 
 A user-set, time-boxed keep-awake. While it is active the Mac does not
