@@ -211,7 +211,7 @@ test('the sidebar keeps its 48px top inset from the old title bar, level with th
   expect(firstChild.y - sidebar.y).toBe(48);
   const firstIcon = await box(win.getByTestId('activity-bar').locator('button').first());
   const main = await box(win.locator('main').first());
-  expect(Math.round(main.x + main.width), 'main sheet has no right margin').toBe(await win.evaluate(() => window.innerWidth));
+  expect(Math.round(main.x + main.width), 'main sheet keeps an 8px right margin while the status bar shows').toBe(await win.evaluate(() => window.innerWidth) - 8);
   const filter = await box(win.getByTestId('sidebar-filter').locator('xpath=..'));
   expect(firstIcon.y + firstIcon.height / 2, 'the sidebar toggle centres on the filter field').toBe(filter.y + filter.height / 2);
 });
@@ -285,7 +285,7 @@ test('switching the sidebar view animates the column to that view\'s width; drag
   await win.waitForTimeout(300); // the reset width animates; let it land before the next test measures
 });
 
-test('the status bar sits inside the main sheet at its bottom; hiding it gives the space to the content', async () => {
+test('the status bar sits under the main sheet only (not the sidebar), with no top border; shown it rounds and insets the sheet, hidden the sheet runs square to the edges', async () => {
   const setStatusBar = (value: boolean) => win.evaluate(async (v: boolean) => {
     const api = (window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<unknown> } }).api;
     await api.invoke('settings:set', { key: 'show_status_bar', value: v });
@@ -293,21 +293,29 @@ test('the status bar sits inside the main sheet at its bottom; hiding it gives t
   await expect(win.getByTestId('status-bar'), 'positive control: shown by default').toBeVisible();
   const main = win.locator('main').first();
   const height = await win.evaluate(() => window.innerHeight);
-  await expect(main.getByTestId('status-bar'), 'rendered inside the main sheet').toBeVisible();
+  const column = await box(win.getByTestId('main-column'));
+  await expect(main.getByTestId('status-bar'), 'not inside the main sheet').toHaveCount(0);
   const m = await box(main);
   const bar = await box(win.getByTestId('status-bar'));
-  expect([bar.x, Math.round(bar.width)], 'spans only the main sheet').toEqual([m.x, Math.round(m.width)]);
+  expect([bar.x, Math.round(bar.width)], 'spans the main column, not the sidebar').toEqual([column.x, Math.round(column.width)]);
+  expect(bar.x, 'starts right of the sidebar').toBeGreaterThan(64);
+  expect(await css(win.getByTestId('status-bar'), 'border-top-width'), 'no top border').toBe('0px');
   expect(Math.round(bar.y + bar.height), 'at the bottom of the window').toBe(height);
-  expect(Math.round(m.y + m.height)).toBe(height);
+  expect(Math.round(m.y + m.height), 'the sheet ends where the status bar starts').toBe(Math.round(bar.y));
+  expect(await radii(main), 'rounded while the status bar shows').toEqual(['14px', '14px', '14px', '14px']);
+  expect([await css(main, 'margin-top'), await css(main, 'margin-right')], 'inset while the status bar shows').toEqual(['8px', '8px']);
+  expect(await css(main, 'transition-property'), 'margin and rounding animate').toContain('border-radius');
   try {
     await setStatusBar(false);
     await expect(win.getByTestId('status-bar')).toHaveCount(0);
     await expect.poll(async () => { const b = await box(main); return Math.round(b.y + b.height); }).toBe(height);
-    expect(await radii(main), 'square on every window edge').toEqual(['0px', '0px', '0px', '0px']);
+    await expect.poll(() => radii(main), 'square on every window edge').toEqual(['0px', '0px', '0px', '0px']);
+    await expect.poll(async () => [await css(main, 'margin-top'), await css(main, 'margin-right')]).toEqual(['0px', '0px']);
   } finally {
     await setStatusBar(true);
   }
   await expect(win.getByTestId('status-bar')).toBeVisible();
+  await win.waitForTimeout(300);
 });
 
 test('the project name and branch still show in the status bar and the OS window title', async () => {
@@ -444,8 +452,8 @@ test('AC1/AC3/AC10–AC13/AC15/AC25–AC28: chrome dimensions, badges and branch
 
         // AC25
         const main = win.locator('main').first();
-        expect(await radii(main), `${at} sheet radius (square: it meets the window edges and the rail)`).toEqual(['0px', '0px', '0px', '0px']);
-        expect(await css(main, 'margin-right'), `${at} sheet right margin`).toBe('0px');
+        expect(await radii(main), `${at} sheet radius (rounded while the status bar shows)`).toEqual(['14px', '14px', '14px', '14px']);
+        expect(await css(main, 'margin-right'), `${at} sheet right margin`).toBe('8px');
 
         // AC26: compact tabs (28px, 8px side padding) with more room around and between them.
         const tabBar = win.getByTestId(DIFF_TESTIDS.tabBar);
