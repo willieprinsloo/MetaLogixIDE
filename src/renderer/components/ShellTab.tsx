@@ -107,6 +107,9 @@ export function ShellTab({
   const platformRef = useRef(platform);
   platformRef.current = platform;
   const containerRef = useRef<HTMLDivElement>(null);
+  // Full-screen apps (opencode, vim, …) paint their own margins and background; the shell
+  // padding would only frame them in sheet colour, so it drops while the alternate screen shows.
+  const [altScreen, setAltScreen] = useState(false);
   const termHostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
@@ -450,6 +453,7 @@ export function ShellTab({
 
     const ro = new ResizeObserver(passiveSync);
     if (containerRef.current) ro.observe(containerRef.current);
+    const bufferChange = term.buffer.onBufferChange((buffer) => setAltScreen(buffer.type === 'alternate'));
 
     // Intercept every copy from the terminal (Cmd+C, right-click Copy,
     // browser Edit menu) and replace the clipboard payload with a
@@ -486,6 +490,7 @@ export function ShellTab({
       window.removeEventListener('focus', passiveSync);
       offHoldRelease();
       ro.disconnect();
+      bufferChange.dispose();
       media.removeEventListener('change', onScheme);
       themeObserver.disconnect();
       copyHost?.removeEventListener('copy', onCopy);
@@ -511,6 +516,11 @@ export function ShellTab({
     if (!q || !searchRef.current) return;
     searchRef.current.findPrevious(q, { caseSensitive: false, wholeWord: false, regex: false });
   }, []);
+
+  // The padding changes with the alternate screen; refit to the new host size once it has laid out.
+  useEffect(() => {
+    geometrySyncRef.current?.();
+  }, [altScreen]);
 
   // Push font-size changes into the running instance and immediately remeasure its geometry.
   useEffect(() => {
@@ -669,7 +679,8 @@ export function ShellTab({
         e.preventDefault();
         setMenu({ x: e.clientX, y: e.clientY });
       }}
-      className="relative w-full h-full min-h-0 px-3 pt-2 pb-1 bg-transparent focus:outline-none"
+      data-alt-screen={altScreen || undefined}
+      className={`relative w-full h-full min-h-0 bg-transparent focus:outline-none ${altScreen ? 'p-0' : 'px-3 pt-2 pb-1'}`}
     >
       {/* `isolate` keeps xterm's internal z-indexes (e.g. its link layer) inside the
           host, so the exit overlay, drop hint and search bar always paint above it. */}
