@@ -19,6 +19,7 @@ import { PROJECT_SETTINGS_COPY, PROJECT_SETTINGS_TESTIDS, type ProjectSettingsTa
 import type { SettingsSection } from './components/settings/nav-icons';
 import { ResizeHandle } from './components/ResizeHandle';
 import { NewProjectDialog } from './components/NewProjectDialog';
+import { UsageMeter } from './components/UsageMeter';
 import { ActivityBar, ABButton, type ActivityView } from './components/ActivityBar';
 import { CommandPalette } from './components/CommandPalette';
 import { ShortcutsHelp } from './components/ShortcutsHelp';
@@ -924,6 +925,7 @@ function MainApp() {
               <ABButton label={SHORTCUT_COPY.settingsTitle(platform)} onClick={() => setSettingsOpen(true)} active={false} data-testid="settings-open">
                 <GearIcon />
               </ABButton>
+              <UsageMeter />
             </>
           )}
           gitDirty={git.dirty ? Object.keys(git.files).length : undefined}

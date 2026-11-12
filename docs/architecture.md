@@ -1079,8 +1079,12 @@ Rules:
   remains idle.
 - The same foreground check recognises Codex and opencode typed into a
   terminal (by executable name or argv[0]). The tab is then labelled as that
-  agent while it runs, and the project records it as resumable. Only Claude's
-  screen is classified, so Codex and opencode read idle while they run.
+  agent while it runs, and the project records it as resumable.
+- Codex and opencode screens are classified from the bottom rows of the live
+  viewport (`agent-screen.ts`). Codex is busy while "esc to interrupt" shows
+  and blocked on a "Would you like to …" approval with answer choices.
+  opencode is busy while "esc interrupt" shows and blocked on "Permission
+  required" with Allow/Reject choices.
 - Claude shows busy for a working OSC title or recognized live activity,
   including a spinner above the persistent input box. A known current approval
   or confirmation form takes precedence and shows blocked. Unknown or stale

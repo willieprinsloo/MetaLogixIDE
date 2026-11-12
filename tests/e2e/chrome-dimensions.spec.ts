@@ -331,7 +331,7 @@ test('AC4/AC14: the status bar branch follows a checkout and detached HEAD; a cl
   await expect.poll(() => statusBranch(win), { timeout: 10000 }).toBe('HEAD');
 });
 
-test('AC8: the theme, tile and settings buttons sit at the bottom of the activity bar, 44x44 with a 10px radius', async () => {
+test('AC8: the theme, tile, settings and AI usage buttons sit at the bottom of the activity bar, 44x44 with a 10px radius', async () => {
   const bar = win.getByTestId('activity-bar');
   const group = bar.getByTestId(CHROME_TESTIDS.titleButtons);
   const barBox = await box(bar);
@@ -347,7 +347,10 @@ test('AC8: the theme, tile and settings buttons sit at the bottom of the activit
     previousBottom = r.y + r.height;
     expect(await b.getAttribute('aria-label'), `${id} has an accessible name`).toBeTruthy();
   }
-  expect(barBox.y + barBox.height - previousBottom, 'settings is pinned to the bottom with the rail padding').toBeLessThanOrEqual(16);
+  const usage = await box(group.getByTestId('ab-usage'));
+  expect(usage.y, 'the AI usage meter sits below settings').toBeGreaterThanOrEqual(previousBottom);
+  previousBottom = usage.y + usage.height;
+  expect(barBox.y + barBox.height - previousBottom, 'the usage meter is pinned to the bottom with the rail padding').toBeLessThanOrEqual(16);
   const gapAboveFooter = (await box(group.getByTestId('theme-toggle'))).y - (fleet.y + fleet.height);
   expect(gapAboveFooter, 'a flexible spacer separates the footer from the nav buttons').toBeGreaterThan(40);
 });
@@ -364,8 +367,8 @@ test('the top of the activity bar is a draggable strip (traffic-light room on ma
   expect(await css(win.getByTestId(CHROME_TESTIDS.titleButtons), '-webkit-app-region')).toBe('no-drag');
 });
 
-test('AC10a: the activity bar has six rail buttons plus the three footer buttons, and no ab-settings button', async () => {
-  await expect(win.getByTestId('activity-bar').locator('button'), 'positive control: the activity bar renders').toHaveCount(9);
+test('AC10a: the activity bar has six rail buttons plus the four footer buttons, and no ab-settings button', async () => {
+  await expect(win.getByTestId('activity-bar').locator('button'), 'positive control: the activity bar renders').toHaveCount(10);
   await expect(win.getByTestId('ab-settings')).toHaveCount(0);
   await expect(win.getByTestId('activity-bar').getByTestId('settings-open')).toBeVisible();
 });
@@ -389,10 +392,12 @@ test('AC1/AC3/AC10–AC13/AC15/AC25–AC28: chrome dimensions, badges and branch
 
         // AC10
         const bar = win.getByTestId('activity-bar');
-        expect((await box(bar)).width, `${at} activity bar width`).toBe(56);
+        expect((await box(bar)).width, `${at} activity bar width`).toBe(64);
         const buttons = bar.locator('button');
-        expect(await buttons.count(), `${at} AC10a: six rail buttons and three footer buttons`).toBe(9);
+        expect(await buttons.count(), `${at} AC10a: six rail buttons and four footer buttons`).toBe(10);
         for (const b of await buttons.all()) {
+          // The AI usage meter stacks its weekly bars under the icon, so it is taller than 44px.
+          if ((await b.getAttribute('data-testid')) === 'ab-usage') continue;
           const label = await b.getAttribute('aria-label');
           const r = await box(b);
           expect([r.width, r.height], `${at} ${label} size`).toEqual([44, 44]);

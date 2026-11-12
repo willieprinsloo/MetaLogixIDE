@@ -1,7 +1,7 @@
 /** Public per-shell status sent by main; no terminal content or credentials cross IPC. */
 import type { AgentHarness } from './agent-harness';
 
-/** A recognised agent harness, launched directly or detected in a shell's foreground. Only Claude reports busy/blocked; the others read idle while running. */
+/** A recognised agent harness, launched directly or detected in a shell's foreground. Each harness's screen is classified into idle/busy/blocked. */
 export type AgentKind = AgentHarness;
 export type AgentState = 'idle' | 'busy' | 'blocked';
 
@@ -22,12 +22,12 @@ export const AGENT_STATE_LABEL: Readonly<Record<AgentKind, Readonly<Record<Agent
       blocked: 'Claude needs your input',
     },
     codex: {
-      idle: 'Codex is running',
+      idle: 'Codex is idle',
       busy: 'Codex is working',
       blocked: 'Codex needs your input',
     },
     opencode: {
-      idle: 'opencode is running',
+      idle: 'opencode is idle',
       busy: 'opencode is working',
       blocked: 'opencode needs your input',
     },

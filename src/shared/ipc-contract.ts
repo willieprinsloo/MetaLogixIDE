@@ -7,6 +7,7 @@ import type { TerminalFontWeight } from './terminal-font-weight';
 import type { ProjectDefaultAgentRequest, ScopedCliProfile } from './project-default-agent';
 import type { AppFileDragPayload, ClipboardImageResult, ResolveAppFileResult, StageFileRequest, StageResult } from './terminal-drop-contract';
 import type { TasksDiscovery } from './tasks-contract';
+import type { UsageSnapshot } from './usage-contract';
 import type { KeepAwakeDarkenResult, KeepAwakeStartRequest, KeepAwakeStartResult, KeepAwakeState } from './keep-awake-contract';
 import type { PrimarySessionInspection, StopPrimarySessionRequest, StopPrimarySessionResult } from './unload-session-contract';
 import type { FleetEntry, P2PSettings, P2PSettingsView } from './p2p-contract';
@@ -418,6 +419,9 @@ export interface IpcContract {
   'keep-awake:start':  { request: KeepAwakeStartRequest; response: KeepAwakeStartResult };
   'keep-awake:stop':   { request: undefined; response: KeepAwakeState };
   'keep-awake:darken': { request: undefined; response: KeepAwakeDarkenResult };
+
+  /** Claude and Codex subscription usage; `force` bypasses the 60 s cache. */
+  'usage:get': { request: { force?: boolean } | undefined; response: UsageSnapshot };
 
   /* ─── P2P remote access (fleet) ─── */
   'p2p:fleet-list':         { request: undefined; response: { fleet: FleetEntry[] } };

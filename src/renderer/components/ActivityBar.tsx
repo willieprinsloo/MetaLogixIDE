@@ -28,7 +28,7 @@ export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, ch
   const platform = useShortcutPlatform();
   return (
     <nav
-      className="drag w-14 shrink-0 h-full flex flex-col items-center pb-3 gap-2"
+      className="drag w-16 shrink-0 h-full flex flex-col items-center pb-3 gap-2"
       data-testid="activity-bar"
     >
       {/* Room for the traffic lights; sized so the sidebar toggle (44px) centres on the sidebar's 36px filter field, which starts 48px down. */}
