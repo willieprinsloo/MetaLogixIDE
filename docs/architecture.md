@@ -1344,7 +1344,10 @@ Rules:
 The activity bar's bottom item shows Claude and OpenAI Codex subscription usage
 (`src/main/usage/`, `src/renderer/components/UsageMeter.tsx`). A thin bar per
 signed-in provider shows the weekly window; hovering opens a popover with the
-weekly and 5-hour windows and their reset countdowns.
+weekly and 5-hour windows and their reset countdowns. Claude's per-model weekly
+windows (`seven_day_<model>`, e.g. Fable) get their own bar under Claude's and
+their own popover row. Colours follow usage, lower is better: green below 70%,
+amber from 70%, red from 90%; the icon takes the highest weekly figure's level.
 
 - Main reads each CLI's own sign-in, read-only and never refreshed: Claude Code's
   `Claude Code-credentials` keychain item (or `~/.claude/.credentials.json`) and
