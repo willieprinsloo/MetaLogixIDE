@@ -37,9 +37,6 @@ export function UsageMeter() {
   const bars = gutterBars(usage);
   const peak = peakWeekly(usage);
   const label = peak === null ? 'AI usage' : `AI usage — weekly peak ${Math.round(peak)}%`;
-  const peakLevel = peak === null ? 'ok' : usageLevel(peak);
-  // The icon stays muted while usage is fine and takes the amber/red tone once it is high.
-  const iconTone = peakLevel === 'ok' ? 'text-[--text-muted] hover:text-[--text]' : USAGE_LEVEL_TEXT[peakLevel];
 
   return (
     <>
@@ -53,8 +50,7 @@ export function UsageMeter() {
         onFocus={show}
         onBlur={hide}
         onClick={() => refresh(true)}
-        data-level={peakLevel}
-        className={`relative w-11 py-1.5 flex flex-col items-center justify-center gap-1 rounded-[10px] pressable hover:bg-[--surface-hover] ${iconTone}`}
+        className="relative w-11 py-1.5 flex flex-col items-center justify-center gap-1 rounded-[10px] pressable text-[--text-muted] hover:text-[--text] hover:bg-[--surface-hover]"
       >
         <SparklesIcon />
         {bars.length > 0 && (

@@ -42,8 +42,8 @@ test('the meter shows a weekly bar for each provider with figures, and the popov
   await expect(button).toHaveAttribute('aria-label', 'AI usage — weekly peak 93%');
   await expect(win.getByTestId(USAGE_TESTIDS.meter('claude')), 'Claude has weekly figures').toBeVisible();
   await expect(win.getByTestId(USAGE_TESTIDS.meter('claude')).locator('[data-level]'), 'high usage is red').toHaveAttribute('data-level', 'critical');
-  await expect(button, 'the icon takes the peak level').toHaveAttribute('data-level', 'critical');
-  await expect(win.getByTestId(USAGE_TESTIDS.meter('claude-fable')).locator('[data-level]'), 'Fable has its own bar, amber at 74%').toHaveAttribute('data-level', 'warn');
+  await expect(button, 'the icon itself is never coloured').not.toHaveAttribute('data-level');
+  await expect(win.getByTestId(USAGE_TESTIDS.meter('claude-fable')), 'Fable shows only in the popover').toHaveCount(0);
   await expect(win.getByTestId(USAGE_TESTIDS.meter('codex')), 'rate-limited Codex has no bar').toHaveCount(0);
 
   const popover = win.getByTestId(USAGE_TESTIDS.popover);

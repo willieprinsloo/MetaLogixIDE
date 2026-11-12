@@ -24,19 +24,18 @@ export interface GutterBar {
   readonly weekly: UsageWindow;
 }
 
-/** Bars in display order: Claude, its model windows (Fable first), then Codex. */
+/** Bars in display order, one per provider (model windows such as Fable appear only in the popover). */
 export function gutterBars(usage: UsageSnapshot | null): GutterBar[] {
   const bars: GutterBar[] = [];
   for (const p of PROVIDERS) {
     const u = usage?.[p];
     if (u?.status !== 'ok') continue;
     if (u.weekly) bars.push({ key: p, label: p, weekly: u.weekly });
-    for (const m of u.models ?? []) bars.push({ key: `${p}-${m.id}`, label: m.label, weekly: m.weekly });
   }
   return bars;
 }
 
-/** Highest weekly use across providers and their models, for the icon's level and label. */
+/** Highest provider weekly use, for the button's accessible label. */
 export function peakWeekly(usage: UsageSnapshot | null): number | null {
   const values = gutterBars(usage).map((b) => b.weekly.usedPercent);
   return values.length ? Math.max(...values) : null;

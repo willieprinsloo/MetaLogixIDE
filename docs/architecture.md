@@ -1346,10 +1346,10 @@ The activity bar's bottom item shows Claude and OpenAI Codex subscription usage
 signed-in provider shows the weekly window; hovering opens a popover with the
 weekly and 5-hour windows and their reset countdowns. Claude's per-model weekly
 limits (`limits[]` entries of kind `weekly_scoped` with `scope.model`, e.g.
-Fable; older `seven_day_<model>` windows too) get their own bar under Claude's
-and their own popover row. Plans without a 5-hour window (Claude and OpenAI top
+Fable; older `seven_day_<model>` windows too) get their own popover row (no
+activity-bar bar). Plans without a 5-hour window (Claude and OpenAI top
 tiers) simply show no 5-hour row. Colours follow usage, lower is better: green below 70%,
-amber from 70%, red from 90%; the icon takes the highest weekly figure's level.
+amber from 70%, red from 90%; only the bars are coloured, never the icon.
 
 - Main reads each CLI's own sign-in, read-only and never refreshed: Claude Code's
   `Claude Code-credentials` keychain item (or `~/.claude/.credentials.json`) and
