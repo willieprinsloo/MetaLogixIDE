@@ -298,7 +298,7 @@ test('the status bar sits under the main sheet only (not the sidebar), with no t
   const m = await box(main);
   const bar = await box(win.getByTestId('status-bar'));
   expect([bar.x, Math.round(bar.width)], 'spans the main column, not the sidebar').toEqual([column.x, Math.round(column.width)]);
-  expect(bar.x, 'starts right of the sidebar').toBeGreaterThan(64);
+  expect(bar.x, 'starts right of the sidebar').toBeGreaterThan(80);
   expect(await css(win.getByTestId('status-bar'), 'border-top-width'), 'no top border').toBe('0px');
   expect(Math.round(bar.y + bar.height), 'at the bottom of the window').toBe(height);
   expect(Math.round(m.y + m.height), 'the sheet ends where the status bar starts').toBe(Math.round(bar.y));
@@ -416,7 +416,7 @@ test('AC1/AC3/AC10–AC13/AC15/AC25–AC28: chrome dimensions, badges and branch
 
         // AC10
         const bar = win.getByTestId('activity-bar');
-        expect((await box(bar)).width, `${at} activity bar width`).toBe(64);
+        expect((await box(bar)).width, `${at} activity bar width`).toBe(80);
         const buttons = bar.locator('button');
         expect(await buttons.count(), `${at} AC10a: six rail buttons and four footer buttons`).toBe(10);
         for (const b of await buttons.all()) {

@@ -1064,8 +1064,8 @@ kbd {
   .fleet-projects-pane {
     position: fixed;
     top: 44px;
-    left: 64px;
-    width: calc(100vw - 64px) !important;
+    left: 80px;
+    width: calc(100vw - 80px) !important;
     height: calc(100dvh - 78px);
     z-index: var(--layer-mobile-sidebar);
     background: var(--surface-chrome);

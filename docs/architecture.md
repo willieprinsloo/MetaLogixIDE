@@ -284,7 +284,7 @@ the lights on the 44px bar. The title-bar buttons are 32px with 3px right
 padding, so the last glyph ends 12px from the edge and mirrors the lights.
 The document title (`<project> — MetaLogix IDE`) is unchanged.
 
-**Activity bar and status bar.** The activity bar is 56px wide with 36px
+**Activity bar and status bar.** The activity bar is 80px wide (room for the macOS window controls) with 36px
 buttons; count badges sit at the top-right of their button. Settings is
 reached from the title-bar gear or ⌘,. The status bar is 34px at 12px text.
 
