@@ -6,7 +6,7 @@
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { USAGE_CACHE_MS, type ProviderUsage, type UsageSnapshot } from '@shared/usage-contract';
+import { USAGE_CACHE_MS, USAGE_MIN_FORCE_MS, USAGE_RATE_LIMIT_BACKOFF_MS, type ProviderUsage, type UsageProvider, type UsageSnapshot } from '@shared/usage-contract';
 import { parseClaudeUsage, parseCodexUsage } from './parse';
 
 export interface UsageDeps {
@@ -15,7 +15,7 @@ export interface UsageDeps {
   readonly readText: (path: string) => Promise<string | null>;
   /** macOS keychain generic password by service name; null when absent. */
   readonly keychain: (service: string) => Promise<string | null>;
-  readonly fetch: (url: string, init: { headers: Record<string, string>; signal: AbortSignal }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+  readonly fetch: (url: string, init: { headers: Record<string, string>; signal: AbortSignal }) => Promise<{ ok: boolean; status: number; headers?: { get(name: string): string | null }; json(): Promise<unknown> }>;
   readonly now: () => number;
 }
 
@@ -50,11 +50,30 @@ async function codexAuth(d: UsageDeps): Promise<{ token: string; accountId: stri
   return { token: tokens.access_token, accountId: typeof tokens.account_id === 'string' ? tokens.account_id : null };
 }
 
+/** HTTP 429: the provider asks us to slow down; `retryAfterMs` comes from Retry-After when sent. */
+export class RateLimitedError extends Error {
+  constructor(readonly retryAfterMs: number) {
+    super('Rate limited by the provider');
+  }
+}
+
+/** Retry-After as delta-seconds or an HTTP date; falls back to the default backoff. */
+function retryAfterMs(value: string | null | undefined, now: number): number {
+  if (value) {
+    const secs = Number(value);
+    if (Number.isFinite(secs) && secs >= 0) return Math.max(USAGE_RATE_LIMIT_BACKOFF_MS, secs * 1000);
+    const at = Date.parse(value);
+    if (Number.isFinite(at)) return Math.max(USAGE_RATE_LIMIT_BACKOFF_MS, at - now);
+  }
+  return USAGE_RATE_LIMIT_BACKOFF_MS;
+}
+
 async function getJson(d: UsageDeps, url: string, headers: Record<string, string>): Promise<unknown> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   try {
     const res = await d.fetch(url, { headers, signal: ctrl.signal });
+    if (res.status === 429) throw new RateLimitedError(retryAfterMs(res.headers?.get('retry-after'), d.now()));
     if (res.status === 401 || res.status === 403) throw new Error('Sign-in expired — run the CLI once to refresh it');
     if (!res.ok) throw new Error(`Usage request failed (HTTP ${res.status})`);
     return await res.json();
@@ -76,6 +95,7 @@ export async function fetchClaudeUsage(d: UsageDeps): Promise<ProviderUsage> {
     const body = await getJson(d, CLAUDE_USAGE_URL, { Authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20', Accept: 'application/json' });
     return { provider: 'claude', status: 'ok', ...parseClaudeUsage(body), fetchedAt: d.now() };
   } catch (err) {
+    if (err instanceof RateLimitedError) throw err;
     return failed('claude', err);
   }
 }
@@ -89,29 +109,62 @@ export async function fetchCodexUsage(d: UsageDeps): Promise<ProviderUsage> {
     const body = await getJson(d, CODEX_USAGE_URL, headers);
     return { provider: 'codex', status: 'ok', ...parseCodexUsage(body, d.now()), fetchedAt: d.now() };
   } catch (err) {
+    if (err instanceof RateLimitedError) throw err;
     return failed('codex', err);
   }
 }
 
-/** Caches one snapshot for USAGE_CACHE_MS and shares an in-flight request between callers. */
+interface ProviderState {
+  value: ProviderUsage | null;
+  fetchedAt: number;
+  /** No request before this time (rate-limit backoff). */
+  blockedUntil: number;
+  inflight: Promise<ProviderUsage> | null;
+}
+
+/**
+ * Per-provider cache (USAGE_CACHE_MS) with in-flight sharing. A 429 starts a backoff that
+ * even a forced refresh respects, and the last good figures stay on show with a note.
+ */
 export class UsageService {
-  private cached: { at: number; snap: UsageSnapshot } | null = null;
-  private inflight: Promise<UsageSnapshot> | null = null;
+  private readonly state: Record<UsageProvider, ProviderState> = {
+    claude: { value: null, fetchedAt: -Infinity, blockedUntil: -Infinity, inflight: null },
+    codex: { value: null, fetchedAt: -Infinity, blockedUntil: -Infinity, inflight: null },
+  };
 
-  constructor(private readonly deps: UsageDeps) {}
+  constructor(
+    private readonly deps: UsageDeps,
+    private readonly fetchers: Record<UsageProvider, (d: UsageDeps) => Promise<ProviderUsage>> = { claude: fetchClaudeUsage, codex: fetchCodexUsage },
+  ) {}
 
-  get(force = false): Promise<UsageSnapshot> {
-    if (this.cached && !force && this.deps.now() - this.cached.at < USAGE_CACHE_MS) return Promise.resolve(this.cached.snap);
-    this.inflight ??= Promise.all([fetchClaudeUsage(this.deps), fetchCodexUsage(this.deps)])
-      .then(([claude, codex]) => {
-        const snap = { claude, codex };
-        this.cached = { at: this.deps.now(), snap };
-        return snap;
+  async get(force = false): Promise<UsageSnapshot> {
+    const [claude, codex] = await Promise.all([this.one('claude', force), this.one('codex', force)]);
+    return { claude, codex };
+  }
+
+  private one(provider: UsageProvider, force: boolean): Promise<ProviderUsage> {
+    const st = this.state[provider];
+    const now = this.deps.now();
+    const age = now - st.fetchedAt;
+    if (st.value && (now < st.blockedUntil || age < (force ? USAGE_MIN_FORCE_MS : USAGE_CACHE_MS))) return Promise.resolve(st.value);
+    st.inflight ??= this.fetchers[provider](this.deps)
+      .catch((err: unknown): ProviderUsage => {
+        if (!(err instanceof RateLimitedError)) throw err;
+        st.blockedUntil = this.deps.now() + err.retryAfterMs;
+        const retryAt = st.blockedUntil;
+        const last = st.value;
+        if (last?.status === 'ok') return { ...last, note: 'Rate limited — showing the last figures', retryAt };
+        return { provider, status: 'error', message: 'Rate limited by the provider', retryAt };
+      })
+      .then((value) => {
+        st.value = value;
+        st.fetchedAt = this.deps.now();
+        return value;
       })
       .finally(() => {
-        this.inflight = null;
+        st.inflight = null;
       });
-    return this.inflight;
+    return st.inflight;
   }
 }
 

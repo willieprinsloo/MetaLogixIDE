@@ -47,10 +47,51 @@ describe('usage service', () => {
     const svc = new UsageService(deps({ readText, fetch, now: () => t }));
     await Promise.all([svc.get(), svc.get()]);
     expect(fetch).toHaveBeenCalledTimes(1);
-    t = 30_000;
+    t = 5 * 60_000;
     await svc.get();
     expect(fetch).toHaveBeenCalledTimes(1);
     await svc.get(true);
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('usage service rate limiting', () => {
+  const okBody = { seven_day: { utilization: 20 } };
+  const creds = async () => JSON.stringify({ claudeAiOauth: { accessToken: 'x' } });
+
+  it('a 429 keeps the last figures with a note and backs off for Retry-After, even when forced', async () => {
+    let t = 0;
+    let status = 200;
+    const fetch = vi.fn(async () => ({ ok: status === 200, status, headers: { get: (n: string) => (n === 'retry-after' ? '1200' : null) }, json: async () => okBody }));
+    const svc = new UsageService(deps({ readText: creds, fetch, now: () => t }));
+    expect((await svc.get()).claude).toMatchObject({ status: 'ok', weekly: { usedPercent: 20 } });
+    status = 429;
+    t = 11 * 60_000;
+    const limited = (await svc.get()).claude;
+    expect(limited).toMatchObject({ status: 'ok', weekly: { usedPercent: 20 }, note: expect.stringContaining('Rate limited'), retryAt: t + 1_200_000 });
+    const calls = fetch.mock.calls.length;
+    t += 5 * 60_000;
+    await svc.get(true);
+    expect(fetch.mock.calls.length, 'no request during the backoff').toBe(calls);
+    status = 200;
+    t += 16 * 60_000;
+    expect((await svc.get(true)).claude).not.toHaveProperty('note');
+  });
+
+  it('a first-call 429 is an error with a retry time and the default 10 minute backoff', async () => {
+    const t = 1000;
+    const fetch = vi.fn(async () => ({ ok: false, status: 429, json: async () => ({}) }));
+    const svc = new UsageService(deps({ readText: creds, fetch, now: () => t }));
+    expect((await svc.get()).claude).toEqual({ provider: 'claude', status: 'error', message: 'Rate limited by the provider', retryAt: t + 600_000 });
+  });
+
+  it('a click refresh within a minute reuses the cached figures', async () => {
+    let t = 0;
+    const fetch = vi.fn(async () => ({ ok: true, status: 200, json: async () => okBody }));
+    const svc = new UsageService(deps({ readText: creds, fetch, now: () => t }));
+    await svc.get();
+    t = 30_000;
+    await svc.get(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

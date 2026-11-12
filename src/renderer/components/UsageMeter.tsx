@@ -28,7 +28,6 @@ export function UsageMeter() {
     timer.current = window.setTimeout(() => {
       const r = ref.current?.getBoundingClientRect();
       if (r) setAnchor({ x: r.right + 8, y: r.bottom });
-      refresh();
     }, OPEN_DELAY_MS);
   };
   const hide = () => {
@@ -91,15 +90,21 @@ function ProviderRows({ provider, usage }: { provider: UsageProvider; usage: Pro
   const title = <div className="font-medium mb-1">{USAGE_PROVIDER_LABEL[provider]}</div>;
   if (!usage) return <div>{title}<div className="text-[--text-muted]">Loading…</div></div>;
   if (usage.status === 'signed-out') return <div>{title}<div className="text-[--text-muted]">Not signed in to the CLI</div></div>;
-  if (usage.status === 'error') return <div>{title}<div className="text-[--hue-orange]">{usage.message}</div></div>;
+  if (usage.status === 'error') return <div>{title}<div className="text-[--hue-orange]">{usage.message}{retryText(usage.retryAt)}</div></div>;
   const now = Date.now();
   return (
     <div>
       {title}
       <WindowRow name="Weekly" win={usage.weekly} tone={BAR_TONE[provider]} now={now} />
       <WindowRow name="5-hour" win={usage.session} tone={BAR_TONE[provider]} now={now} />
+      {usage.note && <div className="text-[10px] text-[--hue-orange]">{usage.note}{retryText(usage.retryAt)}</div>}
     </div>
   );
+}
+
+/** " — retrying in 9m" while a rate-limit backoff runs. */
+function retryText(retryAt: number | undefined): string {
+  return retryAt && retryAt > Date.now() ? ` — retrying in ${formatResetIn(retryAt, Date.now())}` : '';
 }
 
 function WindowRow({ name, win, tone, now }: { name: string; win: UsageWindow | null; tone: string; now: number }) {
