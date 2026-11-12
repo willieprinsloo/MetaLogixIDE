@@ -10,7 +10,7 @@ import { closeApp, guardedLaunch } from './helpers/claude-harness';
 
 const WEEK_FROM_NOW = new Date(Date.now() + 3 * 86_400_000).toISOString();
 const FIXTURE: UsageFixture = {
-  claude: { status: 200, body: { five_hour: { utilization: 12, resets_at: WEEK_FROM_NOW }, seven_day: { utilization: 42, resets_at: WEEK_FROM_NOW } } },
+  claude: { status: 200, body: { five_hour: { utilization: 12, resets_at: WEEK_FROM_NOW }, seven_day: { utilization: 93, resets_at: WEEK_FROM_NOW } } },
   codex: { status: 429, retryAfter: '900' },
 };
 
@@ -36,8 +36,10 @@ test.afterAll(async () => {
 test('the meter shows a weekly bar for each provider with figures, and the popover explains a rate limit', async () => {
   const button = win.getByTestId(USAGE_TESTIDS.button);
   await expect(button).toBeVisible();
-  await expect(button).toHaveAttribute('aria-label', 'AI usage — weekly peak 42%');
+  await expect(button).toHaveAttribute('aria-label', 'AI usage — weekly peak 93%');
   await expect(win.getByTestId(USAGE_TESTIDS.meter('claude')), 'Claude has weekly figures').toBeVisible();
+  await expect(win.getByTestId(USAGE_TESTIDS.meter('claude')).locator('[data-level]'), 'high usage is red').toHaveAttribute('data-level', 'critical');
+  await expect(button, 'the icon takes the peak level').toHaveAttribute('data-level', 'critical');
   await expect(win.getByTestId(USAGE_TESTIDS.meter('codex')), 'rate-limited Codex has no bar').toHaveCount(0);
 
   const popover = win.getByTestId(USAGE_TESTIDS.popover);
@@ -47,7 +49,7 @@ test('the meter shows a weekly bar for each provider with figures, and the popov
     await button.hover();
     await expect(popover).toBeVisible({ timeout: 1000 });
   }).toPass({ timeout: 10_000 });
-  await expect(popover).toContainText('Weekly · 42%');
+  await expect(popover).toContainText('Weekly · 93%');
   await expect(popover).toContainText('5-hour · 12%');
   await expect(popover).toContainText(/resets in 2d 2\dh|resets in 3d 0h/);
   await expect(popover).toContainText(/Rate limited by the provider — retrying in 1\dm/);

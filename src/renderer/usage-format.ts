@@ -23,3 +23,26 @@ export function peakWeekly(usage: UsageSnapshot | null): number | null {
   return values.length ? Math.max(...values) : null;
 }
 
+
+/** Usage severity: lower is better. Amber from 70 %, red from 90 %. */
+export type UsageLevel = 'ok' | 'warn' | 'critical';
+export const USAGE_WARN_PERCENT = 70;
+export const USAGE_CRITICAL_PERCENT = 90;
+
+export function usageLevel(usedPercent: number): UsageLevel {
+  if (usedPercent >= USAGE_CRITICAL_PERCENT) return 'critical';
+  if (usedPercent >= USAGE_WARN_PERCENT) return 'warn';
+  return 'ok';
+}
+
+/** Fill and text classes per level: green, amber, red. */
+export const USAGE_LEVEL_FILL: Readonly<Record<UsageLevel, string>> = {
+  ok: 'bg-[--hue-green]',
+  warn: 'bg-[--hue-orange]',
+  critical: 'bg-[--danger]',
+};
+export const USAGE_LEVEL_TEXT: Readonly<Record<UsageLevel, string>> = {
+  ok: 'text-[--text]',
+  warn: 'text-[--hue-orange]',
+  critical: 'text-[--danger]',
+};

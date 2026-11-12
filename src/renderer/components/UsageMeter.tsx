@@ -8,10 +8,9 @@ import {
   type UsageWindow,
 } from '@shared/usage-contract';
 import { useAgentUsage } from '@renderer/hooks/useAgentUsage';
-import { PROVIDERS, formatResetIn, peakWeekly, weeklyOf } from '@renderer/usage-format';
+import { PROVIDERS, USAGE_LEVEL_FILL, USAGE_LEVEL_TEXT, formatResetIn, peakWeekly, usageLevel, weeklyOf } from '@renderer/usage-format';
 import { ICON_SIZE } from './icon-size';
 
-const BAR_TONE: Record<UsageProvider, string> = { claude: 'bg-[--hue-orange]', codex: 'bg-[--hue-green]' };
 const OPEN_DELAY_MS = 250;
 
 /** Activity-bar AI usage widget: icon plus one weekly bar per signed-in provider, details on hover. */
@@ -38,6 +37,9 @@ export function UsageMeter() {
   const visible = PROVIDERS.filter((p) => weeklyOf(usage?.[p]) !== null);
   const peak = peakWeekly(usage);
   const label = peak === null ? 'AI usage' : `AI usage — weekly peak ${Math.round(peak)}%`;
+  const peakLevel = peak === null ? 'ok' : usageLevel(peak);
+  // The icon stays muted while usage is fine and takes the amber/red tone once it is high.
+  const iconTone = peakLevel === 'ok' ? 'text-[--text-muted] hover:text-[--text]' : USAGE_LEVEL_TEXT[peakLevel];
 
   return (
     <>
@@ -51,14 +53,19 @@ export function UsageMeter() {
         onFocus={show}
         onBlur={hide}
         onClick={() => refresh(true)}
-        className="relative w-11 py-1.5 flex flex-col items-center justify-center gap-1 rounded-[10px] pressable text-[--text-muted] hover:text-[--text] hover:bg-[--surface-hover]"
+        data-level={peakLevel}
+        className={`relative w-11 py-1.5 flex flex-col items-center justify-center gap-1 rounded-[10px] pressable hover:bg-[--surface-hover] ${iconTone}`}
       >
         <SparklesIcon />
         {visible.length > 0 && (
           <span className="flex flex-col gap-[3px] w-7" aria-hidden>
             {visible.map((p) => (
               <span key={p} className="block h-[3px] w-full rounded-full bg-[--surface-hover] overflow-hidden" data-testid={USAGE_TESTIDS.meter(p)}>
-                <span className={`block h-full rounded-full ${BAR_TONE[p]}`} style={{ width: `${weeklyOf(usage?.[p])?.usedPercent ?? 0}%` }} />
+                <span
+                  className={`block h-full rounded-full ${USAGE_LEVEL_FILL[usageLevel(weeklyOf(usage?.[p])?.usedPercent ?? 0)]}`}
+                  data-level={usageLevel(weeklyOf(usage?.[p])?.usedPercent ?? 0)}
+                  style={{ width: `${weeklyOf(usage?.[p])?.usedPercent ?? 0}%` }}
+                />
               </span>
             ))}
           </span>
@@ -95,8 +102,8 @@ function ProviderRows({ provider, usage }: { provider: UsageProvider; usage: Pro
   return (
     <div>
       {title}
-      <WindowRow name="Weekly" win={usage.weekly} tone={BAR_TONE[provider]} now={now} />
-      <WindowRow name="5-hour" win={usage.session} tone={BAR_TONE[provider]} now={now} />
+      <WindowRow name="Weekly" win={usage.weekly} now={now} />
+      <WindowRow name="5-hour" win={usage.session} now={now} />
       {usage.note && <div className="text-[10px] text-[--hue-orange]">{usage.note}{retryText(usage.retryAt)}</div>}
     </div>
   );
@@ -107,16 +114,17 @@ function retryText(retryAt: number | undefined): string {
   return retryAt && retryAt > Date.now() ? ` — retrying in ${formatResetIn(retryAt, Date.now())}` : '';
 }
 
-function WindowRow({ name, win, tone, now }: { name: string; win: UsageWindow | null; tone: string; now: number }) {
+function WindowRow({ name, win, now }: { name: string; win: UsageWindow | null; now: number }) {
   if (!win) return null;
+  const level = usageLevel(win.usedPercent);
   return (
     <div className="mb-1.5">
       <div className="flex justify-between text-[--text-muted]">
-        <span>{name} · <span className="text-[--text]">{Math.round(win.usedPercent)}%</span></span>
+        <span>{name} · <span className={`font-medium ${USAGE_LEVEL_TEXT[level]}`}>{Math.round(win.usedPercent)}%</span></span>
         {win.resetsAt !== null && <span>resets in {formatResetIn(win.resetsAt, now)}</span>}
       </div>
       <div className="mt-0.5 h-1 rounded-full bg-[--surface-hover] overflow-hidden">
-        <div className={`h-full rounded-full ${tone}`} style={{ width: `${win.usedPercent}%` }} />
+        <div className={`h-full rounded-full ${USAGE_LEVEL_FILL[level]}`} style={{ width: `${win.usedPercent}%` }} />
       </div>
     </div>
   );

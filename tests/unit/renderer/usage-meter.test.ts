@@ -17,3 +17,13 @@ describe('UsageMeter helpers', () => {
     })).toBe(40);
   });
 });
+
+describe('usage level (lower is better)', () => {
+  it('is ok below 70, amber from 70, red from 90', async () => {
+    const { usageLevel, USAGE_LEVEL_FILL } = await import('@renderer/usage-format');
+    expect([0, 69.9, 70, 89.9, 90, 100].map(usageLevel)).toEqual(['ok', 'ok', 'warn', 'warn', 'critical', 'critical']);
+    expect(USAGE_LEVEL_FILL.ok).toContain('--hue-green');
+    expect(USAGE_LEVEL_FILL.warn).toContain('--hue-orange');
+    expect(USAGE_LEVEL_FILL.critical).toContain('--danger');
+  });
+});
