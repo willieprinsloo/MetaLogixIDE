@@ -10,7 +10,10 @@ import { closeApp, guardedLaunch } from './helpers/claude-harness';
 
 const WEEK_FROM_NOW = new Date(Date.now() + 3 * 86_400_000).toISOString();
 const FIXTURE: UsageFixture = {
-  claude: { status: 200, body: { five_hour: { utilization: 12, resets_at: WEEK_FROM_NOW }, seven_day: { utilization: 93, resets_at: WEEK_FROM_NOW }, seven_day_fable: { utilization: 74, resets_at: WEEK_FROM_NOW } } },
+  claude: { status: 200, body: { five_hour: { utilization: 12, resets_at: WEEK_FROM_NOW }, seven_day: { utilization: 93, resets_at: WEEK_FROM_NOW }, limits: [
+    { kind: 'weekly_all', group: 'weekly', percent: 93, resets_at: WEEK_FROM_NOW, scope: null },
+    { kind: 'weekly_scoped', group: 'weekly', percent: 74, resets_at: WEEK_FROM_NOW, scope: { model: { id: null, display_name: 'Fable' }, surface: null } },
+  ] } },
   codex: { status: 429, retryAfter: '900' },
 };
 

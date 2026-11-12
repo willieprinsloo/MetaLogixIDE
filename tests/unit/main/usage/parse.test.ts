@@ -55,3 +55,31 @@ describe('parseCodexUsage', () => {
     expect(parseCodexUsage({}, now)).toEqual({ weekly: null, session: null });
   });
 });
+
+describe('real response shapes (2026-11)', () => {
+  it('Claude: weekly 12%, no 5-hour window, and Fable from limits[] weekly_scoped', async () => {
+    const body = (await import('./fixtures/claude-usage-2026-11.json')).default;
+    const r = parseClaudeUsage(body);
+    expect(r.weekly).toEqual({ usedPercent: 12, resetsAt: Date.parse('2026-11-16T23:00:00.350558+00:00') });
+    expect(r.session).toBeNull();
+    expect(r.models).toEqual([{ id: 'fable', label: 'Fable', weekly: { usedPercent: 5, resetsAt: Date.parse('2026-11-16T23:00:00.350687+00:00') } }]);
+  });
+
+  it('Claude: weekly_all stands in when seven_day is missing; scoped limits without a model are ignored', () => {
+    const r = parseClaudeUsage({
+      seven_day: null,
+      limits: [
+        { kind: 'weekly_all', percent: 40, resets_at: '2026-11-16T23:00:00Z' },
+        { kind: 'weekly_scoped', percent: 9, scope: { model: null, surface: 'cowork' } },
+        { kind: 'weekly_scoped', percent: 'x', scope: { model: { display_name: 'Opus' } } },
+      ],
+    });
+    expect(r.weekly).toEqual({ usedPercent: 40, resetsAt: Date.parse('2026-11-16T23:00:00Z') });
+    expect(r.models).toEqual([]);
+  });
+
+  it('Codex: a single 7-day primary window is weekly, with no session window', () => {
+    const r = parseCodexUsage({ rate_limit: { primary_window: { used_percent: 77, limit_window_seconds: 604800, reset_after_seconds: 310296, reset_at: 1794814364 }, secondary_window: null } }, 0);
+    expect(r).toEqual({ weekly: { usedPercent: 77, resetsAt: 1794814364000 }, session: null });
+  });
+});

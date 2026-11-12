@@ -1345,15 +1345,18 @@ The activity bar's bottom item shows Claude and OpenAI Codex subscription usage
 (`src/main/usage/`, `src/renderer/components/UsageMeter.tsx`). A thin bar per
 signed-in provider shows the weekly window; hovering opens a popover with the
 weekly and 5-hour windows and their reset countdowns. Claude's per-model weekly
-windows (`seven_day_<model>`, e.g. Fable) get their own bar under Claude's and
-their own popover row. Colours follow usage, lower is better: green below 70%,
+limits (`limits[]` entries of kind `weekly_scoped` with `scope.model`, e.g.
+Fable; older `seven_day_<model>` windows too) get their own bar under Claude's
+and their own popover row. Plans without a 5-hour window (Claude and OpenAI top
+tiers) simply show no 5-hour row. Colours follow usage, lower is better: green below 70%,
 amber from 70%, red from 90%; the icon takes the highest weekly figure's level.
 
 - Main reads each CLI's own sign-in, read-only and never refreshed: Claude Code's
   `Claude Code-credentials` keychain item (or `~/.claude/.credentials.json`) and
   `~/.codex/auth.json`. It calls `api.anthropic.com/api/oauth/usage` and
   `chatgpt.com/backend-api/wham/usage`. Only percentages and reset times cross IPC
-  (`usage:get`).
+  (`usage:get`). The last raw response per provider is kept in
+  `<userData>/usage-debug/<provider>.json` (figures only) to diagnose field changes.
 - Each provider is cached for 10 minutes; a click refresh fetches at most once a
   minute. HTTP 429 starts a backoff (Retry-After, at least 10 minutes) that a
   click cannot skip, and the last good figures stay on show with a note.

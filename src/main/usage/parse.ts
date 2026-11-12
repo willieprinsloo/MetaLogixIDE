@@ -7,12 +7,20 @@ const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFi
 const clampPct = (v: number): number => Math.max(0, Math.min(100, v));
 
 /** `seven_day_*` keys that are not model windows. */
-const NON_MODEL_WEEKLY = new Set(['oauth_apps']);
+const NON_MODEL_WEEKLY = new Set(['oauth_apps', 'cowork', 'omelette', 'breakdown']);
+
+const slug = (name: string): string => name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+const titleCase = (id: string): string => id.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+const parseReset = (v: unknown): number | null => {
+  const at = typeof v === 'string' ? Date.parse(v) : NaN;
+  return Number.isFinite(at) ? at : null;
+};
 
 /**
- * Claude `GET /api/oauth/usage`: `{ five_hour: { utilization, resets_at }, seven_day: {...},
- * seven_day_<model>: {...} }`. Every `seven_day_<model>` with a utilization (Fable, Opus,
- * Sonnet, …) becomes a per-model weekly window; null ones are skipped.
+ * Claude `GET /api/oauth/usage`. Overall windows are `seven_day` / `five_hour`
+ * (`{ utilization, resets_at }`, null when the plan has none). Per-model weekly limits
+ * (Fable, …) come from `limits[]` entries of kind `weekly_scoped` with
+ * `scope.model.display_name` and `percent`; older `seven_day_<model>` windows are read too.
  */
 export function parseClaudeUsage(body: unknown): { weekly: UsageWindow | null; session: UsageWindow | null; models: ModelUsage[] } {
   const root = obj(body);
@@ -20,19 +28,32 @@ export function parseClaudeUsage(body: unknown): { weekly: UsageWindow | null; s
     const w = obj(root?.[key]);
     const used = num(w?.utilization);
     if (used === null) return null;
-    const reset = typeof w?.resets_at === 'string' ? Date.parse(w.resets_at) : NaN;
-    return { usedPercent: clampPct(used), resetsAt: Number.isFinite(reset) ? reset : null };
+    return { usedPercent: clampPct(used), resetsAt: parseReset(w?.resets_at) };
   };
-  const models: ModelUsage[] = [];
+  const limits = Array.isArray(root?.limits) ? root.limits.map(obj).filter((l): l is Json => l !== null) : [];
+
+  const byId = new Map<string, ModelUsage>();
+  for (const l of limits) {
+    if (l.kind !== 'weekly_scoped') continue;
+    const name = obj(obj(l.scope)?.model)?.display_name;
+    const used = num(l.percent);
+    if (typeof name !== 'string' || !name.trim() || used === null) continue;
+    const id = slug(name);
+    if (!byId.has(id)) byId.set(id, { id, label: name.trim(), weekly: { usedPercent: clampPct(used), resetsAt: parseReset(l.resets_at) } });
+  }
   for (const key of Object.keys(root ?? {})) {
     const id = /^seven_day_([a-z0-9_]+)$/.exec(key)?.[1];
-    if (!id || NON_MODEL_WEEKLY.has(id)) continue;
+    if (!id || NON_MODEL_WEEKLY.has(id) || byId.has(id)) continue;
     const weekly = win(key);
-    if (weekly) models.push({ id, label: id.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' '), weekly });
+    if (weekly) byId.set(id, { id, label: titleCase(id), weekly });
   }
   // Fable first (the one users ask about), then the rest alphabetically.
-  models.sort((a, b) => (a.id === 'fable' ? -1 : b.id === 'fable' ? 1 : a.id.localeCompare(b.id)));
-  return { weekly: win('seven_day'), session: win('five_hour'), models };
+  const models = [...byId.values()].sort((a, b) => (a.id === 'fable' ? -1 : b.id === 'fable' ? 1 : a.id.localeCompare(b.id)));
+
+  // Fall back to the `weekly_all` limit when `seven_day` is absent.
+  const all = limits.find((l) => l.kind === 'weekly_all' && num(l.percent) !== null);
+  const weekly = win('seven_day') ?? (all ? { usedPercent: clampPct(num(all.percent) ?? 0), resetsAt: parseReset(all.resets_at) } : null);
+  return { weekly, session: win('five_hour'), models };
 }
 
 /**
