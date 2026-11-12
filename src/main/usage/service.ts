@@ -4,7 +4,7 @@
  * percentages and reset times reach the renderer.
  */
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { USAGE_FIXTURE_ENV, type UsageFixture, USAGE_CACHE_MS, USAGE_MIN_FORCE_MS, USAGE_RATE_LIMIT_BACKOFF_MS, type ProviderUsage, type UsageProvider, type UsageSnapshot } from '@shared/usage-contract';
 import { parseClaudeUsage, parseCodexUsage } from './parse';
@@ -17,6 +17,8 @@ export interface UsageDeps {
   readonly keychain: (service: string) => Promise<string | null>;
   readonly fetch: (url: string, init: { headers: Record<string, string>; signal: AbortSignal }) => Promise<{ ok: boolean; status: number; headers?: { get(name: string): string | null }; json(): Promise<unknown> }>;
   readonly now: () => number;
+  /** Keeps the last raw response body per provider for troubleshooting (usage figures only, never tokens). */
+  readonly recordResponse?: (provider: UsageProvider, body: unknown) => void;
 }
 
 const CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
@@ -93,6 +95,7 @@ export async function fetchClaudeUsage(d: UsageDeps): Promise<ProviderUsage> {
   if (!token) return { provider: 'claude', status: 'signed-out' };
   try {
     const body = await getJson(d, CLAUDE_USAGE_URL, { Authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20', Accept: 'application/json' });
+    d.recordResponse?.('claude', body);
     return { provider: 'claude', status: 'ok', ...parseClaudeUsage(body), fetchedAt: d.now() };
   } catch (err) {
     if (err instanceof RateLimitedError) throw err;
@@ -107,6 +110,7 @@ export async function fetchCodexUsage(d: UsageDeps): Promise<ProviderUsage> {
     const headers: Record<string, string> = { Authorization: `Bearer ${auth.token}`, Accept: 'application/json', 'User-Agent': 'codex_cli_rs' };
     if (auth.accountId) headers['ChatGPT-Account-Id'] = auth.accountId;
     const body = await getJson(d, CODEX_USAGE_URL, headers);
+    d.recordResponse?.('codex', body);
     return { provider: 'codex', status: 'ok', ...parseCodexUsage(body, d.now()), fetchedAt: d.now() };
   } catch (err) {
     if (err instanceof RateLimitedError) throw err;
@@ -169,8 +173,15 @@ export class UsageService {
 }
 
 /** Production dependencies: fs, `security` for the keychain, and global fetch. */
-export function nodeUsageDeps(homeDir: string): UsageDeps {
+export function nodeUsageDeps(homeDir: string, debugDir?: string): UsageDeps {
   return {
+    recordResponse: debugDir
+      ? (provider, body) => {
+          void mkdir(debugDir, { recursive: true })
+            .then(() => writeFile(join(debugDir, `${provider}.json`), JSON.stringify(body, null, 2)))
+            .catch(() => {});
+        }
+      : undefined,
     homeDir,
     platform: process.platform,
     readText: (path) => readFile(path, 'utf8').catch(() => null),
@@ -213,8 +224,8 @@ export function fixtureUsageDeps(homeDir: string, fixture: UsageFixture): UsageD
 }
 
 /** Picks real dependencies, or the fixture seam under `METAIDE_TEST_MODE=1` (signed out when unset or invalid). */
-export function usageDepsFor(homeDir: string, env: NodeJS.ProcessEnv = process.env): UsageDeps {
-  if (env.METAIDE_TEST_MODE !== '1') return nodeUsageDeps(homeDir);
+export function usageDepsFor(homeDir: string, env: NodeJS.ProcessEnv = process.env, debugDir?: string): UsageDeps {
+  if (env.METAIDE_TEST_MODE !== '1') return nodeUsageDeps(homeDir, debugDir);
   let fixture: UsageFixture = {};
   try {
     const parsed: unknown = JSON.parse(env[USAGE_FIXTURE_ENV] ?? '{}');

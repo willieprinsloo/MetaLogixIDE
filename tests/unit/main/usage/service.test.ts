@@ -126,3 +126,16 @@ describe('usage test-mode seam', () => {
     expect(snap.claude.status).toBe('signed-out');
   });
 });
+
+describe('usage response recording', () => {
+  it('hands each successful raw body to recordResponse, never on failure', async () => {
+    const recordResponse = vi.fn();
+    const body = { seven_day: { utilization: 1 }, extra: { x: 1 } };
+    const ok = deps({ readText: async () => JSON.stringify({ claudeAiOauth: { accessToken: 't' } }), fetch: vi.fn(async () => ({ ok: true, status: 200, json: async () => body })), recordResponse });
+    await fetchClaudeUsage(ok);
+    expect(recordResponse).toHaveBeenCalledWith('claude', body);
+    const failing = deps({ readText: async () => JSON.stringify({ claudeAiOauth: { accessToken: 't' } }), fetch: vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}) })), recordResponse: vi.fn() });
+    await fetchClaudeUsage(failing);
+    expect(failing.recordResponse).not.toHaveBeenCalled();
+  });
+});
