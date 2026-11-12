@@ -17,9 +17,28 @@ export function formatResetIn(at: number, now: number): string {
 /** Weekly figure when known; null hides the provider's bar. */
 export const weeklyOf = (p: ProviderUsage | undefined): UsageWindow | null => (p?.status === 'ok' ? p.weekly : null);
 
-/** Highest weekly use across providers, for the compact label under the icon. */
+/** One thin bar in the activity bar: a provider's weekly window, or one of its models'. */
+export interface GutterBar {
+  readonly key: string;
+  readonly label: string;
+  readonly weekly: UsageWindow;
+}
+
+/** Bars in display order: Claude, its model windows (Fable first), then Codex. */
+export function gutterBars(usage: UsageSnapshot | null): GutterBar[] {
+  const bars: GutterBar[] = [];
+  for (const p of PROVIDERS) {
+    const u = usage?.[p];
+    if (u?.status !== 'ok') continue;
+    if (u.weekly) bars.push({ key: p, label: p, weekly: u.weekly });
+    for (const m of u.models ?? []) bars.push({ key: `${p}-${m.id}`, label: m.label, weekly: m.weekly });
+  }
+  return bars;
+}
+
+/** Highest weekly use across providers and their models, for the icon's level and label. */
 export function peakWeekly(usage: UsageSnapshot | null): number | null {
-  const values = PROVIDERS.map((p) => weeklyOf(usage?.[p])?.usedPercent).filter((v): v is number => v != null);
+  const values = gutterBars(usage).map((b) => b.weekly.usedPercent);
   return values.length ? Math.max(...values) : null;
 }
 

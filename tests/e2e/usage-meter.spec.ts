@@ -10,7 +10,7 @@ import { closeApp, guardedLaunch } from './helpers/claude-harness';
 
 const WEEK_FROM_NOW = new Date(Date.now() + 3 * 86_400_000).toISOString();
 const FIXTURE: UsageFixture = {
-  claude: { status: 200, body: { five_hour: { utilization: 12, resets_at: WEEK_FROM_NOW }, seven_day: { utilization: 93, resets_at: WEEK_FROM_NOW } } },
+  claude: { status: 200, body: { five_hour: { utilization: 12, resets_at: WEEK_FROM_NOW }, seven_day: { utilization: 93, resets_at: WEEK_FROM_NOW }, seven_day_fable: { utilization: 74, resets_at: WEEK_FROM_NOW } } },
   codex: { status: 429, retryAfter: '900' },
 };
 
@@ -40,6 +40,7 @@ test('the meter shows a weekly bar for each provider with figures, and the popov
   await expect(win.getByTestId(USAGE_TESTIDS.meter('claude')), 'Claude has weekly figures').toBeVisible();
   await expect(win.getByTestId(USAGE_TESTIDS.meter('claude')).locator('[data-level]'), 'high usage is red').toHaveAttribute('data-level', 'critical');
   await expect(button, 'the icon takes the peak level').toHaveAttribute('data-level', 'critical');
+  await expect(win.getByTestId(USAGE_TESTIDS.meter('claude-fable')).locator('[data-level]'), 'Fable has its own bar, amber at 74%').toHaveAttribute('data-level', 'warn');
   await expect(win.getByTestId(USAGE_TESTIDS.meter('codex')), 'rate-limited Codex has no bar').toHaveCount(0);
 
   const popover = win.getByTestId(USAGE_TESTIDS.popover);
@@ -51,6 +52,7 @@ test('the meter shows a weekly bar for each provider with figures, and the popov
   }).toPass({ timeout: 10_000 });
   await expect(popover).toContainText('Weekly · 93%');
   await expect(popover).toContainText('5-hour · 12%');
+  await expect(popover.getByTestId(USAGE_TESTIDS.modelRow('claude', 'fable'))).toContainText('Weekly · Fable · 74%');
   await expect(popover).toContainText(/resets in 2d 2\dh|resets in 3d 0h/);
   await expect(popover).toContainText(/Rate limited by the provider — retrying in 1\dm/);
 });

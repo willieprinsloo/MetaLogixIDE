@@ -27,3 +27,16 @@ describe('usage level (lower is better)', () => {
     expect(USAGE_LEVEL_FILL.critical).toContain('--danger');
   });
 });
+
+describe('gutter bars', () => {
+  it('orders Claude, its models, then Codex, and the peak includes model windows', async () => {
+    const { gutterBars, peakWeekly } = await import('@renderer/usage-format');
+    const usage = {
+      claude: { provider: 'claude' as const, status: 'ok' as const, weekly: { usedPercent: 20, resetsAt: null }, session: null, fetchedAt: 0,
+        models: [{ id: 'fable', label: 'Fable', weekly: { usedPercent: 91, resetsAt: null } }] },
+      codex: { provider: 'codex' as const, status: 'ok' as const, weekly: { usedPercent: 40, resetsAt: null }, session: null, fetchedAt: 0 },
+    };
+    expect(gutterBars(usage).map((b) => b.key)).toEqual(['claude', 'claude-fable', 'codex']);
+    expect(peakWeekly(usage)).toBe(91);
+  });
+});

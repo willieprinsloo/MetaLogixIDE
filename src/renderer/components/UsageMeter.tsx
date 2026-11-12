@@ -8,7 +8,7 @@ import {
   type UsageWindow,
 } from '@shared/usage-contract';
 import { useAgentUsage } from '@renderer/hooks/useAgentUsage';
-import { PROVIDERS, USAGE_LEVEL_FILL, USAGE_LEVEL_TEXT, formatResetIn, peakWeekly, usageLevel, weeklyOf } from '@renderer/usage-format';
+import { PROVIDERS, USAGE_LEVEL_FILL, USAGE_LEVEL_TEXT, formatResetIn, gutterBars, peakWeekly, usageLevel } from '@renderer/usage-format';
 import { ICON_SIZE } from './icon-size';
 
 const OPEN_DELAY_MS = 250;
@@ -34,7 +34,7 @@ export function UsageMeter() {
     setAnchor(null);
   };
 
-  const visible = PROVIDERS.filter((p) => weeklyOf(usage?.[p]) !== null);
+  const bars = gutterBars(usage);
   const peak = peakWeekly(usage);
   const label = peak === null ? 'AI usage' : `AI usage — weekly peak ${Math.round(peak)}%`;
   const peakLevel = peak === null ? 'ok' : usageLevel(peak);
@@ -57,14 +57,14 @@ export function UsageMeter() {
         className={`relative w-11 py-1.5 flex flex-col items-center justify-center gap-1 rounded-[10px] pressable hover:bg-[--surface-hover] ${iconTone}`}
       >
         <SparklesIcon />
-        {visible.length > 0 && (
+        {bars.length > 0 && (
           <span className="flex flex-col gap-[3px] w-7" aria-hidden>
-            {visible.map((p) => (
-              <span key={p} className="block h-[3px] w-full rounded-full bg-[--surface-hover] overflow-hidden" data-testid={USAGE_TESTIDS.meter(p)}>
+            {bars.map((bar) => (
+              <span key={bar.key} className="block h-[3px] w-full rounded-full bg-[--surface-hover] overflow-hidden" data-testid={USAGE_TESTIDS.meter(bar.key)}>
                 <span
-                  className={`block h-full rounded-full ${USAGE_LEVEL_FILL[usageLevel(weeklyOf(usage?.[p])?.usedPercent ?? 0)]}`}
-                  data-level={usageLevel(weeklyOf(usage?.[p])?.usedPercent ?? 0)}
-                  style={{ width: `${weeklyOf(usage?.[p])?.usedPercent ?? 0}%` }}
+                  className={`block h-full rounded-full ${USAGE_LEVEL_FILL[usageLevel(bar.weekly.usedPercent)]}`}
+                  data-level={usageLevel(bar.weekly.usedPercent)}
+                  style={{ width: `${bar.weekly.usedPercent}%` }}
                 />
               </span>
             ))}
@@ -103,6 +103,7 @@ function ProviderRows({ provider, usage }: { provider: UsageProvider; usage: Pro
     <div>
       {title}
       <WindowRow name="Weekly" win={usage.weekly} now={now} />
+      {usage.models?.map((m) => <WindowRow key={m.id} name={`Weekly · ${m.label}`} win={m.weekly} now={now} testId={USAGE_TESTIDS.modelRow(provider, m.id)} />)}
       <WindowRow name="5-hour" win={usage.session} now={now} />
       {usage.note && <div className="text-[10px] text-[--hue-orange]">{usage.note}{retryText(usage.retryAt)}</div>}
     </div>
@@ -114,11 +115,11 @@ function retryText(retryAt: number | undefined): string {
   return retryAt && retryAt > Date.now() ? ` — retrying in ${formatResetIn(retryAt, Date.now())}` : '';
 }
 
-function WindowRow({ name, win, now }: { name: string; win: UsageWindow | null; now: number }) {
+function WindowRow({ name, win, now, testId }: { name: string; win: UsageWindow | null; now: number; testId?: string }) {
   if (!win) return null;
   const level = usageLevel(win.usedPercent);
   return (
-    <div className="mb-1.5">
+    <div className="mb-1.5" data-testid={testId}>
       <div className="flex justify-between text-[--text-muted]">
         <span>{name} · <span className={`font-medium ${USAGE_LEVEL_TEXT[level]}`}>{Math.round(win.usedPercent)}%</span></span>
         {win.resetsAt !== null && <span>resets in {formatResetIn(win.resetsAt, now)}</span>}

@@ -16,11 +16,20 @@ export type ProviderUsage =
   | {
       readonly provider: UsageProvider; readonly status: 'ok';
       readonly weekly: UsageWindow | null; readonly session: UsageWindow | null; readonly fetchedAt: number;
+      /** Per-model weekly windows the provider reports separately (Claude: `seven_day_fable`, …). */
+      readonly models?: readonly ModelUsage[];
       /** Set when these are older figures kept because a refresh was rate limited. */
       readonly note?: string; readonly retryAt?: number;
     }
   | { readonly provider: UsageProvider; readonly status: 'signed-out' }
   | { readonly provider: UsageProvider; readonly status: 'error'; readonly message: string; readonly retryAt?: number };
+
+/** A model-specific weekly window, e.g. `{ id: 'fable', label: 'Fable' }`. */
+export interface ModelUsage {
+  readonly id: string;
+  readonly label: string;
+  readonly weekly: UsageWindow;
+}
 
 export interface UsageSnapshot {
   readonly claude: ProviderUsage;
@@ -43,7 +52,9 @@ export const USAGE_RATE_LIMIT_BACKOFF_MS = 10 * 60_000;
 export const USAGE_TESTIDS = {
   button: 'ab-usage',
   popover: 'usage-popover',
-  meter: (p: UsageProvider) => `usage-meter-${p}`,
+  /** One gutter bar: a provider (`claude`) or one of its models (`claude-fable`). */
+  meter: (key: string) => `usage-meter-${key}`,
+  modelRow: (p: UsageProvider, model: string) => `usage-row-${p}-${model}`,
 } as const;
 
 /**

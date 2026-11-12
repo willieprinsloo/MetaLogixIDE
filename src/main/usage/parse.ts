@@ -1,13 +1,20 @@
 /** Pure parsers for the Claude and Codex usage endpoints; unknown or malformed fields become null. */
-import type { UsageWindow } from '@shared/usage-contract';
+import type { ModelUsage, UsageWindow } from '@shared/usage-contract';
 
 type Json = Record<string, unknown>;
 const obj = (v: unknown): Json | null => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Json) : null);
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const clampPct = (v: number): number => Math.max(0, Math.min(100, v));
 
-/** Claude `GET /api/oauth/usage`: `{ five_hour: { utilization, resets_at }, seven_day: {...} }`. */
-export function parseClaudeUsage(body: unknown): { weekly: UsageWindow | null; session: UsageWindow | null } {
+/** `seven_day_*` keys that are not model windows. */
+const NON_MODEL_WEEKLY = new Set(['oauth_apps']);
+
+/**
+ * Claude `GET /api/oauth/usage`: `{ five_hour: { utilization, resets_at }, seven_day: {...},
+ * seven_day_<model>: {...} }`. Every `seven_day_<model>` with a utilization (Fable, Opus,
+ * Sonnet, …) becomes a per-model weekly window; null ones are skipped.
+ */
+export function parseClaudeUsage(body: unknown): { weekly: UsageWindow | null; session: UsageWindow | null; models: ModelUsage[] } {
   const root = obj(body);
   const win = (key: string): UsageWindow | null => {
     const w = obj(root?.[key]);
@@ -16,7 +23,16 @@ export function parseClaudeUsage(body: unknown): { weekly: UsageWindow | null; s
     const reset = typeof w?.resets_at === 'string' ? Date.parse(w.resets_at) : NaN;
     return { usedPercent: clampPct(used), resetsAt: Number.isFinite(reset) ? reset : null };
   };
-  return { weekly: win('seven_day'), session: win('five_hour') };
+  const models: ModelUsage[] = [];
+  for (const key of Object.keys(root ?? {})) {
+    const id = /^seven_day_([a-z0-9_]+)$/.exec(key)?.[1];
+    if (!id || NON_MODEL_WEEKLY.has(id)) continue;
+    const weekly = win(key);
+    if (weekly) models.push({ id, label: id.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' '), weekly });
+  }
+  // Fable first (the one users ask about), then the rest alphabetically.
+  models.sort((a, b) => (a.id === 'fable' ? -1 : b.id === 'fable' ? 1 : a.id.localeCompare(b.id)));
+  return { weekly: win('seven_day'), session: win('five_hour'), models };
 }
 
 /**

@@ -12,11 +12,28 @@ describe('parseClaudeUsage', () => {
     expect(r.session).toEqual({ usedPercent: 12.5, resetsAt: Date.parse('2026-11-12T20:00:00Z') });
   });
   it('tolerates missing, null and malformed windows', () => {
-    expect(parseClaudeUsage(null)).toEqual({ weekly: null, session: null });
+    expect(parseClaudeUsage(null)).toEqual({ weekly: null, session: null, models: [] });
     expect(parseClaudeUsage({ seven_day: { utilization: 'x' }, five_hour: { utilization: 150, resets_at: 'nope' } })).toEqual({
       weekly: null,
       session: { usedPercent: 100, resetsAt: null },
+      models: [],
     });
+  });
+});
+
+describe('parseClaudeUsage per-model weekly windows', () => {
+  it('reads seven_day_<model> windows with Fable first, skipping null ones and oauth_apps', () => {
+    const r = parseClaudeUsage({
+      seven_day: { utilization: 30 },
+      seven_day_opus: { utilization: 10 },
+      seven_day_fable: { utilization: 75, resets_at: '2026-11-16T08:00:00Z' },
+      seven_day_sonnet: null,
+      seven_day_oauth_apps: { utilization: 5 },
+    });
+    expect(r.models).toEqual([
+      { id: 'fable', label: 'Fable', weekly: { usedPercent: 75, resetsAt: Date.parse('2026-11-16T08:00:00Z') } },
+      { id: 'opus', label: 'Opus', weekly: { usedPercent: 10, resetsAt: null } },
+    ]);
   });
 });
 
