@@ -669,7 +669,7 @@ export function ShellTab({
         e.preventDefault();
         setMenu({ x: e.clientX, y: e.clientY });
       }}
-      className="relative w-full h-full min-h-0 px-3 pt-2 pb-3 bg-transparent focus:outline-none"
+      className="relative w-full h-full min-h-0 px-3 pt-2 pb-1 bg-transparent focus:outline-none"
     >
       {/* `isolate` keeps xterm's internal z-indexes (e.g. its link layer) inside the
           host, so the exit overlay, drop hint and search bar always paint above it. */}
