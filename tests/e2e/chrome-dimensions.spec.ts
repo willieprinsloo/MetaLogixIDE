@@ -305,12 +305,28 @@ test('the status bar sits under the main sheet only (not the sidebar), with no t
   expect(await radii(main), 'rounded while the status bar shows').toEqual(['14px', '14px', '14px', '14px']);
   expect([await css(main, 'margin-top'), await css(main, 'margin-right')], 'inset while the status bar shows').toEqual(['8px', '8px']);
   expect(await css(main, 'transition-property'), 'margin and rounding animate').toContain('border-radius');
+  /** Largest document overflow (px) seen while the bar folds; any overflow shows window scrollbars. */
+  const maxOverflowDuring = (value: boolean) => win.evaluate(async (v: boolean) => {
+    const api = (window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<unknown> } }).api;
+    const d = document.scrollingElement as HTMLElement;
+    let worst = 0;
+    const until = performance.now() + 400;
+    const sample = () => { worst = Math.max(worst, d.scrollHeight - d.clientHeight, d.scrollWidth - d.clientWidth); };
+    const done = new Promise<void>((resolve) => {
+      const tick = () => { sample(); if (performance.now() < until) requestAnimationFrame(tick); else resolve(); };
+      requestAnimationFrame(tick);
+    });
+    await api.invoke('settings:set', { key: 'show_status_bar', value: v });
+    await done;
+    return worst;
+  }, value);
   try {
-    await setStatusBar(false);
+    expect(await maxOverflowDuring(false), 'hiding never overflows the window (no scrollbars)').toBe(0);
     await expect(win.getByTestId('status-bar')).toHaveCount(0);
     await expect.poll(async () => { const b = await box(main); return Math.round(b.y + b.height); }).toBe(height);
     await expect.poll(() => radii(main), 'square on every window edge').toEqual(['0px', '0px', '0px', '0px']);
     await expect.poll(async () => [await css(main, 'margin-top'), await css(main, 'margin-right')]).toEqual(['0px', '0px']);
+    expect(await maxOverflowDuring(true), 'showing never overflows the window (no scrollbars)').toBe(0);
   } finally {
     await setStatusBar(true);
   }

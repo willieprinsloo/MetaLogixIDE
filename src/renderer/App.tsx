@@ -68,6 +68,8 @@ import { useTerminalGeometryHold } from './hooks/useTerminalGeometryHold';
 
 /** Status bar fold and sheet margin/rounding transition length. */
 const STATUS_BAR_MS = 200;
+/** The status bar's fixed height (StatusBar's h-[34px]); its slot animates to this. */
+const STATUS_BAR_HEIGHT = 34;
 import { useSplitLifecycle } from './hooks/useSplitLifecycle';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { StatusDot } from './components/StatusDot';
@@ -910,7 +912,7 @@ function MainApp() {
   const mainSheetContent: SheetContent = mainTab === 'shell' ? 'shell' : 'other';
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-[--surface-chrome]" data-chrome-root>
+    <div className="h-screen w-screen overflow-hidden flex flex-col bg-[--surface-chrome]" data-chrome-root>
       <div className="flex-1 flex min-h-0">
         <ActivityBar
           active={activeView}
@@ -1009,7 +1011,7 @@ function MainApp() {
             </FoldPane>
           )}
         </AnimatePresence>
-        <div className="flex flex-1 flex-col min-h-0 min-w-0" data-testid="main-column">
+        <div className="flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden" data-testid="main-column">
           <main
             className={`flex flex-1 flex-col min-h-0 min-w-0 bg-[--surface-sheet] transition-[margin,border-radius] duration-200 ease-out motion-reduce:transition-none ${
               showStatusBar ? 'mt-2 mr-2 rounded-[14px]' : 'mt-0 mr-0 rounded-none'
@@ -1170,23 +1172,24 @@ function MainApp() {
             {showStatusBar && (
               <m.div
                 key="status-bar"
-                // Clip only while folding so the bar's upward popovers can overlap the sheet once settled.
-                className={`relative z-10 shrink-0 ${statusBarAnimating ? 'overflow-hidden' : 'overflow-visible'}`}
+                // The bar hangs from the top of this height-animated slot and the column clips below,
+                // so it slides in/out at the bottom while its upward popovers still overlap the sheet.
+                className="relative z-10 shrink-0"
                 initial={{ height: 0 }}
-                animate={{ height: 'auto' }}
+                animate={{ height: STATUS_BAR_HEIGHT }}
                 exit={{ height: 0 }}
                 transition={reduceMotion ? { duration: 0 } : { duration: STATUS_BAR_MS / 1000, ease: [0.23, 1, 0.32, 1] }}
-                onAnimationStart={() => setStatusBarAnimating(true)}
-                onAnimationComplete={() => setStatusBarAnimating(false)}
               >
-                <StatusBar
-                  project={remotePane ? null : selected}
-                  aliveCount={aliveCount}
-                  activeAgent={activeShellAgentLabel}
-                  activeAgentState={activeShellAgentStateLabel}
-                  onOpenPalette={() => openPalette('')}
-                  keepAwake={keepAwake}
-                />
+                <div className="absolute inset-x-0 top-0">
+                  <StatusBar
+                    project={remotePane ? null : selected}
+                    aliveCount={aliveCount}
+                    activeAgent={activeShellAgentLabel}
+                    activeAgentState={activeShellAgentStateLabel}
+                    onOpenPalette={() => openPalette('')}
+                    keepAwake={keepAwake}
+                  />
+                </div>
               </m.div>
             )}
           </AnimatePresence>
