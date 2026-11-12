@@ -697,6 +697,12 @@ input::placeholder, textarea::placeholder {
 }
 .pressable:not(:disabled):active { transform: scale(0.97); }
 
+/* Fleet sheet: a newly discovered or linked machine settles in rather than popping. */
+.fleet-peer { transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out); }
+@starting-style {
+  .fleet-peer { opacity: 0; transform: translateY(4px); }
+}
+
 /* Live-shell indicator: a ring expands off the dot. Animating transform and
  * opacity on a pseudo-element stays on the compositor, unlike the previous
  * box-shadow pulse which repainted every dot every frame. */
@@ -733,7 +739,7 @@ input::placeholder, textarea::placeholder {
   .live-dot::after { animation: none; opacity: 0; }
   .pressable:not(:disabled):active { transform: none; }
   @starting-style {
-    .modal-panel, .popover, .toast { transform: none; }
+    .modal-panel, .popover, .toast, .fleet-peer { transform: none; }
     .tooltip { transform: translate(-50%, var(--tooltip-y)); }
   }
   .toast[data-leaving] { transform: none; }
@@ -769,6 +775,22 @@ input::placeholder, textarea::placeholder {
 }
 
 .no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Inside a drag region only the empty space moves the window: controls stay clickable. */
+.drag :is(button, input, select, textarea, a, label, [role="button"], [role="tab"], [tabindex]) {
+  -webkit-app-region: no-drag;
+}
+
+/* Chromium only carves no-drag holes for elements that ask for them, so anything floating over a
+ * drag region (modals, menus, popovers, tooltips) must opt out or it would swallow its own clicks. */
+.fixed,
+.absolute[class*="z-"],
+[role="dialog"],
+[role="menu"],
+[role="listbox"],
+[role="tooltip"] {
   -webkit-app-region: no-drag;
 }
 
@@ -890,6 +912,7 @@ kbd {
   --hue-cyan: var(--term-cyan, var(--hue-cyan-default));
   --hue-pink: var(--term-red, var(--hue-pink-default));
   --hue-orange: var(--hue-orange-default);
+  --hue-green: var(--term-green, var(--hue-green-default));
   /* Hue pulled toward --text so small coloured text keeps its contrast. */
   --hue-orange-text: color-mix(in oklab, var(--hue-orange) 75%, var(--text));
   --hue-orange-soft: color-mix(in oklab, var(--hue-orange) 22%, transparent);
@@ -903,6 +926,7 @@ kbd {
   --hue-cyan-default: #7dcfff;
   --hue-pink-default: #f7768e;
   --hue-orange-default: #ff9e64;
+  --hue-green-default: #9ece6a;
 }
 :root[data-theme="light"] {
   --badge-ink: #fff;
@@ -1033,4 +1057,28 @@ kbd {
   padding: 0;
   color: inherit;
   font-size: 12.5px;
+}
+
+@media (max-width: 639px) {
+  :root { --layer-mobile-sidebar: 20; }
+  .fleet-projects-pane {
+    position: fixed;
+    top: 44px;
+    left: 56px;
+    width: calc(100vw - 56px) !important;
+    height: calc(100dvh - 78px);
+    z-index: var(--layer-mobile-sidebar);
+    background: var(--surface-chrome);
+  }
+  .fleet-projects-pane > div,
+  .fleet-projects-pane .section-panel {
+    width: 100% !important;
+    min-width: 0;
+  }
+  /* Activity sheets fill the pane on a narrow window, so the fold wrapper must too. */
+  .fleet-projects-pane .sheet-fold,
+  .fleet-projects-pane .sheet-fold > div {
+    width: 100% !important;
+  }
+  .fleet-projects-pane [data-testid="resize-handle"] { display: none; }
 }

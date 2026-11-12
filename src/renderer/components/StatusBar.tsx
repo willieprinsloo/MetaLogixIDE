@@ -2,8 +2,15 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Project } from '@shared/types';
 import { useGitStatus } from '@renderer/hooks/useGitStatus';
 import { usePorts } from '@renderer/hooks/usePorts';
+import { useShowStatusBarPorts } from '@renderer/hooks/useShowStatusBarPorts';
 import { api } from '@renderer/api';
 import { toast } from '@renderer/hooks/useToasts';
+import { PALETTE_COPY, PALETTE_TESTIDS } from '@renderer/command-palette-contract';
+import type { ShortcutPlatform } from '@renderer/shortcut-contract';
+import { SHORTCUT_COPY } from '@renderer/shortcut-copy';
+import { RUNTIME_SHORTCUT_PLATFORM, useShortcutPlatform } from '@renderer/shortcut-platform';
+import type { KeepAwakeControls } from '@renderer/hooks/useKeepAwake';
+import { KeepAwakeChip } from './KeepAwakeChip';
 import { XIcon } from './shell-icons';
 import { ICON_SIZE } from './icon-size';
 
@@ -13,18 +20,27 @@ interface LiveShell {
   launchName: string; hanging: boolean;
 }
 
-export function StatusBar({
-  project, aliveCount, activeAgent, activeAgentState,
-}: {
-  project: Project | null;
-  aliveCount: number;
+interface StatusBarProps {
+  readonly project: Project | null;
+  readonly aliveCount: number;
+  /** Opens the command palette exactly as ⌘K does. */
+  readonly onOpenPalette: () => void;
+  /** Keep-awake controls; omitted or null (off macOS, pop-outs) shows no chip. */
+  readonly keepAwake?: KeepAwakeControls | null;
   /** Label of the currently visible shell's agent (e.g. "Claude", "Codex", "Terminal"). */
-  activeAgent?: string | null;
+  readonly activeAgent?: string | null;
   /** Agent state for the visible shell — "idle" / "thinking" / "needs-input" / "finished". */
-  activeAgentState?: string | null;
-}) {
-  const { status: git } = useGitStatus(project?.id ?? null);
-  const ports = usePorts(project?.id ?? null);
+  readonly activeAgentState?: string | null;
+}
+
+/** The window's bottom bar: project, active agent, git branch, shells chip, port chips, the ⌘K palette hint and the app version. */
+export function StatusBar({ project, aliveCount, onOpenPalette, keepAwake, activeAgent, activeAgentState }: StatusBarProps): React.JSX.Element {
+  const { status: localGit } = useGitStatus(project?.id ?? null);
+  const git = { ...localGit, changedCount: Object.keys(localGit.files).length };
+  const showPorts = useShowStatusBarPorts();
+  const ports = usePorts(project?.id ?? null, showPorts);
+  const label = project?.name ?? null;
+  const platform = useShortcutPlatform();
   // App version shown at the far right so users know exactly which build
   // they're running when they hit a bug or file feedback. Cached for the
   // session — a version bump requires a relaunch anyway.
@@ -33,10 +49,10 @@ export function StatusBar({
     void api.invoke('app:get-version', undefined as never).then(({ version }) => setVersion(version)).catch(() => {});
   }, []);
   return (
-    <div className="h-[34px] shrink-0 px-3 text-xs text-[--text-muted] flex items-center gap-4 tabular-nums" data-testid="status-bar">
+    <div className="h-[34px] shrink-0 px-3 border-t border-[--border] text-xs text-[--text-muted] flex items-center gap-4 tabular-nums" data-testid="status-bar">
       <span className="flex items-center gap-1.5">
-        <span className={`inline-block w-1.5 h-1.5 rounded-full ${project ? 'bg-[--accent]' : 'bg-[--text-muted]/50'}`} />
-        {project ? project.name : 'no project'}
+        <span className={`inline-block w-1.5 h-1.5 rounded-full ${label ? 'bg-[color:var(--accent-mark,var(--accent))]' : 'bg-[--text-muted]/50'}`} />
+        {label ?? 'no project'}
       </span>
       {activeAgent && (
         <span className="flex items-center gap-1.5" title={activeAgentState ? `${activeAgent} — ${activeAgentState}` : activeAgent}>
@@ -46,7 +62,7 @@ export function StatusBar({
       )}
       {git.isRepo && (
         <span className="flex items-center gap-1" title={
-          `${git.branch ?? 'detached'}${git.ahead ? ` · ahead ${git.ahead}` : ''}${git.behind ? ` · behind ${git.behind}` : ''}${git.dirty ? ` · ${Object.keys(git.files).length} changed` : ''}`
+          `${git.branch ?? 'detached'}${git.ahead ? ` · ahead ${git.ahead}` : ''}${git.behind ? ` · behind ${git.behind}` : ''}${git.dirty ? ` · ${git.changedCount} changed` : ''}`
         }>
           <span className="text-[--hue-pink] flex"><BranchIcon /></span>
           <span className="text-[--text]">{git.branch ?? 'HEAD'}</span>
@@ -56,6 +72,13 @@ export function StatusBar({
         </span>
       )}
       <ShellsChip aliveCount={aliveCount} />
+      {keepAwake && (
+        <KeepAwakeChip
+          state={keepAwake.state}
+          onStop={() => { void keepAwake.stop(); }}
+          onDarkenNow={() => { void keepAwake.darkenNow(); }}
+        />
+      )}
       {ports.length > 0 && (
         <span className="flex items-center gap-1" title="Ports opened by this project's shells — click to open in your browser">
           <span className="text-[9px] uppercase opacity-70">ports</span>
@@ -73,11 +96,7 @@ export function StatusBar({
         </span>
       )}
       <span className="ml-auto min-w-0 overflow-hidden flex items-center gap-3 opacity-70 whitespace-nowrap">
-        <span className="flex items-center gap-1"><kbd>⌘K</kbd> project</span>
-        <span className="flex items-center gap-1"><kbd>⌘P</kbd> file</span>
-        <span className="flex items-center gap-1"><kbd>⌘⇧F</kbd> search</span>
-        <span className="flex items-center gap-1"><kbd>⌘B</kbd> sidebar</span>
-        <span className="flex items-center gap-1"><kbd>⌘,</kbd> settings</span>
+        <PaletteHint onOpen={onOpenPalette} platform={platform} />
         {version && (
           <>
             <span className="opacity-40">·</span>
@@ -161,13 +180,13 @@ function ShellsChip({ aliveCount }: { aliveCount: number }) {
         title="Alive shells — click to see details / kill"
         data-testid="shells-chip"
       >
-        <span>{aliveCount} shell{aliveCount === 1 ? '' : 's'}</span>
+        <span>{shellLabel(aliveCount)}</span>
         {open && shells.length > 0 && (
           <span className="opacity-70">· {totalCpu.toFixed(0)}%</span>
         )}
       </button>
       {open && (
-        <div className="absolute bottom-full right-0 mb-2 w-[380px] max-h-[400px] overflow-y-auto rounded-md border border-[--border] bg-[--panel-strong] shadow-xl z-50 text-[11px]">
+        <div className="absolute bottom-full right-0 mb-2 w-[380px] max-h-[400px] overflow-y-auto rounded-md border border-[--border] bg-[--panel-strong] shadow-xl z-50 text-[11px]" data-overlay>
           <div className="px-3 py-2 border-b border-[--border] flex items-center gap-2">
             <span className="font-semibold text-[--text]">Alive shells</span>
             <span className="text-[--text-muted]">·  refresh every 2s</span>
@@ -229,6 +248,10 @@ function ShellsChip({ aliveCount }: { aliveCount: number }) {
   );
 }
 
+function shellLabel(count: number): string {
+  return `${count} shell${count === 1 ? '' : 's'}`;
+}
+
 function fmtDuration(ms: number): string {
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
@@ -254,5 +277,26 @@ function BranchIcon() {
       <circle cx="18" cy="18" r="2.5" />
       <path d="M6 8.5v4a4 4 0 0 0 4 4h5.5" />
     </svg>
+  );
+}
+
+interface PaletteHintProps {
+  readonly onOpen: () => void;
+  /** Label notation for the key and accessible name; defaults to the runtime platform. */
+  readonly platform?: ShortcutPlatform;
+}
+
+/** The status bar's single "⌘K command palette" hint (`Ctrl+K` off mac): a muted button that opens the palette (AC29-AC31). */
+export function PaletteHint({ onOpen, platform = RUNTIME_SHORTCUT_PLATFORM }: PaletteHintProps): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label={SHORTCUT_COPY.statusHintLabel(platform)}
+      data-testid={PALETTE_TESTIDS.statusHint}
+      className="flex items-center gap-1 rounded-sm hover:text-[--text]"
+    >
+      <kbd>{SHORTCUT_COPY.statusHintKey(platform)}</kbd> {PALETTE_COPY.statusHintText}
+    </button>
   );
 }

@@ -99,6 +99,6 @@ describe('iconScaleViolations', () => {
     const other = 'export function StarIcon() { return <svg width={ICON_SIZE.sm} height={ICON_SIZE.sm} strokeWidth="1.5" />; }';
     expect(rules(other, 'src/renderer/components/shell-icons.tsx')).toEqual(['R4']);
     const glyph = 'function RootFolderGlyph() { return <svg width={ICON_SIZE.sm} height={ICON_SIZE.sm} strokeWidth="1.8" />; }';
-    expect(rules(glyph, 'src/renderer/components/Sidebar.tsx')).toEqual([]);
+    expect(rules(glyph, 'src/renderer/components/RootFolderGlyph.tsx')).toEqual([]);
   });
 });

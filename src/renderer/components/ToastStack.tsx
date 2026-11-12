@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useToasts, type Toast, type ToastKind } from '@renderer/hooks/useToasts';
+import { TOAST_Z } from '@renderer/modal-glass';
 import { ICON_SIZE, ICON_STROKE } from './icon-size';
 import { XIcon } from './shell-icons';
 
@@ -46,12 +48,13 @@ const KIND_STYLES: Record<ToastKind, { border: string; accent: string; stripe: s
   error:   { border: 'border-[color:var(--danger)]/40', accent: 'text-[--danger]',    stripe: 'bg-[--danger]',             Icon: ErrorIcon },
 };
 
+/** Keeps notifications interactive above modal chrome by rendering outside the inert app root. */
 export function ToastStack() {
   const { toasts, dismiss } = useToasts();
   const entries = useExitingToasts(toasts);
   if (entries.length === 0) return null;
-  return (
-    <div className="pointer-events-none fixed bottom-10 right-4 z-[60] flex flex-col-reverse gap-2 max-w-[380px]" data-overlay>
+  return createPortal(
+    <div className="pointer-events-none fixed bottom-10 right-4 flex flex-col-reverse gap-2 max-w-[380px]" style={{ zIndex: TOAST_Z }} data-overlay>
       {entries.map(({ toast: t, leaving }) => {
         const s = KIND_STYLES[t.kind];
         const Icon = s.Icon;
@@ -81,7 +84,8 @@ export function ToastStack() {
           </div>
         );
       })}
-    </div>
+    </div>,
+    document.body,
   );
 }
 

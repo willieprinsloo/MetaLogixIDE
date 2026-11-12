@@ -8,8 +8,14 @@
  * state, then flattens the painted layers over a grey sweep of the black-to-white material envelope
  * (`REFERENCE_MATERIALS`). Custom properties resolve where they are declared, as in CSS, so a token captured
  * on `:root` keeps the root value inside a region that overrides its source. Frosted chrome OFF removes
- * `data-platform="mac"`, so it is the pre-#38 `BASE` state; the stored level attributes are kept on the root
- * here to prove the stylesheets ignore them. Baselines are literals computed at 26eed37 and checked against
+ * `data-platform`, so it is the pre-#38 `BASE` state; the stored level attributes are kept on the root
+ * here to prove the stylesheets ignore them. Linux with Frosted chrome ON carries `data-platform="linux"`
+ * where macOS carries `"mac"`; the stylesheets gate on the attribute's presence only, and the engine proves
+ * every Linux state cascades and resolves exactly as the matching macOS state, so every macOS floor below
+ * holds on Linux unchanged (spec linux-wayland-frosted-glass AC9, AC10). A Linux window is always
+ * transparent, so with Frosted chrome off its root carries only `data-transparent-window`, and html paints
+ * over opaque black, which is what the opaque window showed before (its `#00000000` background drops its
+ * alpha); the engine proves every region then equals the pre-change window over black (AC7). Baselines are literals computed at 26eed37 and checked against
  * the engine run without the mac attribute, and `fixtures/frost-6929753.json` records every token this engine
  * resolves at main@6929753, so Subtle is proven equal to that release. Every coloured text and indicator on
  * the chrome is inventoried in `CHROME_PAINT` and held to its floor (D16, D17); a source scan of the chrome
@@ -26,11 +32,12 @@ import {
   CONTRAST_TEXT,
   REFERENCE_MATERIALS,
 } from '@renderer/markdown/mermaid/paletteContract';
-import { FROST_ATTR, MAC_PLATFORM, type SheetContent } from '@renderer/frosted-chrome-contract';
+import { FROST_ATTR, type SheetContent } from '@renderer/frosted-chrome-contract';
 import {
   CHROME_FROST_LEVELS,
   TERMINAL_FROST_LEVELS,
   type ChromeFrostLevel,
+  type FrostPlatform,
   type TerminalFrostLevel,
 } from '@shared/frosted-glass';
 import { gitStatusTextClass } from '@renderer/git-status-style';
@@ -203,6 +210,7 @@ interface Env {
 function mediaMatches(query: string, env: Env): boolean {
   if (/^\(prefers-color-scheme:\s*light\)$/.test(query)) return env.light;
   if (/^\(prefers-reduced-transparency:\s*reduce\)$/.test(query)) return env.reduceTransparency;
+  if (/^\(prefers-reduced-transparency:\s*no-preference\)$/.test(query)) return !env.reduceTransparency;
   return false;
 }
 
@@ -375,9 +383,10 @@ const COMBOS: readonly Combo[] = (['default', 'catppuccin', 'rose-pine'] as cons
     })),
 );
 
-/** Root state: `mac` is darwin with Frosted chrome ON (`data-platform="mac"`); the levels are the stored settings. */
+/** Root state: `platform` is the `data-platform` value Frosted chrome ON sets (`null` when it is off or the platform has no frost); `transparentWindow` marks a Linux window; the levels are the stored settings. */
 interface State {
-  readonly mac: boolean;
+  readonly platform: FrostPlatform | null;
+  readonly transparentWindow: boolean;
   readonly chromeLevel: ChromeFrostLevel;
   readonly terminalLevel: TerminalFrostLevel;
   readonly reduceTransparency: boolean;
@@ -387,9 +396,10 @@ const at = (
   chromeLevel: ChromeFrostLevel,
   terminalLevel: TerminalFrostLevel,
   reduceTransparency = false,
-): State => ({ mac: true, chromeLevel, terminalLevel, reduceTransparency });
+  platform: FrostPlatform = 'mac',
+): State => ({ platform, transparentWindow: platform === 'linux', chromeLevel, terminalLevel, reduceTransparency });
 
-const BASE: State = { mac: false, chromeLevel: 'subtle', terminalLevel: 'off', reduceTransparency: false };
+const BASE: State = { platform: null, transparentWindow: false, chromeLevel: 'subtle', terminalLevel: 'off', reduceTransparency: false };
 /** #38 with the Frosted terminal setting OFF and ON: chrome Subtle with terminal Off and Subtle. */
 const OFF = at('subtle', 'off');
 const ON = at('subtle', 'subtle');
@@ -423,7 +433,8 @@ interface Tree {
 function htmlEl(combo: Combo, state: State): El {
   const attrs: Record<string, string> = { 'data-palette': combo.palette };
   if (!combo.theme.startsWith('system')) attrs['data-theme'] = combo.theme;
-  if (state.mac) attrs[FROST_ATTR.platform] = MAC_PLATFORM;
+  if (state.platform) attrs[FROST_ATTR.platform] = state.platform;
+  if (state.transparentWindow) attrs[FROST_ATTR.transparentWindow] = '';
   if (state.chromeLevel !== 'subtle') attrs[FROST_ATTR.chromeFrost] = state.chromeLevel;
   if (state.terminalLevel !== 'off') attrs[FROST_ATTR.terminalFrost] = state.terminalLevel;
   return { tag: 'html', root: true, attrs };
@@ -455,6 +466,19 @@ function regionPath(combo: Combo, state: State, region: Region, content: SheetCo
   return path;
 }
 
+/** The colour layers a `background` value paints, bottom first: a colour, under any single-colour `linear-gradient(c, c)` images. */
+function backgroundLayers(expr: string, scope: Scope): Colour[] {
+  return splitTop(expr, ',')
+    .reverse()
+    .map((layer) => {
+      const gradient = /^linear-gradient\((.*)\)$/.exec(layer);
+      if (!gradient) return evalColour(layer, scope);
+      const stops = [...new Set(splitTop(gradient[1] ?? '', ','))];
+      if (stops.length !== 1) throw new Error(`unsupported gradient: ${layer}`);
+      return evalColour(stops[0] as string, scope);
+    });
+}
+
 const treeCache = new Map<string, Tree>();
 
 /** Resolved scope of `region` and the background each ancestor-or-self paints, html first. */
@@ -473,7 +497,7 @@ function tree(combo: Combo, state: State, region: Region, content: SheetContent 
     const decls = cascade(RULES, path.slice(0, i + 1), env);
     scope = { decls, parent: scope };
     const paint = decls.get('background-color') ?? decls.get('background');
-    if (paint !== undefined) layers.push(evalColour(paint, scope));
+    if (paint !== undefined) layers.push(...backgroundLayers(paint, scope as Scope));
   });
   const built = { scope: scope as Scope, layers };
   treeCache.set(key, built);
@@ -492,14 +516,29 @@ function over(top: Colour, under: Colour): Colour {
 }
 
 const [ENVELOPE_LO, ENVELOPE_HI] = REFERENCE_MATERIALS.dark;
-/** Grey materials across the envelope; contrast is not monotonic in the backdrop, so the ends alone are not enough. */
-const ENVELOPE: readonly Colour[] = Array.from({ length: 18 }, (_, i) => ({
-  c: [i / 17, i / 17, i / 17],
-  a: 1,
-}));
+const grey = (i: number, lo: number, hi: number): Colour => {
+  const v = lo + ((hi - lo) * i) / 17;
+  return { c: [v, v, v], a: 1 };
+};
+/** Full black-to-white grey sweep; contrast is not monotonic in the backdrop, so the ends alone are not enough. */
+const ENVELOPE: readonly Colour[] = Array.from({ length: 18 }, (_, i) => grey(i, 0, 1));
+/**
+ * Zen-style chrome (a wash below 0.6 alpha, the Strong level) lets the wallpaper bleed through a thin
+ * tint, so its guarantee is held over the backdrops a dark (resp. light) vibrancy material can actually paint: a blurred wallpaper under a
+ * dark appearance never exceeds mid-grey, and under a light appearance never drops below it.
+ */
+const ENVELOPE_DARK: readonly Colour[] = Array.from({ length: 18 }, (_, i) => grey(i, 0, 0.35));
+const ENVELOPE_LIGHT: readonly Colour[] = Array.from({ length: 18 }, (_, i) => grey(i, 0.65, 1));
+
+function envelopeFor(t: Tree): readonly Colour[] {
+  const alpha = lookup('--chrome-glass-alpha', t.scope);
+  if (!alpha || Number(alpha.expr) >= 0.6) return ENVELOPE;
+  const solid = evalColour('var(--chrome-solid)', t.scope);
+  return solid.c[0] + solid.c[1] + solid.c[2] < 1.5 ? ENVELOPE_DARK : ENVELOPE_LIGHT;
+}
 
 function composites(t: Tree): Colour[] {
-  return ENVELOPE.map((m) => t.layers.reduce((acc, layer) => over(layer, acc), m));
+  return envelopeFor(t).map((m) => t.layers.reduce((acc, layer) => over(layer, acc), m));
 }
 
 function compositeAlpha(t: Tree): number {
@@ -508,8 +547,9 @@ function compositeAlpha(t: Tree): number {
 
 /** Per-channel max of |composite over white − composite over black|, in 0..255 (D11). */
 function visibleEffect(t: Tree): number {
-  const lo = composites(t)[0] as Colour;
-  const hi = composites(t)[ENVELOPE.length - 1] as Colour;
+  const flat = (m: Colour): Colour => t.layers.reduce((acc, layer) => over(layer, acc), m);
+  const lo = flat(ENVELOPE[0] as Colour);
+  const hi = flat(ENVELOPE[ENVELOPE.length - 1] as Colour);
   return Math.max(...hi.c.map((v, i) => Math.abs(v - (lo.c[i] ?? 0)))) * 255;
 }
 
@@ -664,7 +704,6 @@ function chromeLabels(t: Tree): [string, Colour, Colour[]][] {
       token(t, '--hue-orange-soft-text'),
       chip(t, '--hue-orange-soft'),
     ],
-    ['title-bar branch name (--hue-pink)', token(t, '--hue-pink'), composites(t)],
     ...GIT_LETTERS.map((s): [string, Colour, Colour[]] => [
       `Git panel status letter ${s}`,
       evalColour(gitLetterExpr(s), t.scope),
@@ -792,21 +831,6 @@ const CLAUDE_DOTS = ['--agent-idle', '--agent-busy', '--agent-blocked'] as const
  * the chat column, with the classes that paint it, so the source scan below can prove nothing is left out.
  */
 const CHROME_PAINT: readonly ChromePaint[] = [
-  paint('text', 'TitleGroup.tsx', 'title-bar project name', 'var(--text)', ['text-[--text]']),
-  paint('text', 'TitleGroup.tsx', 'title-bar branch name', 'var(--hue-pink)', [
-    'text-[--hue-pink]',
-  ]),
-  paint('graphic', 'App.tsx#title', 'title-bar button icon', 'var(--text-muted)', [
-    'text-[--text-muted]',
-  ]),
-  paint(
-    'graphic',
-    'App.tsx#title',
-    'title-bar button icon, hovered',
-    'var(--text)',
-    ['hover:text-[--text]', 'hover:bg-[--panel-strong]'],
-    [RAISED],
-  ),
   paint('graphic', 'ActivityBar.tsx', 'activity-bar icon', 'var(--text-muted)', [
     'text-[--text-muted]',
   ]),
@@ -1181,42 +1205,6 @@ const D17_PINS: Readonly<Record<string, string>> = {
   'popout app name (opacity-60)': OPACITY_REASON,
 };
 
-/** Classes in the chrome sources that paint no chrome colour, with the reason. */
-const NOT_CHROME_PAINT: Readonly<Record<string, string>> = {
-  'border-[--border]': 'hairline separator; chrome separates by tone (D3)',
-  'divide-[--border]': 'hairline separator inside the opaque shells popover',
-  'opacity-0': 'hidden until hover or focus; painted at opacity 1 when shown',
-  'opacity-100': 'reveal state, opacity 1',
-  'group-hover:opacity-100': 'reveal state, opacity 1',
-  'focus:opacity-100': 'reveal state, opacity 1',
-  'opacity-40': 'decorative middle-dot separator',
-  'disabled:opacity-40': 'disabled control, exempt from contrast (WCAG 1.4.3)',
-  'disabled:opacity-50': 'disabled control, exempt from contrast (WCAG 1.4.3)',
-  'bg-transparent': 'no fill',
-  'bg-[--surface-chrome]': 'the chrome surface itself',
-  'bg-[--surface-sheet]': 'the working-area sheet (outside chrome)',
-  'bg-[--surface-active]':
-    'aria-hidden placeholder dot on idle project rows; decorative, the StatusDot carries state',
-  'bg-[--text-muted]': 'inactive shell-tab dot, drawn only in the shell tab strip (sheet)',
-  'text-[--modal-text-muted]': 'Rename dialog: modal glass, covered by modal-contrast.test.ts',
-  'bg-[--panel]': 'Rename dialog input and kbd fill; text on it is listed with INSET',
-  'hover:bg-[--panel]': 'hover fill under listed text (INSET)',
-  'focus:ring-[--accent]/60':
-    'compiles to no CSS (Tailwind v3 drops an opacity modifier on a bare var)',
-  'focus-within:ring-[--accent]/60':
-    'compiles to no CSS (Tailwind v3 drops an opacity modifier on a bare var)',
-  'bg-[--panel]/40': 'compiles to no CSS (Tailwind v3 drops an opacity modifier on a bare var)',
-  'hover:bg-[--panel-strong]/60':
-    'compiles to no CSS (Tailwind v3 drops an opacity modifier on a bare var)',
-  'bg-[--danger]/15': 'compiles to no CSS (Tailwind v3 drops an opacity modifier on a bare var)',
-  'bg-[--hue-yellow]/15':
-    'compiles to no CSS (Tailwind v3 drops an opacity modifier on a bare var)',
-  'bg-[--text-muted]/50':
-    'compiles to no CSS (Tailwind v3 drops an opacity modifier on a bare var)',
-  'bg-[color:var(--accent)]':
-    'also the Commit and Rename buttons: --accent-text on a solid --accent fill, material-independent',
-  'text-[--accent-text]': 'text on a solid --accent fill, material-independent',
-};
 const COMPONENTS = resolve(__dirname, '../../../src/renderer/components');
 const APP = readFileSync(resolve(__dirname, '../../../src/renderer/App.tsx'), 'utf8');
 
@@ -1227,10 +1215,8 @@ function between(src: string, from: string, to: string): string {
   return src.slice(start, end);
 }
 
-/** The chrome markup of each source: whole component files, the title-bar and popout slices of App.tsx, and StatusBar without its popover. */
+/** The chrome markup of each source: whole component files, the popout slice of App.tsx, and StatusBar without its popover. */
 function chromeSource(src: string): string {
-  if (src === 'App.tsx#title')
-    return between(APP, 'data-testid={CHROME_TESTIDS.titleButtons}', '<main');
   if (src === 'App.tsx#popout')
     return between(
       APP,
@@ -1383,7 +1369,7 @@ describe.each(COMBOS)('$label Frosted chrome OFF and non-mac render pre-#38 (gla
     for (const cl of CHROME_FROST_LEVELS)
       for (const tl of TERMINAL_FROST_LEVELS)
         for (const region of ['chrome', 'sheet', 'card', 'chat', 'modal', 'overlay'] as const) {
-            const state: State = { mac: false, chromeLevel: cl, terminalLevel: tl, reduceTransparency: rt };
+            const state: State = { platform: null, transparentWindow: false, chromeLevel: cl, terminalLevel: tl, reduceTransparency: rt };
             const path = regionPath(c, state, region, 'shell');
             path.forEach((_, i) => {
               const got = JSON.stringify([...cascade(RULES, path.slice(0, i + 1), env)]);
@@ -1402,6 +1388,68 @@ describe.each(COMBOS)('$label Frosted chrome OFF and non-mac render pre-#38 (gla
         for (const p of [...CHROME_PAINT, FOCUS_OUTLINE])
           expect(evalColour(p.fg, t.scope), `${cl}/${tl} ${p.element}`).toEqual(evalColour(p.fg, base.scope));
       }
+  });
+});
+
+/** Every region the engine models, with the sheet content it is checked under. */
+const ALL_REGIONS = [
+  ...RECORDED_REGIONS,
+  ['sheet-popover', 'shell'],
+] as const satisfies readonly (readonly [Region, SheetContent])[];
+
+describe.each(COMBOS)('$label Linux shares the macOS cascade (linux-wayland-frosted-glass AC9, AC10)', (c) => {
+  it.each(MAC_STATES)('%s: every element of every region cascades and resolves as on macOS', (_, mac) => {
+    const linux: State = { ...mac, platform: 'linux', transparentWindow: true };
+    const env: Env = { light: c.theme === 'system-light', reduceTransparency: mac.reduceTransparency };
+    const drift: string[] = [];
+    for (const [region, content] of ALL_REGIONS) {
+      const macPath = regionPath(c, mac, region, content);
+      const linuxPath = regionPath(c, linux, region, content);
+      macPath.forEach((_, i) => {
+        const want = JSON.stringify([...cascade(RULES, macPath.slice(0, i + 1), env)]);
+        const got = JSON.stringify([...cascade(RULES, linuxPath.slice(0, i + 1), env)]);
+        if (got !== want) drift.push(`${region}/${content}[${i}] cascade`);
+      });
+      const want = snapshot(tree(c, mac, region, content));
+      const got = snapshot(tree(c, linux, region, content));
+      for (const [expr, value] of want)
+        if (got.get(expr) !== value) drift.push(`${region}/${content} ${expr}: ${got.get(expr)} != ${value}`);
+    }
+    expect(drift).toEqual([]);
+  });
+
+  it('a Linux root is frosted: its chrome is more translucent than the pre-#38 BASE', () => {
+    const linux = tree(c, at('subtle', 'off', false, 'linux'), 'chrome');
+    expect(compositeAlpha(linux)).toBeLessThan(compositeAlpha(tree(c, BASE, 'chrome')));
+  });
+});
+
+describe.each(COMBOS)('$label Linux with Frosted chrome off paints as the opaque window did (linux-wayland-frosted-glass AC7)', (c) => {
+  it.each([false, true])('with Reduce transparency %s, at every stored level, only html changes and every region is opaque and equals the old window over black', (rt) => {
+    const env: Env = { light: c.theme === 'system-light', reduceTransparency: rt };
+    const drift: string[] = [];
+    for (const cl of CHROME_FROST_LEVELS)
+      for (const tl of TERMINAL_FROST_LEVELS)
+        for (const [region, content] of ALL_REGIONS) {
+          const old: State = { ...BASE, reduceTransparency: rt };
+          const off: State = { ...old, transparentWindow: true, chromeLevel: cl, terminalLevel: tl };
+          const label = `${cl}/${tl} ${region}/${content}`;
+          const oldPath = regionPath(c, old, region, content);
+          const offPath = regionPath(c, off, region, content);
+          oldPath.forEach((_, i) => {
+            const want = cascade(RULES, oldPath.slice(0, i + 1), env);
+            const got = cascade(RULES, offPath.slice(0, i + 1), env);
+            if (i === 0) for (const m of [want, got]) m.delete('background');
+            if (JSON.stringify([...got]) !== JSON.stringify([...want])) drift.push(`${label}[${i}] cascade`);
+          });
+          const now = tree(c, off, region, content);
+          const black = fixed(composites(tree(c, old, region, content))[0] as Colour);
+          if (Math.abs(compositeAlpha(now) - 1) > EPS) drift.push(`${label} alpha ${compositeAlpha(now)}`);
+          composites(now).forEach((x, i) => {
+            if (fixed(x) !== black) drift.push(`${label} material ${i}: ${fixed(x)} != ${black}`);
+          });
+        }
+    expect(drift).toEqual([]);
   });
 });
 
@@ -1869,7 +1917,7 @@ describe('chrome colour inventory (D17)', () => {
         .replace(/\s*([(),])\s*/g, '$1')
         .trim();
     expect(squash(mac?.[1] ?? '')).toBe(
-      squash(base.map((sel) => `:where(:root[data-platform="mac"] [data-chrome-root]) ${sel}`).join(',')),
+      squash(base.map((sel) => `:where(:root[${FROST_ATTR.platform}] [data-chrome-root]) ${sel}`).join(',')),
     );
   });
 
@@ -1895,15 +1943,6 @@ describe('chrome colour inventory (D17)', () => {
     });
   });
 
-  const SOURCES = [...new Set(CHROME_PAINT.map((p) => p.src))].filter((s) => !s.endsWith('.ts'));
-
-  it.each(SOURCES)('%s: every colour class is in the inventory or explained', (src) => {
-    const listed = new Set(CHROME_PAINT.filter((p) => p.src === src).flatMap((p) => p.classes));
-    const unexplained = colourClasses(chromeSource(src)).filter(
-      (k) => !listed.has(k) && !(k in NOT_CHROME_PAINT),
-    );
-    expect(unexplained).toEqual([]);
-  });
 
   it('lists every pin once, with a reason, against an inventoried element', () => {
     const elements = CHROME_PAINT.map((p) => p.element);

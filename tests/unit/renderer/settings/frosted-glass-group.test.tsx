@@ -63,7 +63,7 @@ beforeEach(() => {
 
 describe('FrostedGlassGroup — placement and semantics (AC26)', () => {
   it('is a role="group" named by a "Frosted glass" heading, with the testid', () => {
-    const html = renderToStaticMarkup(<FrostedGlassGroup />);
+    const html = renderToStaticMarkup(<FrostedGlassGroup platform="mac" />);
     expect(attr(html, 'div', 'role')).toBe('group');
     expect(attr(html, 'div', 'data-testid')).toBe(FROSTED_GLASS_TESTIDS.group);
     const labelledby = attr(html, 'div', 'aria-labelledby');
@@ -72,7 +72,7 @@ describe('FrostedGlassGroup — placement and semantics (AC26)', () => {
   });
 
   it('renders the controls in order: Frosted chrome switch, Chrome frost, Terminal frost, Material', () => {
-    const html = renderToStaticMarkup(<FrostedGlassGroup />);
+    const html = renderToStaticMarkup(<FrostedGlassGroup platform="mac" />);
     const chromeIdx = html.indexOf(`data-testid="${FROSTED_GLASS_TESTIDS.frostChrome}"`);
     const chromeFrostIdx = html.indexOf(`data-testid="${FROSTED_GLASS_TESTIDS.chromeFrost}"`);
     const terminalFrostIdx = html.indexOf(`data-testid="${FROSTED_GLASS_TESTIDS.terminalFrost}"`);
@@ -84,7 +84,7 @@ describe('FrostedGlassGroup — placement and semantics (AC26)', () => {
   });
 
   it('renders the material select with every VIBRANCY_MATERIALS option, labelled', () => {
-    const html = renderToStaticMarkup(<FrostedGlassGroup />);
+    const html = renderToStaticMarkup(<FrostedGlassGroup platform="mac" />);
     for (const material of VIBRANCY_MATERIALS) {
       expect(html).toContain(`value="${material}"`);
       expect(html).toContain(`>${FROSTED_GLASS_COPY.materials[material]}<`);
@@ -92,7 +92,7 @@ describe('FrostedGlassGroup — placement and semantics (AC26)', () => {
   });
 
   it('renders the chrome and terminal frost radiogroups with their option sets', () => {
-    const html = renderToStaticMarkup(<FrostedGlassGroup />);
+    const html = renderToStaticMarkup(<FrostedGlassGroup platform="mac" />);
     expect((html.match(/role="radiogroup"/g) ?? []).length).toBe(2);
     const radioCount = (html.match(/role="radio"/g) ?? []).length;
     expect(radioCount).toBe(CHROME_FROST_LEVELS.length + TERMINAL_FROST_LEVELS.length);
@@ -102,7 +102,7 @@ describe('FrostedGlassGroup — placement and semantics (AC26)', () => {
 describe('FrostedGlassGroup — disabled levels (AC9)', () => {
   it('disables both level radiogroups and shows the reason when Frosted chrome is OFF', () => {
     hookValues = fakeApi({ frostChrome: false, chromeFrostLevel: 'medium', terminalFrostLevel: 'strong' });
-    const html = renderToStaticMarkup(<FrostedGlassGroup />);
+    const html = renderToStaticMarkup(<FrostedGlassGroup platform="mac" />);
     expect((html.match(/aria-disabled="true"/g) ?? []).length).toBe(CHROME_FROST_LEVELS.length + TERMINAL_FROST_LEVELS.length);
     expect((html.match(new RegExp(FROSTED_GLASS_COPY.disabledReason, 'g')) ?? []).length).toBeGreaterThanOrEqual(2);
     expect(html).toContain('>medium<'.replace('medium', FROSTED_GLASS_COPY.levels.medium));
@@ -111,7 +111,7 @@ describe('FrostedGlassGroup — disabled levels (AC9)', () => {
 
   it('links each "Needs Frosted chrome" reason to its own radiogroup with aria-describedby (gate L8)', () => {
     hookValues = fakeApi({ frostChrome: false });
-    const html = renderToStaticMarkup(<FrostedGlassGroup />);
+    const html = renderToStaticMarkup(<FrostedGlassGroup platform="mac" />);
     const ids = [...html.matchAll(/<div[^>]*role="radiogroup"[^>]*>/g)].map((m) => /aria-describedby="([^"]+)"/.exec(m[0])?.[1]);
     expect(ids).toHaveLength(2);
     expect(new Set(ids).size).toBe(2);
@@ -120,7 +120,7 @@ describe('FrostedGlassGroup — disabled levels (AC9)', () => {
 
   it('keeps both level radiogroups enabled when Frosted chrome is ON', () => {
     hookValues = fakeApi({ frostChrome: true });
-    const html = renderToStaticMarkup(<FrostedGlassGroup />);
+    const html = renderToStaticMarkup(<FrostedGlassGroup platform="mac" />);
     expect(html).not.toContain('aria-disabled="true"');
     expect(html).not.toContain(FROSTED_GLASS_COPY.disabledReason);
   });
@@ -129,21 +129,21 @@ describe('FrostedGlassGroup — disabled levels (AC9)', () => {
 describe('FrostedGlassGroup — reduce transparency (AC24)', () => {
   it('shows the reduce-transparency line when the media query is on', () => {
     reduceTransparency = true;
-    const html = renderToStaticMarkup(<FrostedGlassGroup />);
+    const html = renderToStaticMarkup(<FrostedGlassGroup platform="mac" />);
     expect(html).toContain(`data-testid="${FROSTED_GLASS_TESTIDS.reduceTransparency}"`);
     expect(html).toContain(FROSTED_GLASS_COPY.reduceTransparency);
   });
 
   it('omits the line when the media query is off', () => {
     reduceTransparency = false;
-    const html = renderToStaticMarkup(<FrostedGlassGroup />);
+    const html = renderToStaticMarkup(<FrostedGlassGroup platform="mac" />);
     expect(html).not.toContain(FROSTED_GLASS_TESTIDS.reduceTransparency);
   });
 });
 
 describe('FrostedGlassGroup — keyboard reach (AC27)', () => {
   it('the switch and the material select are not removed from the tab order', () => {
-    const html = renderToStaticMarkup(<FrostedGlassGroup />);
+    const html = renderToStaticMarkup(<FrostedGlassGroup platform="mac" />);
     expect(attr(html, 'input', 'tabindex')).toBeUndefined();
     expect(attr(html, 'select', 'tabindex')).toBeUndefined();
   });
@@ -151,26 +151,78 @@ describe('FrostedGlassGroup — keyboard reach (AC27)', () => {
 
 describe('FrostedGlassGroup — wiring to useFrostedGlassSettings', () => {
   it('forwards the switch change to setFrostChrome', () => {
-    const switchEl = elements(FrostedGlassGroup()).find((e) => e.props.testId === FROSTED_GLASS_TESTIDS.frostChrome);
+    const switchEl = elements(FrostedGlassGroup({ platform: 'mac' })).find((e) => e.props.testId === FROSTED_GLASS_TESTIDS.frostChrome);
     (switchEl?.props.onChange as (next: boolean) => void)(false);
     expect(setFrostChrome).toHaveBeenCalledWith(false);
   });
 
   it('forwards the chrome frost radiogroup change to setChromeFrostLevel', () => {
-    const group = elements(FrostedGlassGroup()).find((e) => e.props.testId === FROSTED_GLASS_TESTIDS.chromeFrost);
+    const group = elements(FrostedGlassGroup({ platform: 'mac' })).find((e) => e.props.testId === FROSTED_GLASS_TESTIDS.chromeFrost);
     (group?.props.onChange as (next: string) => void)('strong');
     expect(setChromeFrostLevel).toHaveBeenCalledWith('strong');
   });
 
   it('forwards the terminal frost radiogroup change to setTerminalFrostLevel', () => {
-    const group = elements(FrostedGlassGroup()).find((e) => e.props.testId === FROSTED_GLASS_TESTIDS.terminalFrost);
+    const group = elements(FrostedGlassGroup({ platform: 'mac' })).find((e) => e.props.testId === FROSTED_GLASS_TESTIDS.terminalFrost);
     (group?.props.onChange as (next: string) => void)('medium');
     expect(setTerminalFrostLevel).toHaveBeenCalledWith('medium');
   });
 
   it('forwards the material select change to setVibrancyMaterial', () => {
-    const select = elements(FrostedGlassGroup()).find((e) => e.props['data-testid'] === FROSTED_GLASS_TESTIDS.material);
+    const select = elements(FrostedGlassGroup({ platform: 'mac' })).find((e) => e.props['data-testid'] === FROSTED_GLASS_TESTIDS.material);
     (select?.props.onChange as (e: unknown) => void)({ target: { value: 'popover' } });
     expect(setVibrancyMaterial).toHaveBeenCalledWith('popover');
+  });
+});
+
+describe('FrostedGlassGroup — linux variant (AC12, AC13, AC14, AC22)', () => {
+  const linux = () => renderToStaticMarkup(<FrostedGlassGroup platform="linux" />);
+
+  it('renders the switch and both radiogroups but no Material row', () => {
+    const html = linux();
+    expect(html).toContain(`data-testid="${FROSTED_GLASS_TESTIDS.frostChrome}"`);
+    expect((html.match(/role="radiogroup"/g) ?? []).length).toBe(2);
+    expect(html).not.toContain(`data-testid="${FROSTED_GLASS_TESTIDS.material}"`);
+    expect(html).not.toContain('<select');
+  });
+
+  it('shows the Linux hint and not the mac hint', () => {
+    const html = linux();
+    expect(html).toContain(`>${FROSTED_GLASS_COPY.frostChromeHintLinux}</span>`);
+    expect(html).not.toContain(`>${FROSTED_GLASS_COPY.frostChromeHint}</span>`);
+  });
+
+  it('shows the Linux reduce-transparency notice without System Settings', () => {
+    reduceTransparency = true;
+    const html = linux();
+    const notice = new RegExp(`data-testid="${FROSTED_GLASS_TESTIDS.reduceTransparency}"[^>]*>([^<]*)<`).exec(html)?.[1];
+    expect(notice).toBe(FROSTED_GLASS_COPY.reduceTransparencyLinux);
+    expect(html).not.toContain('System Settings');
+  });
+
+  it('never says macOS anywhere in the rendered group', () => {
+    reduceTransparency = true;
+    expect(linux()).not.toMatch(/macOS/i);
+  });
+
+  it('disables levels with "Needs Frosted chrome" while off, keeping the values', () => {
+    hookValues = fakeApi({ frostChrome: false, chromeFrostLevel: 'medium', terminalFrostLevel: 'strong' });
+    const html = linux();
+    expect((html.match(/aria-disabled="true"/g) ?? []).length).toBe(CHROME_FROST_LEVELS.length + TERMINAL_FROST_LEVELS.length);
+    expect(html).toContain(FROSTED_GLASS_COPY.disabledReason);
+    expect(html).toContain(FROSTED_GLASS_COPY.levels.strong);
+    expect(setChromeFrostLevel).not.toHaveBeenCalled();
+  });
+});
+
+describe('FrostedGlassGroup — mac variant unchanged', () => {
+  it('keeps Material, the mac hint and the mac notice', () => {
+    reduceTransparency = true;
+    const html = renderToStaticMarkup(<FrostedGlassGroup platform="mac" />);
+    expect(html).toContain(`data-testid="${FROSTED_GLASS_TESTIDS.material}"`);
+    expect(html).toContain(`>${FROSTED_GLASS_COPY.frostChromeHint}</span>`);
+    expect(html).toContain(FROSTED_GLASS_COPY.reduceTransparency);
+    expect(html).not.toContain(FROSTED_GLASS_COPY.frostChromeHintLinux);
+    expect(html).not.toContain(FROSTED_GLASS_COPY.reduceTransparencyLinux);
   });
 });

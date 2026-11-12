@@ -5,6 +5,7 @@
  */
 import type { ReactNode } from 'react';
 import type { PaletteCategory } from '@renderer/command-palette-contract';
+import { ICON_SIZE, ICON_STROKE, type IconSize } from '../icon-size';
 
 const PATHS: Record<PaletteCategory, ReactNode> = {
   Go: (
@@ -49,12 +50,7 @@ const PATHS: Record<PaletteCategory, ReactNode> = {
   ),
 };
 
-interface IconProps {
-  readonly size: number;
-  readonly children: ReactNode;
-}
-
-function StrokeIcon({ size, children }: IconProps): React.JSX.Element {
+function StrokeIcon({ size, children }: { readonly size: IconSize; readonly children: ReactNode }): React.JSX.Element {
   return (
     <svg
       width={size}
@@ -62,7 +58,7 @@ function StrokeIcon({ size, children }: IconProps): React.JSX.Element {
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="2"
+      strokeWidth={ICON_STROKE.outline}
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
@@ -75,12 +71,12 @@ function StrokeIcon({ size, children }: IconProps): React.JSX.Element {
 }
 
 export function CategoryIcon({ category }: { readonly category: PaletteCategory }): React.JSX.Element {
-  return <StrokeIcon size={14}>{PATHS[category]}</StrokeIcon>;
+  return <StrokeIcon size={ICON_SIZE.md}>{PATHS[category]}</StrokeIcon>;
 }
 
 export function SearchIcon(): React.JSX.Element {
   return (
-    <StrokeIcon size={16}>
+    <StrokeIcon size={ICON_SIZE.lg}>
       <circle cx="11" cy="11" r="7" />
       <path d="m20 20-3.5-3.5" />
     </StrokeIcon>

@@ -3,7 +3,7 @@ import { rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { resolveColour } from './helpers/mermaid-palette';
 import { effectiveColours, backgroundLuminance, paintedOver, textContrast, type Theme } from './helpers/contrast';
-import { isMacPlatform } from './helpers/chrome-colour';
+import { isFrostedChrome } from './helpers/chrome-colour';
 import { FROSTED_GLASS_COPY, FROSTED_GLASS_TESTIDS } from '../../src/renderer/frosted-chrome-contract';
 import { closeApp, guardedLaunch } from './helpers/claude-harness';
 
@@ -45,7 +45,7 @@ const ROW_HINTS = {
   'Max watched paths': 'File-watcher limit across all roots.',
 } as const;
 const FONTS_HINT = 'Pick an installed font or type an exact family name.';
-const NAV = ['General', 'Root directories', 'Launch commands', 'Environment', 'Metaproject'] as const;
+const NAV = ['General', 'Root directories', 'Launch commands', 'Environment', 'Metaproject', 'P2P'] as const;
 const SECTIONS = ['Appearance', 'Fonts', 'Workspace', 'Notifications'] as const;
 const SWITCHES = [
   { testId: 'notify-needs-input-toggle', label: 'When Claude needs input', key: 'notify_claude_needs_input' },
@@ -352,17 +352,28 @@ test('AC4: focus moves to the panel, Tab is contained, and returns to the opener
   // Frosted chrome (switch) -> Chrome frost (radiogroup) -> Terminal frost
   // (radiogroup) -> Material (select) -> Interface, each radiogroup being
   // one roving-tabindex stop (the control's own `aria-checked="true"`
-  // option), four stops longer than off mac.
+  // option), four stops longer than off mac. On Linux
+  // (docs/specs/linux-wayland-frosted-glass.md AC12) the same group renders
+  // without the Material select, so it is three stops longer and the first
+  // Shift+Tab lands on Terminal frost. The group's presence follows the
+  // frosted platform, and the fresh profile here boots with Frosted chrome on
+  // (the default), so `isFrostedChrome` is true exactly where the group
+  // renders. The Material stop is macOS-only and guarded on process.platform.
   await win.keyboard.press('Shift+Tab');
   expect(await insidePanel()).toBe(true);
-  if (await isMacPlatform(win)) {
+  if (await isFrostedChrome(win)) {
     const material = dialog().getByTestId(FROSTED_GLASS_TESTIDS.material);
     // Positive control: the group is actually there to land on, not absent
     // (which would make the following assertions fail for an unrelated reason).
-    await expect(material, 'the Frosted glass group is rendered on mac (AC26)').toBeVisible();
-    await expect(material).toBeFocused();
-    await win.keyboard.press('Shift+Tab');
-    expect(await insidePanel()).toBe(true);
+    await expect(dialog().getByTestId(FROSTED_GLASS_TESTIDS.group), 'the Frosted glass group is rendered (mac AC26, linux AC12)').toBeVisible();
+    if (process.platform === 'darwin') {
+      await expect(material, 'the Material select is rendered on mac (AC26)').toBeVisible();
+      await expect(material).toBeFocused();
+      await win.keyboard.press('Shift+Tab');
+      expect(await insidePanel()).toBe(true);
+    } else {
+      await expect(material, 'linux AC12: no Material select, so no Material tab stop').toHaveCount(0);
+    }
 
     const terminalFrost = dialog().getByTestId(FROSTED_GLASS_TESTIDS.terminalFrost).locator('[aria-checked="true"]');
     await expect(terminalFrost).toBeFocused();
@@ -409,7 +420,7 @@ test('AC5, AC6: nav geometry, icons, names, aria-current; every label on one lin
     }
     const iconColour = (name: string) => item(name).locator('svg').evaluate((e) => getComputedStyle(e).color);
     expect(await iconColour('General'), `${at} General icon`).toBe(await style(item('General'), 'color'));
-    for (const [name, hue] of [['Root directories', '--hue-yellow'], ['Launch commands', '--hue-purple'], ['Metaproject', '--hue-cyan']] as const) {
+    for (const [name, hue] of [['Root directories', '--hue-yellow'], ['Launch commands', '--hue-purple'], ['Metaproject', '--hue-cyan'], ['P2P', '--hue-pink']] as const) {
       const expected = await resolveIn(nav(), 'color', `var(${hue})`);
       expect(await iconColour(name), `${at} ${name} icon`).toBe(expected);
       // Positive control: the hue is not just the inherited item text colour.
@@ -483,17 +494,19 @@ test('AC9-AC12: four section headings, control order, spacing, row layout and hi
   // macOS the Frosted glass group (docs/specs/macos-frosted-glass-settings.md
   // AC26) sits in Appearance, directly after Window opacity: switch, Chrome
   // frost radiogroup, Terminal frost radiogroup, Material select, in order.
-  const mac = await isMacPlatform(win);
+  // On Linux (docs/specs/linux-wayland-frosted-glass.md AC12) the same group
+  // renders there without the Material select (macOS-only, process.platform).
+  const frosted = await isFrostedChrome(win);
   const order: [string, Locator[]][] = [
     ['Appearance', [
       region('Appearance').getByRole('group', { name: 'Theme' }),
       region('Appearance').getByRole('radiogroup', { name: 'Mode' }),
       region('Appearance').getByRole('slider', { name: 'Window opacity' }),
-      ...(mac ? [
+      ...(frosted ? [
         region('Appearance').getByRole('switch', { name: FROSTED_GLASS_COPY.frostChrome }),
         region('Appearance').getByTestId(FROSTED_GLASS_TESTIDS.chromeFrost),
         region('Appearance').getByTestId(FROSTED_GLASS_TESTIDS.terminalFrost),
-        region('Appearance').getByTestId(FROSTED_GLASS_TESTIDS.material),
+        ...(process.platform === 'darwin' ? [region('Appearance').getByTestId(FROSTED_GLASS_TESTIDS.material)] : []),
       ] : []),
     ]],
     ['Fonts', [
@@ -552,12 +565,21 @@ test('AC9-AC12: four section headings, control order, spacing, row layout and hi
   // 5th SettingsSection — the `headings.toHaveText([...SECTIONS])` check above already
   // pins the section count at 4), and its own row hints render only there, mac-gated so
   // the generic ROW_HINTS loop above (which runs unconditionally) is never asked to find
-  // a mac-only hint off mac.
-  if (await isMacPlatform(win)) {
+  // a mac-only hint off mac. On Linux (docs/specs/linux-wayland-frosted-glass.md
+  // AC12/AC13) the group renders with the compositor hint and no Material row; the
+  // hint/Material copy is macOS-only and guarded on process.platform.
+  if (await isFrostedChrome(win)) {
     const group = region('Appearance').getByRole('group', { name: FROSTED_GLASS_COPY.group });
     await expect(group).toHaveCount(1);
-    await expect(scroller().getByText(FROSTED_GLASS_COPY.frostChromeHint, { exact: true })).toHaveCount(1);
-    await expect(scroller().getByText(FROSTED_GLASS_COPY.materialHint, { exact: true })).toHaveCount(1);
+    if (process.platform === 'darwin') {
+      await expect(scroller().getByText(FROSTED_GLASS_COPY.frostChromeHint, { exact: true })).toHaveCount(1);
+      await expect(scroller().getByText(FROSTED_GLASS_COPY.materialHint, { exact: true })).toHaveCount(1);
+    } else {
+      // Positive control first (the Linux hint is there), then the absences.
+      await expect(scroller().getByText(FROSTED_GLASS_COPY.frostChromeHintLinux, { exact: true })).toHaveCount(1);
+      await expect(scroller().getByText(FROSTED_GLASS_COPY.frostChromeHint, { exact: true })).toHaveCount(0);
+      await expect(scroller().getByText(FROSTED_GLASS_COPY.materialHint, { exact: true })).toHaveCount(0);
+    }
   } else {
     await expect(scroller().getByTestId(FROSTED_GLASS_TESTIDS.group)).toHaveCount(0);
   }

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { applyRootFlags, parseFrostQuery, type RootFlagTarget } from '@renderer/root-flags';
-import { FROST_ATTR, MAC_PLATFORM } from '@renderer/frosted-chrome-contract';
+import { FROST_ATTR } from '@renderer/frosted-chrome-contract';
 import { FROSTED_GLASS_DEFAULTS, FROSTED_GLASS_QUERY_KEYS } from '@shared/frosted-glass';
 
 function fakeTarget(): RootFlagTarget & { set: Record<string, string>; removed: string[] } {
@@ -16,25 +16,80 @@ function fakeTarget(): RootFlagTarget & { set: Record<string, string>; removed: 
 
 const ON = { platform: 'darwin', frostChrome: true, chromeFrost: 'medium', terminalFrost: 'medium' } as const;
 
-describe('applyRootFlags — platform', () => {
-  it('sets data-platform="mac" on darwin with frost chrome on', () => {
-    const el = fakeTarget();
-    applyRootFlags(el, ON);
-    expect(el.set[FROST_ATTR.platform]).toBe(MAC_PLATFORM);
-  });
+const FROST_PLATFORMS = [
+  ['darwin', 'mac'],
+  ['linux', 'linux'],
+] as const;
+const NO_FROST_PLATFORMS = ['win32', 'freebsd', '', undefined];
+const FROST_ATTRS = [FROST_ATTR.platform, FROST_ATTR.chromeFrost, FROST_ATTR.terminalFrost];
+const ALL_ATTRS = [...FROST_ATTRS, FROST_ATTR.transparentWindow];
+const LINUX_WINDOW = { [FROST_ATTR.transparentWindow]: '' };
 
-  it.each(['win32', 'linux', undefined])('never sets data-platform for platform %s', (platform) => {
+describe('applyRootFlags — platform', () => {
+  it.each(FROST_PLATFORMS)('sets data-platform to the frost platform on %s with frost chrome on', (platform, value) => {
     const el = fakeTarget();
     applyRootFlags(el, { ...ON, platform });
-    expect(el.set[FROST_ATTR.platform]).toBeUndefined();
-    expect(el.removed).toContain(FROST_ATTR.platform);
+    expect(el.set[FROST_ATTR.platform]).toBe(value);
   });
 
-  it('removes data-platform on darwin when frost chrome is off', () => {
+  it.each(NO_FROST_PLATFORMS)('never sets any frost attribute for platform %j, whatever is stored', (platform) => {
     const el = fakeTarget();
-    applyRootFlags(el, { ...ON, frostChrome: false });
-    expect(el.set[FROST_ATTR.platform]).toBeUndefined();
-    expect(el.removed).toContain(FROST_ATTR.platform);
+    applyRootFlags(el, { platform, frostChrome: true, chromeFrost: 'strong', terminalFrost: 'strong' });
+    expect(el.set).toEqual({});
+    expect([...el.removed].sort()).toEqual([...ALL_ATTRS].sort());
+  });
+
+  it.each(FROST_PLATFORMS)('removes every frost attribute on %s when frost chrome is off', (platform) => {
+    const el = fakeTarget();
+    applyRootFlags(el, { platform, frostChrome: false, chromeFrost: 'strong', terminalFrost: 'strong' });
+    for (const attr of FROST_ATTRS) expect(el.set[attr], attr).toBeUndefined();
+    expect(el.removed).toEqual(expect.arrayContaining(FROST_ATTRS));
+  });
+
+  it('switches a live root from linux on to off and back, leaving no stale attribute', () => {
+    const el = fakeTarget();
+    applyRootFlags(el, { ...ON, platform: 'linux' });
+    applyRootFlags(el, { ...ON, platform: 'linux', frostChrome: false });
+    expect(el.set).toEqual(LINUX_WINDOW);
+    applyRootFlags(el, { ...ON, platform: 'linux', chromeFrost: 'subtle', terminalFrost: 'off' });
+    expect(el.set).toEqual({ [FROST_ATTR.platform]: 'linux', ...LINUX_WINDOW });
+  });
+});
+
+describe('applyRootFlags — transparent window (linux AC7)', () => {
+  it.each([true, false])('marks the linux root as a transparent window with frost chrome %s', (frostChrome) => {
+    const el = fakeTarget();
+    applyRootFlags(el, { ...ON, platform: 'linux', frostChrome });
+    expect(el.set[FROST_ATTR.transparentWindow]).toBe('');
+  });
+
+  it.each([true, false])('never marks a darwin root, with frost chrome %s', (frostChrome) => {
+    const el = fakeTarget();
+    applyRootFlags(el, { ...ON, frostChrome });
+    expect(el.set[FROST_ATTR.transparentWindow]).toBeUndefined();
+    expect(el.removed).toContain(FROST_ATTR.transparentWindow);
+  });
+
+  it('linux with frost chrome off sets only the transparent-window marker', () => {
+    const el = fakeTarget();
+    applyRootFlags(el, { platform: 'linux', frostChrome: false, chromeFrost: 'strong', terminalFrost: 'strong' });
+    expect(el.set).toEqual(LINUX_WINDOW);
+  });
+});
+
+describe('applyRootFlags — linux sets the same level attributes as darwin', () => {
+  it.each([
+    ['subtle', 'off'],
+    ['medium', 'subtle'],
+    ['strong', 'medium'],
+    ['medium', 'strong'],
+  ] as const)('chrome %s, terminal %s', (chromeFrost, terminalFrost) => {
+    const mac = fakeTarget();
+    const linux = fakeTarget();
+    applyRootFlags(mac, { ...ON, chromeFrost, terminalFrost });
+    applyRootFlags(linux, { ...ON, platform: 'linux', chromeFrost, terminalFrost });
+    expect(linux.set).toEqual({ ...mac.set, [FROST_ATTR.platform]: 'linux', ...LINUX_WINDOW });
+    expect([...linux.removed, FROST_ATTR.transparentWindow].sort()).toEqual([...mac.removed].sort());
   });
 });
 
@@ -65,10 +120,10 @@ describe('applyRootFlags — chrome frost level', () => {
     expect(el.removed).toContain(FROST_ATTR.chromeFrost);
   });
 
-  it.each(['win32', 'linux', undefined])('never sets data-chrome-frost for platform %s', (platform) => {
+  it('sets data-chrome-frost="strong" on linux when ON at strong', () => {
     const el = fakeTarget();
-    applyRootFlags(el, { ...ON, platform, chromeFrost: 'strong' });
-    expect(el.set[FROST_ATTR.chromeFrost]).toBeUndefined();
+    applyRootFlags(el, { ...ON, platform: 'linux', chromeFrost: 'strong' });
+    expect(el.set[FROST_ATTR.chromeFrost]).toBe('strong');
   });
 });
 
@@ -93,10 +148,10 @@ describe('applyRootFlags — terminal frost level', () => {
     expect(el.removed).toContain(FROST_ATTR.terminalFrost);
   });
 
-  it.each(['win32', 'linux', undefined])('never sets data-terminal-frost for platform %s', (platform) => {
+  it('sets data-terminal-frost="strong" on linux when ON at strong', () => {
     const el = fakeTarget();
-    applyRootFlags(el, { ...ON, platform, terminalFrost: 'strong' });
-    expect(el.set[FROST_ATTR.terminalFrost]).toBeUndefined();
+    applyRootFlags(el, { ...ON, platform: 'linux', terminalFrost: 'strong' });
+    expect(el.set[FROST_ATTR.terminalFrost]).toBe('strong');
   });
 });
 

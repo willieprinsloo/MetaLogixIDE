@@ -266,7 +266,7 @@ function rootFolderName(path: string): string {
 
 function RootFolderGlyph({ color }: { color: string }) {
   return (
-    <svg aria-hidden width={ICON_SIZE.sm} height={ICON_SIZE.sm} viewBox="0 0 24 24" fill={color} fillOpacity={0.25} stroke={color} strokeWidth="1.8" strokeLinejoin="round" className="shrink-0">
+    <svg aria-hidden width={ICON_SIZE.sm} height={ICON_SIZE.sm} viewBox="0 0 24 24" fill={color} fillOpacity={0.25} stroke={color} strokeWidth="2" strokeLinejoin="round" className="shrink-0">
       <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
     </svg>
   );

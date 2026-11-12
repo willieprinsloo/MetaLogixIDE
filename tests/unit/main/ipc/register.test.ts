@@ -18,6 +18,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { commitAll, finishOrder, git, makeConflict, markerScript, slowCommandDir, stubGitEnv, tempProject } from '../git/temp-repo';
 import { parseGitStatus } from '@shared/parse-git-status';
 import { tmpdir } from 'node:os';
+import { EventEmitter } from 'node:events';
 import { join, resolve } from 'node:path';
 
 const migrationsDir = resolve(__dirname, '../../../../migrations');
@@ -52,7 +53,7 @@ function realSettings(): SettingsRepo {
 
 /** Minimal ptyManager stand-in: every method is a spy, so a test can assert nothing was spawned. */
 function fakePtyManager() {
-  return { on: vi.fn(), off: vi.fn(), spawn: vi.fn(async () => {}), kill: vi.fn(async () => {}), isAlive: vi.fn(() => false), resize: vi.fn(), write: vi.fn(), getScrollback: vi.fn(() => ''), getSnapshot: vi.fn(async () => ''), allPorts: vi.fn(() => []), liveShells: vi.fn(() => []) };
+  return { on: vi.fn(), off: vi.fn(), spawn: vi.fn(async () => {}), kill: vi.fn(async () => {}), stopIfGeneration: vi.fn<(_: number, __: string) => 'stopped' | 'gone' | 'replaced'>(() => 'gone'), liveShell: vi.fn<(_: number, __: number) => { pid: number; generation: string; agent: 'claude' | null } | null>(() => null), isAlive: vi.fn(() => false), resize: vi.fn(), write: vi.fn(), getScrollback: vi.fn(() => ''), getSnapshot: vi.fn(async () => ''), allPorts: vi.fn(() => []), liveShells: vi.fn(() => []) };
 }
 
 describe('registerIpc', () => {
@@ -64,10 +65,11 @@ describe('registerIpc', () => {
       'roots:list', 'roots:add', 'roots:remove', 'roots:rescan',
       'projects:list', 'projects:open', 'projects:pin', 'projects:hide',
       'projects:update-config', 'projects:recents',
-      'shells:launch', 'shells:kill', 'shells:resize', 'shells:write',
+      'shells:launch', 'shells:kill', 'shells:inspect-primary', 'shells:stop-primary', 'shells:resize', 'shells:write',
       'shells:alive-list', 'shells:pin',
       'settings:get', 'settings:set', 'settings:set-font', 'settings:set-app-env', 'settings:set-claude-permission-mode',
       'files:tree', 'app:ping', 'notifications:viewed-shells', 'agent-state:list',
+      'keep-awake:get', 'keep-awake:start', 'keep-awake:stop', 'keep-awake:darken',
     ];
     for (const c of expected) expect(ipc.handlers.has(c)).toBe(true);
   });
@@ -76,7 +78,7 @@ describe('registerIpc', () => {
     const ipc = fakeIpcMain();
     const shells = [
       { projectId: 1, shellIndex: 0, agent: 'claude', state: 'idle' },
-      { projectId: 2, shellIndex: 3, agent: 'omp', state: 'blocked' },
+      { projectId: 2, shellIndex: 3, agent: 'claude', state: 'blocked' },
     ];
     const list = vi.fn(() => shells);
     const services = { agentStatus: { list } } as unknown as Parameters<typeof registerIpc>[1];
@@ -90,6 +92,214 @@ describe('registerIpc', () => {
     const services = { agentStatus: null } as unknown as Parameters<typeof registerIpc>[1];
     registerIpc(ipc, services, () => {});
     await expect(ipc.handlers.get('agent-state:list')!({}, undefined)).rejects.toThrow('agent status not installed');
+  });
+
+  describe('PTY exit delivery', () => {
+    function rig() {
+      const ipc = fakeIpcMain();
+      const ptyManager = fakePtyManager();
+      const source = new EventEmitter();
+      ptyManager.on.mockImplementation((event: string, listener: (...args: unknown[]) => void) => source.on(event, listener));
+      const shells = { remove: vi.fn() };
+      const sendEvent = vi.fn();
+      registerIpc(ipc, { ptyManager, shells } as unknown as Parameters<typeof registerIpc>[1], sendEvent);
+      return { ptyManager, source, shells, sendEvent };
+    }
+
+    it('keeps the replacement shell entry and renderer stream when its predecessor exits late', () => {
+      const { ptyManager, source, shells, sendEvent } = rig();
+      ptyManager.liveShell.mockReturnValue({ pid: 42, generation: 'successor', agent: null });
+      source.emit('exit', { projectId: 4, shellIndex: 0, generation: 'predecessor', code: 0, uptimeMs: 20, earlyOutput: '' });
+      expect(ptyManager.liveShell(4, 0)?.generation).toBe('successor');
+      expect(shells.remove).not.toHaveBeenCalled();
+      expect(sendEvent).not.toHaveBeenCalledWith('pty:exit', expect.anything());
+      expect(sendEvent).not.toHaveBeenCalledWith('alive-shells:changed', expect.anything());
+    });
+
+    it('forwards a current shell exit and removes its entry without leaking internal generation', () => {
+      const { ptyManager, source, shells, sendEvent } = rig();
+      ptyManager.liveShell.mockReturnValue(null);
+      source.emit('exit', { projectId: 4, shellIndex: 2, generation: 'ended', code: 7, uptimeMs: 20, earlyOutput: '' });
+      expect(shells.remove).toHaveBeenCalledTimes(1);
+      expect(shells.remove).toHaveBeenCalledWith(4, 2);
+      expect(sendEvent).toHaveBeenNthCalledWith(1, 'pty:exit', { projectId: 4, shellIndex: 2, code: 7 });
+      expect(sendEvent).toHaveBeenNthCalledWith(2, 'alive-shells:changed', {});
+    });
+  });
+
+
+  describe('primary-session inspection and guarded stop', () => {
+    function rig() {
+      const ipc = fakeIpcMain();
+      const ptyManager = fakePtyManager();
+      const shells = { remove: vi.fn() };
+      const list = vi.fn((): Array<{ projectId: number; shellIndex: number; agent: 'claude'; state: 'idle' | 'busy' | 'blocked' }> => []);
+      const readForGuard = vi.fn((projectId: number, shellIndex: number, generation: string) => {
+        if (ptyManager.liveShell(projectId, shellIndex)?.generation !== generation)
+          throw new Error('agent status unavailable');
+        const entry = list().find((item) => item.projectId === projectId && item.shellIndex === shellIndex);
+        return entry ? { agent: entry.agent, state: entry.state } : { agent: null, state: null };
+      });
+      const events: string[] = [];
+      const services = { ptyManager, agentStatus: { list, readForGuard }, shells } as unknown as Parameters<typeof registerIpc>[1];
+      registerIpc(ipc, services, (channel) => { events.push(channel); });
+      const call = (channel: string, request: unknown) => ipc.handlers.get(channel)!({}, request);
+      return { ptyManager, list, readForGuard, shells, events, call };
+    }
+
+    it('inspects only live shell zero and reads its recognized state, not a busy sibling', async () => {
+      const { ptyManager, list, call } = rig();
+      ptyManager.liveShell.mockReturnValue({ pid: 31, generation: 'first', agent: 'claude' });
+      list.mockReturnValue([
+        { projectId: 4, shellIndex: 0, agent: 'claude', state: 'idle' },
+        { projectId: 4, shellIndex: 1, agent: 'claude', state: 'busy' },
+        { projectId: 5, shellIndex: 0, agent: 'claude', state: 'blocked' },
+      ]);
+      await expect(call('shells:inspect-primary', { projectId: 4 })).resolves.toEqual({
+        kind: 'live', generation: 'first', agent: 'claude', state: 'idle',
+      });
+      expect(ptyManager.liveShell).toHaveBeenCalledWith(4, 0);
+      expect(list).toHaveBeenCalledTimes(1);
+      ptyManager.liveShell.mockReturnValue({ pid: 32, generation: 'plain', agent: null });
+      list.mockReturnValue([]);
+      await expect(call('shells:inspect-primary', { projectId: 4 })).resolves.toEqual({
+        kind: 'live', generation: 'plain', agent: null, state: null,
+      });
+      ptyManager.liveShell.mockReturnValue(null);
+      await expect(call('shells:inspect-primary', { projectId: 4 })).resolves.toEqual({ kind: 'gone' });
+    });
+
+    it.each(['busy', 'blocked'] as const)('inspects shell-zero %s without sibling attribution', async (state) => {
+      const { ptyManager, list, call } = rig();
+      ptyManager.liveShell.mockReturnValue({ pid: 31, generation: 'target', agent: 'claude' });
+      list.mockReturnValue([
+        { projectId: 4, shellIndex: 1, agent: 'claude', state: 'busy' },
+        { projectId: 7, shellIndex: 0, agent: 'claude', state: 'blocked' },
+        { projectId: 4, shellIndex: 0, agent: 'claude', state },
+      ]);
+      await expect(call('shells:inspect-primary', { projectId: 4 })).resolves.toEqual({
+        kind: 'live', generation: 'target', agent: 'claude', state,
+      });
+    });
+
+    it('distinguishes unrecognized shells from an unavailable status read', async () => {
+      const { ptyManager, list, call } = rig();
+      ptyManager.liveShell.mockReturnValue({ pid: 31, generation: 'first', agent: 'claude' });
+      list.mockReturnValue([]);
+      await expect(call('shells:inspect-primary', { projectId: 4 })).resolves.toEqual({
+        kind: 'live', generation: 'first', agent: null, state: null,
+      });
+      list.mockImplementation(() => { throw new Error('tracker failed'); });
+      await expect(call('shells:inspect-primary', { projectId: 4 })).rejects.toThrow('tracker failed');
+      const ipc = fakeIpcMain();
+      registerIpc(ipc, { ptyManager, agentStatus: null } as unknown as Parameters<typeof registerIpc>[1], () => {});
+      await expect(ipc.handlers.get('shells:inspect-primary')!({}, { projectId: 4 })).rejects.toThrow('agent status not installed');
+      await expect(ipc.handlers.get('shells:stop-primary')!({}, {
+        projectId: 4, generation: 'first', acknowledgedWorkRisk: true,
+      })).rejects.toThrow('agent status not installed');
+    });
+
+    it('blocks unload on sampler failure and permits retry after a fresh status sample', async () => {
+      const { ptyManager, readForGuard, shells, call } = rig();
+      ptyManager.liveShell.mockReturnValue({ pid: 31, generation: 'first', agent: 'claude' });
+      readForGuard.mockImplementationOnce(() => { throw new Error('agent status unavailable'); });
+      await expect(call('shells:stop-primary', { projectId: 4, generation: 'first', acknowledgedWorkRisk: false })).rejects.toThrow('agent status unavailable');
+      expect(ptyManager.stopIfGeneration).not.toHaveBeenCalled();
+      readForGuard.mockReturnValue({ agent: 'claude', state: 'busy' });
+      await expect(call('shells:inspect-primary', { projectId: 4 })).resolves.toEqual({
+        kind: 'live', generation: 'first', agent: 'claude', state: 'busy',
+      });
+      expect(shells.remove).not.toHaveBeenCalled();
+    });
+
+    it('rejects malformed inspection and stop input before reading status or signalling', async () => {
+      const { ptyManager, list, call } = rig();
+      for (const projectId of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '4', null, undefined]) {
+        await expect(call('shells:inspect-primary', { projectId })).rejects.toThrow('invalid projectId');
+        await expect(call('shells:stop-primary', { projectId, generation: 'first', acknowledgedWorkRisk: false })).rejects.toThrow('invalid projectId');
+      }
+      await expect(call('shells:inspect-primary', null)).rejects.toThrow('invalid projectId');
+      await expect(call('shells:stop-primary', null)).rejects.toThrow('invalid projectId');
+      for (const generation of ['', ' ', 'x'.repeat(129), 42, null]) {
+        await expect(call('shells:stop-primary', { projectId: 4, generation, acknowledgedWorkRisk: false })).rejects.toThrow('invalid generation');
+      }
+      await expect(call('shells:stop-primary', { projectId: 4, generation: 'first', acknowledgedWorkRisk: 'false' })).rejects.toThrow('invalid acknowledgedWorkRisk');
+      expect(ptyManager.liveShell).not.toHaveBeenCalled();
+      expect(ptyManager.stopIfGeneration).not.toHaveBeenCalled();
+      expect(list).not.toHaveBeenCalled();
+    });
+
+    it('stops matching generation once, removes only shell zero and broadcasts liveness', async () => {
+      const { ptyManager, list, shells, events, call } = rig();
+      ptyManager.liveShell.mockReturnValue({ pid: 31, generation: 'first', agent: 'claude' });
+      list.mockReturnValue([{ projectId: 4, shellIndex: 0, agent: 'claude', state: 'idle' }]);
+      ptyManager.stopIfGeneration.mockReturnValueOnce('stopped').mockReturnValueOnce('gone');
+      const request = { projectId: 4, generation: 'first', acknowledgedWorkRisk: false };
+      await expect(call('shells:stop-primary', request)).resolves.toEqual({ kind: 'stopped' });
+      expect(ptyManager.stopIfGeneration).toHaveBeenCalledWith(4, 'first');
+      expect(shells.remove).toHaveBeenCalledTimes(1);
+      expect(shells.remove).toHaveBeenCalledWith(4, 0);
+      expect(events).toEqual(['alive-shells:changed']);
+      await expect(call('shells:stop-primary', request)).resolves.toEqual({ kind: 'gone' });
+      expect(shells.remove).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses replacement and newly busy or blocked shell without acknowledged work risk', async () => {
+      const { ptyManager, list, shells, call } = rig();
+      ptyManager.liveShell.mockReturnValue({ pid: 31, generation: 'first', agent: 'claude' });
+      list.mockReturnValue([{ projectId: 4, shellIndex: 0, agent: 'claude', state: 'busy' }]);
+      await expect(call('shells:stop-primary', { projectId: 4, generation: 'first', acknowledgedWorkRisk: false })).resolves.toEqual({ kind: 'escalated' });
+      list.mockReturnValue([{ projectId: 4, shellIndex: 0, agent: 'claude', state: 'blocked' }]);
+      await expect(call('shells:stop-primary', { projectId: 4, generation: 'first', acknowledgedWorkRisk: false })).resolves.toEqual({ kind: 'escalated' });
+      ptyManager.liveShell.mockReturnValue({ pid: 32, generation: 'replacement', agent: 'claude' });
+      await expect(call('shells:stop-primary', { projectId: 4, generation: 'first', acknowledgedWorkRisk: true })).resolves.toEqual({ kind: 'replaced' });
+      expect(ptyManager.stopIfGeneration).not.toHaveBeenCalled();
+      expect(shells.remove).not.toHaveBeenCalled();
+    });
+
+    it('rechecks actual PTY generation after status read before stopping', async () => {
+      const { ptyManager, list, shells, call } = rig();
+      ptyManager.liveShell.mockReturnValue({ pid: 31, generation: 'first', agent: 'claude' });
+      list.mockImplementation(() => {
+        ptyManager.liveShell.mockReturnValue({ pid: 32, generation: 'replacement', agent: 'claude' });
+        return [{ projectId: 4, shellIndex: 0, agent: 'claude', state: 'idle' }];
+      });
+      ptyManager.stopIfGeneration.mockReturnValue('replaced');
+      await expect(call('shells:stop-primary', { projectId: 4, generation: 'first', acknowledgedWorkRisk: false })).resolves.toEqual({ kind: 'replaced' });
+      expect(ptyManager.stopIfGeneration).toHaveBeenCalledWith(4, 'first');
+      expect(shells.remove).not.toHaveBeenCalled();
+    });
+
+    it('allows acknowledged busy work and refuses gone shells without changing persistence', async () => {
+      const { ptyManager, list, shells, call } = rig();
+      ptyManager.liveShell.mockReturnValue({ pid: 31, generation: 'first', agent: 'claude' });
+      list.mockReturnValue([{ projectId: 4, shellIndex: 0, agent: 'claude', state: 'busy' }]);
+      ptyManager.stopIfGeneration.mockReturnValue('stopped');
+      await expect(call('shells:stop-primary', { projectId: 4, generation: 'first', acknowledgedWorkRisk: true })).resolves.toEqual({ kind: 'stopped' });
+      ptyManager.liveShell.mockReturnValue(null);
+      await expect(call('shells:stop-primary', { projectId: 4, generation: 'first', acknowledgedWorkRisk: true })).resolves.toEqual({ kind: 'gone' });
+      expect(shells.remove).toHaveBeenCalledTimes(1);
+    });
+
+    it('propagates a status failure and retains the ordinary shell kill route', async () => {
+      const { ptyManager, list, shells, call } = rig();
+      ptyManager.liveShell.mockReturnValue({ pid: 31, generation: 'first', agent: 'claude' });
+      list.mockImplementation(() => { throw new Error('tracker failed'); });
+      await expect(call('shells:stop-primary', { projectId: 4, generation: 'first', acknowledgedWorkRisk: true })).rejects.toThrow('tracker failed');
+      expect(ptyManager.stopIfGeneration).not.toHaveBeenCalled();
+      await expect(call('shells:kill', { projectId: 4, shellIndex: 2 })).resolves.toEqual({ ok: true });
+      expect(ptyManager.kill).toHaveBeenCalledWith(4, 2);
+      expect(shells.remove).toHaveBeenCalledWith(4, 2);
+    });
+
+    it('does not remove shell persistence or report success when signalling fails', async () => {
+      const { ptyManager, list, shells, call } = rig();
+      ptyManager.liveShell.mockReturnValue({ pid: 31, generation: 'first', agent: 'claude' });
+      list.mockReturnValue([{ projectId: 4, shellIndex: 0, agent: 'claude', state: 'idle' }]);
+      ptyManager.stopIfGeneration.mockImplementation(() => { throw new Error('stop failed'); });
+      await expect(call('shells:stop-primary', { projectId: 4, generation: 'first', acknowledgedWorkRisk: false })).rejects.toThrow('stop failed');
+      expect(shells.remove).not.toHaveBeenCalled();
+    });
   });
 
   it('settings:set rejects key claude_permission_mode without writing', async () => {
@@ -952,7 +1162,7 @@ describe('registerIpc', () => {
  * Real projects/shells/settings repos on a temp db, a spy ptyManager and two
  * projects on disk, for exercising project env at every spawn site.
  */
-function envRig() {
+function envRig(opts: { homeDir?: string } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'reg-env-'));
   const db = openDb(join(dir, 'db'));
   runMigrations(db, migrationsDir);
@@ -978,7 +1188,7 @@ function envRig() {
     shells,
     ptyManager,
     listMise,
-    homeDir: '/home/u',
+    homeDir: opts.homeDir ?? '/home/u',
   } as unknown as Parameters<typeof registerIpc>[1];
   registerIpc(ipc as unknown as IpcMain, services, ((channel: string) => {
     events.push(channel);
@@ -1004,6 +1214,161 @@ function envRig() {
     pathA,
   };
 }
+
+describe('fresh Claude start keeps earlier sessions', () => {
+  it('forceFirst launches the first command and leaves the project\'s saved Claude sessions in place', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'reg-home-'));
+    const rig = envRig({ homeDir: home });
+    try {
+      rig.projects.setFirstLaunched(rig.a.id, new Date());
+      rig.settings.set('default_launch_cmd.first', { argv: ['claude'], env: {} });
+      rig.settings.set('default_launch_cmd.subsequent', { argv: ['claude', '--continue'], env: {} });
+      const sessionDir = join(home, '.claude', 'projects', rig.pathA.replace(/[/ ]/g, '-'));
+      mkdirSync(sessionDir, { recursive: true });
+      writeFileSync(join(sessionDir, 'abc.jsonl'), '{}\n');
+      await rig.call('shells:launch', { projectId: rig.a.id, forceFirst: true });
+      expect(rig.spawned(0).argv).toEqual(['claude']);
+      expect(readdirSync(sessionDir), 'no session is renamed aside').toEqual(['abc.jsonl']);
+    } finally {
+      rig.db.close();
+      rmSync(rig.dir, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('primary shell tab publication (no wait on resume checks)', () => {
+  function rig() {
+    const r = envRig();
+    const emitter = new EventEmitter();
+    for (const call of r.ptyManager.on.mock.calls) {
+      const name: unknown = call[0];
+      const listener: unknown = call[1];
+      if (typeof name === 'string' && typeof listener === 'function') emitter.on(name, (event: unknown) => listener(event));
+    }
+    expect(emitter.listenerCount('exit'), 'the real IPC exit cleanup is wired').toBe(1);
+    let alive = false;
+    r.ptyManager.on.mockImplementation((name: string, listener: (event: unknown) => void) => emitter.on(name, listener));
+    r.ptyManager.off.mockImplementation((name: string, listener: (event: unknown) => void) => emitter.off(name, listener));
+    r.ptyManager.isAlive.mockImplementation(() => alive);
+    r.ptyManager.spawn.mockImplementation(async () => { alive = true; });
+    const exit = (output: string) => {
+      alive = false;
+      emitter.emit('exit', { projectId: r.a.id, shellIndex: 0, generation: 'g', code: 1, uptimeMs: 100, earlyOutput: output });
+    };
+    const close = () => { r.db.close(); rmSync(r.dir, { recursive: true, force: true }); };
+    return { ...r, emitter, exit, close };
+  }
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it.each<[string, string[]]>([
+    ['Codex resume', ['codex', 'resume', '--last']],
+    ['opencode continue', ['opencode', '--continue']],
+    ['Claude without continuation', ['claude']],
+    ['Claude prompt after option terminator', ['claude', '--', '--continue']],
+  ])('%s repeat launch publishes the tab and returns without a resume wait', async (_name, argv) => {
+    const r = rig();
+    r.projects.setFirstLaunched(r.a.id, new Date());
+    r.settings.set('default_launch_cmd.subsequent', { argv, env: {} });
+    let completed = false;
+    const pending = r.call('shells:launch', { projectId: r.a.id }).then(() => { completed = true; });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(completed).toBe(true);
+      expect(r.shells.list().map((row) => row.launchArgv)).toEqual([argv]);
+      expect(r.events).toContain('alive-shells:changed');
+      expect(vi.getTimerCount(), 'no watchdog').toBe(0);
+    } finally {
+      await vi.runAllTimersAsync();
+      await pending;
+      r.close();
+    }
+  });
+
+  it.each(['--continue', '-c'])('Claude %s shows its live tab before the resume check settles, then releases the watchdog', async (flag) => {
+    const r = rig();
+    r.projects.setFirstLaunched(r.a.id, new Date());
+    r.settings.set('default_launch_cmd.subsequent', { argv: ['claude', flag], env: {} });
+    let completed = false;
+    const pending = r.call('shells:launch', { projectId: r.a.id }).then(() => { completed = true; });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(completed, 'the resume check is still running').toBe(false);
+      expect(r.shells.list().map((row) => row.launchArgv)).toEqual([['claude', flag]]);
+      expect(r.events, 'renderers are told before the handler returns').toEqual(['alive-shells:changed']);
+      await vi.advanceTimersByTimeAsync(2500);
+      await pending;
+      expect(completed).toBe(true);
+      expect(r.emitter.listenerCount('exit')).toBe(1);
+    } finally {
+      await vi.runAllTimersAsync();
+      await pending;
+      r.close();
+    }
+  });
+
+  it('missing-session fallback replaces the failed tab with the first-launch command', async () => {
+    const r = rig();
+    r.projects.setFirstLaunched(r.a.id, new Date());
+    r.settings.set('default_launch_cmd.first', { argv: ['claude'], env: {} });
+    r.settings.set('default_launch_cmd.subsequent', { argv: ['claude', '--continue'], env: {} });
+    const pending = r.call('shells:launch', { projectId: r.a.id });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(r.shells.list().map((row) => row.launchArgv)).toEqual([['claude', '--continue']]);
+      r.exit('No conversation found to continue');
+      await pending;
+      expect(r.shells.list().map((row) => row.launchArgv)).toEqual([['claude']]);
+      expect(r.emitter.listenerCount('exit')).toBe(1);
+    } finally {
+      await vi.runAllTimersAsync();
+      await pending;
+      r.close();
+    }
+  });
+
+  it('an ordinary early exit does not recreate a dead primary tab', async () => {
+    const r = rig();
+    r.projects.setFirstLaunched(r.a.id, new Date());
+    r.settings.set('default_launch_cmd.subsequent', { argv: ['claude', '--continue'], env: {} });
+    const pending = r.call('shells:launch', { projectId: r.a.id });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      r.exit('Exiting');
+      await pending;
+      expect(r.shells.list()).toEqual([]);
+      expect(r.emitter.listenerCount('exit')).toBe(1);
+    } finally {
+      await vi.runAllTimersAsync();
+      await pending;
+      r.close();
+    }
+  });
+
+  it.each(['first', 'subsequent'])('a failed %s spawn leaves no tab or watchdog', async (stage) => {
+    const r = rig();
+    if (stage === 'subsequent') {
+      r.projects.setFirstLaunched(r.a.id, new Date());
+      r.settings.set('default_launch_cmd.subsequent', { argv: ['claude', '--continue'], env: {} });
+    }
+    r.ptyManager.spawn.mockRejectedValueOnce(new Error('spawn ENOENT'));
+    const observed = r.call('shells:launch', { projectId: r.a.id }).catch((failure: unknown) => failure);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await observed).toMatchObject({ message: expect.stringContaining('spawn ENOENT') });
+      expect(r.shells.list()).toEqual([]);
+      expect(r.events).not.toContain('alive-shells:changed');
+      expect(r.emitter.listenerCount('exit')).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await vi.runAllTimersAsync();
+      await observed;
+      r.close();
+    }
+  });
+});
 
 describe('shells:set-default-cli — project default-agent boundary', () => {
   const legacy: ProjectConfig = {
@@ -1182,6 +1547,40 @@ describe('shells:set-default-cli — project default-agent boundary', () => {
   });
 });
 
+describe('agent session resume across launches', () => {
+  it('a default Codex agent starts fresh once, then resumes its last session on the next launch', async () => {
+    const r = envRig();
+    r.projects.updateConfig(r.a.id, { defaultCliName: 'OpenAI Codex' });
+    await r.call('shells:launch', { projectId: r.a.id });
+    expect(r.spawned(0).argv).toEqual(['codex']);
+    expect(r.projects.get(r.a.id)?.config.resumableAgents).toEqual(['codex']);
+    await r.call('shells:launch', { projectId: r.a.id });
+    expect(r.spawned(1).argv).toEqual(['codex', 'resume', '--last']);
+    r.db.close();
+  });
+
+  it('an opencode tab resumes after it has run, but not while another opencode shell is live', async () => {
+    const r = envRig();
+    await r.call('shells:launch-cli', { projectId: r.a.id, profileName: 'opencode' });
+    expect(r.spawned(0).argv).toEqual(['opencode']);
+    r.ptyManager.isAlive.mockImplementation((...args: unknown[]) => args[1] === 0);
+    await r.call('shells:launch-cli', { projectId: r.a.id, profileName: 'opencode' });
+    expect(r.spawned(1).argv).toEqual(['opencode']);
+    r.ptyManager.isAlive.mockImplementation(() => false);
+    await r.call('shells:launch-cli', { projectId: r.a.id, profileName: 'opencode' });
+    expect(r.spawned(2).argv).toEqual(['opencode', '--continue']);
+    r.db.close();
+  });
+
+  it('a one-off inline command never resumes', async () => {
+    const r = envRig();
+    r.projects.updateConfig(r.a.id, { resumableAgents: ['claude'] });
+    await r.call('shells:launch-cli', { projectId: r.a.id, argv: ['claude'] });
+    expect(r.spawned(0).argv).toEqual(['claude']);
+    r.db.close();
+  });
+});
+
 describe('projects:update-config — env validation (AC8, AC9)', () => {
   const seeded: ProjectConfig = {
     env: { A: '1' },
@@ -1291,6 +1690,22 @@ describe('project env at every spawn site (AC10, AC11, AC14–AC16)', () => {
     expect(rig.ptyManager.spawn).toHaveBeenCalledTimes(1);
     expect(rig.spawned(0).variant).toBe('subsequent');
     expect(rig.spawned(0).env).toStrictEqual({ API_URL: 'http://localhost:4000' });
+  });
+
+  it('does not treat a predecessor exit as failure of a new subsequent launch', async () => {
+    const rig = envRig();
+    rig.projects.setFirstLaunched(rig.a.id, new Date());
+    rig.ptyManager.liveShell.mockReturnValue({ pid: 42, generation: 'successor', agent: 'claude' });
+    // The successor is live once spawned; only the predecessor's stale exit arrives.
+    rig.ptyManager.isAlive.mockImplementation(() => rig.ptyManager.spawn.mock.calls.length > 0);
+    rig.ptyManager.spawn.mockImplementationOnce(async () => {
+      const onExit = rig.ptyManager.on.mock.calls.filter((call) => call[0] === 'exit').at(-1)?.[1];
+      if (!onExit) throw new Error('missing launch exit listener');
+      onExit({ projectId: rig.a.id, shellIndex: 0, generation: 'predecessor', code: 1, uptimeMs: 100, earlyOutput: 'No conversation found to continue' });
+    });
+    await rig.call('shells:launch', { projectId: rig.a.id });
+    expect(rig.ptyManager.spawn).toHaveBeenCalledTimes(1);
+    expect(rig.shells.list()).toHaveLength(1);
   });
 
   it('shells:launch no-session fallback passes the project var on the retry', async () => {
@@ -1817,6 +2232,99 @@ describe('git handlers for the Diff tab and Git panel (AC9, AC19, AC20, AC28, AC
   it('git:file-diff without .git returns an empty diff', async () => {
     const { call } = gitRig();
     await expect(call('git:file-diff', { projectId: 1, path: 'a.ts' })).resolves.toEqual({ diff: '' });
+  });
+});
+
+describe('git write handlers and project git setup do not block the main process', () => {
+  beforeEach(stubGitEnv);
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  /** A repo at `<base>/proj` with one commit and one modified file, resolved as project 1; root 1 is `<base>`. */
+  function writeRig() {
+    const { base, root } = tempProject('reg-gitw-');
+    git(root, 'init', '-q', '-b', 'main');
+    writeFileSync(join(root, 'a.txt'), 'one\n');
+    commitAll(root);
+    writeFileSync(join(root, 'a.txt'), 'two\n');
+    const ipc = fakeIpcMain();
+    const projects = {
+      get: (id: number) => (id === 1 ? { id: 1, path: root } : undefined),
+      upsert: (rootId: number, path: string, name: string) => ({ id: 2, rootId, path, name }),
+      markLastOpened: () => {},
+    };
+    const roots = { list: () => [{ id: 1, path: base }] };
+    registerIpc(ipc as unknown as IpcMain, { projects, roots } as unknown as Parameters<typeof registerIpc>[1], () => {});
+    const call = (channel: string, req: unknown) => ipc.handlers.get(channel)!({}, req);
+    const slowGit = () => vi.stubEnv('PATH', `${slowCommandDir(base, 'git', 0.6)}:${process.env.PATH ?? ''}`);
+    return { base, root, call, slowGit };
+  }
+
+  it.each([
+    ['git:stage', { projectId: 1, paths: ['a.txt'] }],
+    ['git:unstage', { projectId: 1, paths: ['a.txt'] }],
+    ['git:commit', { projectId: 1, message: 'm' }],
+    ['git:push', { projectId: 1 }],
+    ['git:pull', { projectId: 1 }],
+    ['projects:create', { rootId: 1, name: 'fresh', initGit: true }],
+    ['projects:clone-git', { rootId: 1, url: 'proj', name: 'copy' }],
+  ])('%s lets timers run while git is still running', async (channel, req) => {
+    const { call, slowGit } = writeRig();
+    slowGit();
+    expect(await finishOrder(() => call(channel, req).catch(() => {}))).toEqual(['timer', 'work']);
+  });
+
+  it('git:stage and git:unstage move a file into and out of the index', async () => {
+    const { root, call } = writeRig();
+    await expect(call('git:stage', { projectId: 1, paths: ['a.txt'] })).resolves.toEqual({ ok: true });
+    expect(git(root, 'status', '--porcelain=v1')).toBe('M  a.txt\n');
+    await expect(call('git:unstage', { projectId: 1, paths: ['a.txt'] })).resolves.toEqual({ ok: true });
+    expect(git(root, 'status', '--porcelain=v1')).toBe(' M a.txt\n');
+  });
+
+  it('git:commit passes a multi-line message with shell metacharacters through verbatim', async () => {
+    const { root, call } = writeRig();
+    const message = 'subject `x` $HOME\n\nbody "quoted"\n';
+    await call('git:stage', { projectId: 1, paths: ['a.txt'] });
+    await expect(call('git:commit', { projectId: 1, message })).resolves.toEqual({ ok: true });
+    expect(git(root, 'log', '-1', '--format=%B')).toBe(`${message}\n`);
+  });
+
+  it('git:commit with nothing staged rejects with git\'s explanation', async () => {
+    const { call } = writeRig();
+    await expect(call('git:commit', { projectId: 1, message: 'm' })).rejects.toThrow(/no changes added to commit|nothing (added )?to commit/);
+  });
+
+  it('git:stage of a missing path rejects with git\'s error', async () => {
+    const { call } = writeRig();
+    await expect(call('git:stage', { projectId: 1, paths: ['missing.txt'] })).rejects.toThrow(/did not match any files/);
+  });
+
+  it('git:push without a remote rejects with git\'s error', async () => {
+    const { call } = writeRig();
+    await expect(call('git:push', { projectId: 1 })).rejects.toThrow(/no configured push destination|No configured push destination/i);
+  });
+
+  it('git:pull reports git\'s output on success', async () => {
+    const { base, root, call } = writeRig();
+    git(root, 'stash', '-q');
+    git(base, 'clone', '-q', 'proj', 'upstream');
+    git(root, 'remote', 'add', 'origin', join(base, 'upstream'));
+    git(root, 'fetch', '-q', 'origin');
+    git(root, 'branch', '-q', '--set-upstream-to=origin/main');
+    await expect(call('git:pull', { projectId: 1 })).resolves.toEqual({ ok: true, output: 'Already up to date.' });
+  });
+
+  it('projects:create with initGit makes a git repository', async () => {
+    const { base, call } = writeRig();
+    await call('projects:create', { rootId: 1, name: 'fresh', initGit: true });
+    expect(git(join(base, 'fresh'), 'rev-parse', '--is-inside-work-tree').trim()).toBe('true');
+  });
+
+  it('projects:clone-git clones the repository and rejects with git\'s error when the clone fails', async () => {
+    const { base, call } = writeRig();
+    await call('projects:clone-git', { rootId: 1, url: join(base, 'proj'), name: 'copy' });
+    expect(readFileSync(join(base, 'copy', 'a.txt'), 'utf8')).toBe('one\n');
+    await expect(call('projects:clone-git', { rootId: 1, url: join(base, 'nope'), name: 'bad' })).rejects.toThrow(/does not exist|not a git repository|Could not read/i);
   });
 });
 

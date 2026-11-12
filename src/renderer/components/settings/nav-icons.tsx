@@ -4,7 +4,7 @@
  * icon with its text-only label, marks the active section with `aria-current="page"` and can show
  * an unsaved-changes marker.
  */
-import { APP_ENV_TESTIDS, ENV_COPY } from '@renderer/project-env-copy';
+import { APP_ENV_COPY, APP_ENV_TESTIDS, ENV_COPY } from '@renderer/project-env-copy';
 import { ICON_SIZE, ICON_STROKE } from '../icon-size';
 
 export type SettingsSection = 'general' | 'roots' | 'launch' | 'env' | 'metaproject' | 'p2p';
@@ -14,7 +14,7 @@ export const SETTINGS_NAV_ITEMS: readonly { readonly section: SettingsSection; r
   { section: 'general', label: 'General' },
   { section: 'roots', label: 'Root directories' },
   { section: 'launch', label: 'Launch commands' },
-  { section: 'env', label: 'Environment' },
+  { section: 'env', label: APP_ENV_COPY.navLabel },
   { section: 'metaproject', label: 'Metaproject' },
   { section: 'p2p', label: 'P2P' },
 ];

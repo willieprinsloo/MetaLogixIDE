@@ -1,9 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@renderer/api';
 import { toast } from '@renderer/hooks/useToasts';
+import { isCommitShortcut } from '@renderer/app-keys';
+import { SHORTCUT_COPY } from '@renderer/shortcut-copy';
+import { useShortcutPlatform } from '@renderer/shortcut-platform';
 import { gitStatusTextClass } from '@renderer/git-status-style';
 import { unstagePaths } from '@renderer/git-unstage-paths';
 import { DIFF_COPY } from '@renderer/diff-tab-copy';
+import { createRequestGate } from '@renderer/diff/diff-load-state';
 import { ICON_SIZE, ICON_STROKE } from './icon-size';
 import type { GitChangeEntry } from '@shared/ipc-contract';
 
@@ -20,30 +24,53 @@ interface Status {
 }
 
 /**
+ * The Git panel's `git:panel-status` for `projectId`: fetched on mount and on project change, then
+ * polled every 3s so external `git` commands (from the shell) show up. `status` is null while there
+ * is no project, before the first answer, or after a failed request; `refresh` refetches now. Only
+ * the latest request's response (or failure) is applied, so a slow answer for a previous project or
+ * an older poll never overwrites newer lists; a poll tick is skipped while a request is in flight.
+ */
+export function usePanelStatus(projectId: number | null): { status: Status | null; refresh: () => Promise<void> } {
+  const [status, setStatus] = useState<Status | null>(null);
+  const gateRef = useRef(createRequestGate());
+
+  const load = useCallback(async (fromPoll: boolean) => {
+    const gate = gateRef.current;
+    if (projectId == null) { gate.invalidate(); setStatus(null); return; }
+    if (fromPoll && gate.inFlight) return;
+    const seq = gate.begin();
+    try {
+      const s = await api.invoke('git:panel-status', { projectId });
+      if (gate.isLatest(seq)) setStatus(s);
+    } catch {
+      if (gate.isLatest(seq)) setStatus(null);
+    } finally {
+      gate.settle(seq);
+    }
+  }, [projectId]);
+
+  const refresh = useCallback(() => load(false), [load]);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    const id = window.setInterval(() => { void load(true); }, 3000);
+    return () => window.clearInterval(id);
+  }, [load]);
+
+  return { status, refresh };
+}
+
+/**
  * Compact git surface: staged / unstaged / untracked lists with per-row
  * stage-unstage buttons, a commit message input, and Commit / Push / Pull.
  * Deliberately narrow scope — this is not a diff viewer or history browser;
  * it covers the 80% of git you'd otherwise `git add` in the terminal for.
  */
 export function GitPanel({ projectId }: { projectId: number | null }) {
-  const [status, setStatus] = useState<Status | null>(null);
+  const platform = useShortcutPlatform();
+  const { status, refresh } = usePanelStatus(projectId);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
-
-  const refresh = useCallback(async () => {
-    if (projectId == null) { setStatus(null); return; }
-    try {
-      const s = await api.invoke('git:panel-status', { projectId });
-      setStatus(s);
-    } catch { setStatus(null); }
-  }, [projectId]);
-
-  useEffect(() => { void refresh(); }, [refresh]);
-  // Poll every 3s so external `git` commands (from the shell) show up.
-  useEffect(() => {
-    const id = window.setInterval(refresh, 3000);
-    return () => window.clearInterval(id);
-  }, [refresh]);
 
   const untrackedAsEntries = useMemo<FileEntry[]>(
     () => (status?.untracked ?? []).map((path) => ({ path, status: '?' as const })),
@@ -113,8 +140,8 @@ export function GitPanel({ projectId }: { projectId: number | null }) {
       <div className="px-3 py-2 border-b border-[--border] flex items-center gap-2 shrink-0">
         <BranchIcon />
         <span className="text-sm font-medium truncate flex-1" title={status.branch ?? ''}>{status.branch ?? 'detached'}</span>
-        {status.ahead  > 0 && <span className="text-[10px] font-mono text-emerald-400 px-1 rounded bg-emerald-400/10">↑{status.ahead}</span>}
-        {status.behind > 0 && <span className="text-[10px] font-mono text-rose-400 px-1 rounded bg-rose-400/10">↓{status.behind}</span>}
+        {status.ahead  > 0 && <span className="text-[10px] font-mono text-[color:var(--git-added,#34d399)] px-1 rounded bg-[color:var(--git-ahead-chip,rgb(52_211_153/0.1))]">↑{status.ahead}</span>}
+        {status.behind > 0 && <span className="text-[10px] font-mono text-[color:var(--git-deleted,#fb7185)] px-1 rounded bg-[color:var(--git-behind-chip,rgb(251_113_133/0.1))]">↓{status.behind}</span>}
         <button
           onClick={refresh}
           className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel-strong]"
@@ -150,8 +177,8 @@ export function GitPanel({ projectId }: { projectId: number | null }) {
         <textarea
           value={message}
           onChange={(e) => setMessage(e.target.value)}
-          onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') void commit(); }}
-          placeholder="Commit message — ⌘Enter to commit"
+          onKeyDown={(e) => { if (isCommitShortcut(e, platform)) void commit(); }}
+          placeholder={SHORTCUT_COPY.commitPlaceholder(platform)}
           rows={2}
           className="w-full resize-none bg-[--panel-strong] border border-[--border] rounded-md px-2.5 py-1.5 text-xs outline-none focus:ring-1 focus:ring-[--accent]/60"
           data-testid="git-message"
@@ -197,7 +224,7 @@ function Section({ title, count, onBulk, bulkLabel, children }: {
         <span className="text-[10px] uppercase tracking-wider font-semibold text-[--text-muted] flex-1">{title} <span className="opacity-60">({count})</span></span>
         <button
           onClick={onBulk}
-          className="text-[10px] text-[color:var(--accent)] hover:brightness-110"
+          className="text-[10px] text-[color:var(--accent-label,var(--accent))] hover:brightness-110"
         >
           {bulkLabel}
         </button>
@@ -276,9 +303,9 @@ function DiffView({ text }: { text: string }) {
         let cls = 'text-[--text-muted]';
         // Skip the file headers ("diff --git", "index …", "---", "+++") from
         // dominating the coloured output.
-        if (l.startsWith('@@')) cls = 'text-sky-400';
-        else if (l.startsWith('+') && !l.startsWith('+++')) cls = 'text-emerald-400 bg-emerald-500/5';
-        else if (l.startsWith('-') && !l.startsWith('---')) cls = 'text-rose-400 bg-rose-500/5';
+        if (l.startsWith('@@')) cls = 'text-[color:var(--git-untracked,#38bdf8)]';
+        else if (l.startsWith('+') && !l.startsWith('+++')) cls = 'text-[color:var(--git-added,#34d399)] bg-emerald-500/5';
+        else if (l.startsWith('-') && !l.startsWith('---')) cls = 'text-[color:var(--git-deleted,#fb7185)] bg-rose-500/5';
         else if (l.startsWith('diff --git') || l.startsWith('index ') || l.startsWith('+++') || l.startsWith('---')) cls = 'text-[--text-muted] opacity-60';
         return <div key={i} className={`px-2 ${cls}`}>{l || ' '}</div>;
       })}

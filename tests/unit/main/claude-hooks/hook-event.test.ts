@@ -108,7 +108,7 @@ describe('parseHookEvent — background_tasks (AC24, AC27, AC28)', () => {
 });
 
 describe('classifyHookEvent', () => {
-  const notif = (notificationType: string | null) => ({ hookEventName: 'Notification', notificationType, message: 'm', backgroundTaskCount: 0 });
+  const notif = (notificationType: string | null) => ({ hookEventName: 'Notification', notificationType, message: 'm', backgroundTaskCount: 0, toolName: null, toolTarget: null, toolOk: null });
 
   it.each(['permission_prompt', 'elicitation_dialog', 'elicitation_url_dialog', 'agent_needs_input'])(
     'Notification/%s is needs-input (AC1)',
@@ -127,16 +127,16 @@ describe('classifyHookEvent', () => {
   });
 
   it('Stop is finished (AC2)', () => {
-    expect(classifyHookEvent({ hookEventName: 'Stop', notificationType: null, message: null, backgroundTaskCount: 0 })).toBe('finished');
+    expect(classifyHookEvent({ hookEventName: 'Stop', notificationType: null, message: null, backgroundTaskCount: 0, toolName: null, toolTarget: null, toolOk: null })).toBe('finished');
   });
 
   it.each(['SubagentStop', 'UserPromptSubmit', 'SessionEnd', 'PreToolUse', 'stop'])('%s is ignored (AC3)', (name) => {
-    expect(classifyHookEvent({ hookEventName: name, notificationType: null, message: null, backgroundTaskCount: 0 })).toBe('ignored');
+    expect(classifyHookEvent({ hookEventName: name, notificationType: null, message: null, backgroundTaskCount: 0, toolName: null, toolTarget: null, toolOk: null })).toBe('ignored');
   });
 
   it('notification_type only counts on a Notification event', () => {
-    expect(classifyHookEvent({ hookEventName: 'Stop', notificationType: 'permission_prompt', message: null, backgroundTaskCount: 0 })).toBe('finished');
-    expect(classifyHookEvent({ hookEventName: 'PreToolUse', notificationType: 'permission_prompt', message: null, backgroundTaskCount: 0 })).toBe('ignored');
+    expect(classifyHookEvent({ hookEventName: 'Stop', notificationType: 'permission_prompt', message: null, backgroundTaskCount: 0, toolName: null, toolTarget: null, toolOk: null })).toBe('finished');
+    expect(classifyHookEvent({ hookEventName: 'PreToolUse', notificationType: 'permission_prompt', message: null, backgroundTaskCount: 0, toolName: null, toolTarget: null, toolOk: null })).toBe('ignored');
   });
 
   it('the needs-input set is exactly the four documented blocking types', () => {

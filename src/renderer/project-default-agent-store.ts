@@ -1,5 +1,5 @@
 /** Per-tab project default state; injected IO preserves confirmed choices and isolates late results. */
-import type { ProjectDefaultAgentRequest, ScopedCliProfile } from '@shared/project-default-agent';
+import { TERMINAL_AGENT_NAME, type ProjectDefaultAgentRequest, type ScopedCliProfile } from '@shared/project-default-agent';
 import type { Project } from '@shared/types';
 import type { ProjectSettingsTarget } from './project-settings-contract';
 
@@ -71,14 +71,14 @@ class ProjectDefaultAgentSession implements ProjectDefaultAgentStore {
 
   choose = (name: string | null): void => {
     if (this.snapshot.status !== 'ready' || name === this.snapshot.confirmedName) return;
-    if (name !== null && !this.snapshot.profiles.some((profile) => profile.name === name)) return;
+    if (name !== null && !isSelectable(this.snapshot.profiles, name)) return;
     void this.persist(name);
   };
 
   replaceCustomCommands = (): void => {
     if (this.snapshot.status !== 'ready' || !hasCustomLaunchCommands(this.snapshot.project)) return;
     const name = this.snapshot.confirmedName;
-    if (name !== null && !this.snapshot.profiles.some((profile) => profile.name === name)) return;
+    if (name !== null && !isSelectable(this.snapshot.profiles, name)) return;
     void this.persist(name);
   };
 
@@ -135,4 +135,9 @@ export function createProjectDefaultAgentStore(
   ports: ProjectDefaultAgentPorts,
 ): ProjectDefaultAgentStore {
   return new ProjectDefaultAgentSession(opener, ports);
+}
+
+/** A choosable default: a catalog profile or the built-in Terminal. */
+function isSelectable(profiles: readonly ScopedCliProfile[], name: string): boolean {
+  return name === TERMINAL_AGENT_NAME || profiles.some((profile) => profile.name === name);
 }

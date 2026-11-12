@@ -16,13 +16,12 @@ import { ClaudeHookReceiver } from './claude-hooks/receiver';
 import { ClaudeHookRuntime } from './claude-hooks/runtime';
 import { createLaunchDecorator } from './claude-hooks/launch-decorator';
 import { ViewedShells } from './notifications/viewed-shells';
-import { OmpReceiver } from './agent-status/omp-receiver';
-import { createOmpLaunchDecorator } from './agent-status/omp-launch';
 import { ClaudeHookHistory } from './notifications/claude-hook-history';
 import type { AgentStatusTracker } from './agent-status/state-tracker';
 import { createDropStaging, defaultDropDir, type DropStaging } from './drops/staging';
 import { createClipboardImage, type ClipboardImage } from './drops/clipboard-image';
 import { listMiseTasks, type MiseLister } from './domain/mise-cli';
+import type { KeepAwakeController } from './keep-awake/port';
 import type { P2PServices } from './p2p/types';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -42,8 +41,6 @@ export interface Services {
   hookReceiver: ClaudeHookReceiver;
   hookRuntime: ClaudeHookRuntime;
   hookHistory: ClaudeHookHistory;
-  /** Loopback receiver for app-launched OMP reports. */
-  ompReceiver: OmpReceiver;
   /** Installed before the renderer can spawn a shell. */
   agentStatus: AgentStatusTracker | null;
   viewedShells: ViewedShells;
@@ -52,6 +49,8 @@ export interface Services {
   clipboardImage: ClipboardImage;
   /** Lists a project's mise tasks; injected so tests run without a mise binary. */
   listMise: MiseLister;
+  /** macOS keep-awake timer; installed after startup, null off darwin. */
+  keepAwake: KeepAwakeController | null;
   homeDir: string;
   migrationsDir: string;
   /** Attached by `startP2P`; absent until the P2P lifecycle has started. */
@@ -89,7 +88,7 @@ function lastOutputAt(ptyManager: PtyManager, shell: ShellKey): number | null {
  * `dropDir` overrides the drop staging directory, which is otherwise resolved
  * here once from the OS temp directory and the current uid.
  */
-export function buildServices(opts: { dbPath?: string; migrationsDir?: string; homeDir?: string; ompExtensionPath?: string | null; dropDir?: string } = {}): Services {
+export function buildServices(opts: { dbPath?: string; migrationsDir?: string; homeDir?: string; dropDir?: string } = {}): Services {
   const home = opts.homeDir ?? homedir();
   const dbPath = opts.dbPath ?? join(home, '.metaide', 'metaide.db');
   const migrationsDir = opts.migrationsDir ?? resolve(process.cwd(), 'migrations');
@@ -106,16 +105,10 @@ export function buildServices(opts: { dbPath?: string; migrationsDir?: string; h
   const hookSessions = new SessionRegistry();
   const hookReceiver = new ClaudeHookReceiver(hookSessions);
   const hookRuntime = new ClaudeHookRuntime({ receiver: hookReceiver, homeDir: home });
-  const ompReceiver = new OmpReceiver();
   const claudeDecorator = createLaunchDecorator({ sessions: hookSessions, settingsPath: () => hookRuntime.settingsPath() });
-  const ompDecorator = createOmpLaunchDecorator({
-    receiver: ompReceiver,
-    extensionPath: opts.ompExtensionPath ?? resolve(process.cwd(), 'resources/omp-status-extension.js'),
-    port: () => ompReceiver.boundPort(),
-  });
   const ptyManager = new PtyManager({
     spawnDecorator: (projectId, shellIndex, launch) =>
-      ompDecorator(projectId, shellIndex, claudeDecorator(projectId, shellIndex, launch)),
+      claudeDecorator(projectId, shellIndex, launch),
   });
   const watcher = new RootWatcher({ cap: settings.get('max_watched_paths') });
   const metaproject = new MetaprojectClient();
@@ -132,7 +125,7 @@ export function buildServices(opts: { dbPath?: string; migrationsDir?: string; h
   });
   return {
     db, roots, projects, shells, settings, prompts, ptyManager, watcher, metaproject,
-    hookSessions, hookReceiver, hookRuntime, hookHistory, ompReceiver, agentStatus: null,
-    viewedShells: new ViewedShells(), dropStaging, clipboardImage: createClipboardImage(), listMise: listMiseTasks, homeDir: home, migrationsDir,
+    hookSessions, hookReceiver, hookRuntime, hookHistory, agentStatus: null,
+    viewedShells: new ViewedShells(), dropStaging, clipboardImage: createClipboardImage(), listMise: listMiseTasks, keepAwake: null, homeDir: home, migrationsDir,
   };
 }

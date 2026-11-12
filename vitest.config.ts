@@ -11,6 +11,8 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
+    // Keep main-process logging out of the user's real log file.
+    setupFiles: ['tests/unit/setup-log.ts'],
     // Cap the worker pool: the default uses every core, in every session sharing this machine.
     // minWorkers must be set too, or its core-count default conflicts with the cap.
     maxWorkers: 4,
@@ -62,6 +64,16 @@ export default defineConfig({
         'src/renderer/components/ActivityBar.tsx',
         'src/renderer/components/settings/TerminalFontSizeControl.tsx',
         'src/renderer/App.tsx',
+        'src/shared/keep-awake-contract.ts',
+        'src/main/keep-awake/**',
+        'src/renderer/components/Sidebar.tsx',
+        'src/renderer/components/UnloadSessionDialog.tsx',
+        'src/renderer/hooks/useAliveShellIds.ts',
+        'src/renderer/unload-session.ts',
+        'src/renderer/keep-awake-time.ts',
+        'src/renderer/hooks/useKeepAwake.ts',
+        'src/renderer/components/KeepAwakeChip.tsx',
+        'src/renderer/components/KeepAwakeUntilDialog.tsx',
       ],
     },
   },

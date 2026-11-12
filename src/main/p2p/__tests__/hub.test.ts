@@ -170,8 +170,8 @@ describe('shells.attach scrollback', () => {
       const baseData = pty.listenerCount('data');
       const baseExit = pty.listenerCount('exit');
       const { client } = setup();
-      const got1: any[] = [];
-      const s1 = client.openStream('shells.attach', { projectId, shellIndex: 0 }, (e) => got1.push(e));
+      const got1: Array<{ bytes?: string }> = [];
+      const s1 = client.openStream('shells.attach', { projectId, shellIndex: 0 }, (e) => got1.push(e as { bytes?: string }));
       await waitFor(() => got1.map((e) => e.bytes).join('').includes('mock-claude ready'), 4000);
       expect(pty.listenerCount('data')).toBe(baseData + 1);
       s1.close();
@@ -184,8 +184,8 @@ describe('shells.attach scrollback', () => {
         await new Promise((r) => setTimeout(r, 20));
       }
 
-      const got2: any[] = [];
-      client.openStream('shells.attach', { projectId, shellIndex: 0 }, (e) => got2.push(e));
+      const got2: Array<{ bytes?: string }> = [];
+      client.openStream('shells.attach', { projectId, shellIndex: 0 }, (e) => got2.push(e as { bytes?: string }));
       await waitFor(() => got2.length > 0, 4000);
       expect(got2[0]).toMatchObject({ kind: 'out', bytes: expect.stringContaining('mock-claude ready') });
       expect(got2.map((e) => e.bytes).join('')).toMatch(/\d+x\d+/);
@@ -214,8 +214,8 @@ describe('shells.input / shells.resize', () => {
       const write = vi.spyOn(pty, 'write');
       const resize = vi.spyOn(pty, 'resize');
       const { client } = setup();
-      const got: any[] = [];
-      const h = client.openStream('shells.attach', { projectId, shellIndex: 0 }, (e) => got.push(e));
+      const got: Array<{ bytes?: string }> = [];
+      const h = client.openStream('shells.attach', { projectId, shellIndex: 0 }, (e) => got.push(e as { bytes?: string }));
       await waitFor(() => h.stream !== undefined && got.length > 0, 4000);
       const stream = h.stream!;
       expect(await client.call('shells.input', { stream, bytes: b64('ls é\r') })).toEqual({ ok: true });

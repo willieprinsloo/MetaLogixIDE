@@ -27,6 +27,7 @@ import {
 } from '@playwright/test';
 import { cpSync, mkdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { FROST_ATTR } from '../../../src/renderer/frosted-chrome-contract';
 import {
   MARKDOWN_PREVIEW_TESTID,
   MERMAID_BLOCK_CLASS,
@@ -376,13 +377,19 @@ export async function openSettled(win: Page, name: string, count: number): Promi
 }
 
 /**
- * True iff the renderer root carries `data-platform="mac"` (frosted-chrome
- * plan §2.2 / FROST_ATTR.platform, MAC_PLATFORM). Lives here, not in
- * chrome-colour.ts, so `readReferenceBackgrounds` below can use it without a
- * circular import (chrome-colour.ts already imports from this module).
+ * True iff frosted chrome is active: the renderer root carries the
+ * `data-platform` attribute (FROST_ATTR.platform), whatever its value (`mac`
+ * or `linux`). The frosted CSS gates on the attribute's presence, never on its
+ * value (docs/specs/linux-wayland-frosted-glass.md D3, AC21), so a colour
+ * branch keyed on this follows the cascade the window actually renders. A
+ * branch that is genuinely macOS-only (the vibrancy Material control, say)
+ * adds its own `process.platform === 'darwin'` guard.
+ *
+ * Lives here, not in chrome-colour.ts, so `readReferenceBackgrounds` below can
+ * use it without a circular import (chrome-colour.ts imports from this module).
  */
-export async function isMacPlatform(win: Page): Promise<boolean> {
-  return win.evaluate(() => document.documentElement.getAttribute('data-platform') === 'mac');
+export async function isFrostedChrome(win: Page): Promise<boolean> {
+  return win.evaluate((attr) => document.documentElement.hasAttribute(attr), FROST_ATTR.platform);
 }
 
 /* ─────────────────────────────── live tokens ─────────────────────────────── */
@@ -422,16 +429,17 @@ export async function tokenColour(win: Page, name: `--${string}`): Promise<Rgba>
 const MAC_SHEET_SOLID_TOKEN = '--sheet-solid' as const;
 
 /**
- * The theme's two reference backgrounds. Non-mac: live `--bg` composited
- * `BG_LAYERS` times over each of the theme's `REFERENCE_MATERIALS` bounds.
- * macOS (AC29): the opaque `--sheet-solid` the mac stack paints the sheet
- * with, read directly (see `MAC_SHEET_SOLID_TOKEN`).
+ * The theme's two reference backgrounds. Frosted chrome off (or Windows): live
+ * `--bg` composited `BG_LAYERS` times over each of the theme's
+ * `REFERENCE_MATERIALS` bounds. Frosted chrome on, macOS or Linux (AC29; the
+ * Linux cascade is the macOS one): the opaque `--sheet-solid` the frosted
+ * stack paints the sheet with, read directly (see `MAC_SHEET_SOLID_TOKEN`).
  */
 export async function readReferenceBackgrounds(
   win: Page,
   theme: EffectiveTheme,
 ): Promise<readonly [Rgb, Rgb]> {
-  if (await isMacPlatform(win)) {
+  if (await isFrostedChrome(win)) {
     const sheet = await tokenColour(win, MAC_SHEET_SOLID_TOKEN);
     return [sheet, sheet] as const;
   }

@@ -43,6 +43,8 @@
  */
 
 import { test, expect, type Page } from '@playwright/test';
+import { resolve } from 'node:path';
+import type {} from '../../src/renderer/api';
 import {
   launch, openProject, projectRow, waitForProjectShown, blurToBody,
   terminalActiveIn, primaryTerminalFocusedFor, focusedTerminalCount,
@@ -297,7 +299,17 @@ test.describe('project switch focus', () => {
       try {
         await openProject(win, 'alpha');
 
-        await clickRowsInOneTask(win, ['beta'], 'open-switcher');
+        // Keep click and palette shortcut in one task, using the actual
+        // platform modifier (Ctrl on Linux/Windows, Meta on macOS).
+        await win.evaluate((mac) => {
+          const row = [...document.querySelectorAll<HTMLElement>('[data-testid="project-row"]')]
+            .find((candidate) => candidate.textContent?.trim() === 'beta');
+          if (!row) throw new Error('beta row missing');
+          row.click();
+          window.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'k', ctrlKey: !mac, metaKey: mac, bubbles: true,
+          }));
+        }, process.platform === 'darwin');
 
         await waitForProjectShown(win, 'beta');
         await expect(win.locator(`${PRIMARY} .xterm-screen`), 'positive control: beta\'s terminal opened').toBeVisible({ timeout: FOCUS_TIMEOUT });
@@ -460,6 +472,88 @@ test.describe('project switch focus', () => {
       }
     });
   });
+});
+
+test('opening an existing OMP terminal shows its newest parsed scrollback in the first visible frame', async () => {
+  test.setTimeout(120_000);
+  const { app, win, cleanup } = await launch(['alpha']);
+  try {
+    await openProject(win, 'alpha');
+    const projectId = await projectIdByName(win, 'alpha');
+    await win.getByTestId('tabbar-new-shell').click();
+    await win.getByRole('button', { name: 'Add a custom command…' }).click();
+    await win.getByPlaceholder('Name (optional, e.g. Llama)').fill('OMP');
+    await win.getByPlaceholder('Command, e.g. `llama chat --model llama3`')
+      .fill(`node "${resolve(process.cwd(), 'scripts/mock-omp.mjs')}"`);
+    await win.getByRole('button', { name: 'Run', exact: true }).click();
+    await expect.poll(async () => (await rememberedState(win, projectId))?.activeShellIndex ?? 0).toBeGreaterThan(0);
+    const ompIndex = (await rememberedState(win, projectId))?.activeShellIndex;
+    if (ompIndex === undefined) throw new Error('OMP tab was not selected');
+    await waitForShellOutput(win, 'alpha', ompIndex, 'mock-omp ready');
+
+    // Stream deterministic lines through the real PTY, then remount from its serialized snapshot.
+    const output = Array.from({ length: 180 }, (_, i) => `omp-output-${String(i).padStart(3, '0')}`).join('\n');
+    await win.evaluate(({ id, index, data }) =>
+      window.api.invoke('shells:write', { projectId: id, shellIndex: index, data: `${data}\r` }),
+    { id: projectId, index: ompIndex, data: output });
+    const latest = marker('omp-newest');
+    await win.evaluate(({ id, index, text }) =>
+      window.api.invoke('shells:write', { projectId: id, shellIndex: index, data: `${text}\r` }),
+    { id: projectId, index: ompIndex, text: latest });
+    await waitForShellOutput(win, 'alpha', ompIndex, latest);
+    expect(await shellOutput(win, 'alpha', ompIndex), 'serialized snapshot retains older OMP output')
+      .toContain('omp-output-000');
+    const priorViewport = win.locator(`${PRIMARY} .xterm-viewport`);
+    await expect.poll(() => priorViewport.evaluate((el) => el.scrollHeight - el.clientHeight))
+      .toBeGreaterThan(0);
+
+    await win.getByRole('button', { name: 'Files', exact: true }).click();
+    await expect(win.locator(`${PRIMARY} .xterm`)).toHaveCount(0);
+    // Installed before the Shell click. The first rAF in which the terminal
+    // host is visible records once; later settling cannot make this pass.
+    await win.evaluate(() => {
+      type Viewport = { scroll: number; max: number; height: number };
+      const watch: { first: Viewport | null; expired: boolean } = { first: null, expired: false };
+      Object.assign(window, { __ompFirstVisible: watch });
+      const deadline = performance.now() + 10_000;
+      const sample = () => {
+        const host = document.querySelector('.split-left [data-testid="shell-tab"] > .isolate');
+        const viewport = host?.querySelector('.xterm-viewport');
+        if (host instanceof HTMLElement && viewport instanceof HTMLElement &&
+          getComputedStyle(host).visibility === 'visible' && host.getClientRects().length > 0) {
+          watch.first = {
+            scroll: viewport.scrollTop,
+            max: viewport.scrollHeight - viewport.clientHeight,
+            height: viewport.clientHeight,
+          };
+        } else if (performance.now() < deadline) requestAnimationFrame(sample);
+        else watch.expired = true;
+      };
+      requestAnimationFrame(sample);
+    });
+    await win.getByRole('button', { name: 'Shell', exact: true }).click();
+    await expect.poll(() => win.evaluate(() => (window as typeof window & {
+      __ompFirstVisible?: { first: { scroll: number; max: number; height: number } | null; expired: boolean };
+    }).__ompFirstVisible?.first ?? null), { timeout: 11_000 }).not.toBeNull();
+    const first = await win.evaluate(() => (window as typeof window & {
+      __ompFirstVisible?: { first: { scroll: number; max: number; height: number } | null };
+    }).__ompFirstVisible?.first);
+    if (!first) throw new Error('First visible OMP frame was not sampled');
+    const viewport = win.locator(`${PRIMARY} .xterm-viewport`);
+    await expect.poll(() => viewport.evaluate((el) => el.scrollHeight - el.clientHeight), {
+      message: 'positive control: restored OMP terminal eventually has scrollback',
+    }).toBeGreaterThan(0);
+    expect(first.height, 'first visible frame has a laid-out terminal').toBeGreaterThan(0);
+    expect(first.max, 'positive control: the newly parsed screen has scrollback on its first visible frame').toBeGreaterThan(0);
+    expect(first.scroll, `first visible frame must start at newest content (bottom=${first.max})`)
+      .toBeGreaterThanOrEqual(first.max - 1);
+
+    await viewport.evaluate((el) => { el.scrollTop = 0; });
+    expect(await viewport.evaluate((el) => el.scrollTop), 'positive control: viewport measurement detects a traversal to older content').toBe(0);
+  } finally {
+    await app.close();
+    cleanup();
+  }
 });
 
 /** Tags the primary xterm element so a later read can tell whether it remounted. */

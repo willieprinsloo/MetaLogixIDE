@@ -1,5 +1,4 @@
 import { useMemo } from 'react';
-import { api } from '@renderer/api';
 import { useFleet } from '@renderer/p2p/useFleet';
 import { useRemoteAliveShells } from '@renderer/p2p/useRemoteAliveShells';
 import type { FleetEntry } from '@shared/p2p-contract';

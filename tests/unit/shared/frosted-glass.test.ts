@@ -6,6 +6,7 @@ import {
   isChromeFrostLevel,
   isTerminalFrostLevel,
   isVibrancyMaterial,
+  toFrostPlatform,
 } from '@shared/frosted-glass';
 
 describe('isChromeFrostLevel (AC3)', () => {
@@ -35,5 +36,18 @@ describe('isVibrancyMaterial (AC3, AC18)', () => {
 
   it.each(['window', 'content', 'under-page', 'header', '', 0, 1, null, undefined, {}, []])('rejects %j', (value) => {
     expect(isVibrancyMaterial(value)).toBe(false);
+  });
+});
+
+describe('toFrostPlatform (AC1, AC3)', () => {
+  it.each([
+    ['darwin', 'mac'],
+    ['linux', 'linux'],
+  ] as const)('maps %s to %s', (platform, expected) => {
+    expect(toFrostPlatform(platform)).toBe(expected);
+  });
+
+  it.each(['win32', 'freebsd', 'Linux', 'DARWIN', '', undefined, null])('maps %j to null', (platform) => {
+    expect(toFrostPlatform(platform)).toBeNull();
   });
 });

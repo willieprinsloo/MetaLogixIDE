@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, Menu, Notification, screen, shell } from 'electron';
+import { app, BrowserWindow, crashReporter, ipcMain, Menu, Notification, powerSaveBlocker, screen, shell } from 'electron';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
@@ -8,7 +9,8 @@ import { startP2P, stopP2P } from './p2p';
 import { isWorkerWindowId } from './p2p/worker/windowWorker';
 import { buildServices, type Services } from './services';
 import { DROP_MAX_AGE_MS, testModeDropDir } from './drops/staging';
-import { registerIpc } from './ipc/register';
+import { installKeepAwake } from './keep-awake/install';
+import { registerIpc, rememberResumableHarness } from './ipc/register';
 import { buildAppMenu } from './menu';
 import { installClaudeNotifications } from './notifications/install';
 import { installAgentStatus } from './agent-status/install';
@@ -17,6 +19,7 @@ import { wireActivityLog } from './activity/wire';
 import { rescanRootsAtBoot } from './startup/boot-rescan';
 import { startDoneNotifier } from './startup/done-notifier';
 import { startReceivers } from './startup/receivers';
+import { installCrashObservability } from './startup/crash-observability';
 import { withoutHookConfirmed } from './notifications/claude-notifier';
 import { resolveLoginShellPath } from './domain/login-shell-path';
 import { computeTileLayout } from './window-tiling';
@@ -24,13 +27,16 @@ import {
   FROSTED_GLASS_FALLBACK,
   applyVibrancy,
   platformChrome,
+  MAIN_TRAFFIC_LIGHTS,
   readStoredFrostedGlass,
   rendererQuery,
   type StoredFrostedGlass,
 } from './window-chrome';
 
-// Route console.log/warn/error to a rolling file at
-// `~/Library/Logs/MetaLogix IDE/main.log` (Electron's app.getPath('logs')).
+// Route console.log/warn/error to a rolling `main.log`: on macOS
+// `~/Library/Logs/<app name>/`, on Linux `~/.config/<app name>/logs/`, on
+// Windows `%USERPROFILE%\AppData\Roaming\<app name>\logs\`. The resolved
+// path is written to the log's `[metaide] started` line at every boot.
 // `preload: true` wires renderer console output through IPC into the same
 // file so both sides land in one place — no more "was that a main or a
 // renderer error?" hunt when a user reports a blank screen. transports.file
@@ -39,6 +45,7 @@ log.initialize({ preload: true });
 log.transports.file.level = 'info';
 log.transports.console.level = 'debug';
 Object.assign(console, log.functions);
+installCrashObservability({ log, app, crashReporter, pid: process.pid });
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -186,6 +193,7 @@ async function createMainWindow(): Promise<BrowserWindow> {
     show: false,
     backgroundColor: '#00000000',
     ...platformChrome(process.platform, readFrostedGlass().vibrancyMaterial),
+    ...(process.platform === 'darwin' ? { trafficLightPosition: MAIN_TRAFFIC_LIGHTS } : {}),
     webPreferences: baseWebPreferences(),
   });
   win.once('ready-to-show', () => win.show());
@@ -358,12 +366,8 @@ function registerWindowsAppId(): void {
 
 /** Builds the service graph from the app's install paths and the test-mode drop directory env. */
 function createServices(): Services {
-  const ompExtensionPath = app.isPackaged
-    ? join(process.resourcesPath, 'omp-status-extension.js')
-    : resolve(app.getAppPath(), 'resources/omp-status-extension.js');
   return buildServices({
     migrationsDir: resolve(app.getAppPath(), 'migrations'),
-    ompExtensionPath,
     dropDir: testModeDropDir(process.env, app.getPath('userData')),
   });
 }
@@ -372,10 +376,13 @@ function createServices(): Services {
 function attachAgentStatus(services: Services): ReturnType<typeof installAgentStatus> {
   const agentStatus = installAgentStatus({
     ptyManager: services.ptyManager,
-    receiver: services.ompReceiver,
     broadcast,
   });
   services.agentStatus = agentStatus.tracker;
+  // A harness started by hand in a terminal counts as having run here: the project's next launch of it resumes.
+  agentStatus.tracker.onChange((entry) => {
+    if (entry.agent) rememberResumableHarness(services, entry.projectId, entry.agent);
+  });
   return agentStatus;
 }
 
@@ -383,6 +390,18 @@ function attachAgentStatus(services: Services): ReturnType<typeof installAgentSt
 function bindWindowSettings(services: Services): void {
   readWindowOpacity = () => services.settings.get('window_opacity');
   readFrostedGlass = () => readStoredFrostedGlass((key) => services.settings.get(key));
+}
+
+/** Installs the macOS keep-awake timer on `services`; stays null off darwin. */
+function attachKeepAwake(services: Services): void {
+  services.keepAwake = installKeepAwake({
+    platform: process.platform,
+    env: process.env,
+    powerSaveBlocker,
+    execFile,
+    notificationClass: Notification,
+    broadcast,
+  });
 }
 
 /** Registers the renderer IPC surface, with window operations bound to this module's windows. */
@@ -456,12 +475,12 @@ function forwardPortChanges(services: Services): void {
   });
 }
 
-/** Stops the done poller, the agent-status monitor and both receivers when the app quits. */
+/** Stops the done poller, keep-awake, the agent-status monitor and both receivers when the app quits. */
 function stopOnQuit(services: Services, donePoll: NodeJS.Timeout, agentStatus: ReturnType<typeof installAgentStatus>): void {
   app.on('before-quit', () => {
     clearInterval(donePoll);
     agentStatus.stop();
-    services.ompReceiver.stop();
+    services.keepAwake?.dispose();
     void services.hookRuntime.stop();
     void stopP2P();
   });
@@ -470,8 +489,8 @@ function stopOnQuit(services: Services, donePoll: NodeJS.Timeout, agentStatus: R
 /**
  * App startup once Electron is ready, in a fixed order: login-shell PATH, cold-launch argv scan
  * (after ready so `existsSync` sees the app-relative CWD), Windows app id, services, receivers,
- * agent status, boot rescan, window settings, IPC, Claude notifications, main window, done
- * notifier, ports fan-out, quit teardown.
+ * agent status, boot rescan, window settings, IPC, P2P startup,
+ * Claude notifications, main window, done notifier, ports fan-out, quit teardown.
  */
 async function startApp(): Promise<void> {
   await adoptLoginShellPath();
@@ -482,6 +501,7 @@ async function startApp(): Promise<void> {
   const agentStatus = attachAgentStatus(services);
   await rescanRootsAtBoot(services);
   bindWindowSettings(services);
+  attachKeepAwake(services);
   registerMainIpc(services);
   // P2P needs the IPC broadcaster (rpc stream events) and must never block or fail app startup.
   void startP2P(services, { emit: broadcast }).catch((err: unknown) => log.warn('[p2p] start failed', err));

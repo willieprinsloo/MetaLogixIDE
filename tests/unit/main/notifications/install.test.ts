@@ -131,7 +131,7 @@ function installSetup<P extends ExitSource>(ptyManager: P, sessions = new Sessio
 }
 
 const ev = (hookEventName: string, extra: { notificationType?: string; backgroundTaskCount?: number } = {}) =>
-  ({ hookEventName, notificationType: null, message: null, backgroundTaskCount: 0, ...extra });
+  ({ hookEventName, notificationType: null, message: null, backgroundTaskCount: 0, toolName: null, toolTarget: null, toolOk: null, ...extra });
 const NEEDS_INPUT = ev('Notification', { notificationType: 'permission_prompt' });
 
 describe('installClaudeNotifications', () => {
@@ -266,6 +266,8 @@ describe.skipIf(process.platform === 'win32')('installClaudeNotifications — re
     const exits: unknown[] = [];
     pty.on('exit', (ev: unknown) => exits.push(ev));
     await pty.spawn(shell.projectId, shell.shellIndex, launch);
+    const oldGeneration = pty.liveShell(shell.projectId, shell.shellIndex)?.generation;
+    expect(oldGeneration).toEqual(expect.any(String));
     await pty.kill(shell.projectId, shell.shellIndex);
     await pty.spawn(shell.projectId, shell.shellIndex, launch);
     const fresh = issued[1]!;
@@ -273,7 +275,10 @@ describe.skipIf(process.platform === 'win32')('installClaudeNotifications — re
     expect(exits).toHaveLength(0);
     const deadline = Date.now() + 3000;
     while (exits.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
-    expect(exits).toHaveLength(1);
+    expect(exits).toEqual([
+      expect.objectContaining({ projectId: shell.projectId, shellIndex: shell.shellIndex, generation: oldGeneration }),
+    ]);
+    expect(pty.liveShell(shell.projectId, shell.shellIndex)?.generation).not.toBe(oldGeneration);
     expect(sessions.verify(fresh.id, fresh.token)).toEqual(shell);
     expect(FakeNotification.instances).toHaveLength(1);
     expect(FakeNotification.instances[0]!.closed).toBe(false);

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '@renderer/api';
+import { ModalFrame } from '@renderer/components/ModalFrame';
 import { ICON_SIZE } from './icon-size';
 import { XIcon } from './shell-icons';
 
@@ -85,43 +86,46 @@ export function ScrollbackSearch({ open, onClose, onFocus }: Props) {
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 backdrop-blur-sm pt-[10vh]" onClick={onClose} data-testid="scrollback-search">
-      <div
-        className="bg-[--panel-strong] w-[720px] max-w-[92vw] max-h-[75vh] rounded-xl shadow-2xl border border-[--border] flex flex-col overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <ModalFrame
+      testId="scrollback-search"
+      tier="modal"
+      motion="none"
+      layerClassName="flex items-start justify-center pt-[10vh]"
+      onDismiss={onClose}
+    >
+      <div className="modal-sheet modal-sheet--compact w-[720px] max-w-[92vw] max-h-[75vh] flex flex-col overflow-hidden">
         <div className="px-3 py-2 border-b border-[--border] flex items-center gap-2">
-          <span className="text-xs text-[--text-muted]">🔎 all shells</span>
+          <span className="text-xs text-[--modal-text-muted]">🔎 all shells</span>
           <input
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search live scrollback across every shell…"
-            className="flex-1 bg-transparent text-sm outline-none placeholder:text-[--text-muted]"
+            className="flex-1 bg-transparent text-sm outline-none placeholder:text-[--modal-text-muted]"
           />
-          <label className="flex items-center gap-1 text-[10px] text-[--text-muted]" title="Match case">
+          <label className="flex items-center gap-1 text-[10px] text-[--modal-text-muted]" title="Match case">
             <input type="checkbox" checked={caseSensitive} onChange={(e) => setCaseSensitive(e.target.checked)} className="accent-[color:var(--accent)]" />
             Aa
           </label>
-          <label className="flex items-center gap-1 text-[10px] text-[--text-muted]" title="Regex">
+          <label className="flex items-center gap-1 text-[10px] text-[--modal-text-muted]" title="Regex">
             <input type="checkbox" checked={regex} onChange={(e) => setRegex(e.target.checked)} className="accent-[color:var(--accent)]" />
             .*
           </label>
           <button
             onClick={onClose}
-            className="text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel]"
+            className="text-[--modal-text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel]"
             aria-label="Close"
           >
             <XIcon size={ICON_SIZE.md} />
           </button>
         </div>
-        <div className="px-3 py-1 border-b border-[--border] text-[10px] text-[--text-muted] flex gap-3">
+        <div className="px-3 py-1 border-b border-[--border] text-[10px] text-[--modal-text-muted] flex gap-3">
           <span>{loading ? 'searching…' : `${matches.length} match${matches.length === 1 ? '' : 'es'} across ${scanned} shell${scanned === 1 ? '' : 's'}`}</span>
           <span className="ml-auto opacity-80">↑↓ to navigate · ⏎ to focus · Esc to close</span>
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto font-mono">
           {!loading && query.trim() && matches.length === 0 && (
-            <div className="px-4 py-6 text-center text-xs text-[--text-muted]">No matches — try a different query, or open a shell to search.</div>
+            <div className="px-4 py-6 text-center text-xs text-[--modal-text-muted]">No matches — try a different query, or open a shell to search.</div>
           )}
           {matches.map((m, i) => (
             <button
@@ -134,24 +138,24 @@ export function ScrollbackSearch({ open, onClose, onFocus }: Props) {
             >
               <div className="flex items-center gap-2 text-[10px]">
                 <span className="text-[color:var(--accent)] font-semibold">{m.projectName}</span>
-                <span className="text-[--text-muted]">/</span>
-                <span className="text-[--text-muted]">{m.launchName}</span>
-                <span className="text-[--text-muted] ml-auto">line {m.lineNumber}</span>
+                <span className="text-[--modal-text-muted]">/</span>
+                <span className="text-[--modal-text-muted]">{m.launchName}</span>
+                <span className="text-[--modal-text-muted] ml-auto">line {m.lineNumber}</span>
               </div>
               {m.contextBefore.map((l, ci) => (
-                <div key={`b${ci}`} className="text-[--text-muted] opacity-60 truncate">{l}</div>
+                <div key={`b${ci}`} className="text-[--modal-text-muted] opacity-60 truncate">{l}</div>
               ))}
               <div className="text-[--text] whitespace-pre-wrap break-all">
                 {highlight(m.line, query, regex, caseSensitive)}
               </div>
               {m.contextAfter.map((l, ci) => (
-                <div key={`a${ci}`} className="text-[--text-muted] opacity-60 truncate">{l}</div>
+                <div key={`a${ci}`} className="text-[--modal-text-muted] opacity-60 truncate">{l}</div>
               ))}
             </button>
           ))}
         </div>
       </div>
-    </div>
+    </ModalFrame>
   );
 }
 

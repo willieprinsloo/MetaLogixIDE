@@ -2,16 +2,21 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '@renderer/api';
 
 /**
- * Returns a Set of projectIds that currently have an alive PTY.
- * Refetches on mount, whenever the main process emits `alive-shells:changed`,
- * and also on `pty:exit` for extra safety.
+ * Subscribes to all live project shells while separately exposing projects with a live primary.
+ * Recents/In use use `aliveIds`; unload affordances require `primaryIds`.
  */
-export function useAliveShellIds(): { aliveIds: Set<number>; refresh: () => Promise<void> } {
-  const [aliveIds, setAliveIds] = useState<Set<number>>(new Set());
+export function useAliveShellIds(): { aliveIds: Set<number>; primaryIds: Set<number>; refresh: () => Promise<void> } {
+  const [ids, setIds] = useState({ aliveIds: new Set<number>(), primaryIds: new Set<number>() });
 
   const refresh = useCallback(async () => {
     const { shells } = await api.invoke('shells:alive-list', undefined as never);
-    setAliveIds(new Set(shells.map((s) => s.projectId)));
+    const aliveIds = new Set<number>();
+    const primaryIds = new Set<number>();
+    for (const shell of shells) {
+      aliveIds.add(shell.projectId);
+      if (shell.shellIndex === 0) primaryIds.add(shell.projectId);
+    }
+    setIds({ aliveIds, primaryIds });
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
@@ -22,5 +27,5 @@ export function useAliveShellIds(): { aliveIds: Set<number>; refresh: () => Prom
     return () => { offChanged(); offExit(); };
   }, [refresh]);
 
-  return { aliveIds, refresh };
+  return { ...ids, refresh };
 }

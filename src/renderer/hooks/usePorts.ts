@@ -7,9 +7,10 @@ interface Entry { projectId: number; shellIndex: number; ports: number[] }
  * Subscribes to ports:changed and returns the full picture. Shells that
  * announce ports (dev servers, docker, whatever) are collected from a
  * one-shot snapshot at mount and kept in sync via broadcast events.
- * `projectId` scopes the returned list; pass null to see everything.
+ * `projectId` scopes the returned list; pass null to see everything. When `enabled` is false
+ * it neither snapshots nor listens and returns an empty list.
  */
-export function usePorts(projectId: number | null): number[] {
+export function usePorts(projectId: number | null, enabled = true): number[] {
   const [entries, setEntries] = useState<Entry[]>([]);
 
   const refresh = useCallback(async () => {
@@ -19,8 +20,9 @@ export function usePorts(projectId: number | null): number[] {
     } catch { /* main not up yet */ }
   }, []);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { if (enabled) void refresh(); }, [refresh, enabled]);
   useEffect(() => {
+    if (!enabled) return undefined;
     const off = api.on('ports:changed', (ev) => {
       setEntries((prev) => {
         const key = `${ev.projectId}:${ev.shellIndex}`;
@@ -30,12 +32,13 @@ export function usePorts(projectId: number | null): number[] {
       });
     });
     return () => { off(); };
-  }, []);
+  }, [enabled]);
 
   return useMemo(() => {
+    if (!enabled) return [];
     if (projectId == null) return Array.from(new Set(entries.flatMap((e) => e.ports))).sort((a, b) => a - b);
     return Array.from(new Set(
       entries.filter((e) => e.projectId === projectId).flatMap((e) => e.ports),
     )).sort((a, b) => a - b);
-  }, [entries, projectId]);
+  }, [entries, projectId, enabled]);
 }

@@ -7,6 +7,8 @@ import type { TerminalFontWeight } from './terminal-font-weight';
 import type { ProjectDefaultAgentRequest, ScopedCliProfile } from './project-default-agent';
 import type { AppFileDragPayload, ClipboardImageResult, ResolveAppFileResult, StageFileRequest, StageResult } from './terminal-drop-contract';
 import type { TasksDiscovery } from './tasks-contract';
+import type { KeepAwakeDarkenResult, KeepAwakeStartRequest, KeepAwakeStartResult, KeepAwakeState } from './keep-awake-contract';
+import type { PrimarySessionInspection, StopPrimarySessionRequest, StopPrimarySessionResult } from './unload-session-contract';
 import type { FleetEntry, P2PSettings, P2PSettingsView } from './p2p-contract';
 
 /**
@@ -100,6 +102,10 @@ export interface IpcContract {
    */
   'shells:set-default-cli':     { request: ProjectDefaultAgentRequest; response: { project: Project } };
   'shells:kill':        { request: { projectId: number; shellIndex: number };   response: { ok: true } };
+  /** One live local shell-zero generation and its recognized agent status; unavailable status rejects. */
+  'shells:inspect-primary': { request: { projectId: number }; response: PrimarySessionInspection };
+  /** Stops only the inspected generation; stale consent cannot stop a replacement or newly reported work. */
+  'shells:stop-primary': { request: StopPrimarySessionRequest; response: StopPrimarySessionResult };
   /** Repair a corrupted Claude session by stripping all thinking blocks from the most recent .jsonl session file. Backs up the original. */
   'claude:repair-session': { request: { projectId: number }; response: { repaired: number; blocksStripped: number; backup: string } | { repaired: 0; blocksStripped: 0; backup: null; reason: string } };
   'shells:resize':      { request: { projectId: number; shellIndex: number; cols: number; rows: number }; response: { ok: true } };
@@ -407,6 +413,12 @@ export interface IpcContract {
     };
   };
 
+  // keep-awake (macOS only; off darwin start/darken return 'unsupported')
+  'keep-awake:get':    { request: undefined; response: KeepAwakeState };
+  'keep-awake:start':  { request: KeepAwakeStartRequest; response: KeepAwakeStartResult };
+  'keep-awake:stop':   { request: undefined; response: KeepAwakeState };
+  'keep-awake:darken': { request: undefined; response: KeepAwakeDarkenResult };
+
   /* ─── P2P remote access (fleet) ─── */
   'p2p:fleet-list':         { request: undefined; response: { fleet: FleetEntry[] } };
   'p2p:settings-get':       { request: undefined; response: P2PSettingsView };
@@ -440,7 +452,7 @@ export interface IpcEvents {
   'popout:changed':         { popped: Array<{ projectId: number; shellIndex: number }> };
   'metaproject:event':      { event: string; payload: unknown };
   'ports:changed':          { projectId: number; shellIndex: number; ports: number[] };
-  /** An agent shell changed state; emitted after screen observation or an authenticated OMP report. */
+  /** An agent shell changed state; emitted after screen observation. */
   'agent-state:changed': AgentShellStateEntry;
   /**
    * Fired when the user clicks an OS notification for a live shell — the
@@ -456,6 +468,10 @@ export interface IpcEvents {
    * add the file's parent as a new root if nothing matches.
    */
   'app:open-file-request':  { path: string };
+  /** Keep-awake state changed (start, re-start, stop, expiry, quit); sent to every window. */
+  'keep-awake:changed':     KeepAwakeState;
+  /** Both darken actions (`pmset displaysleepnow`, ScreenSaverEngine) failed; keep-awake stays on. */
+  'keep-awake:darken-failed': Record<string, never>;
   /** Pushed stream events from a remote device (`closed` when the stream or its connection ends). */
   'p2p:rpc-event':          { deviceId: string; streamId: number; data?: unknown; closed?: true; reason?: string };
   /**

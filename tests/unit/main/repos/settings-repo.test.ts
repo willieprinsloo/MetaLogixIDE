@@ -34,41 +34,24 @@ describe('SettingsRepo', () => {
     expect(repo.get('keep_alive_cap')).toBe(3);
   });
 
-  it('backfills official agent icons without replacing saved commands or custom icons', () => {
-    const repo = seed();
-    const pi = { name: 'Pi', argv: ['/custom/pi', '--flag'], env: { CUSTOM: 'yes' } };
-    const omp = { name: 'oh-my-pi', argv: ['/custom/omp'], icon: 'custom-mark' };
-    repo.set('default_cli_profiles', [pi, omp]);
-    repo.seedDefaults();
-    const profiles = repo.get('default_cli_profiles');
-    expect(profiles.find(p => p.name === 'Pi')).toEqual({ ...pi, icon: 'builtin:pi' });
-    expect(profiles.find(p => p.name === 'oh-my-pi')).toEqual(omp);
+  it('seeds only the Claude, Codex and opencode profiles on fresh installs', () => {
+    expect(seed().get('default_cli_profiles').map(p => p.name)).toEqual(['Claude', 'OpenAI Codex', 'opencode']);
   });
 
-  it('backfills the omp icon on existing profiles that have no icon', () => {
+  it('removes retired built-in profiles but keeps edited and custom ones, and adds the missing defaults', () => {
     const repo = seed();
-    repo.set('default_cli_profiles', [{ name: 'oh-my-pi', argv: ['omp'] }]);
+    const custom = { name: 'Custom', argv: ['/custom/tool'], env: { MODE: 'custom' } };
+    const editedPi = { name: 'Pi', argv: ['/custom/pi', '--flag'] };
+    repo.set('default_cli_profiles', [
+      { name: 'Claude', argv: ['claude'], icon: '🤖' },
+      { name: 'Gemini', argv: ['gemini'], icon: '✨' },
+      { name: 'oh-my-pi', argv: ['omp'], icon: 'builtin:omp' },
+      custom,
+      editedPi,
+    ]);
     repo.seedDefaults();
-    expect(repo.get('default_cli_profiles').find(p => p.name === 'oh-my-pi'))
-      .toEqual({ name: 'oh-my-pi', argv: ['omp'], icon: 'builtin:omp' });
-  });
-
-  it('seeds official agent icons on fresh installs', () => {
-    const profiles = seed().get('default_cli_profiles');
-    expect(profiles.find(p => p.name === 'Pi')?.icon).toBe('builtin:pi');
-    expect(profiles.find(p => p.name === 'oh-my-pi')?.icon).toBe('builtin:omp');
-  });
-
-  it('preserves empty custom marks, profile order, and unrelated profiles', () => {
-    const repo = seed();
-    const profiles = [
-      { name: 'Custom', argv: ['/custom/tool'], env: { MODE: 'custom' } },
-      { name: 'oh-my-pi', argv: ['/custom/omp', '--flag'], env: { MODE: 'omp' }, icon: '' },
-      { name: 'Pi', argv: ['/custom/pi'], env: { MODE: 'pi' }, icon: '' },
-    ];
-    repo.set('default_cli_profiles', profiles);
-    repo.seedDefaults();
-    expect(repo.get('default_cli_profiles').slice(0, profiles.length)).toEqual(profiles);
+    expect(repo.get('default_cli_profiles').map(p => p.name)).toEqual(['Claude', 'Custom', 'Pi', 'OpenAI Codex', 'opencode']);
+    expect(repo.get('default_cli_profiles').find(p => p.name === 'Pi')).toEqual(editedPi);
   });
 
   describe('font preferences', () => {

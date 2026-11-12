@@ -177,7 +177,7 @@ describe('CHANNEL_EMITS guard', () => {
     expect(scan.channels.length).toBeGreaterThan(50);
     expect(scan.channels).toEqual(expect.arrayContaining(Object.keys(CHANNEL_EMITS)));
     expect(scan.channels).toContain('drops:stage-file');
-    expect(scan.mutating).toEqual(expect.arrayContaining(['shells:kill', 'shells:launch', 'tasks:run']));
+    expect(scan.mutating).toEqual(expect.arrayContaining(['shells:kill', 'shells:stop-primary', 'shells:launch', 'tasks:run']));
   });
 
   it("lists 'alive-shells:changed' for every handler that changes the alive-shell set", () => {

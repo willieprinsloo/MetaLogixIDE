@@ -34,7 +34,14 @@ const INVISIBLE_RE = new RegExp('[\\u200B-\\u200D\\u2060\\uFEFF]', 'g');
 const NBSP_RE = new RegExp('\\u00A0', 'g');
 
 const CRLF_RE = /\r\n?/g;
-const TRAIL_WS_PER_LINE = /[ \t]+$/gm;
+
+// Hand-rolled instead of /[ \t]+$/gm: that regex backtracks quadratically on long blank runs
+// (TUI padding, wrapped empty rows) and froze the renderer on copy.
+function trimLineEnd(line: string): string {
+  let end = line.length;
+  while (end > 0 && (line[end - 1] === ' ' || line[end - 1] === '\t')) end--;
+  return line.slice(0, end);
+}
 
 export function sanitizeTerminalCopy(raw: string): string {
   if (!raw) return '';
@@ -44,5 +51,7 @@ export function sanitizeTerminalCopy(raw: string): string {
     .replace(NBSP_RE, ' ')
     .replace(INVISIBLE_RE, '')
     .replace(PUA_RE, '')
-    .replace(TRAIL_WS_PER_LINE, '');
+    .split('\n')
+    .map(trimLineEnd)
+    .join('\n');
 }

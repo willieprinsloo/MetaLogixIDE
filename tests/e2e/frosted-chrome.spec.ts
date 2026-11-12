@@ -19,7 +19,11 @@
  * Mac-only: every test calls `test.skip(process.platform !== 'darwin', ...)`
  * first, because the frosted chrome, the setting's visible effect and the
  * `data-platform="mac"` attribute only exist on darwin with Frosted chrome
- * ON (AC13, AC25 of the prior spec; AC6/AC7 of this one).
+ * ON (AC13, AC25 of the prior spec; AC6/AC7 of this one). The re-skip uses
+ * `isFrostedChrome` (attribute present); on darwin that is exactly
+ * `data-platform="mac"`, so mac results are unchanged. Linux shares this
+ * cascade but its coverage lives in linux-frosted-glass.spec.ts
+ * (docs/specs/linux-wayland-frosted-glass.md AC6-AC8, AC21).
  *
  * Reconciled contract (Phase 5, against the real diff):
  *  - Root attributes: `[data-chrome-root]` on both the main and popout app
@@ -55,7 +59,7 @@ import {
   MAC_PLATFORM,
 } from '../../src/renderer/frosted-chrome-contract';
 import type { TerminalFrostLevel } from '../../src/shared/frosted-glass';
-import { backgroundAlpha, isMacPlatform } from './helpers/chrome-colour';
+import { backgroundAlpha, isFrostedChrome } from './helpers/chrome-colour';
 import { newShellTab } from './helpers/focus';
 import { SPLIT_TESTIDS } from '../../src/renderer/split-copy';
 import { closeApp, guardedLaunch } from './helpers/claude-harness';
@@ -196,7 +200,7 @@ test.describe('AC17: computed alpha relationships (default palette, dark+light, 
       const l = await launchFrostApp({ terminalFrost: 'off' });
       try {
         const { win } = l;
-        test.skip(!(await isMacPlatform(win)), 'data-platform="mac" was not set; chrome floors do not apply here');
+        test.skip(!(await isFrostedChrome(win)), 'data-platform (frosted chrome) was not set; chrome floors do not apply here');
         await win.evaluate((t: string) => {
           document.documentElement.setAttribute('data-palette', 'default');
           document.documentElement.setAttribute('data-theme', t);
@@ -243,7 +247,7 @@ test('AC27: popout sheet is frosted only on the Shell tab, never on Files', asyn
   const l = await launchFrostApp({ terminalFrost: 'subtle' });
   try {
     const { app, win } = l;
-    test.skip(!(await isMacPlatform(win)), 'data-platform="mac" was not set');
+    test.skip(!(await isFrostedChrome(win)), 'data-platform (frosted chrome) was not set');
     await focusOutOfTerminal(win);
 
     const [popout] = await Promise.all([
@@ -278,7 +282,7 @@ test('AC8: toggling the setting updates the main window and an open popout withi
   const l = await launchFrostApp({ terminalFrost: 'off' });
   try {
     const { app, win } = l;
-    test.skip(!(await isMacPlatform(win)), 'data-platform="mac" was not set');
+    test.skip(!(await isFrostedChrome(win)), 'data-platform (frosted chrome) was not set');
     await focusOutOfTerminal(win);
 
     const [popout] = await Promise.all([
@@ -332,7 +336,7 @@ test('AC7: the setting persists across relaunch, from first paint, with no flash
   const home = mkdtempSync(join(tmpdir(), 'metaide-frost-relaunch-'));
   const first = await launchFrostApp({ terminalFrost: 'off', home });
   try {
-    test.skip(!(await isMacPlatform(first.win)), 'data-platform="mac" was not set');
+    test.skip(!(await isFrostedChrome(first.win)), 'data-platform (frosted chrome) was not set');
     await focusOutOfTerminal(first.win);
     await setFrostToggle(first.win, 'subtle');
   } finally {
@@ -378,7 +382,7 @@ test('AC21: emulated prefers-reduced-transparency makes every surface alpha 1, w
   const l = await launchFrostApp({ terminalFrost: 'subtle' });
   try {
     const { win } = l;
-    test.skip(!(await isMacPlatform(win)), 'data-platform="mac" was not set');
+    test.skip(!(await isFrostedChrome(win)), 'data-platform (frosted chrome) was not set');
     await focusOutOfTerminal(win);
     await openChat(win);
     await openSplit(win);
@@ -423,7 +427,7 @@ test('AC25(c): stripping data-platform restores the original (non-mac) palette a
   const l = await launchFrostApp({ terminalFrost: 'off' });
   try {
     const { win } = l;
-    test.skip(!(await isMacPlatform(win)), 'data-platform="mac" was not set to begin with');
+    test.skip(!(await isFrostedChrome(win)), 'data-platform (frosted chrome) was not set to begin with');
     await win.evaluate(() => {
       document.documentElement.setAttribute('data-palette', 'default');
       document.documentElement.setAttribute('data-theme', 'dark');
@@ -472,7 +476,7 @@ test('AC28: window opacity still applies to main and popout with terminal frost 
   const l = await launchFrostApp({ terminalFrost: 'subtle' });
   try {
     const { app, win } = l;
-    test.skip(!(await isMacPlatform(win)), 'data-platform="mac" was not set');
+    test.skip(!(await isFrostedChrome(win)), 'data-platform (frosted chrome) was not set');
     await focusOutOfTerminal(win);
 
     await win.getByTestId('settings-open').click();

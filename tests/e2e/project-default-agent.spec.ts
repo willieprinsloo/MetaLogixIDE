@@ -3,6 +3,7 @@ import {
   PROJECT_SETTINGS_COPY as COPY,
   PROJECT_SETTINGS_TESTIDS as IDS,
 } from '../../src/renderer/project-settings-contract';
+import { ENV_TESTIDS } from '../../src/renderer/project-env-copy';
 import type { Project, ProjectConfig } from '../../src/shared/types';
 import {
   assertLaunch,
@@ -164,15 +165,15 @@ async function paintedFocus(control: Locator): Promise<void> {
   );
 }
 
-test('E1 settings follows Env and shows a truthful selection prompt before any project is selected (AC1/12)', async () => {
+test('E1 settings follows Diff (the Env tab is gone) and shows a truthful selection prompt before any project is selected (AC1/12)', async () => {
   const { h, a, b } = await start();
   const tabs = h.win.getByTestId('main-tab-bar').getByRole('button');
-  await expect(tabs.nth(3)).toHaveText('Env');
-  await expect(tabs.nth(4)).toHaveText(COPY.tab);
-  await expect(tabs.nth(4)).toHaveAttribute('data-testid', IDS.tab);
+  await expect(tabs).toHaveText(['Shell', 'Files', /^Diff/, COPY.tab, 'Activity']);
+  await expect(h.win.getByRole('button', { name: 'Env', exact: true })).toHaveCount(0);
+  await expect(tabs.nth(3)).toHaveAttribute('data-testid', IDS.tab);
   await installGate(h.app, 'shells:set-default-cli', 'pass');
   try {
-    await tabs.nth(4).click();
+    await tabs.nth(3).click();
     await expect(h.win.getByText(COPY.noProject, { exact: true })).toBeVisible();
     await expect(h.win.getByRole('dialog')).toHaveCount(0);
     await expect(h.win.getByRole('combobox', { name: COPY.defaultAgentLabel })).toHaveCount(0);
@@ -182,7 +183,7 @@ test('E1 settings follows Env and shows a truthful selection prompt before any p
     expect(await project(h.win, A)).toEqual(a);
     expect(await project(h.win, B)).toEqual(b);
     expect((await gateEvidence(h.app, 'shells:set-default-cli')).requests).toEqual([]);
-    await h.win.getByRole('button', { name: 'Env', exact: true }).click();
+    await tabs.nth(0).click();
     await expect(h.win.getByText(COPY.noProject, { exact: true })).toHaveCount(0);
     await h.win.getByRole('button', { name: COPY.tab, exact: true }).click();
     await expect(h.win.getByText(COPY.noProject, { exact: true })).toBeVisible();
@@ -301,6 +302,7 @@ test('E2 merged choices deduplicate, match shell menu, retain custom sentinel na
   await expect(choice(h.win)).toBeEnabled();
   await expect(choice(h.win).locator('option')).toHaveText([
     COPY.globalDefault,
+    COPY.terminalAgent,
     PRIMARY,
     OTHER,
     'global',
@@ -350,7 +352,7 @@ test('E2 successful empty catalog retains enabled global fallback without missin
   try {
     await enterSettingsTab(h.win, a, true);
     await expect(choice(h.win)).toBeEnabled();
-    await expect(choice(h.win).locator('option')).toHaveText([COPY.globalDefault]);
+    await expect(choice(h.win).locator('option')).toHaveText([COPY.globalDefault, COPY.terminalAgent]);
     expect(await displayedChoice(h.win)).toBe(COPY.globalDefault);
     await expect(
       settingsView(h.win).getByText(COPY.nextLaunchNotice, { exact: true }),
@@ -809,7 +811,9 @@ for (const channel of ['projects:list', 'shells:cli-profiles-list'] as const) {
     const { h, a, b } = await start();
     await selectProject(h.win, A);
     await assertLaunch(h, a, 'project-primary', true);
-    await installGate(h.app, channel, 'hold', channel === 'projects:list' ? null : a.id);
+    // The Settings tab's env section also reads projects:list on mount (child effect, so first);
+    // skip that call so the hold lands on the default-agent settings load under test.
+    await installGate(h.app, channel, 'hold', channel === 'projects:list' ? null : a.id, channel === 'projects:list' ? 1 : 0);
     try {
       await enterSettingsTab(h.win, a);
       await expect(settingsView(h.win).getByTestId(IDS.loading)).toHaveText(COPY.loading);
@@ -933,9 +937,9 @@ test('E6 main tab and sidebar entry work by keyboard, native choice saves and fo
   });
   await expect.poll(() => h.win.evaluate(() => document.hasFocus())).toBe(true);
   const settingsTab = h.win.getByRole('button', { name: COPY.tab, exact: true });
-  const envTab = h.win.getByRole('button', { name: 'Env', exact: true });
+  const precedingTab = h.win.getByTestId('main-tab-bar').getByRole('button').nth(2);
   await h.win.keyboard.press('Tab'); // Keyboard modality for focus-visible assertions.
-  await envTab.focus();
+  await precedingTab.focus();
   await h.win.keyboard.press('Tab');
   await paintedFocus(settingsTab);
   await h.win.keyboard.press('Enter');
@@ -955,9 +959,9 @@ test('E6 main tab and sidebar entry work by keyboard, native choice saves and fo
   await choice(h.win).focus();
   await h.win.keyboard.press('Tab');
   expect(
-    await settingsView(h.win).evaluate((panel) => panel.contains(document.activeElement)),
-    'Tab leaves the only settings control rather than wrapping inside',
-  ).toBe(false);
+    await h.win.getByTestId(ENV_TESTIDS.panel).evaluate((panel) => panel.contains(document.activeElement)),
+    'Tab leaves the agent control for the environment section below it',
+  ).toBe(true);
   await h.win.keyboard.press('Shift+Tab');
   await expect(choice(h.win)).toBeFocused();
   await h.win.keyboard.press('Shift+Tab');
@@ -968,11 +972,13 @@ test('E6 main tab and sidebar entry work by keyboard, native choice saves and fo
   await settingsTab.focus();
   await paintedFocus(settingsTab);
   await h.win.keyboard.press('Shift+Tab');
-  await paintedFocus(envTab);
+  await paintedFocus(precedingTab);
   await h.win.keyboard.press('Enter');
   await expect(settingsView(h.win)).toHaveCount(0);
+  await settingsTab.focus();
+  await h.win.keyboard.press('Enter');
   await expect(
-    h.win.getByRole('heading', { name: 'Environment variables', exact: true }),
+    settingsView(h.win).getByRole('heading', { name: 'Environment variables', exact: true }),
   ).toBeVisible();
   const stableRow = row(h.win, B);
   await stableRow.focus();

@@ -1,9 +1,9 @@
-/** Async bounded POSIX process sampling for manually launched foreground Claude. */
+/** Async bounded POSIX process sampling for agent harnesses (Claude, Codex, opencode) started by hand in a shell. */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { harnessOf, type AgentHarness } from '@shared/agent-harness';
 
 const exec = promisify(execFile);
-const CLAUDE = /(?:^|[/\\])claude(?:\.exe|\.cmd)?$/i;
 interface ProcessRow {
   readonly pid: number;
   readonly parent: number;
@@ -30,16 +30,21 @@ function parseRows(text: string): ProcessRow[] {
   return rows;
 }
 
-function isForegroundClaude(
+/** The harness a foreground process runs, by its executable name or argv[0]. */
+function rowHarness(row: ProcessRow): AgentHarness | null {
+  return harnessOf([row.command]) ?? harnessOf([row.args.split(/\s/)[0] ?? '']);
+}
+
+function foregroundHarness(
   rows: readonly ProcessRow[],
   byPid: ReadonlyMap<number, ProcessRow>,
   ptyPid: number,
-): boolean {
-  if (!byPid.has(ptyPid)) return false;
+): AgentHarness | null {
+  if (!byPid.has(ptyPid)) return null;
   for (const row of rows) {
     if (row.foreground <= 0 || row.group !== row.foreground || row.pid === ptyPid) continue;
-    const argv0 = row.args.split(/\s/)[0] ?? '';
-    if (!CLAUDE.test(row.command) && !CLAUDE.test(argv0)) continue;
+    const harness = rowHarness(row);
+    if (!harness) continue;
     const seen = new Set<number>();
     let parent = row.parent;
     while (parent !== ptyPid && !seen.has(parent)) {
@@ -47,14 +52,19 @@ function isForegroundClaude(
       parent = byPid.get(parent)?.parent ?? 0;
       if (parent === 0) break;
     }
-    if (parent === ptyPid) return true;
+    if (parent === ptyPid) return harness;
   }
-  return false;
+  return null;
 }
 /** Checks foreground process-group membership and ancestry beneath a current PTY leader. */
-export function findForegroundClaude(snapshot: string, ptyPid: number): boolean {
+export function findForegroundHarness(snapshot: string, ptyPid: number): AgentHarness | null {
   const rows = parseRows(snapshot);
-  return isForegroundClaude(rows, new Map(rows.map((row) => [row.pid, row])), ptyPid);
+  return foregroundHarness(rows, new Map(rows.map((row) => [row.pid, row])), ptyPid);
+}
+
+/** True when the PTY's foreground job is Claude. */
+export function findForegroundClaude(snapshot: string, ptyPid: number): boolean {
+  return findForegroundHarness(snapshot, ptyPid) === 'claude';
 }
 
 /** Runs one bounded non-shell `ps` query per concurrent sampling interval. */
@@ -71,8 +81,13 @@ export class PosixForegroundObserver {
     },
   ) {}
 
-  /** Returns false if process evidence is unavailable; never blocks the event loop. */
+  /** True when the foreground job is Claude; false if process evidence is unavailable. */
   async hasClaude(ptyPid: number): Promise<boolean> {
+    return (await this.harness(ptyPid)) === 'claude';
+  }
+
+  /** The harness running as the PTY's foreground job, or null (also when evidence is unavailable); never blocks the event loop. */
+  async harness(ptyPid: number): Promise<AgentHarness | null> {
     this.pending ??= this.sample()
       .then((text) => {
         const rows = parseRows(text);
@@ -83,9 +98,9 @@ export class PosixForegroundObserver {
       });
     try {
       const { rows, byPid } = await this.pending;
-      return isForegroundClaude(rows, byPid, ptyPid);
+      return foregroundHarness(rows, byPid, ptyPid);
     } catch {
-      return false;
+      return null;
     }
   }
 }

@@ -1,3 +1,4 @@
+import type { AgentKind } from '@shared/agent-state';
 import { describe, expect, it, vi } from 'vitest';
 import { AgentStatusTracker } from '@main/agent-status/state-tracker';
 
@@ -7,7 +8,7 @@ const identity = { ...shell, pid: 10, generation: 'g1', agent: 'claude' as const
 describe('Agent status transitions', () => {
   it('uses app launch identity and current screen without consulting process sampling', async () => {
     let rows = ['> '];
-    const observeForeground = vi.fn(async () => false);
+    const observeForeground = vi.fn(async (): Promise<AgentKind | null> => null);
     const liveShell = vi.fn(() => ({ pid: 10, generation: 'g1', agent: 'claude' as const }));
     const tracker = new AgentStatusTracker({ liveShell, liveStatus: async () => ({ rows, title: '' }) }, observeForeground, 'win32');
     tracker.spawn(identity);
@@ -31,7 +32,7 @@ describe('Agent status transitions', () => {
     const liveShell = () => ({ pid: 10, generation: 'g1', agent: 'claude' as const });
     const tracker = new AgentStatusTracker(
       { liveShell, liveStatus: async () => ({ rows: ['❯ '], title }) },
-      async () => false,
+      async () => null,
     );
     tracker.spawn(identity);
     await tracker.refresh();
@@ -42,7 +43,7 @@ describe('Agent status transitions', () => {
   });
 
   it('manual Windows remains idle and replaced generations reject old reports', async () => {
-    const observed = vi.fn(async () => true);
+    const observed = vi.fn(async (): Promise<AgentKind | null> => 'claude');
     let generation = 'g1';
     const liveShell = vi.fn(() => ({ pid: 10, generation, agent: null }));
     const tracker = new AgentStatusTracker({ liveShell, liveStatus: async () => ({ rows: ['Allow Bash command?', 'Esc to cancel'], title: '' }) }, observed, 'win32');
@@ -50,14 +51,10 @@ describe('Agent status transitions', () => {
     await tracker.refresh();
     expect(tracker.list()).toEqual([]);
     expect(observed).not.toHaveBeenCalled();
-    generation = 'g2';
-    tracker.spawn({ ...identity, generation: 'g2', agent: 'omp' });
-    tracker.ompReport(shell, 'g1', 'blocked');
-    expect(tracker.list()).toEqual([{ ...shell, agent: 'omp', state: 'idle' }]);
   });
   it('manual POSIX Claude appears only while it owns the foreground and stale samples cannot revive it', async () => {
     let foreground = true;
-    const observe = vi.fn(async () => foreground);
+    const observe = vi.fn(async (): Promise<AgentKind | null> => (foreground ? 'claude' : null));
     const liveShell = () => ({ pid: 10, generation: 'g1', agent: null });
     const tracker = new AgentStatusTracker({ liveShell, liveStatus: async () => ({ rows: ['✻ Thinking…', 'esc to interrupt'], title: '' }) }, observe, 'darwin');
     tracker.spawn({ ...identity, agent: null });
@@ -68,23 +65,86 @@ describe('Agent status transitions', () => {
     expect(tracker.list()).toEqual([]);
     expect(observe).toHaveBeenCalledWith(10);
   });
-  it('expires an unrefreshed OMP report while a live generation remains, then recovers from a fresh report', async () => {
-    vi.useFakeTimers();
-    try {
-      const liveShell = () => ({ pid: 10, generation: 'g1', agent: 'omp' as const });
-      const tracker = new AgentStatusTracker({ liveShell, liveStatus: async () => ({ rows: [], title: '' }) }, async () => false);
-      tracker.spawn({ ...identity, agent: 'omp' });
-      tracker.ompReport(shell, 'g1', 'blocked');
-      await vi.advanceTimersByTimeAsync(1600);
-      await tracker.refresh();
-      expect(tracker.list()).toEqual([{ ...shell, agent: 'omp', state: 'idle' }]);
-      tracker.ompReport(shell, 'g1', 'busy');
-      expect(tracker.list()[0]?.state).toBe('busy');
-      tracker.exit({ ...identity, agent: 'omp' });
-      tracker.ompReport(shell, 'g1', 'blocked');
-      expect(tracker.list()).toEqual([]);
-    } finally {
-      vi.useRealTimers();
-    }
+  it('fails guarded reads only for a failed sample and restores them after a successful sample', async () => {
+    let unavailable = true;
+    const tracker = new AgentStatusTracker({
+      liveShell: () => ({ pid: 10, generation: 'g1', agent: 'claude' }),
+      liveStatus: async () => {
+        if (unavailable) throw new Error('screen unavailable');
+        return { rows: ['✻ Thinking…', 'esc to interrupt'], title: '' };
+      },
+    }, async () => null, 'win32');
+    tracker.spawn(identity);
+    await tracker.refresh();
+    expect(tracker.list()).toEqual([{ ...shell, agent: 'claude', state: 'idle' }]);
+    expect(() => tracker.readForGuard(1, 0, 'g1')).toThrow('agent status unavailable');
+    unavailable = false;
+    await tracker.refresh();
+    expect(tracker.readForGuard(1, 0, 'g1')).toEqual({ agent: 'claude', state: 'busy' });
+  });
+
+  it('fails a guarded read after a foreground-sample error but permits a later plain-shell result', async () => {
+    let unavailable = true;
+    const tracker = new AgentStatusTracker({
+      liveShell: () => ({ pid: 10, generation: 'g1', agent: null }),
+      liveStatus: async () => ({ rows: [], title: '' }),
+    }, async () => {
+      if (unavailable) throw new Error('foreground unavailable');
+      return null;
+    }, 'darwin');
+    tracker.spawn({ ...identity, agent: null });
+    await tracker.refresh();
+    expect(() => tracker.readForGuard(1, 0, 'g1')).toThrow('agent status unavailable');
+    unavailable = false;
+    await tracker.refresh();
+    expect(tracker.readForGuard(1, 0, 'g1')).toEqual({ agent: null, state: null });
+  });
+
+  it('never lends a prior generation failure or an unsampled idle state to a replacement', async () => {
+    let generation = 'g1';
+    let unavailable = true;
+    const tracker = new AgentStatusTracker({
+      liveShell: () => ({ pid: 10, generation, agent: 'claude' }),
+      liveStatus: async () => {
+        if (unavailable) throw new Error('old screen unavailable');
+        return { rows: ['✻ Thinking…', 'esc to interrupt'], title: '' };
+      },
+    }, async () => null, 'win32');
+    tracker.spawn(identity);
+    await tracker.refresh();
+    expect(() => tracker.readForGuard(1, 0, 'g1')).toThrow('agent status unavailable');
+    generation = 'g2';
+    tracker.spawn({ ...identity, generation: 'g2' });
+    expect(() => tracker.readForGuard(1, 0, 'g1')).toThrow('agent status unavailable');
+    expect(() => tracker.readForGuard(1, 0, 'g2')).toThrow('agent status unavailable');
+    unavailable = false;
+    await tracker.refresh();
+    expect(tracker.readForGuard(1, 0, 'g2')).toEqual({ agent: 'claude', state: 'busy' });
+  });
+
+  it('detects Codex and opencode started by hand in a terminal; they read idle and clear when they exit', async () => {
+    let running: AgentKind | null = 'codex';
+    const observe = vi.fn(async (): Promise<AgentKind | null> => running);
+    const liveStatus = vi.fn(async () => ({ rows: ['✻ Thinking…', 'esc to interrupt'], title: '' }));
+    const tracker = new AgentStatusTracker({ liveShell: () => ({ pid: 10, generation: 'g1', agent: null }), liveStatus }, observe, 'darwin');
+    tracker.spawn({ ...identity, agent: null });
+    await tracker.refresh();
+    expect(tracker.list()).toEqual([{ ...shell, agent: 'codex', state: 'idle' }]);
+    expect(liveStatus, 'only Claude screens are classified').not.toHaveBeenCalled();
+    running = 'opencode';
+    await tracker.refresh();
+    expect(tracker.list()).toEqual([{ ...shell, agent: 'opencode', state: 'idle' }]);
+    running = null;
+    await tracker.refresh();
+    expect(tracker.list()).toEqual([]);
+  });
+
+  it('a shell launched as Codex is Codex without sampling the foreground', async () => {
+    const observe = vi.fn(async (): Promise<AgentKind | null> => null);
+    const tracker = new AgentStatusTracker({ liveShell: () => ({ pid: 10, generation: 'g1', agent: 'codex' }), liveStatus: async () => ({ rows: [], title: '' }) }, observe, 'darwin');
+    tracker.spawn({ ...identity, agent: 'codex' });
+    await tracker.refresh();
+    expect(tracker.list()).toEqual([{ ...shell, agent: 'codex', state: 'idle' }]);
+    expect(observe).not.toHaveBeenCalled();
   });
 });

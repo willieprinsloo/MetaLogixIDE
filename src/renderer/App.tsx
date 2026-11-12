@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence } from 'motion/react';
 import { Sidebar } from './components/Sidebar';
+import { UnloadSessionDialog } from './components/UnloadSessionDialog';
 import { RemoteProjectPane } from './components/RemoteProjectPane';
 import type { OpenPaneRequest } from './components/MachinesSection';
-import { ProjectSwitcher } from './components/ProjectSwitcher';
 import { StatusBar } from './components/StatusBar';
-import { TitleGroup } from './components/TitleGroup';
-import { CHROME_TESTIDS } from './chrome-testids';
+import { useShowStatusBar } from './hooks/useShowStatusBarPorts';
 import { SIDEBAR_WIDTH, useSidebarWidth } from './sidebar-width';
 import { ShellTab } from './components/ShellTab';
 import { FilesTab } from './components/FilesTab';
@@ -15,12 +14,21 @@ import { FleetView } from './components/FleetView';
 import { ChatTab } from './components/ChatTab';
 import { GitPanel } from './components/GitPanel';
 import { Settings } from './components/Settings';
+import { ProjectSettingsTab } from './components/ProjectSettingsTab';
+import { PROJECT_SETTINGS_COPY, PROJECT_SETTINGS_TESTIDS, type ProjectSettingsTarget } from './project-settings-contract';
 import type { SettingsSection } from './components/settings/nav-icons';
 import { ResizeHandle } from './components/ResizeHandle';
-import { FileFinder } from './components/FileFinder';
 import { NewProjectDialog } from './components/NewProjectDialog';
-import { ActivityBar, type ActivityView } from './components/ActivityBar';
-import { CommandPalette, type Command } from './components/CommandPalette';
+import { ActivityBar, ABButton, type ActivityView } from './components/ActivityBar';
+import { CommandPalette } from './components/CommandPalette';
+import { ShortcutsHelp } from './components/ShortcutsHelp';
+import type { PaletteRequest, PaletteSeed } from './command-palette-contract';
+import { buildPaletteCommands } from './palette-commands';
+import { paletteKeyAction } from './palette-keys';
+import { appShortcutAction } from './app-keys';
+import type { AppShortcutAction } from './shortcut-contract';
+import { SHORTCUT_COPY } from './shortcut-copy';
+import { useShortcutPlatform } from './shortcut-platform';
 import { ProjectSearch } from './components/ProjectSearch';
 import { PromptLibrary } from './components/PromptLibrary';
 import { ScrollbackSearch } from './components/ScrollbackSearch';
@@ -35,10 +43,14 @@ import { diffTabCount } from './diff/diff-selection';
 import { isMainTab, type MainTab } from './main-tab';
 import { useEnvDrafts } from './hooks/useEnvDrafts';
 import { useClaudePermissionMode } from './hooks/useClaudePermissionMode';
+import { useTaskCount } from './hooks/useTaskCount';
 import { toast } from './hooks/useToasts';
+import { useKeepAwake } from './hooks/useKeepAwake';
+import { KeepAwakeUntilDialog } from './components/KeepAwakeUntilDialog';
 import { useRoots } from './hooks/useRoots';
 import type { Project } from '@shared/types';
 import { api } from './api';
+import { createPendingFileOpen } from './pending-file-open';
 import { useTheme, type ThemeMode } from './hooks/useTheme';
 import { usePersistedNumber } from './hooks/usePersistedNumber';
 import { usePersistedState } from './hooks/usePersistedState';
@@ -64,6 +76,10 @@ import { ShellSplit } from './components/ShellSplit';
 import { ShellTabDot } from './components/ShellTabDot';
 import { SPLIT_RATIO_DEFAULT, sanitizeRatio } from './split-ratio';
 import { shellChipLabel, stripShells } from './shell-label';
+import { useFrostedGlassAttributes } from './hooks/useFrostedGlassAttributes';
+import { useExternalDragGuard } from './hooks/useExternalDragGuard';
+import { isPrimaryVisible } from './unload-session';
+import type { SheetContent } from './frosted-chrome-contract';
 
 
 interface PopoutInfo {
@@ -78,12 +94,13 @@ interface ProjectUiState {
   splitRatio: number;
 }
 
+
 /**
- * The sidebar fold's flags and terminal hold. `animate` is sampled when `open` flips: mouse
+ * A side pane's fold flags and terminal hold (the sidebar, and the activity sheet inside it). `animate` is sampled when `open` flips: mouse
  * toggles fold (holding terminal geometry until the fold completes), keyboard toggles are instant
  * and take no hold. Returns the `custom` for the fold and its completion handler.
  */
-function useSidebarFold(open: boolean, animate: boolean) {
+function usePaneFold(open: boolean, animate: boolean) {
   const reduced = usePrefersReducedMotion();
   const [prevOpen, setPrevOpen] = useState(open);
   const [folding, setFolding] = useState(false);
@@ -105,6 +122,11 @@ function readPopout(): PopoutInfo | null {
 }
 
 /** Selects the renderer shell and applies synchronized application typography. */
+/** Views shown in the sidebar column in place of the project list; Fleet takes over the main area instead. */
+function hasSheet(view: ActivityView): boolean {
+  return view !== 'projects' && view !== 'fleet';
+}
+
 export function App() {
   useApplyUiFont();
   useTheme();
@@ -120,6 +142,8 @@ export function App() {
 }
 
 function MainApp() {
+  const platform = useShortcutPlatform();
+  useFrostedGlassAttributes();
   // App-boot auto-login: if the user opted into "Remember me" in a previous
   // session, the OS keychain has their password. Try the silent auto-login
   // once at startup so the chat unread badge, event stream, and rail state
@@ -157,7 +181,7 @@ function MainApp() {
   const [remotePane, setRemotePane] = useState<OpenPaneRequest | null>(null);
   const openPane = useCallback((req: OpenPaneRequest) => setRemotePane(req), []);
   // -1 never matches a real project id, so this reads idle when nothing is selected.
-  const selectedClaudeState = useProjectAgentState(selected?.id ?? -1);
+  const selectedAgentState = useProjectAgentState(selected?.id ?? -1);
   // Keep a live ref of `selected` so the shortcut handler (bound once in a
   // useEffect with an empty dep list) always reads the current project.
   const selectedRef = useRef<Project | null>(null);
@@ -166,7 +190,6 @@ function MainApp() {
   const [fullscreen, toggleFullscreen] = useWindowFullscreen();
   const toggleFullscreenRef = useRef<() => void>(() => undefined);
   useEffect(() => { toggleFullscreenRef.current = toggleFullscreen; }, [toggleFullscreen]);
-  const [switcherOpen, setSwitcherOpen] = useState(false);
   const [aliveCount, setAliveCount] = useState(0);
   const [localAliveShells, setLocalAliveShells] = useState<Array<{ projectId: number; projectName: string; projectPath: string; shellIndex: number; launchArgv: string[] }>>([]);
   const [mainTab, setMainTab] = usePersistedState<MainTab>('metaide.mainTab', 'shell', isMainTab);
@@ -203,21 +226,16 @@ function MainApp() {
   useEffect(() => { if (activeView === 'chat') setChatUnread(0); }, [activeView]);
   // Clear any pending "open this file" request when the project changes —
   // otherwise a relPath captured from project A would fire in project B's
-  // FilesTab and either open the wrong file or 404.
-  useEffect(() => { setOpenInFiles(null); }, [selected?.id]);
-  // Refresh task count for the ActivityBar pip whenever the project changes.
-  // Cheap: it's a filesystem read of package.json + Makefile + compose.
+  // FilesTab and either open the wrong file or 404. The one exception is a
+  // file opened from another project's terminal path, recorded for exactly
+  // this project before the switch.
+  const [pendingFileOpen] = useState(createPendingFileOpen);
   useEffect(() => {
-    if (!selected) { setTaskCount(0); return; }
-    let cancelled = false;
-    (async () => {
-      try {
-        const { tasks } = await api.invoke('tasks:discover', { projectId: selected.id });
-        if (!cancelled) setTaskCount(tasks.length);
-      } catch { if (!cancelled) setTaskCount(0); }
-    })();
-    return () => { cancelled = true; };
-  }, [selected]);
+    const open = pendingFileOpen.take(selected?.id ?? null);
+    setOpenInFiles(open);
+    if (open) setMainTab('files');
+  }, [selected?.id, pendingFileOpen, setMainTab]);
+  const taskCount = useTaskCount(selected?.id ?? null);
   // Which shellIndex is currently visible in the Shell tab. Default 0 (the
   // Claude/primary shell); ad-hoc terminals opened as tabs bump this to
   // their fresh index so the user immediately sees the new shell.
@@ -254,6 +272,26 @@ function MainApp() {
     }));
   }, [setProjectStates]);
   const allProjectShells = useProjectShells(selected?.id ?? null);
+  const primaryAlive = allProjectShells.some((shell) => shell.shellIndex === 0);
+  const [unloadTarget, setUnloadTarget] = useState<Pick<Project, 'id' | 'name'> | null>(null);
+  const unloadTargetRef = useRef<Pick<Project, 'id' | 'name'> | null>(null);
+  const unloadOpenerRef = useRef<HTMLElement | null>(null);
+  const openUnloadSession = useCallback((project: Project, opener: HTMLElement | null) => {
+    if (unloadTargetRef.current) return;
+    unloadTargetRef.current = { id: project.id, name: project.name };
+    unloadOpenerRef.current = opener;
+    setUnloadTarget(unloadTargetRef.current);
+  }, []);
+  const closeUnloadSession = useCallback(() => {
+    unloadTargetRef.current = null;
+    setUnloadTarget(null);
+    requestAnimationFrame(() => {
+      const opener = unloadOpenerRef.current;
+      const fallback = document.querySelector<HTMLElement>('[data-testid="status-bar-palette-hint"]');
+      (opener?.isConnected ? opener : fallback)?.focus();
+      unloadOpenerRef.current = null;
+    });
+  }, []);
   // Label shown in the status bar for the visible shell's agent. Read from
   // the same alive-shells list the tab chips use, so the two stay in sync.
   const activeShellAgentLabel: string | null = useMemo(() => {
@@ -262,6 +300,7 @@ function MainApp() {
   }, [allProjectShells, activeShellIndex]);
   const activeShellAgentState = useShellAgentState(selected?.id ?? -1, activeShellIndex).state;
   const activeShellAgentStateLabel = activeShellAgentLabel ? activeShellAgentState : null;
+  const showStatusBar = useShowStatusBar();
   const [sidebarOpen, setSidebarOpen] = usePersistedState<boolean>(
     'metaide.sidebarOpen',
     true,
@@ -274,32 +313,68 @@ function MainApp() {
     setSidebarAnimate(animate);
     setSidebarOpen((v) => open ?? !v);
   }, [setSidebarOpen]);
-  const sidebarFold = useSidebarFold(sidebarOpen, sidebarAnimate);
+  const sidebarFold = usePaneFold(sidebarOpen, sidebarAnimate);
+  const sheetInColumn = hasSheet(activeView) && !remotePane;
+  const [columnDragging, setColumnDragging] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useSidebarWidth();
   // Chat panel gets its own persisted width so the wider chat view doesn't
   // resize the projects list back to a tiny column when the user flips modes.
   const [chatPanelWidth, setChatPanelWidth] = usePersistedNumber('metaide.chatPanelWidth', 400, 300, 640);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [projectSettingsTarget, setProjectSettingsTarget] = useState<ProjectSettingsTarget | null>(null);
+  const settingsTarget = projectSettingsTarget ?? selected;
+  // Bumped by "Environment variables…" so the Settings tab scrolls its env section into view.
+  const [envFocusRequest, setEnvFocusRequest] = useState(0);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
-  const [finderOpen, setFinderOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [openInFiles, setOpenInFiles] = useState<{ relPath: string; line: number | null } | null>(null);
-  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteRequest, setPaletteRequest] = useState<PaletteRequest | null>(null);
+  const paletteOpenRef = useRef(false);
+  paletteOpenRef.current = paletteRequest != null;
+  const paletteSeqRef = useRef(0);
+  const openPalette = useCallback((seed: PaletteSeed) => {
+    paletteSeqRef.current += 1;
+    setPaletteRequest({ seq: paletteSeqRef.current, seed });
+  }, []);
   const [helpOpen, setHelpOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [promptsOpen, setPromptsOpen] = useState(false);
   const [scrollbackOpen, setScrollbackOpen] = useState(false);
+  const keepAwake = useKeepAwake();
+  const [keepAwakeUntilOpen, setKeepAwakeUntilOpen] = useState(false);
+  const keepAwakeActive = keepAwake?.state.active ?? false;
+  const keepAwakeStart = keepAwake?.start;
+  const keepAwakeStop = keepAwake?.stop;
+  const keepAwakeDarken = keepAwake?.darkenNow;
+  const paletteKeepAwake = useMemo(() => (
+    keepAwakeStart && keepAwakeStop && keepAwakeDarken
+      ? {
+          active: keepAwakeActive,
+          start: (minutes: number) => { void keepAwakeStart(minutes * 60_000); },
+          openUntil: () => setKeepAwakeUntilOpen(true),
+          stop: () => { void keepAwakeStop(); },
+          darkenNow: () => { void keepAwakeDarken(); },
+        }
+      : null
+  ), [keepAwakeActive, keepAwakeStart, keepAwakeStop, keepAwakeDarken]);
   const envDrafts = useEnvDrafts();
   const envDirty = selected != null && envDrafts.isDirty(selected.id);
-  const [taskCount, setTaskCount] = useState(0);
   const { mode: themeMode, effective: effectiveTheme, cycle: cycleTheme, setMode: setThemeMode, setPalette: setThemePalette } = useTheme();
   const permissionMode = useClaudePermissionMode();
   const shortcutsBlockedRef = useRef(true);
-  shortcutsBlockedRef.current = permissionMode.status !== 'chosen';
-  const overlayOpen = switcherOpen || settingsOpen || (finderOpen && selected != null) || newProjectOpen
-    || paletteOpen || helpOpen || (searchOpen && selected != null) || promptsOpen || scrollbackOpen
-    || permissionMode.status === 'unchosen';
+  shortcutsBlockedRef.current = permissionMode.status !== 'chosen' || unloadTarget !== null;
+  const overlayOpen = paletteRequest != null || settingsOpen || newProjectOpen
+    || helpOpen || (searchOpen && selected != null) || promptsOpen || scrollbackOpen
+    || permissionMode.status === 'unchosen' || unloadTarget !== null;
   useWindowTerminalFocus(overlayOpen);
+  // A request issued while the palette is still open is refused by the overlay rule, so it waits for the close to commit.
+  const focusAfterPaletteRef = useRef<number | null>(null);
+  useEffect(() => {
+    const projectId = focusAfterPaletteRef.current;
+    if (paletteRequest != null || projectId == null) return;
+    focusAfterPaletteRef.current = null;
+    terminalFocus.requestProjectFocus(projectId);
+  }, [paletteRequest]);
   useReportViewedShells({ selectedProjectId: selected?.id ?? null, mainTab, activeShellIndex, rightShellIndex });
   const { roots } = useRoots();
   const { isPopped } = usePoppedShells();
@@ -327,34 +402,62 @@ function MainApp() {
     }
   }, [selected, activeShellIndex, isPopped]);
 
-  const commands = useMemo<Command[]>(() => [
-    { id: 'nav.projects',    category: 'Go',       title: 'Open project switcher',           hint: '⌘K',   run: () => setSwitcherOpen(true) },
-    { id: 'nav.find-file',   category: 'Go',       title: 'Find file in project',            hint: '⌘P',   run: () => setFinderOpen(true) },
-    { id: 'nav.find-in-project', category: 'Go',   title: 'Find in project…',                hint: '⌘⇧F',  run: () => setSearchOpen(true) },
-    { id: 'nav.scrollback-search', category: 'Go', title: 'Search all shells…',              hint: '⌘⇧O',  run: () => setScrollbackOpen(true) },
-    { id: 'shell.prompts',   category: 'Shell',    title: 'Open prompt library',             hint: '⌘⇧K',  run: () => setPromptsOpen(true) },
-    { id: 'view.tasks',      category: 'View',     title: 'Show tasks panel',                              run: () => setActiveView('tasks') },
-    { id: 'view.sidebar',    category: 'View',     title: sidebarOpen ? 'Hide sidebar' : 'Show sidebar', hint: '⌘B', run: () => toggleSidebar(false) },
-    { id: 'view.shell',      category: 'View',     title: 'Switch to Shell tab',                           run: () => setMainTab('shell') },
-    { id: 'view.files',      category: 'View',     title: 'Switch to Files tab',                           run: () => setMainTab('files') },
-    { id: 'view.diff',       category: 'View',     title: DIFF_COPY.paletteTitle,                          run: () => setMainTab('diff') },
-    { id: 'view.env',        category: 'View',     title: 'Switch to Env tab',                             run: () => setMainTab('env') },
-    { id: 'view.help',       category: 'View',     title: 'Show keyboard shortcut cheat sheet',   hint: '⌘/', run: () => setHelpOpen(true) },
-    { id: 'proj.new',        category: 'Project',  title: 'New project…',                    hint: '⌘⇧N',  run: () => setNewProjectOpen(true) },
-    { id: 'shell.unload',    category: 'Shell',    title: 'Unload current session',                        run: async () => { if (selected) { await api.invoke('shells:kill', { projectId: selected.id, shellIndex: 0 }); toast('Session unloaded', { kind: 'success' }); } } },
-    { id: 'shell.popout',    category: 'Shell',    title: 'Pop current shell into a new window',          run: async () => { if (selected) await api.invoke('windows:popout-shell', { projectId: selected.id, shellIndex: 0 }); } },
-    { id: 'shell.find',      category: 'Shell',    title: 'Find in terminal',                  hint: '⌘F', run: () => { /* handled inside ShellTab when focused */ toast('Focus the shell first, then ⌘F', { kind: 'info' }); } },
-    { id: 'shell.zoom.in',   category: 'Shell',    title: 'Zoom in',                          hint: '⌘=', run: () => { /* handled inside ShellTab */ } },
-    { id: 'shell.zoom.out',  category: 'Shell',    title: 'Zoom out',                         hint: '⌘-', run: () => { /* handled inside ShellTab */ } },
-    { id: 'shell.zoom.reset',category: 'Shell',    title: 'Reset zoom',                       hint: '⌘0', run: () => { /* handled inside ShellTab */ } },
-    { id: 'theme.system',    category: 'Theme',    title: 'Follow system theme',                          run: () => setThemeMode('system') },
-    { id: 'theme.light',     category: 'Theme',    title: 'Use light theme',                              run: () => setThemeMode('light') },
-    { id: 'theme.dark',      category: 'Theme',    title: 'Use dark theme',                               run: () => setThemeMode('dark') },
-    { id: 'theme.default',   category: 'Theme',    title: 'Use Default palette',                           run: () => setThemePalette('default') },
-    { id: 'theme.catppuccin', category: 'Theme',   title: 'Use Catppuccin palette',                        run: () => setThemePalette('catppuccin') },
-    { id: 'theme.rose-pine', category: 'Theme',    title: 'Use Rosé Pine palette',                         run: () => setThemePalette('rose-pine') },
-    { id: 'app.settings',    category: 'App',      title: 'Open Settings',                    hint: '⌘,',  run: () => setSettingsOpen(true) },
-  ], [selected, sidebarOpen, setThemeMode, setThemePalette]);
+  /** Launches a plain shell in the selected project: a new tab (⌘T) or, with `newWindow`, a new window (⌘⇧T). */
+  const openNewTerminal = useCallback((newWindow: boolean) => {
+    const p = selectedRef.current;
+    if (!p) return;
+    void (async () => {
+      try {
+        const { shellIndex } = await api.invoke('shells:launch-plain', { projectId: p.id });
+        if (newWindow) {
+          await api.invoke('windows:popout-shell', { projectId: p.id, shellIndex });
+          toast(`New terminal in ${p.name}`, { kind: 'info' });
+        } else {
+          setMainTab('shell');
+          setActiveShellIndex(shellIndex);
+        }
+      } catch (err) {
+        toast('Failed to open terminal', { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') });
+      }
+    })();
+  }, [setActiveShellIndex, setMainTab]);
+  const openNewTerminalRef = useRef(openNewTerminal);
+  openNewTerminalRef.current = openNewTerminal;
+
+  const commands = useMemo(() => buildPaletteCommands({
+    hasProject: selected != null,
+    hasPrimary: primaryAlive && remotePane === null,
+    sidebarOpen,
+    openPalette,
+    openProjectSearch: () => setSearchOpen(true),
+    openScrollbackSearch: () => setScrollbackOpen(true),
+    openPrompts: () => setPromptsOpen(true),
+    showTasks: () => setActiveView('tasks'),
+    toggleSidebar: () => toggleSidebar(false),
+    statusBarVisible: showStatusBar,
+    toggleStatusBar: () => { void api.invoke('settings:set', { key: 'show_status_bar', value: !showStatusBar }); },
+    showTab: setMainTab,
+    openHelp: () => setHelpOpen(true),
+    openNewProject: () => setNewProjectOpen(true),
+    unloadSession: async () => {
+      if (selected && !remotePane && primaryAlive) {
+        openUnloadSession(selected, document.querySelector<HTMLElement>('[data-testid="status-bar-palette-hint"]'));
+      }
+    },
+    popOutShell: async () => {
+      if (selected) await api.invoke('windows:popout-shell', { projectId: selected.id, shellIndex: 0 });
+    },
+    findInTerminal: () => toast(SHORTCUT_COPY.findInTerminalToast(platform), { kind: 'info' }),
+    openNewTerminal,
+    setThemeMode,
+    setThemePalette,
+    openSettings: (section) => {
+      if (section) setSettingsSection(section);
+      setSettingsOpen(true);
+    },
+    keepAwake: paletteKeepAwake,
+    platform,
+  }), [selected, remotePane, primaryAlive, openUnloadSession, sidebarOpen, openPalette, setActiveView, toggleSidebar, showStatusBar, setMainTab, openNewTerminal, setThemeMode, setThemePalette, paletteKeepAwake, platform]);
 
   const refreshAlive = useCallback(async () => {
     const { shells } = await api.invoke('shells:alive-list', undefined as never);
@@ -431,6 +534,7 @@ function MainApp() {
 
   useEffect(() => {
     const off = api.on('app:open-file-request', async ({ path }) => {
+      const requestId = ++selectionRequestRef.current;
       try {
         const { projects } = await api.invoke('projects:list', undefined as never);
         // Longest-prefix wins — a project nested inside a parent project
@@ -444,8 +548,12 @@ function MainApp() {
         const { project, relPath } = match
           ? { project: match, relPath: path === match.path ? '' : path.slice(match.path.length + 1) }
           : await api.invoke('projects:ensure-for-file', { path });
+        if (selectionRequestRef.current !== requestId) return;
         await api.invoke('projects:open', { id: project.id });
-        lastPickIdRef.current = project.id;
+        if (selectionRequestRef.current !== requestId) return;
+        setProjectSettingsTarget(null);
+        setRemotePane(null);
+        setActiveView('projects');
         setSelected(project);
         try { await api.invoke('shells:launch', { projectId: project.id }); } catch { /* fine */ }
         setMainTab('files');
@@ -463,11 +571,15 @@ function MainApp() {
   // switch to that shell tab.
   useEffect(() => {
     const off = api.on('shell:focus-request', async ({ projectId, shellIndex }) => {
+      const requestId = ++selectionRequestRef.current;
+      setRemotePane(null);
       terminalFocus.requestFocus({ projectId, shellIndex });
       try {
         const cur = selectedRef.current;
         if (!cur || cur.id !== projectId) {
           const { project } = await api.invoke('projects:open', { id: projectId });
+          if (selectionRequestRef.current !== requestId) return;
+          setProjectSettingsTarget(null);
           setSelected(project);
         }
         setMainTab('shell');
@@ -480,43 +592,29 @@ function MainApp() {
   }, [setActiveShellIndexFor, setMainTab]);
 
   useEffect(() => {
+    const runAppShortcut: Readonly<Record<AppShortcutAction, () => void>> = {
+      'toggle-sidebar': () => toggleSidebar(false),
+      'open-settings': () => setSettingsOpen(true),
+      'new-project': () => setNewProjectOpen(true),
+      'project-search': () => setSearchOpen(true),
+      prompts: () => setPromptsOpen(true),
+      'scrollback-search': () => setScrollbackOpen(true),
+      'toggle-help': () => setHelpOpen((v) => !v),
+      'new-terminal': () => openNewTerminalRef.current(false),
+      'new-terminal-window': () => openNewTerminalRef.current(true),
+    };
     function onKey(e: KeyboardEvent) {
       if (shortcutsBlockedRef.current) return;
-      const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.key === 'k')                          { e.preventDefault(); setSwitcherOpen(true); }
-      if (mod && e.key === '\\')                         { e.preventDefault(); toggleSidebar(false); }
-      if (mod && e.key === 'b' && !e.shiftKey && !e.altKey) { e.preventDefault(); toggleSidebar(false); }
-      if (mod && e.key === ',')                          { e.preventDefault(); setSettingsOpen(true); }
-      if (mod && e.key === 'p' && !e.shiftKey)           { e.preventDefault(); setFinderOpen(true); }
-      if (mod && e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); setNewProjectOpen(true); }
-      if (mod && e.shiftKey && e.key.toLowerCase() === 'p') { e.preventDefault(); setPaletteOpen(true); }
-      if (mod && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); setSearchOpen(true); }
-      // ⌘⇧K → prompt library (paste snippets into the active shell)
-      if (mod && e.shiftKey && e.key.toLowerCase() === 'k') { e.preventDefault(); setPromptsOpen(true); }
-      // ⌘⇧O → search across every alive shell's scrollback
-      if (mod && e.shiftKey && e.key.toLowerCase() === 'o') { e.preventDefault(); setScrollbackOpen(true); }
-      if (mod && e.key === '/')                          { e.preventDefault(); setHelpOpen((v) => !v); }
-      if (mod && e.key.toLowerCase() === 't') {
+      const palette = paletteKeyAction(e, paletteOpenRef.current, platform);
+      if (palette.kind === 'swallow') return;
+      if (palette.kind === 'toggle' || palette.kind === 'open') {
         e.preventDefault();
-        const p = selectedRef.current;
-        if (!p) return;
-        (async () => {
-          try {
-            const { shellIndex } = await api.invoke('shells:launch-plain', { projectId: p.id });
-            if (e.shiftKey) {
-              // ⌘⇧T → new window
-              await api.invoke('windows:popout-shell', { projectId: p.id, shellIndex });
-              toast(`New terminal in ${p.name}`, { kind: 'info' });
-            } else {
-              // ⌘T → new tab in the main window
-              setMainTab('shell');
-              setActiveShellIndex(shellIndex);
-            }
-          } catch (err) {
-            toast('Failed to open terminal', { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') });
-          }
-        })();
+        if (palette.kind === 'open') openPalette(palette.seed);
+        else if (paletteOpenRef.current) setPaletteRequest(null);
+        else openPalette('');
+        return;
       }
+      const mod = platform === 'mac' ? e.metaKey : e.ctrlKey;
       if (mod && e.shiftKey && (e.key === 'Enter' || e.key === 'Return')) {
         // ⌘⇧Enter (Ctrl+Shift+Enter on Windows/Linux) → toggle native fullscreen.
         e.preventDefault();
@@ -536,67 +634,93 @@ function MainApp() {
           }
         })();
       }
-      if (e.key === 'Escape')                            { setSettingsOpen(false); setFinderOpen(false); setNewProjectOpen(false); setPaletteOpen(false); setHelpOpen(false); setSearchOpen(false); setPromptsOpen(false); setScrollbackOpen(false); }
+      const action = appShortcutAction(e, platform);
+      if (action) { e.preventDefault(); runAppShortcut[action](); }
+      if (e.key === 'Escape')                            { setSettingsOpen(false); setPaletteRequest(null); setNewProjectOpen(false); setHelpOpen(false); setSearchOpen(false); setPromptsOpen(false); setScrollbackOpen(false); }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [openPalette, toggleSidebar, platform]);
 
   // Keep the OS window title in sync with the current project so it reads
   // "lawreader — MetaLogix IDE" in Mission Control, Dock previews, and every
   // window-manager surface. Electron picks up document.title changes and
   // pushes them straight to the BrowserWindow's native title.
   useEffect(() => {
-    document.title = selected ? `${selected.name} — MetaLogix IDE` : 'MetaLogix IDE';
-  }, [selected]);
+    document.title = remotePane ? `${remotePane.projectName} on ${remotePane.deviceName} — MetaLogix IDE` : selected ? `${selected.name} — MetaLogix IDE` : 'MetaLogix IDE';
+  }, [selected, remotePane]);
 
-  // Global drag/drop guard. Chromium's default behaviour on a file drop is
-  // to navigate the whole webview to `file://<dropped-path>` — which flashes
-  // an error page and unmounts the app. We swallow drops that don't hit a
-  // component that opted in (ShellTab handles its own drop event).
-  useEffect(() => {
-    const swallow = (e: DragEvent) => {
-      if (!e.dataTransfer?.types?.includes('Files')) return;
-      e.preventDefault();
-    };
-    window.addEventListener('dragover', swallow);
-    window.addEventListener('drop', swallow);
-    return () => {
-      window.removeEventListener('dragover', swallow);
-      window.removeEventListener('drop', swallow);
-    };
-  }, []);
+  useExternalDragGuard();
 
-  // Guards against the "clicked another project but nothing happens" bug:
-  // a slow projects:open (or the shells:launch that runs after it) can
-  // resolve after the user has clicked a DIFFERENT project. Without this
-  // ref the stale earlier setSelected would win, reverting the click.
-  const lastPickIdRef = useRef<number | null>(null);
-  async function pick(p: Project) {
-    lastPickIdRef.current = p.id;
+  const selectionRequestRef = useRef(0);
+  /** Selects `p` as the sidebar does and launches its shell; resolves true when it selected `p`, false when the open failed or a newer pick superseded it. */
+  async function pick(p: Pick<Project, 'id'>): Promise<boolean> {
+    setProjectSettingsTarget(null);
     setRemotePane(null);
+    const requestId = ++selectionRequestRef.current;
     terminalFocus.cancelRequest();
+    setActiveView('projects');
+    let selectedIt = false;
     try {
       const { project } = await api.invoke('projects:open', { id: p.id });
-      if (lastPickIdRef.current !== p.id) return;    // superseded by a newer click
+      if (selectionRequestRef.current !== requestId) return false;
       if (mainTabRef.current === 'shell') terminalFocus.requestProjectFocus(project.id);
       setSelected(project);
+      selectedIt = true;
       await api.invoke('shells:launch', { projectId: project.id });
     } catch (e) {
       // Only surface the toast when the failure is for the current pick —
       // otherwise a stale evictee-failure would confuse the user.
-      if (lastPickIdRef.current === p.id) {
-        toast('Failed to launch shell', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+      if (selectionRequestRef.current === requestId) {
+        toast('Failed to launch shell', { kind: 'error', detail: String(e).replace(/^Error:\s*/, ''), timeoutMs: 8000 });
+        // Open Settings → Launch commands so the user can fix the startup command immediately.
+        setSettingsSection('launch');
+        setSettingsOpen(true);
       }
       console.error(e);
     }
+    return selectedIt && selectionRequestRef.current === requestId;
+  }
+
+  /**
+   * Opens a file a terminal path or hover preview found in another project: records it as pending for that project,
+   * then selects the project through the sidebar's `pick` path. The project-change effect opens it in the Files tab
+   * when the selection lands; a failed or superseded pick drops it and restores the tab ref.
+   */
+  async function openFileInProject(projectId: number, relPath: string, line: number | null): Promise<void> {
+    pendingFileOpen.request(projectId, { relPath, line });
+    const previousTab = mainTabRef.current;
+    // Set synchronously so pick() queues no terminal focus for a tab that is about to become Files.
+    mainTabRef.current = 'files';
+    const selectedIt = await pick({ id: projectId });
+    pendingFileOpen.pickSettled(projectId, selectedIt);
+    if (!selectedIt) mainTabRef.current = previousTab;
   }
 
   function editEnv(p: Project) {
-    // Set synchronously so pick() sees 'env' and queues no terminal focus for a later Env -> Shell switch.
-    mainTabRef.current = 'env';
-    setMainTab('env');
+    // Set synchronously so pick() sees 'settings' and queues no terminal focus for a later Settings -> Shell switch.
+    setProjectSettingsTarget(null);
+    mainTabRef.current = 'settings';
+    setMainTab('settings');
+    setEnvFocusRequest((n) => n + 1);
     void pick(p);
+  }
+
+  /** Opens an explicit sidebar target without selecting its project or launching a shell. */
+  function openProjectSettings(target: ProjectSettingsTarget): void {
+    setEnvFocusRequest(0);
+    setRemotePane(null);
+    setProjectSettingsTarget(target);
+    mainTabRef.current = 'settings';
+    setMainTab('settings');
+  }
+
+  /** The main tab always targets the selected project rather than a previous sidebar override. */
+  function openSelectedProjectSettings(): void {
+    setEnvFocusRequest(0);
+    setProjectSettingsTarget(null);
+    mainTabRef.current = 'settings';
+    setMainTab('settings');
   }
 
   /** One split pane's shell: the chip's label and dot inputs, falling back to the full shell list for a popped right shell that has left the strip. */
@@ -625,10 +749,15 @@ function MainApp() {
             }}
             ratio={splitRatio}
             onRatioChange={setSplitRatio}
-            onOpenFile={(relPath, line) => {
+            onOpenFile={(relPath, line, targetProjectId) => {
+              if (targetProjectId !== undefined && targetProjectId !== project.id) {
+                void openFileInProject(targetProjectId, relPath, line);
+                return;
+              }
               setMainTab('files');
               setOpenInFiles({ relPath, line });
             }}
+            onOpenLaunchSettings={() => { setSettingsSection('launch'); setSettingsOpen(true); }}
           />
         );
       case 'files':
@@ -645,19 +774,6 @@ function MainApp() {
         );
       case 'diff':
         return <DiffTab key={project.id} projectId={project.id} />;
-      case 'env':
-        return (
-          <ProjectEnvTab
-            key={project.id}
-            projectId={project.id}
-            projectName={project.name}
-            drafts={envDrafts}
-            onOpenAppEnv={() => {
-              setSettingsSection('env');
-              setSettingsOpen(true);
-            }}
-          />
-        );
       case 'activity':
         return <ActivityTab key={project.id} projectId={project.id} />;
     }
@@ -760,166 +876,128 @@ function MainApp() {
     }
   }
 
-  async function unloadCurrent() {
-    if (!selected) return;
-    try {
-      await api.invoke('shells:kill', { projectId: selected.id, shellIndex: 0 });
-      toast('Session unloaded', { kind: 'success' });
-    } catch (e) { console.error(e); }
+  function applyDefaultAgentProject(project: Project): void {
+    if (selectedRef.current?.id !== project.id) return;
+    setSelected((current) => current?.id === project.id ? project : current);
   }
 
-  return (
-    <div className="h-screen w-screen flex flex-col bg-[--surface-chrome]">
-      {/* Native-feeling drag region for hidden-inset title bar. pr-[3px] puts the
-          last button's 14px glyph 12px from the right edge, mirroring the traffic lights' inset. */}
-      <div className="drag relative h-11 flex items-center pl-[76px] pr-[3px] shrink-0">
-        <div className="absolute inset-y-0 left-[130px] right-[130px] flex items-center justify-center min-w-0 pointer-events-none">
-          <TitleGroup
-            projectName={selected?.name ?? null}
-            branch={git.isRepo ? (git.branch ?? 'HEAD') : null}
-          />
-        </div>
-        <div className="ml-auto flex items-center gap-0.5 no-drag" data-testid={CHROME_TESTIDS.titleButtons}>
-          <button
-            onClick={cycleTheme}
-            className="text-[--text-muted] hover:text-[--text] w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[--panel-strong]"
-            title={`Theme: ${themeMode}${themeMode === 'system' ? ` (following OS — currently ${effectiveTheme})` : ''}. Click to toggle.`}
-            data-testid="theme-toggle"
-            data-theme-mode={themeMode}
-          >
-            <ThemeIcon mode={themeMode} effective={effectiveTheme} />
-          </button>
-          <button
-            onClick={async () => {
-              try {
-                const { arranged } = await api.invoke('windows:tile-all', undefined as never);
-                toast(`Tiled ${arranged} window${arranged === 1 ? '' : 's'}`, { kind: 'success', timeoutMs: 1200 });
-              } catch (e) { toast('Tile failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
-            }}
-            className="text-[--text-muted] hover:text-[--text] w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[--panel-strong]"
-            title="Tile all our windows on the screen"
-            data-testid="tile-windows"
-          >
-            <TileIcon />
-          </button>
-          <button
-            onClick={() => setSettingsOpen(true)}
-            className="text-[--text-muted] hover:text-[--text] w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[--panel-strong]"
-            title="Settings (⌘,)"
-            data-testid="settings-open"
-          >
-            <GearIcon />
-          </button>
-        </div>
-      </div>
+  async function tileWindows() {
+    try {
+      const { arranged } = await api.invoke('windows:tile-all', undefined as never);
+      toast(`Tiled ${arranged} window${arranged === 1 ? '' : 's'}`, { kind: 'success', timeoutMs: 1200 });
+    } catch (e) { toast('Tile failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
+  }
 
+  function unloadCurrent(event: React.MouseEvent<HTMLButtonElement>) {
+    if (selected && primaryAlive) openUnloadSession(selected, event.currentTarget);
+  }
+
+  const mainSheetContent: SheetContent = mainTab === 'shell' ? 'shell' : 'other';
+
+  return (
+    <div className="h-screen w-screen flex flex-col bg-[--surface-chrome]" data-chrome-root>
       <div className="flex-1 flex min-h-0">
         <ActivityBar
           active={activeView}
           onSelect={(v) => {
-            // Toggle if the same view is clicked twice — quality-of-life.
-            setActiveView(activeView === v && v !== 'projects' ? 'projects' : v);
+            const next = sidebarOpen && activeView === v && v !== 'projects' ? 'projects' : v;
+            setActiveView(next);
             if (!sidebarOpen) toggleSidebar(true, true);
           }}
           onToggleSidebar={() => toggleSidebar(true)}
           sidebarOpen={sidebarOpen}
           chatUnread={chatUnread}
+          footer={(
+            <>
+              <ABButton
+                label={`Theme: ${themeMode}${themeMode === 'system' ? ` (following OS — currently ${effectiveTheme})` : ''}. Click to toggle.`}
+                onClick={cycleTheme}
+                active={false}
+                data-testid="theme-toggle"
+                data-theme-mode={themeMode}
+              >
+                <ThemeIcon mode={themeMode} effective={effectiveTheme} />
+              </ABButton>
+              <ABButton label="Tile all our windows on the screen" onClick={tileWindows} active={false} data-testid="tile-windows">
+                <TileIcon />
+              </ABButton>
+              <ABButton label={SHORTCUT_COPY.settingsTitle(platform)} onClick={() => setSettingsOpen(true)} active={false} data-testid="settings-open">
+                <GearIcon />
+              </ABButton>
+            </>
+          )}
           gitDirty={git.dirty ? Object.keys(git.files).length : undefined}
           taskCount={taskCount || undefined}
         />
         <AnimatePresence initial={false} custom={sidebarFold.custom}>
           {sidebarOpen && (
-            <FoldPane key="sidebar" size="intrinsic" anchor="end" custom={sidebarFold.custom} onFoldComplete={sidebarFold.onFoldComplete}>
-              {/* Project sidebar is ALWAYS visible when the sidebar is open — chat
-                  sits alongside it in its own resizable column instead of
-                  replacing it, so the user never has to swap views just to pick
-                  a different project. */}
-              <Sidebar
-                selectedProjectId={remotePane ? null : selected?.id ?? null}
-                onSelect={pick}
-                onOpenPane={openPane}
-                onNewProject={() => setNewProjectOpen(true)}
-                onEditEnv={editEnv}
-                width={sidebarWidth}
-              />
+            <FoldPane key="sidebar" size="intrinsic" anchor="end" className="fleet-projects-pane" custom={sidebarFold.custom} onFoldComplete={sidebarFold.onFoldComplete}>
+              {/* One sidebar column whose width animates when its view (and so its remembered width) changes. */}
+              <div
+                className={`relative h-full shrink-0 overflow-hidden ${columnDragging ? '' : 'transition-[width] duration-200 ease-out motion-reduce:transition-none'}`}
+                style={{ width: sheetInColumn ? chatPanelWidth : sidebarWidth }}
+                data-testid="sidebar-column"
+              >
+                {/* Chat, Git and Tasks replace the project list in the same sidebar column. */}
+                {sheetInColumn ? (
+                    <div
+                      data-view={activeView}
+                      className="section-panel h-full flex flex-col shrink-0 pt-12"
+                      style={{ width: chatPanelWidth }}
+                    >
+                      <div aria-hidden className="drag absolute inset-x-0 top-0 h-11" />
+                      {activeView === 'chat' && (
+                        <ChatTab
+                          projectId={selected?.id ?? 0}
+                          metaprojectProjectId={selected ? (selected.config.linkedMetaprojectProjectId ?? selected.metaprojectProjectId ?? null) : null}
+                          compact
+                          onDismiss={() => setActiveView('projects')}
+                        />
+                      )}
+                      {activeView === 'git' && <GitPanel projectId={selected?.id ?? null} />}
+                      {activeView === 'tasks' && (
+                        <TasksPanel
+                          projectId={selected?.id ?? null}
+                          onLaunched={(shellIndex) => { setMainTab('shell'); setActiveShellIndex(shellIndex); }}
+                        />
+                      )}
+                    </div>
+                ) : (
+                    <Sidebar
+                    selectedProjectId={remotePane ? null : selected?.id ?? null}
+                    onUnloadSession={openUnloadSession}
+                    onSelect={(project) => {
+                      void pick(project);
+                      if (window.innerWidth < 640) toggleSidebar(false, false);
+                    }}
+                    onOpenPane={(req) => {
+                      openPane(req);
+                      if (window.innerWidth < 640) toggleSidebar(false, false);
+                    }}
+                    onNewProject={() => setNewProjectOpen(true)}
+                    onEditEnv={editEnv}
+                    onProjectSettings={openProjectSettings}
+                    width={sidebarWidth}
+                  />
+                )}
+              </div>
               <ResizeHandle
-                value={sidebarWidth}
-                onChange={setSidebarWidth}
-                onReset={() => setSidebarWidth(SIDEBAR_WIDTH.default)}
-                min={SIDEBAR_WIDTH.min}
-                max={SIDEBAR_WIDTH.max}
+                value={sheetInColumn ? chatPanelWidth : sidebarWidth}
+                onChange={sheetInColumn ? setChatPanelWidth : setSidebarWidth}
+                onReset={() => (sheetInColumn ? setChatPanelWidth(400) : setSidebarWidth(SIDEBAR_WIDTH.default))}
+                min={sheetInColumn ? 280 : SIDEBAR_WIDTH.min}
+                max={sheetInColumn ? 640 : SIDEBAR_WIDTH.max}
                 side="left"
+                onDraggingChange={setColumnDragging}
               />
-              {activeView === 'chat' && !remotePane && (
-                <>
-                  <div
-                    data-view="chat"
-                    className="section-panel h-full flex flex-col shrink-0"
-                    style={{ width: chatPanelWidth }}
-                  >
-                    <ChatTab
-                      projectId={selected?.id ?? 0}
-                      metaprojectProjectId={selected ? (selected.config.linkedMetaprojectProjectId ?? selected.metaprojectProjectId ?? null) : null}
-                      compact
-                      onDismiss={() => setActiveView('projects')}
-                    />
-                  </div>
-                  <ResizeHandle
-                    value={chatPanelWidth}
-                    onChange={setChatPanelWidth}
-                    onReset={() => setChatPanelWidth(400)}
-                    min={300}
-                    max={640}
-                    side="left"
-                  />
-                </>
-              )}
-              {activeView === 'git' && !remotePane && (
-                <>
-                  <div
-                    data-view="git"
-                    className="section-panel h-full flex flex-col shrink-0"
-                    style={{ width: chatPanelWidth }}
-                  >
-                    <GitPanel projectId={selected?.id ?? null} />
-                  </div>
-                  <ResizeHandle
-                    value={chatPanelWidth}
-                    onChange={setChatPanelWidth}
-                    onReset={() => setChatPanelWidth(400)}
-                    min={280}
-                    max={640}
-                    side="left"
-                  />
-                </>
-              )}
-              {activeView === 'tasks' && !remotePane && (
-                <>
-                  <div
-                    data-view="tasks"
-                    className="section-panel h-full flex flex-col shrink-0"
-                    style={{ width: chatPanelWidth }}
-                  >
-                    <TasksPanel
-                      projectId={selected?.id ?? null}
-                      onLaunched={(shellIndex) => { setMainTab('shell'); setActiveShellIndex(shellIndex); }}
-                    />
-                  </div>
-                  <ResizeHandle
-                    value={chatPanelWidth}
-                    onChange={setChatPanelWidth}
-                    onReset={() => setChatPanelWidth(400)}
-                    min={280}
-                    max={640}
-                    side="left"
-                  />
-                </>
-              )}
             </FoldPane>
           )}
         </AnimatePresence>
-        <main className="flex-1 flex flex-col min-h-0 min-w-0 bg-[--surface-sheet] rounded-[14px] mr-2">
-          <div className={`items-center gap-1 px-2 pt-1.5 pb-1 text-xs shrink-0 ${remotePane ? 'hidden' : 'flex'}`} data-testid={DIFF_TESTIDS.tabBar}>
+        <main
+          className="flex flex-1 flex-col min-h-0 min-w-0 bg-[--surface-sheet]"
+          data-sheet-content={mainSheetContent}
+        >
+          <div className={`drag flex-wrap items-center gap-1.5 px-3 pt-2.5 pb-1.5 text-xs shrink-0 ${remotePane ? 'hidden' : 'flex'}`} data-testid={DIFF_TESTIDS.tabBar}>
             <TabButton active={mainTab === 'shell'} onClick={() => setMainTab('shell')}>Shell</TabButton>
             <TabButton active={mainTab === 'files'} onClick={() => setMainTab('files')}>Files</TabButton>
             <TabButton
@@ -936,12 +1014,12 @@ function MainApp() {
               )}
             </TabButton>
             <TabButton
-              active={mainTab === 'env'}
-              onClick={() => setMainTab('env')}
-              testId={ENV_TESTIDS.tab}
+              active={mainTab === 'settings'}
+              onClick={openSelectedProjectSettings}
+              testId={PROJECT_SETTINGS_TESTIDS.tab}
               ariaLabel={envDirty ? ENV_COPY.tabUnsavedLabel : undefined}
             >
-              {ENV_COPY.tabLabel}
+              {PROJECT_SETTINGS_COPY.tab}
               {envDirty && (
                 <span aria-hidden className="ml-1 text-[--accent]" data-testid={ENV_TESTIDS.unsaved}>
                   {ENV_COPY.tabUnsavedMarker}
@@ -949,23 +1027,24 @@ function MainApp() {
               )}
             </TabButton>
             <TabButton active={mainTab === 'activity'} onClick={() => setMainTab('activity')}>Activity</TabButton>
-            <div className="ml-auto flex items-center gap-1.5 pr-2">
+            <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 pr-2">
               {selected && (
                 <>
-                  <span className="flex items-center gap-1.5 text-[--text] pl-2 pr-1 py-0.5 rounded-md bg-[--surface-active] text-[11px] max-w-[280px]" title={selected.path}>
-                    <StatusDot state={selectedClaudeState} />
+                  <span className="flex min-w-0 items-center gap-1.5 text-[--text] pl-2 pr-1 py-0.5 rounded-md bg-[--surface-active] text-[11px] max-w-[280px]" title={selected.path}>
+                    <StatusDot state={selectedAgentState} />
                     <span className="truncate font-medium">{selected.name}</span>
-                    <button
+                    {primaryAlive && <button
                       onClick={unloadCurrent}
-                      className="ml-1 text-[--text-muted] hover:text-[--danger] hover:bg-[--panel]/60 w-4 h-4 flex items-center justify-center rounded"
+                      className="ml-1 text-[--text-muted] hover:text-[--danger] hover:bg-[--panel]/60 w-11 h-11 lg:w-4 lg:h-4 flex shrink-0 items-center justify-center rounded focus-visible:ring-2 focus-visible:ring-[--accent]"
                       title="Unload session (close shell)"
+                      aria-label="Unload session (close shell)"
                       data-testid="unload-current"
                     >
                       <XIcon />
-                    </button>
+                    </button>}
                   </span>
                   <MetaprojectBoardButton project={selected} onRequestLink={() => setActiveView('chat')} />
-                  <Tooltip label="Prompt library" shortcut="⌘⇧K">
+                  <Tooltip label="Prompt library" shortcut={SHORTCUT_COPY.promptsShortcut(platform)}>
                     <button
                       onClick={() => setPromptsOpen(true)}
                       className="text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel-strong]"
@@ -975,7 +1054,7 @@ function MainApp() {
                       <PromptsIcon />
                     </button>
                   </Tooltip>
-                  <Tooltip label="Search all shells" shortcut="⌘⇧O">
+                  <Tooltip label="Search all shells" shortcut={SHORTCUT_COPY.scrollbackShortcut(platform)}>
                     <button
                       onClick={() => setScrollbackOpen(true)}
                       className="text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel-strong]"
@@ -1022,12 +1101,7 @@ function MainApp() {
                 onSelect={setActiveShellIndex}
                 onClose={killShell}
                 defaultCliName={selected.config.defaultCliName ?? null}
-                onDefaultCliChanged={(name) => {
-                  // Optimistic local update so the star reflects the click
-                  // immediately; the projects:changed broadcast from main
-                  // will backfill any remote-side normalisation.
-                  setSelected((cur) => cur ? { ...cur, config: { ...cur.config, defaultCliName: name } } : cur);
-                }}
+                onDefaultCliChanged={applyDefaultAgentProject}
                 onLaunchProfile={(name) => void launchCliProfile(name, 'tab')}
                 onLaunchPlainTab={newPlainShellAsTab}
                 onLaunchCustom={(name, cmdLine, save) => void launchCustomCli(name, cmdLine, save, 'tab')}
@@ -1049,33 +1123,52 @@ function MainApp() {
                 />
               : remotePane
               ? <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId} projectName={remotePane.projectName} onClose={() => setRemotePane(null)} />
+              : mainTab === 'settings'
+              ? settingsTarget
+                ? <ProjectSettingsTab key={settingsTarget.id} target={settingsTarget} onSaved={applyDefaultAgentProject}>
+                    <ScrollIntoViewOnRequest request={envFocusRequest}>
+                      <ProjectEnvTab
+                        projectId={settingsTarget.id}
+                        projectName={settingsTarget.name}
+                        drafts={envDrafts}
+                        onOpenAppEnv={() => {
+                          setSettingsSection('env');
+                          setSettingsOpen(true);
+                        }}
+                      />
+                    </ScrollIntoViewOnRequest>
+                  </ProjectSettingsTab>
+                : <section aria-label={PROJECT_SETTINGS_COPY.title} data-testid={PROJECT_SETTINGS_TESTIDS.view}
+                    className="flex-1 min-h-0 min-w-0 overflow-auto p-4 text-base text-[--text-muted] sm:p-6">
+                    {PROJECT_SETTINGS_COPY.noProject}
+                  </section>
               : selected ? mainBody(selected) : <EmptyState />}
           </div>
+          {showStatusBar && <StatusBar
+            project={remotePane ? null : selected}
+            aliveCount={aliveCount}
+            activeAgent={activeShellAgentLabel}
+            activeAgentState={activeShellAgentStateLabel}
+            onOpenPalette={() => openPalette('')}
+            keepAwake={keepAwake}
+          />}
         </main>
       </div>
 
-      <StatusBar
-        project={remotePane ? null : selected}
-        aliveCount={aliveCount}
-        activeAgent={activeShellAgentLabel}
-        activeAgentState={activeShellAgentStateLabel}
-      />
-      <ProjectSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} onPick={pick} />
+      {unloadTarget && <UnloadSessionDialog key={unloadTarget.id} project={unloadTarget}
+        visible={isPrimaryVisible(unloadTarget.id, { selectedProjectId: selected?.id ?? null, mainTab, activeShellIndex, rightShellIndex })}
+        onClose={closeUnloadSession}
+        onStopped={() => { toast('Session unloaded', { kind: 'success' }); }}
+      />}
+      {keepAwakeUntilOpen && keepAwake && (
+        <KeepAwakeUntilDialog onStart={(endsAt) => { void keepAwake.startUntil(endsAt); }} onClose={() => setKeepAwakeUntilOpen(false)} />
+      )}
       <Settings
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         section={settingsSection}
         onSection={setSettingsSection}
         envDrafts={envDrafts}
-      />
-      <FileFinder
-        open={finderOpen && selected != null}
-        projectId={selected?.id ?? null}
-        onClose={() => setFinderOpen(false)}
-        onPick={(relPath) => {
-          setMainTab('files');
-          setOpenInFiles({ relPath, line: null });
-        }}
       />
       <NewProjectDialog
         open={newProjectOpen}
@@ -1085,13 +1178,17 @@ function MainApp() {
         onCreated={(project) => { setNewProjectOpen(false); void pick(project); toast(`Created ${project.name}`, { kind: 'success' }); }}
       />
       <CommandPalette
-        open={paletteOpen}
+        request={paletteRequest}
         commands={commands}
-        onClose={() => setPaletteOpen(false)}
+        currentProject={selected}
+        onPickProject={(p) => { void pick(p); }}
+        onPickCurrent={(p) => { if (mainTabRef.current === 'shell') focusAfterPaletteRef.current = p.id; }}
+        onPickFile={(relPath) => { setMainTab('files'); setOpenInFiles({ relPath, line: null }); }}
+        onClose={() => setPaletteRequest(null)}
       />
       <ToastStack />
       <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
-         <ProjectSearch
+      <ProjectSearch
         open={searchOpen && selected != null}
         projectId={selected?.id ?? null}
         onClose={() => setSearchOpen(false)}
@@ -1111,11 +1208,15 @@ function MainApp() {
         open={scrollbackOpen}
         onClose={() => setScrollbackOpen(false)}
         onFocus={async (projectId, shellIndex) => {
+          const requestId = ++selectionRequestRef.current;
+          setRemotePane(null);
           terminalFocus.cancelRequest();
           try {
             const cur = selectedRef.current;
             if (!cur || cur.id !== projectId) {
               const { project } = await api.invoke('projects:open', { id: projectId });
+              if (selectionRequestRef.current !== requestId) return;
+              setProjectSettingsTarget(null);
               setSelected(project);
             }
             setMainTab('shell');
@@ -1136,7 +1237,9 @@ function MainApp() {
 }
 
 function PopoutShell({ projectId, shellIndex }: PopoutInfo) {
-  const claudeState = useShellAgentState(projectId, shellIndex).state;
+  useFrostedGlassAttributes();
+  useExternalDragGuard();
+  const shellAgentState = useShellAgentState(projectId, shellIndex);
   const [tab, setTab] = useState<'shell' | 'files'>('shell');
   const [openInFiles, setOpenInFiles] = useState<{ relPath: string; line: number | null } | null>(null);
   const [projectName, setProjectName] = useState<string>('');
@@ -1161,14 +1264,15 @@ function PopoutShell({ projectId, shellIndex }: PopoutInfo) {
       ? `${projectName} — Shell ${shellIndex} — MetaLogix IDE`
       : `MetaLogix IDE · shell`;
   }, [projectName, shellIndex]);
+  const popoutSheetContent: SheetContent = tab === 'shell' ? 'shell' : 'other';
   return (
-    <div className="h-screen w-screen flex flex-col bg-[--surface-chrome]">
+    <div className="h-screen w-screen flex flex-col bg-[--surface-chrome]" data-chrome-root>
       <div className="drag h-11 flex items-center gap-2 pl-[76px] pr-3 shrink-0 min-w-0">
         {/* Prominent project name — the whole reason a user pops shells out
             is to run several projects side by side, so the label needs to
             read at a glance even in a narrow window. Trailing subtitle is
             shortened + hidden first when space runs out. */}
-        <StatusDot state={claudeState} className="shrink-0" />
+        <StatusDot agent={shellAgentState.agent} state={shellAgentState.state} className="shrink-0" />
         <span className="text-sm font-semibold text-[--text] truncate min-w-0" title={projectName}>
           {projectName || 'MetaLogix IDE'}
         </span>
@@ -1189,13 +1293,15 @@ function PopoutShell({ projectId, shellIndex }: PopoutInfo) {
           className={`px-3 py-1 rounded-md transition-colors ${tab === 'files' ? 'bg-[--accent-soft] text-[--accent-soft-text] font-medium' : 'text-[--text-muted] hover:text-[--text] hover:bg-[--surface-hover]'}`}
         >Files</button>
       </div>
-      <div className="flex-1 min-h-0 bg-[--surface-sheet] rounded-xl mx-2 mb-2">
+      <div className="flex-1 min-h-0 bg-[--surface-sheet] rounded-xl mx-2 mb-2" data-sheet-content={popoutSheetContent}>
         {tab === 'shell' ? (
           <ShellTab
             projectId={projectId}
             shellIndex={shellIndex}
             primary
-            onOpenFile={(relPath, line) => {
+            popout
+            onOpenFile={(relPath, line, targetProjectId) => {
+              if (targetProjectId !== undefined && targetProjectId !== projectId) return;
               // Open the editor inline in this popout window instead of
               // dropping the user back to Finder.
               setTab('files');
@@ -1232,7 +1338,7 @@ function TabButton({ active, onClick, testId, ariaLabel, children }: TabButtonPr
       data-testid={testId}
       aria-label={ariaLabel}
       aria-current={active ? 'page' : undefined}
-      className={`h-8 px-3 rounded-lg transition-colors ${
+      className={`h-7 px-2 rounded-lg transition-colors ${
         active
           ? 'bg-[--accent-soft] text-[--accent-soft-text] font-medium'
           : 'text-[--text-muted] hover:text-[--text] hover:bg-[--surface-hover]'
@@ -1243,63 +1349,9 @@ function TabButton({ active, onClick, testId, ariaLabel, children }: TabButtonPr
   );
 }
 
-const SHORTCUT_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
-  { title: 'Go',       items: [['⌘K', 'Project switcher'], ['⌘P', 'Find file in project'], ['⌘⇧F', 'Find in project']] },
-  { title: 'Views',    items: [['⌘B', 'Toggle sidebar'], ['⌘⇧Enter', 'Toggle fullscreen'], ['⌘,', 'Settings'], ['⌘/', 'This cheat sheet']] },
-  { title: 'Palette',  items: [['⌘⇧P', 'Command palette'], ['⌘⇧N', 'New project']] },
-  { title: 'Shell',    items: [['⌘T', 'New shell tab'], ['⌘W', 'Close active tab'], ['⌘F', 'Find in terminal'], ['⌘⇧O', 'Search all shells'], ['⌘⇧K', 'Prompt library'], ['⌘=', 'Zoom in'], ['⌘-', 'Zoom out'], ['⌘0', 'Reset zoom']] },
-  { title: 'Files',    items: [['⌘=', 'Zoom in (md / image / pdf)'], ['⌘-', 'Zoom out'], ['⌘0', 'Reset zoom'], ['PageUp/PageDown', 'PDF page nav']] },
-];
-
-function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () => void }) {
-  if (!open) return null;
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
-      onClick={onClose}
-      data-testid="shortcuts-help"
-    >
-      <div
-        className="bg-[--panel-strong] w-[560px] max-w-[92vw] rounded-xl shadow-2xl border border-[--border] overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="px-4 py-3 border-b border-[--border] flex items-center justify-between">
-          <div className="font-semibold text-sm">Keyboard shortcuts</div>
-          <button
-            onClick={onClose}
-            className="w-7 h-7 flex items-center justify-center rounded text-[--text-muted] hover:text-[--text] hover:bg-[--panel]"
-            title="Close (Esc)"
-            aria-label="Close shortcuts"
-          >
-            <XIcon size={ICON_SIZE.md} />
-          </button>
-        </div>
-        <div className="p-5 grid grid-cols-2 gap-x-8 gap-y-4">
-          {SHORTCUT_GROUPS.map((g) => (
-            <div key={g.title}>
-              <div className="text-[10px] uppercase tracking-wider text-[--text-muted] font-semibold mb-2">{g.title}</div>
-              <div className="space-y-1.5">
-                {g.items.map(([keys, desc]) => (
-                  <div key={keys} className="flex items-center justify-between gap-4 text-sm">
-                    <span className="text-[--text-muted]">{desc}</span>
-                    <kbd>{keys}</kbd>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-        <div className="px-4 py-2 border-t border-[--border] text-[11px] text-[--text-muted] text-right">
-          <kbd>Esc</kbd> to close
-        </div>
-      </div>
-    </div>
-  );
-}
-
-
 function EmptyState() {
   const { roots } = useRoots();
+  const platform = useShortcutPlatform();
   // Onboarding: fresh install has no roots yet, so the sidebar shows no
   // projects and the main pane is blank — new users have nothing to click.
   // Surface a welcome card that walks them through the very first action.
@@ -1309,7 +1361,7 @@ function EmptyState() {
       <div className="max-w-sm space-y-2">
         <div className="text-sm text-[--text-muted]">No project selected</div>
         <div className="text-xs text-[--text-muted] opacity-70">
-          Pick one from the sidebar, or press <kbd className="px-1 py-0.5 rounded bg-[--panel] border border-[--border] text-[10px]">⌘K</kbd> to search.
+          Pick one from the sidebar, or press <kbd className="px-1 py-0.5 rounded bg-[--panel] border border-[--border] text-[10px]">{SHORTCUT_COPY.emptyPaletteKey(platform)}</kbd> to search.
         </div>
       </div>
     </div>
@@ -1318,6 +1370,7 @@ function EmptyState() {
 
 function WelcomeOnboarding() {
   const { refresh } = useRoots();
+  const platform = useShortcutPlatform();
   async function addRoot() {
     const picked = await api.invoke('dialogs:pick-directory', undefined as never);
     if (picked.path) {
@@ -1345,7 +1398,7 @@ function WelcomeOnboarding() {
           </button>
         </div>
         <div className="text-[11px] text-[--text-muted] opacity-70 pt-4">
-          Tip: press <kbd className="px-1 py-0.5 rounded bg-[--panel] border border-[--border] text-[10px]">⌘,</kbd> to open settings and change the default CLI or theme.
+          Tip: press <kbd className="px-1 py-0.5 rounded bg-[--panel] border border-[--border] text-[10px]">{SHORTCUT_COPY.emptySettingsKey(platform)}</kbd> to open settings and change the default CLI or theme.
         </div>
       </div>
     </div>
@@ -1460,7 +1513,7 @@ function TileIcon() {
   // Three tall bars side-by-side — matches how tileAllOurWindows lays
   // shells out in a chatbot-style row of columns.
   return (
-    <svg width={ICON_SIZE.md} height={ICON_SIZE.md} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3"  y="3" width="4.5" height="18" rx="1" />
       <rect x="9.75"  y="3" width="4.5" height="18" rx="1" />
       <rect x="16.5" y="3" width="4.5" height="18" rx="1" />
@@ -1470,7 +1523,7 @@ function TileIcon() {
 
 function GearIcon() {
   return (
-    <svg width={ICON_SIZE.md} height={ICON_SIZE.md} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
     </svg>
@@ -1481,7 +1534,7 @@ function ThemeIcon({ mode, effective }: { mode: ThemeMode; effective: 'light' | 
   // system → half moon over sun (auto), light → sun, dark → moon
   if (mode === 'system') {
     return (
-      <svg width={ICON_SIZE.md} height={ICON_SIZE.md} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="12" cy="12" r="4" />
         <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" opacity={effective === 'dark' ? 0.4 : 1} />
         <path d="M12 8a4 4 0 0 0 0 8" fill="currentColor" opacity={effective === 'dark' ? 1 : 0} />
@@ -1490,15 +1543,24 @@ function ThemeIcon({ mode, effective }: { mode: ThemeMode; effective: 'light' | 
   }
   if (mode === 'light') {
     return (
-      <svg width={ICON_SIZE.md} height={ICON_SIZE.md} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="12" cy="12" r="4" />
         <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
       </svg>
     );
   }
   return (
-    <svg width={ICON_SIZE.md} height={ICON_SIZE.md} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
     </svg>
   );
+}
+
+/** Scrolls its content into view whenever `request` changes to a non-zero value (and on mount if already non-zero). */
+function ScrollIntoViewOnRequest({ request, children }: { request: number; children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (request > 0) ref.current?.scrollIntoView({ block: 'start' });
+  }, [request]);
+  return <div ref={ref} className="scroll-mt-4">{children}</div>;
 }

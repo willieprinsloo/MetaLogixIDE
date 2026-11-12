@@ -11,9 +11,11 @@ interface Props {
   max: number;
   /** 'left' handles a left-anchored pane (Sidebar) — dragging right grows it */
   side?: 'left' | 'right';
+  /** Told when a drag starts and ends, so a pane can suspend its width animation while following the pointer. */
+  onDraggingChange?: (dragging: boolean) => void;
 }
 
-export function ResizeHandle({ value, onChange, onReset, min, max, side = 'left' }: Props) {
+export function ResizeHandle({ value, onChange, onReset, min, max, side = 'left', onDraggingChange }: Props) {
   const [dragging, setDragging] = useState(false);
   const startX = useRef(0);
   const startW = useRef(0);
@@ -40,6 +42,8 @@ export function ResizeHandle({ value, onChange, onReset, min, max, side = 'left'
   }, []);
 
   const onDoubleClick = useCallback(() => { onReset?.(); }, [onReset]);
+
+  useEffect(() => { onDraggingChange?.(dragging); }, [dragging, onDraggingChange]);
 
   useEffect(() => {
     if (dragging) document.body.style.cursor = 'col-resize';

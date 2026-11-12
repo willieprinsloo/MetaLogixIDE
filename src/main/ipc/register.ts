@@ -10,7 +10,8 @@ import { randomUUID } from 'node:crypto';
 import { parseMetaproject } from '@shared/parse-metaproject';
 import type { VibrancyMaterial } from '@shared/frosted-glass';
 import { isChromeFrostLevel, isTerminalFrostLevel, isVibrancyMaterial } from '@shared/frosted-glass';
-import { resolveLaunch } from '@main/domain/launch';
+import { profileLaunchArgv, resolveLaunch } from '@main/domain/launch';
+import { harnessOf, type AgentHarness } from '@shared/agent-harness';
 import { parseProjectDefaultAgent, setProjectDefaultAgent } from '@main/domain/project-default-agent';
 import { resolveSpawnEnv } from '@main/domain/spawn-env';
 import { parseProjectEnv, parseAppEnv } from '@shared/project-env';
@@ -33,16 +34,20 @@ import {
 } from '@shared/terminal-font-weight';
 import { parseViewedShells } from '@main/notifications/viewed-shells';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, renameSync } from 'node:fs';
-import { execFile, spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { parseGitStatus } from '@shared/parse-git-status';
 import { parseGitPanelStatus } from '@shared/parse-git-panel-status';
 import { describeGitFailure, runGit } from '@main/git/run-git';
+import { gitCommandError, runGitCommand } from '@main/git/run-git-command';
 import { GIT_DIFF_MAX_BYTES, readFileDiff } from '@main/git/file-diff';
 import { readDiffSides } from '@main/git/diff-sides';
 import { dropHandlers } from '@main/drops/handlers';
+import { keepAwakeHandlers } from '@main/keep-awake/handlers';
 import { isInsideRoot, resolveInsideRoot } from '@main/domain/path-containment';
+import { decodeStoredSecret, encodeStoredSecret } from '@main/credential-encoding';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import type { StopPrimarySessionRequest } from '@shared/unload-session-contract';
 import { readRecentActivity } from '@main/activity/log';
 import { ACTIVITY_PAGE_MAX } from '@shared/activity';
 import { readMetaIdeEnv, readMetaIdeCliProfiles } from '@main/domain/metaide-conf';
@@ -101,6 +106,65 @@ function validatedConfigPatch(config: unknown): Partial<ProjectConfig> {
   return patch;
 }
 
+
+/** True when a live shell of `projectId` (other than `exceptShell`) runs `harness`, launched as it or started by hand in a terminal. */
+function harnessBusy(s: Services, projectId: number, harness: AgentHarness, exceptShell: number): boolean {
+  const launched = s.shells.list().some((row) => row.projectId === projectId && row.shellIndex !== exceptShell &&
+    s.ptyManager.isAlive(projectId, row.shellIndex) && harnessOf(row.launchArgv) === harness);
+  return launched || (s.agentStatus?.list() ?? []).some((e) =>
+    e.projectId === projectId && e.shellIndex !== exceptShell && e.agent === harness);
+}
+
+/** Records that `harness` has run in the project, so its next launch there resumes the session. */
+export function rememberResumableHarness(s: Pick<Services, 'projects'>, projectId: number, harness: AgentHarness): void {
+  const project = s.projects.get(projectId);
+  if (!project || (project.config.resumableAgents ?? []).includes(harness)) return;
+  s.projects.updateConfig(projectId, { resumableAgents: [...(project.config.resumableAgents ?? []), harness] });
+}
+
+/** Records that `argv`'s harness has run in the project, so its next launch resumes the session. */
+function rememberResumable(s: Services, projectId: number, argv: readonly string[]): void {
+  const harness = harnessOf(argv);
+  if (harness) rememberResumableHarness(s, projectId, harness);
+}
+
+/** True for a subsequent Claude launch that continues a session (`--continue`/`-c` before any `--`): only that can fail with "no conversation found". */
+function isClaudeContinuation(launch: { variant: 'first' | 'subsequent'; argv: readonly string[] }): boolean {
+  if (launch.variant !== 'subsequent' || harnessOf(launch.argv) !== 'claude') return false;
+  for (const arg of launch.argv.slice(1)) {
+    if (arg === '--') return false;
+    if (arg === '--continue' || arg === '-c') return true;
+  }
+  return false;
+}
+
+/** Records the live primary shell and tells renderers right after spawn, so its tab and status dot appear without waiting on resume checks. A shell that already exited is not recorded. */
+function publishPrimary(s: Services, projectId: number, argv: string[]): void {
+  if (!s.ptyManager.isAlive(projectId, 0)) return;
+  const nowIso = new Date().toISOString().slice(0, 19).replace('T', ' ');
+  s.shells.upsert({ projectId, shellIndex: 0, model: null, launchArgv: argv, startedAt: nowIso, lastActiveAt: nowIso, pinned: false });
+  emitAliveShellsChanged();
+}
+
+/** Validates a local guarded-unload target before reading PTY or tracker state. */
+function primaryProjectId(request: unknown): number {
+  if (typeof request !== 'object' || request === null || !('projectId' in request) ||
+    typeof request.projectId !== 'number' || !Number.isSafeInteger(request.projectId) || request.projectId <= 0)
+    throw new Error('invalid projectId');
+  return request.projectId;
+}
+
+/** Parses consent as a bounded opaque generation and an explicit work-risk acknowledgment. */
+function stopPrimaryRequest(request: unknown): StopPrimarySessionRequest {
+  const projectId = primaryProjectId(request);
+  if (typeof request !== 'object' || request === null || !('generation' in request) ||
+    typeof request.generation !== 'string' || request.generation.length > 128 ||
+    !/^[A-Za-z0-9-]+$/.test(request.generation))
+    throw new Error('invalid generation');
+  if (!('acknowledgedWorkRisk' in request) || typeof request.acknowledgedWorkRisk !== 'boolean')
+    throw new Error('invalid acknowledgedWorkRisk');
+  return { projectId, generation: request.generation, acknowledgedWorkRisk: request.acknowledgedWorkRisk };
+}
 export type Handler<C extends IpcChannelName> = (services: Services, req: IpcRequest<C>, event?: Electron.IpcMainInvokeEvent) => Promise<IpcResponse<C>>;
 type SendEvent = <E extends IpcEventName>(channel: E, payload: IpcEvents[E]) => void;
 
@@ -239,6 +303,7 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
 
   'app:ping': async () => 'pong',
 
+
   'roots:list':   async (s) => ({ roots: s.roots.list() }),
   'roots:add':    async (s, { path }) => {
     const root = s.roots.add(path);
@@ -304,7 +369,7 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     if (initGit) {
       const gitDir = join(path, '.git');
       if (!existsSync(gitDir)) {
-        const r = spawnSync('git', ['init', '-q', path], { cwd: path });
+        const r = await runGitCommand(path, ['init', '-q', path]);
         if (r.status !== 0) {
           // Fall back to just an empty .git directory marker so discovery picks it up.
           mkdirSync(gitDir, { recursive: true });
@@ -339,11 +404,8 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     // Delegate the clone to system git — much simpler than a JS libgit2
     // dependency and handles SSH, https, credential helpers, submodules, …
     // exactly like the user's own terminal would.
-    const r = spawnSync('git', ['clone', '--', url, path], { cwd: root.path });
-    if (r.status !== 0) {
-      const stderr = r.stderr?.toString() || 'git clone failed';
-      throw new Error(stderr.trim());
-    }
+    const r = await runGitCommand(root.path, ['clone', '--', url, path]);
+    if (r.status !== 0) throw gitCommandError(r, 'git clone failed');
     const project = s.projects.upsert(rootId, path, folder);
     s.projects.markLastOpened(project.id, new Date());
     return { project };
@@ -425,26 +487,11 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     if (s.settings.get('claude_permission_mode') === null) throw new Error('Choose a Claude permission mode first');
     const projectRow = s.projects.get(projectId);
     if (!projectRow) throw new Error(`no project ${projectId}`);
-    // forceFirst bypasses --continue and starts a brand-new Claude session —
-    // used when the saved session is corrupted (e.g. invalid thinking signature).
+    // forceFirst bypasses --continue and starts a brand-new session (used by
+    // "Start fresh Claude session" and the corrupted-session overlay). Earlier
+    // sessions stay on disk untouched: plain `claude` never resumes one, and
+    // `claude --resume` must still be able to list them.
     const project = forceFirst ? { ...projectRow, firstLaunchedAt: null } : projectRow;
-    // Claude Code auto-resumes the active project session (writes to the same
-    // .jsonl) regardless of --continue, so forceFirst alone can't rescue a
-    // bad session. Move the existing session files aside first — they stay
-    // on disk as .pre-fresh-<ts> backups so nothing is lost.
-    if (forceFirst) {
-      const encoded = project.path.replace(/[/ ]/g, '-');
-      const sessionDir = join(s.homeDir, '.claude', 'projects', encoded);
-      if (existsSync(sessionDir)) {
-        const ts = new Date().toISOString().replace(/[:.]/g, '-');
-        for (const n of readdirSync(sessionDir)) {
-          if (n.endsWith('.jsonl')) {
-            try { renameSync(join(sessionDir, n), join(sessionDir, `${n}.pre-fresh-${ts}`)); }
-            catch { /* best-effort */ }
-          }
-        }
-      }
-    }
     // Idempotent: clicking an already-open project (or a tab the sidebar
     // thinks might not be alive) used to re-enter here and throw "already
     // spawned". Just return the index — the renderer re-attaches the stream.
@@ -462,17 +509,23 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
       }
     }
 
-    let launch = resolveLaunch(project, s.settings, s.homeDir, process.env);
+    const launchOptions = { resumeBlocked: (harness: AgentHarness) => harnessBusy(s, projectId, harness, 0) };
+    let launch = resolveLaunch(project, s.settings, s.homeDir, process.env, launchOptions);
     let fallbackApplied = false;
 
-    // If subsequent variant (--continue) exits within ~3s with "no
+    // If a Claude continuation (--continue) exits within ~2.5s with "no
     // conversation found", retry using the first variant instead. This
-    // handles the case where the on-disk claude session was cleared.
-    if (launch.variant === 'subsequent') {
+    // handles the case where the on-disk claude session was cleared. The
+    // shell is published as soon as it spawns, so the tab label and status
+    // dot never wait on this check; other launches skip it entirely.
+    if (isClaudeContinuation(launch)) {
       const settlement = await new Promise<'ok' | 'no-session' | { error: string }>((resolveP) => {
-        const timer = setTimeout(() => resolveP('ok'), 2500);
-        const onExit = (ev: { projectId: number; shellIndex: number; code: number | null; uptimeMs?: number; earlyOutput?: string }) => {
+        // The settle timer must also drop the exit listener, or one leaks per relaunch.
+        const timer = setTimeout(() => { s.ptyManager.off('exit', onExit); resolveP('ok'); }, 2500);
+        const onExit = (ev: { projectId: number; shellIndex: number; generation: string; code: number | null; uptimeMs?: number; earlyOutput?: string }) => {
           if (ev.projectId !== projectId || ev.shellIndex !== 0) return;
+          const live = s.ptyManager.liveShell(projectId, 0);
+          if (live && live.generation !== ev.generation) return;
           clearTimeout(timer);
           s.ptyManager.off('exit', onExit);
           const text = (ev.earlyOutput ?? '').toLowerCase();
@@ -485,7 +538,7 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
         s.ptyManager.on('exit', onExit);
         // Surface spawn failures instead of swallowing them — a missing
         // `claude` binary used to end up as a blank terminal with no cause.
-        void s.ptyManager.spawn(projectId, 0, launch).catch((err: unknown) => {
+        void s.ptyManager.spawn(projectId, 0, launch).then(() => publishPrimary(s, projectId, launch.argv)).catch((err: unknown) => {
           clearTimeout(timer);
           s.ptyManager.off('exit', onExit);
           resolveP({ error: err instanceof Error ? err.message : String(err) });
@@ -501,18 +554,18 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
         // in the resolved project view, re-resolve, then restart cleanly.
         s.projects.updateConfig(projectId, {}); // touch — no-op
         const reProject = { ...project, firstLaunchedAt: null };
-        launch = resolveLaunch(reProject, s.settings, s.homeDir, process.env);
+        launch = resolveLaunch(reProject, s.settings, s.homeDir, process.env, launchOptions);
         fallbackApplied = true;
         await s.ptyManager.spawn(projectId, 0, launch);
+        publishPrimary(s, projectId, launch.argv);
       }
     } else {
       await s.ptyManager.spawn(projectId, 0, launch);
+      publishPrimary(s, projectId, launch.argv);
     }
 
     if (!project.firstLaunchedAt) s.projects.setFirstLaunched(projectId, new Date());
-    const now = new Date();
-    const nowIso = `${now.getUTCFullYear()}-${String(now.getUTCMonth()+1).padStart(2,'0')}-${String(now.getUTCDate()).padStart(2,'0')} ${String(now.getUTCHours()).padStart(2,'0')}:${String(now.getUTCMinutes()).padStart(2,'0')}:${String(now.getUTCSeconds()).padStart(2,'0')}`;
-    s.shells.upsert({ projectId, shellIndex: 0, model: null, launchArgv: launch.argv, startedAt: nowIso, lastActiveAt: nowIso, pinned: false });
+    rememberResumable(s, projectId, launch.argv);
     void fallbackApplied; // future: return this to renderer as a toast reason
     return { shellIndex: 0 };
   },
@@ -520,10 +573,8 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     const project = s.projects.get(projectId);
     if (!project) throw new Error(`no project ${projectId}`);
     assertProjectPathExists(project);
-    // Pick the smallest unused shellIndex for this project. shellIndex 0 is
-    // typically the Claude shell; ad-hoc terminals get 1, 2, …
     const used = new Set(s.shells.list().filter(r => r.projectId === projectId).map(r => r.shellIndex));
-    let idx = 0;
+    let idx = 1;
     while (used.has(idx)) idx++;
     // Respect the alive cap the same way the primary launch does.
     const cap = s.settings.get('keep_alive_cap');
@@ -593,13 +644,18 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
         throw new Error('all shells are pinned — unpin one or raise cap');
       }
     }
+    // A saved profile continues its harness's last session here; a one-off inline command starts fresh.
+    const launchArgv = argv && argv.length > 0
+      ? resolvedArgv
+      : profileLaunchArgv(project, resolvedArgv, 'subsequent', (harness) => harnessBusy(s, projectId, harness, idx));
     const launch = {
-      argv: resolvedArgv,
+      argv: launchArgv,
       cwd: project.path,
       env: projectSpawnEnv(s, project, resolvedEnv),
       variant: 'first' as const,
     };
     await s.ptyManager.spawn(projectId, idx, launch);
+    rememberResumable(s, projectId, launch.argv);
     const now = new Date();
     const nowIso = `${now.getUTCFullYear()}-${String(now.getUTCMonth()+1).padStart(2,'0')}-${String(now.getUTCDate()).padStart(2,'0')} ${String(now.getUTCHours()).padStart(2,'0')}:${String(now.getUTCMinutes()).padStart(2,'0')}:${String(now.getUTCSeconds()).padStart(2,'0')}`;
     s.shells.upsert({ projectId, shellIndex: idx, model: null, launchArgv: launch.argv, startedAt: nowIso, lastActiveAt: nowIso, pinned: false });
@@ -637,6 +693,27 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     return { project: result.project };
   },
   'shells:kill':   async (s, { projectId, shellIndex }) => { await s.ptyManager.kill(projectId, shellIndex); s.shells.remove(projectId, shellIndex); return { ok: true } as const; },
+  'shells:inspect-primary': async (s, request) => {
+    const projectId = primaryProjectId(request);
+    const live = s.ptyManager.liveShell(projectId, 0);
+    if (!live) return { kind: 'gone' };
+    if (!s.agentStatus) throw new Error('agent status not installed');
+    const status = s.agentStatus.readForGuard(projectId, 0, live.generation);
+    return { kind: 'live', generation: live.generation, ...status };
+  },
+  'shells:stop-primary': async (s, request) => {
+    const { projectId, generation, acknowledgedWorkRisk } = stopPrimaryRequest(request);
+    const live = s.ptyManager.liveShell(projectId, 0);
+    if (!live) return { kind: 'gone' };
+    if (live.generation !== generation) return { kind: 'replaced' };
+    if (!s.agentStatus) throw new Error('agent status not installed');
+    const { state } = s.agentStatus.readForGuard(projectId, 0, generation);
+    if (!acknowledgedWorkRisk && (state === 'busy' || state === 'blocked'))
+      return { kind: 'escalated' };
+    const kind = s.ptyManager.stopIfGeneration(projectId, generation);
+    if (kind === 'stopped') s.shells.remove(projectId, 0);
+    return { kind };
+  },
   /**
    * Repair a corrupted Claude session: find the project's session dir
    * (`~/.claude/projects/<encoded-path>/`), locate the most recently
@@ -698,7 +775,10 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     writeFileSync(targetPath, repaired.join('\n'), 'utf8');
     return { repaired: 1, blocksStripped, backup: backupPath } as const;
   },
-  'shells:resize': async (s, { projectId, shellIndex, cols, rows }) => { s.ptyManager.resize(projectId, shellIndex, cols, rows); return { ok: true } as const; },
+  'shells:resize': async (s, { projectId, shellIndex, cols, rows }) => {
+    s.ptyManager.resize(projectId, shellIndex, cols, rows);
+    return { ok: true } as const;
+  },
   'shells:write':  async (s, { projectId, shellIndex, data }) => { s.ptyManager.write(projectId, shellIndex, data); s.shells.touch(projectId, shellIndex, new Date()); return { ok: true } as const; },
   'agent-state:list': async (s) => {
     if (!s.agentStatus) throw new Error('agent status not installed');
@@ -947,7 +1027,7 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     if (remember) {
       try {
         const keytar = await loadKeytar();
-        await keytar.setPassword(KEYTAR_SERVICE, username, password);
+        await keytar.setPassword(KEYTAR_SERVICE, username, encodeStoredSecret(password));
       } catch (err) {
         console.warn('[metaproject] failed to persist credential', err);
       }
@@ -960,8 +1040,8 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     if (!username) return { username: null, hasPassword: false };
     try {
       const keytar = await loadKeytar();
-      const pw = await keytar.getPassword(KEYTAR_SERVICE, username);
-      return { username, hasPassword: !!pw };
+      const stored = await keytar.getPassword(KEYTAR_SERVICE, username);
+      return { username, hasPassword: stored !== null && decodeStoredSecret(stored).text !== '' };
     } catch {
       return { username, hasPassword: false };
     }
@@ -986,7 +1066,8 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     let password: string | null = null;
     try {
       const keytar = await loadKeytar();
-      password = await keytar.getPassword(KEYTAR_SERVICE, username);
+      const stored = await keytar.getPassword(KEYTAR_SERVICE, username);
+      password = stored === null ? null : decodeStoredSecret(stored).text;
     } catch (err) {
       log.warn('[metaproject] auto-login: keychain read failed', err);
       return { ok: false, reason: `keychain-error: ${err instanceof Error ? err.message : String(err)}` };
@@ -1252,8 +1333,8 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     const p = s.projects.get(projectId);
     if (!p) throw new Error(`no project ${projectId}`);
     if (paths.length === 0) return { ok: true } as const;
-    const r = spawnSync('git', ['-C', p.path, 'add', '--', ...paths], { encoding: 'utf8', timeout: 15000 });
-    if (r.status !== 0) throw new Error(r.stderr.trim() || 'git add failed');
+    const r = await runGitCommand(p.path, ['add', '--', ...paths], { timeout: 15000 });
+    if (r.status !== 0) throw gitCommandError(r, 'git add failed');
     return { ok: true } as const;
   },
   'git:unstage': async (s, { projectId, paths }) => {
@@ -1261,8 +1342,8 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     if (!p) throw new Error(`no project ${projectId}`);
     if (paths.length === 0) return { ok: true } as const;
     // `git restore --staged` is the modern equivalent of `git reset HEAD --`.
-    const r = spawnSync('git', ['-C', p.path, 'restore', '--staged', '--', ...paths], { encoding: 'utf8', timeout: 15000 });
-    if (r.status !== 0) throw new Error(r.stderr.trim() || 'git unstage failed');
+    const r = await runGitCommand(p.path, ['restore', '--staged', '--', ...paths], { timeout: 15000 });
+    if (r.status !== 0) throw gitCommandError(r, 'git unstage failed');
     return { ok: true } as const;
   },
   'git:commit':  async (s, { projectId, message }) => {
@@ -1271,22 +1352,22 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     if (!message.trim()) throw new Error('commit message is empty');
     // Pass the message via `-F -` on stdin so we never worry about shell
     // quoting on multi-line messages or embedded backticks/dollars.
-    const r = spawnSync('git', ['-C', p.path, 'commit', '-F', '-'], { encoding: 'utf8', timeout: 30000, input: message });
-    if (r.status !== 0) throw new Error(r.stderr.trim() || r.stdout.trim() || 'git commit failed');
+    const r = await runGitCommand(p.path, ['commit', '-F', '-'], { timeout: 30000, input: message });
+    if (r.status !== 0) throw gitCommandError(r, 'git commit failed');
     return { ok: true } as const;
   },
   'git:push':    async (s, { projectId }) => {
     const p = s.projects.get(projectId);
     if (!p) throw new Error(`no project ${projectId}`);
-    const r = spawnSync('git', ['-C', p.path, 'push'], { encoding: 'utf8', timeout: 60000 });
-    if (r.status !== 0) throw new Error((r.stderr || r.stdout).trim() || 'git push failed');
+    const r = await runGitCommand(p.path, ['push'], { timeout: 60000 });
+    if (r.status !== 0) throw gitCommandError(r, 'git push failed');
     return { ok: true, output: (r.stdout + r.stderr).trim() } as const;
   },
   'git:pull':    async (s, { projectId }) => {
     const p = s.projects.get(projectId);
     if (!p) throw new Error(`no project ${projectId}`);
-    const r = spawnSync('git', ['-C', p.path, 'pull'], { encoding: 'utf8', timeout: 60000 });
-    if (r.status !== 0) throw new Error((r.stderr || r.stdout).trim() || 'git pull failed');
+    const r = await runGitCommand(p.path, ['pull'], { timeout: 60000 });
+    if (r.status !== 0) throw gitCommandError(r, 'git pull failed');
     return { ok: true, output: (r.stdout + r.stderr).trim() } as const;
   },
 
@@ -1515,7 +1596,9 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
   },
 
   ...dropHandlers,
+  ...keepAwakeHandlers,
 };
+
 
 /** Events broadcast after a channel's handler resolves; exported for the CHANNEL_EMITS guard test. */
 export const CHANNEL_EMITS: Partial<Record<IpcChannelName, IpcEventName[]>> = {
@@ -1538,6 +1621,7 @@ export const CHANNEL_EMITS: Partial<Record<IpcChannelName, IpcEventName[]>> = {
   'shells:set-default-cli': ['projects:changed'],
   'projects:update-config': ['projects:changed'],
   'shells:kill':    ['alive-shells:changed'],
+  'shells:stop-primary': ['alive-shells:changed'],
   'shells:pin':     ['alive-shells:changed'],
 };
 
@@ -1552,13 +1636,16 @@ let broadcastEvent: SendEvent | null = null;
 export function emitAliveShellsChanged(): void { broadcastEvent?.('alive-shells:changed', {}); }
 export function emitProjectsChanged(): void { broadcastEvent?.('projects:changed', { kind: 'updated' }); }
 
+/** Registers IPC handlers and forwards PTY exits only when no newer generation owns the shell. */
 export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: SendEvent, windowHooks?: WindowHooks): void {
   broadcastEvent = sendEvent;
   if (services.ptyManager) {
     services.ptyManager.on('data', (ev: IpcEvents['pty:data']) => sendEvent('pty:data', ev));
-    services.ptyManager.on('exit', (ev: IpcEvents['pty:exit']) => {
-      sendEvent('pty:exit', ev);
+    services.ptyManager.on('exit', (ev: IpcEvents['pty:exit'] & { generation: string }) => {
+      const live = services.ptyManager.liveShell(ev.projectId, ev.shellIndex);
+      if (live && live.generation !== ev.generation) return;
       services.shells?.remove(ev.projectId, ev.shellIndex);
+      sendEvent('pty:exit', { projectId: ev.projectId, shellIndex: ev.shellIndex, code: ev.code });
       sendEvent('alive-shells:changed', {});
     });
   }
@@ -1576,6 +1663,7 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
   // Wired separately below: these channels emit keyed `settings:changed`
   // events that the fixed per-channel payload cannot express.
   const CUSTOM_EMIT_CHANNELS: Partial<Record<IpcChannelName, true>> = {
+    'settings:set': true,
     'settings:set-font': true,
     'settings:set-terminal-font-size': true,
     'settings:set-terminal-font-weight': true,
@@ -1597,6 +1685,12 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
       return result;
     });
   }
+
+  ipcMain.handle('settings:set', async (_e, req: IpcRequest<'settings:set'>) => {
+    const result = await handlers['settings:set'](services, req);
+    sendEvent('settings:changed', { key: req.key });
+    return result;
+  });
 
   ipcMain.handle('settings:set-font', async (_e, req: IpcRequest<'settings:set-font'>) => {
     const result = await handlers['settings:set-font'](services, req);

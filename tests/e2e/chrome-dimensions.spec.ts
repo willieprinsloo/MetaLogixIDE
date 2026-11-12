@@ -5,17 +5,16 @@ import { join, resolve } from 'node:path';
 import { CHROME_TESTIDS } from '../../src/renderer/chrome-testids';
 import { SIDEBAR_WIDTH } from '../../src/renderer/sidebar-width';
 import { DIFF_TESTIDS } from '../../src/renderer/diff-tab-copy';
-import { ENV_TESTIDS } from '../../src/renderer/project-env-copy';
 import { PROJECT_SETTINGS_COPY, PROJECT_SETTINGS_TESTIDS } from '../../src/renderer/project-settings-contract';
 import { AGENT_DOT } from '../../src/shared/agent-state';
 import { PALETTE_COPY } from '../../src/renderer/command-palette-contract';
 import type { EffectiveTheme } from '../../src/renderer/markdown/contract';
 import { commitAll, git, GIT_ENV, initRepo, porcelain } from './helpers/git-repo';
-import { badgeContrast, colourDistance, elementColour, fmtColour, isMacPlatform, resolveToken } from './helpers/chrome-colour';
+import { badgeContrast, colourDistance, elementColour, fmtColour, isFrostedChrome, resolveToken } from './helpers/chrome-colour';
 import { closeApp, guardedLaunch } from './helpers/claude-harness';
 
 /**
- * Shell chrome dimensions and the centred title
+ * Shell chrome dimensions; the main window has no title bar (its icons live at the bottom of the activity bar)
  * (docs/specs/2026-10-06-shell-chrome-cleanup.md AC1–AC15, AC25–AC28, AC31).
  *
  * One app, three projects under one root:
@@ -26,14 +25,12 @@ import { closeApp, guardedLaunch } from './helpers/claude-harness';
  *   - `plain`: not a repository (package.json marker only).
  * Every seeded fact is asserted at seed time (`seed`).
  *
- * Tests run in file order and share the app: the no-project title is read
- * before any project is opened, and the width-migration test reloads, so it
+ * Tests run in file order and share the app: the width-migration test reloads, so it
  * runs last.
  */
 
 const PALETTES = ['default', 'catppuccin', 'rose-pine'] as const;
 const THEMES: readonly EffectiveTheme[] = ['dark', 'light'];
-const LONG_BRANCH = `feature/${'x'.repeat(192)}`;
 /** The migration marker named in plan §2.8; not exported by the contract, so named here. */
 const WIDTH_KEY = 'metaide.sidebarWidth';
 const MIGRATED_KEY = 'metaide.sidebarWidth.migrated';
@@ -133,7 +130,7 @@ function projectRow(name: string): Locator {
 
 async function selectProject(name: string): Promise<void> {
   await projectRow(name).click();
-  await expect(win.getByTestId(CHROME_TESTIDS.titleName)).toHaveText(name);
+  await expect(win.getByTestId('status-bar')).toContainText(name);
 }
 
 async function box(l: Locator): Promise<{ x: number; y: number; width: number; height: number }> {
@@ -171,26 +168,6 @@ function statusBranch(page: Page): Promise<string | null> {
   });
 }
 
-function titleBranch(): Locator {
-  return win.getByTestId(CHROME_TESTIDS.titleBranch);
-}
-
-/** Midpoint of the title group minus the window's centre. */
-async function titleOffCentre(): Promise<number> {
-  const g = await box(win.getByTestId(CHROME_TESTIDS.titleGroup));
-  const inner = await win.evaluate(() => window.innerWidth);
-  return g.x + g.width / 2 - inner / 2;
-}
-
-async function expectCentredAt(widths: number[]): Promise<void> {
-  for (const w of widths) {
-    await resizeMain(w, 900);
-    await expect.poll(async () => Math.abs(await titleOffCentre()), { message: `title group centred at width ${w}` })
-      .toBeLessThanOrEqual(2);
-  }
-  await resizeMain(1440, 900);
-}
-
 async function setLook(page: Page, palette: string, theme: EffectiveTheme): Promise<void> {
   await page.evaluate(({ palette, theme }) => {
     document.documentElement.setAttribute('data-palette', palette);
@@ -215,143 +192,210 @@ async function restoreLook(page: Page, look: { palette: string | null; theme: st
   }, look);
 }
 
-async function projectId(name: string): Promise<number> {
-  return win.evaluate(async (n) => {
-    const api = (window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<{ projects: { id: number; name: string }[] }> } }).api;
-    const { projects } = await api.invoke('projects:list', undefined);
-    const p = projects.find((x) => x.name === n);
-    if (!p) throw new Error(`no project ${n}`);
-    return p.id;
-  }, name);
-}
+/* ─────────────────────────────── no title bar ─────────────────────────────── */
 
-/* ─────────────────────────────── title ─────────────────────────────── */
-
-test('AC5/AC6/AC2: with no project the title reads "MetaLogix IDE", has no branch, and is centred', async () => {
-  const name = win.getByTestId(CHROME_TESTIDS.titleName);
-  await expect(name, 'positive control: the title renders').toHaveText('MetaLogix IDE');
-  await expect(win.getByTestId('status-bar'), 'no project is selected').toContainText('no project');
-  await expect(titleBranch()).toHaveCount(0);
-  expect(await css(name, 'font-size')).toBe('12.5px');
-  await expectCentredAt([1440, 1000]);
+test('no title bar: the title group is gone and the shell area starts at the top of the window', async () => {
+  await expect(win.getByTestId('activity-bar'), 'positive control: the chrome renders').toBeVisible();
+  await expect(win.getByTestId('title-group')).toHaveCount(0);
+  await expect(win.getByTestId('title-name')).toHaveCount(0);
+  const bar = await box(win.getByTestId('activity-bar'));
+  const main = await box(win.locator('main').first());
+  expect(bar.y, 'activity bar fills from the top edge').toBe(0);
+  expect(main.y, 'main sheet is not pushed down by a 44px title bar').toBeLessThan(44);
 });
 
-test('AC6/AC31/AC3/AC4/AC2: a git project shows its name and branch, matches the status bar, and stays centred', async () => {
+test('the sidebar keeps its 48px top inset from the old title bar, level with the first rail icon', async () => {
+  const sidebar = await box(win.locator('aside[data-view="projects"]'));
+  const firstChild = await box(win.locator('aside[data-view="projects"] > div:not([aria-hidden])').first());
+  expect(sidebar.y).toBe(0);
+  expect(firstChild.y - sidebar.y).toBe(48);
+  const firstIcon = await box(win.getByTestId('activity-bar').locator('button').first());
+  const main = await box(win.locator('main').first());
+  expect(Math.round(main.x + main.width), 'main sheet has no right margin').toBe(await win.evaluate(() => window.innerWidth));
+  const filter = await box(win.getByTestId('sidebar-filter').locator('xpath=..'));
+  expect(firstIcon.y + firstIcon.height / 2, 'the sidebar toggle centres on the filter field').toBe(filter.y + filter.height / 2);
+});
+
+test('empty chrome drags the window: rail, sidebar below the list and the top tab row; controls and overlays do not', async () => {
+  const region = (l: Locator) => css(l, '-webkit-app-region');
+  expect(await region(win.getByTestId('activity-bar'))).toBe('drag');
+  expect(await region(win.getByTestId('activity-bar').locator('button').first())).toBe('no-drag');
+  const fill = win.getByTestId('sidebar-drag-fill');
+  expect(await region(fill)).toBe('drag');
+  const aside = await box(win.locator('aside[data-view="projects"]'));
+  const f = await box(fill);
+  expect(Math.round(f.y + f.height), 'the drag fill reaches the bottom of the sidebar').toBe(Math.round(aside.y + aside.height));
+  expect(await region(win.getByPlaceholder(/filter projects/i)), 'the filter field is not a drag region').not.toBe('drag');
+  const tabBar = win.getByTestId(DIFF_TESTIDS.tabBar);
+  expect(await region(tabBar)).toBe('drag');
+  expect(await region(tabBar.getByRole('button', { name: 'Shell', exact: true }))).toBe('no-drag');
+  await win.getByTestId('settings-open').click();
+  const dialog = win.getByRole('dialog').first();
+  await expect(dialog).toBeVisible();
+  expect(await region(dialog), 'a modal over the drag band stays clickable').toBe('no-drag');
+  await win.keyboard.press('Escape');
+});
+
+test('Chat, Git and Tasks open in the sidebar column in place of the project list, not as a second column', async () => {
+  const projects = win.locator('aside[data-view="projects"]');
+  await expect(projects, 'positive control: the project list shows first').toBeVisible();
+  const sidebarX = (await box(projects)).x;
+  try {
+    for (const view of ['git', 'tasks', 'chat'] as const) {
+      await win.getByTestId(`ab-${view}`).click();
+      const panel = win.locator(`[data-view="${view}"]`);
+      await expect(panel).toBeVisible();
+      await expect(projects, `${view}: the project list is replaced`).toHaveCount(0);
+      await expect.poll(async () => Math.round((await box(panel)).x), `${view}: same column as the project list`).toBe(Math.round(sidebarX));
+      expect(await win.locator('[data-view]').filter({ visible: true }).count(), `${view}: one sidebar column`).toBe(1);
+    }
+  } finally {
+    await win.getByTestId('ab-projects').click();
+  }
+  await expect(projects).toBeVisible();
+});
+
+test('switching the sidebar view animates the column to that view\'s width; dragging follows the pointer without lag', async () => {
+  const column = win.getByTestId('sidebar-column');
+  expect(await css(column, 'transition-property')).toContain('width');
+  expect(await css(column, 'transition-duration')).toBe('0.2s');
+  await win.waitForTimeout(300); // let an earlier view switch finish animating
+  const projectsW = (await box(column)).width;
+  try {
+    await win.getByTestId('ab-chat').click();
+    const target = await win.evaluate(() => Number(localStorage.getItem('metaide.chatPanelWidth') ?? 400) || 400);
+    test.skip(Math.round(target) === Math.round(projectsW), 'both views share a width');
+    const samples: number[] = [];
+    for (let i = 0; i < 6; i++) { samples.push((await box(column)).width); await win.waitForTimeout(25); }
+    expect(samples.some((w) => Math.round(w) !== Math.round(projectsW) && Math.round(w) !== Math.round(target)), `an in-between width while animating: ${samples.join(', ')}`).toBe(true);
+    await expect.poll(async () => Math.round((await box(column)).width)).toBe(Math.round(target));
+  } finally {
+    await win.getByTestId('ab-projects').click();
+  }
+  await expect.poll(async () => Math.round((await box(column)).width)).toBe(Math.round(projectsW));
+  const handle = win.locator('[data-testid="sidebar-column"] + [data-testid="resize-handle"]');
+  const h = await box(handle);
+  await handle.hover({ position: { x: h.width / 2, y: 200 } });
+  await win.mouse.down();
+  await win.mouse.move(h.x + 40, h.y + 200, { steps: 4 });
+  await expect(handle, 'positive control: the handle is mid-drag').toHaveClass(/(^| )bg-\[color:var\(--accent\)\]/);
+  await expect.poll(() => css(column, 'transition-duration'), 'no width transition mid-drag').toBe('0s');
+  await win.mouse.up();
+  await handle.dblclick();
+  await win.waitForTimeout(300); // the reset width animates; let it land before the next test measures
+});
+
+test('the status bar sits inside the main sheet at its bottom; hiding it gives the space to the content', async () => {
+  const setStatusBar = (value: boolean) => win.evaluate(async (v: boolean) => {
+    const api = (window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<unknown> } }).api;
+    await api.invoke('settings:set', { key: 'show_status_bar', value: v });
+  }, value);
+  await expect(win.getByTestId('status-bar'), 'positive control: shown by default').toBeVisible();
+  const main = win.locator('main').first();
+  const height = await win.evaluate(() => window.innerHeight);
+  await expect(main.getByTestId('status-bar'), 'rendered inside the main sheet').toBeVisible();
+  const m = await box(main);
+  const bar = await box(win.getByTestId('status-bar'));
+  expect([bar.x, Math.round(bar.width)], 'spans only the main sheet').toEqual([m.x, Math.round(m.width)]);
+  expect(Math.round(bar.y + bar.height), 'at the bottom of the window').toBe(height);
+  expect(Math.round(m.y + m.height)).toBe(height);
+  try {
+    await setStatusBar(false);
+    await expect(win.getByTestId('status-bar')).toHaveCount(0);
+    await expect.poll(async () => { const b = await box(main); return Math.round(b.y + b.height); }).toBe(height);
+    expect(await radii(main), 'square on every window edge').toEqual(['0px', '0px', '0px', '0px']);
+  } finally {
+    await setStatusBar(true);
+  }
+  await expect(win.getByTestId('status-bar')).toBeVisible();
+});
+
+test('the project name and branch still show in the status bar and the OS window title', async () => {
   await selectProject('chromed');
   await expect(win.locator('[data-testid="shell-tab"]')).toBeVisible({ timeout: 5000 });
   expect(await win.title(), 'document title format is unchanged').toBe('chromed — MetaLogix IDE');
-  await expect(titleBranch()).toHaveText('main', { timeout: 10000 });
-  await expect.poll(() => statusBranch(win), { message: 'status bar shows the same branch' }).toBe('main');
-  expect(await css(win.getByTestId(CHROME_TESTIDS.titleName), 'font-size')).toBe('12.5px');
-  await expectCentredAt([1440, 1000]);
+  await expect.poll(() => statusBranch(win), { timeout: 10000 }).toBe('main');
 });
 
-test('AC5: a non-repo project shows its name, no branch, and stays centred', async () => {
-  const id = await projectId('plain');
-  const status = await win.evaluate(async (projectId) => {
-    const api = (window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<{ isRepo: boolean }> } }).api;
-    return api.invoke('git:status', { projectId });
-  }, id);
-  expect(status.isRepo, 'input state: the app sees plain as a non-repo').toBe(false);
-
-  await selectProject('plain');
-  await expect(win.getByTestId('status-bar'), 'positive control: the status bar switched to plain').toContainText('plain');
-  await expect(titleBranch()).toHaveCount(0);
-  await expectCentredAt([1440, 1000]);
-});
-
-test('AC4/AC14: the branch follows a checkout and detached HEAD in title and status bar; a clean repo shows no git badge', async () => {
+test('AC4/AC14: the status bar branch follows a checkout and detached HEAD; a clean repo shows no git badge', async () => {
   const dir = join(demoRoot, 'branchy');
   await selectProject('branchy');
-  await expect(titleBranch()).toHaveText('main', { timeout: 10000 });
+  await expect.poll(() => statusBranch(win), { timeout: 10000 }).toBe('main');
   await expect(win.locator('[data-testid="ab-tasks"] [data-tone]'), 'positive control: the tasks badge renders').toHaveText('1');
   await expect(win.locator('[data-testid="ab-git"] [data-tone]'), 'clean tree (0 changes): no git badge').toHaveCount(0);
 
   git(dir, ['checkout', '-q', '-b', 'feature/title-bar']);
-  await expect.poll(async () => [await titleBranch().textContent(), await statusBranch(win)], { timeout: 10000 })
-    .toEqual(['feature/title-bar', 'feature/title-bar']);
+  await expect.poll(() => statusBranch(win), { timeout: 10000 }).toBe('feature/title-bar');
 
   git(dir, ['checkout', '-q', '--detach']);
-  await expect.poll(async () => [await titleBranch().textContent(), await statusBranch(win)], { timeout: 10000 })
-    .toEqual(['HEAD', 'HEAD']);
+  await expect.poll(() => statusBranch(win), { timeout: 10000 }).toBe('HEAD');
 });
 
-test('AC7: a 200-character branch truncates with an ellipsis and stays clear of the traffic lights and buttons at 1000px', async () => {
-  const dir = join(demoRoot, 'branchy');
-  expect(LONG_BRANCH).toHaveLength(200);
-  git(dir, ['checkout', '-q', '-b', LONG_BRANCH]);
-  await selectProject('branchy');
-  await resizeMain(1000, 900);
-  try {
-    await expect(titleBranch()).toHaveText(LONG_BRANCH, { timeout: 10000 });
-    const group = await box(win.getByTestId(CHROME_TESTIDS.titleGroup));
-    const buttons = await box(win.getByTestId(CHROME_TESTIDS.titleButtons));
-    const name = await box(win.getByTestId(CHROME_TESTIDS.titleName));
-    expect(name.width, 'positive control: the project name is still shown').toBeGreaterThan(0);
-    expect(group.x, 'title group clears the traffic-light zone').toBeGreaterThanOrEqual(76);
-    expect(group.x + group.width, 'title group ends before the title buttons').toBeLessThanOrEqual(buttons.x);
-    const overflow = await titleBranch().evaluate((el) => ({
-      scroll: el.scrollWidth, client: el.clientWidth, ellipsis: getComputedStyle(el).textOverflow,
-    }));
-    expect(overflow.scroll, 'branch text overflows its box').toBeGreaterThan(overflow.client);
-    expect(overflow.ellipsis).toBe('ellipsis');
-  } finally {
-    await resizeMain(1440, 900);
-  }
-});
-
-test('AC8: title-bar buttons are 32x32 with an 8px radius, in the title-buttons group', async () => {
-  const group = win.getByTestId(CHROME_TESTIDS.titleButtons);
+test('AC8: the theme, tile and settings buttons sit at the bottom of the activity bar, 44x44 with a 10px radius', async () => {
+  const bar = win.getByTestId('activity-bar');
+  const group = bar.getByTestId(CHROME_TESTIDS.titleButtons);
+  const barBox = await box(bar);
+  const fleet = await box(bar.getByTestId('ab-fleet'));
+  let previousBottom = fleet.y + fleet.height;
   for (const id of ['theme-toggle', 'tile-windows', 'settings-open']) {
     const b = group.getByTestId(id);
     await expect(b, `${id} sits in the title-buttons group`).toBeVisible();
     const r = await box(b);
-    expect([r.width, r.height], `${id} size`).toEqual([32, 32]);
-    expect(await radii(b), `${id} radius`).toEqual(['8px', '8px', '8px', '8px']);
+    expect([r.width, r.height], `${id} size`).toEqual([44, 44]);
+    expect(await radii(b), `${id} radius`).toEqual(['10px', '10px', '10px', '10px']);
+    expect(r.y, `${id} is below the previous button`).toBeGreaterThanOrEqual(previousBottom);
+    previousBottom = r.y + r.height;
+    expect(await b.getAttribute('aria-label'), `${id} has an accessible name`).toBeTruthy();
   }
-  // AC8a: the last button's glyph ends 12px from the window's right edge.
-  const glyph = await box(group.getByTestId('settings-open').locator('svg'));
-  const inner = await win.evaluate(() => window.innerWidth);
-  expect(Math.abs(inner - (glyph.x + glyph.width) - 12), `gear glyph right inset ${inner - (glyph.x + glyph.width)}px`).toBeLessThanOrEqual(1);
-  expect(await css(win.locator('.drag').first(), 'padding-right')).toBe('3px');
+  expect(barBox.y + barBox.height - previousBottom, 'settings is pinned to the bottom with the rail padding').toBeLessThanOrEqual(16);
+  const gapAboveFooter = (await box(group.getByTestId('theme-toggle'))).y - (fleet.y + fleet.height);
+  expect(gapAboveFooter, 'a flexible spacer separates the footer from the nav buttons').toBeGreaterThan(40);
 });
 
-test('AC10a: the activity bar has no Settings button; Settings stays reachable from the title-bar gear', async () => {
-  await expect(win.getByTestId('activity-bar').locator('button'), 'positive control: the activity bar renders').toHaveCount(5);
+test('the top of the activity bar is a draggable strip (traffic-light room on macOS) and the footer buttons are not draggable', async () => {
+  const platform = await app.evaluate(() => process.platform);
+  const strip = win.getByTestId('ab-drag-region');
+  if (platform === 'darwin') {
+    expect((await box(strip)).height).toBe(36);
+    expect(await css(strip, '-webkit-app-region')).toBe('drag');
+  } else {
+    await expect(strip).toHaveCount(0);
+  }
+  expect(await css(win.getByTestId(CHROME_TESTIDS.titleButtons), '-webkit-app-region')).toBe('no-drag');
+});
+
+test('AC10a: the activity bar has six rail buttons plus the three footer buttons, and no ab-settings button', async () => {
+  await expect(win.getByTestId('activity-bar').locator('button'), 'positive control: the activity bar renders').toHaveCount(9);
   await expect(win.getByTestId('ab-settings')).toHaveCount(0);
-  await expect(win.getByTestId(CHROME_TESTIDS.titleButtons).getByTestId('settings-open')).toBeVisible();
+  await expect(win.getByTestId('activity-bar').getByTestId('settings-open')).toBeVisible();
 });
 
 /* ─────────────────────────────── palette x theme matrix ─────────────────────────────── */
 
 test('AC1/AC3/AC10–AC13/AC15/AC25–AC28: chrome dimensions, badges and branch colour hold in every palette and theme', async () => {
   await selectProject('chromed');
-  await expect(titleBranch()).toHaveText('main', { timeout: 10000 });
+  await expect.poll(() => statusBranch(win), { timeout: 10000 }).toBe('main');
   const gitBadge = win.locator('[data-testid="ab-git"] [data-tone]');
   const taskBadge = win.locator('[data-testid="ab-tasks"] [data-tone]');
   await expect(gitBadge, 'AC14: 150 changes cap at 99+').toHaveText('99+', { timeout: 10000 });
   await expect(taskBadge).toHaveText('3');
 
   const look = await currentLook(win);
-  const mac = await isMacPlatform(win);
   try {
     for (const palette of PALETTES) {
       for (const theme of THEMES) {
         const at = `${palette}/${theme}`;
         await setLook(win, palette, theme);
 
-        // AC1
-        expect((await box(win.locator('.drag').first())).height, `${at} title bar height`).toBe(44);
-
         // AC10
         const bar = win.getByTestId('activity-bar');
         expect((await box(bar)).width, `${at} activity bar width`).toBe(56);
         const buttons = bar.locator('button');
-        expect(await buttons.count(), `${at} AC10a: five activity bar buttons`).toBe(5);
+        expect(await buttons.count(), `${at} AC10a: six rail buttons and three footer buttons`).toBe(9);
         for (const b of await buttons.all()) {
           const label = await b.getAttribute('aria-label');
           const r = await box(b);
-          expect([r.width, r.height], `${at} ${label} size`).toEqual([36, 36]);
+          expect([r.width, r.height], `${at} ${label} size`).toEqual([44, 44]);
           expect(await radii(b), `${at} ${label} radius`).toEqual(['10px', '10px', '10px', '10px']);
           const icon = await box(b.locator('svg').first());
           expect([icon.width, icon.height], `${at} ${label} icon`).toEqual([16, 16]);
@@ -390,37 +434,25 @@ test('AC1/AC3/AC10–AC13/AC15/AC25–AC28: chrome dimensions, badges and branch
             .toBeGreaterThanOrEqual(4.5);
         }
 
-        // AC3. The token is resolved beside the branch, so on macOS it reads the
-        // chrome's D16 lift (docs/specs/macos-frosted-chrome.md); off mac nothing
-        // overrides it and this equals the root value.
-        const branchColour = await elementColour(win, titleBranch(), 'color');
-        const pink = await resolveToken(win, '--hue-pink', titleBranch().locator('xpath=..'));
-        expect(colourDistance(branchColour, pink), `${at} branch ${fmtColour(branchColour)} is --hue-pink ${fmtColour(pink)}`).toBeLessThanOrEqual(1);
-        if (mac) {
-          // Positive control: on mac the chrome pink is lifted away from the root (working-area) pink.
-          const rootPink = await resolveToken(win, '--hue-pink');
-          expect(colourDistance(pink, rootPink), `${at} control: chrome --hue-pink ${fmtColour(pink)} is lifted from root ${fmtColour(rootPink)}`).toBeGreaterThan(1);
-        }
-
         // AC15 (fresh HOME, no stored width)
         expect((await box(win.locator('aside[data-view="projects"]'))).width, `${at} sidebar width`).toBe(SIDEBAR_WIDTH.default);
 
         // AC25
         const main = win.locator('main').first();
-        expect(await radii(main), `${at} sheet radius`).toEqual(['14px', '14px', '14px', '14px']);
-        expect(await css(main, 'margin-right'), `${at} sheet right margin`).toBe('8px');
+        expect(await radii(main), `${at} sheet radius (square: it meets the window edges and the rail)`).toEqual(['0px', '0px', '0px', '0px']);
+        expect(await css(main, 'margin-right'), `${at} sheet right margin`).toBe('0px');
 
-        // AC26
+        // AC26: compact tabs (28px, 8px side padding) with more room around and between them.
         const tabBar = win.getByTestId(DIFF_TESTIDS.tabBar);
+        expect([await css(tabBar, 'padding-top'), await css(tabBar, 'padding-left'), await css(tabBar, 'column-gap')], `${at} tab bar spacing`).toEqual(['10px', '12px', '6px']);
         for (const [label, tab] of [
           ['Shell', tabBar.getByRole('button', { name: 'Shell', exact: true })],
           ['Files', tabBar.getByRole('button', { name: 'Files', exact: true })],
           ['Diff', win.getByTestId(DIFF_TESTIDS.tab)],
-          ['Env', win.getByTestId(ENV_TESTIDS.tab)],
           [PROJECT_SETTINGS_COPY.tab, win.getByTestId(PROJECT_SETTINGS_TESTIDS.tab)],
         ] as const) {
-          expect((await box(tab)).height, `${at} ${label} tab height`).toBe(32);
-          expect([await css(tab, 'padding-left'), await css(tab, 'padding-right')], `${at} ${label} tab padding`).toEqual(['12px', '12px']);
+          expect((await box(tab)).height, `${at} ${label} tab height`).toBe(28);
+          expect([await css(tab, 'padding-left'), await css(tab, 'padding-right')], `${at} ${label} tab padding`).toEqual(['8px', '8px']);
           expect(await radii(tab), `${at} ${label} tab radius`).toEqual(['8px', '8px', '8px', '8px']);
         }
 
@@ -481,7 +513,7 @@ test('AC24a: the projects, chat and git panels paint no section tint in any pale
   expect(await tints('projects'), 'positive control: an injected ::before tint is detected').toHaveLength(1);
   await win.evaluate(() => document.getElementById('e2e-tint-control')?.remove());
 
-  const mac = await isMacPlatform(win);
+  const frosted = await isFrostedChrome(win);
   /**
    * The chat panel's own `<tag>.<classPrefix> <resolved --sheet-solid>`
    * entry, in the exact shape `tints()` emits for a painted element in its
@@ -509,12 +541,13 @@ test('AC24a: the projects, chat and git panels paint no section tint in any pale
         for (const theme of THEMES) {
           await setLook(win, palette, theme);
           const at = `${palette}/${theme} ${view}`;
-          if (mac && view === 'chat') {
+          const signedOut = view === 'chat' && (await win.locator('[data-view="chat"] > .chat-signin').count()) > 0;
+          if (frosted && view === 'chat' && !signedOut) {
             // D10/AC10 (docs/specs/macos-frosted-chrome.md): on macOS the
-            // chat column gets its own solid surface, painted directly on
-            // the panel element itself (not a pseudo or ancestor tint) —
-            // exactly one layer, exactly --sheet-solid. Off mac, unchanged
-            // (the `else` branch below, which this view still hits there).
+            // signed-in chat column gets its own solid surface, painted
+            // directly on the panel element itself (not a pseudo or ancestor
+            // tint) — exactly one layer, exactly --sheet-solid. Signed out it
+            // shows the chrome like the other sheets; off mac, unchanged.
             expect(await tints(view), `${at} panel tint layers (mac, D10)`).toEqual([await expectedChatTint()]);
           } else {
             expect(await tints(view), `${at} panel tint layers`).toEqual([]);
@@ -590,7 +623,7 @@ test('AC15: a stored 288 migrates once to 260, other widths are kept, and reset 
 
   // Reset on the resize handle.
   // Reset on the resize handle, with a real mouse: the handle must be hittable.
-  await win.locator('aside[data-view="projects"] + [data-testid="resize-handle"]').dblclick();
+  await win.locator('[data-testid="sidebar-column"] + [data-testid="resize-handle"]').dblclick();
   await expect.poll(async () => (await box(aside)).width).toBe(SIDEBAR_WIDTH.default);
   await expect.poll(stored).toBe(String(SIDEBAR_WIDTH.default));
 });

@@ -10,10 +10,11 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { createElement } from 'react';
+import { createElement, createRef } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { vi } from 'vitest';
 import type { ModalSurface } from '@renderer/modal-glass';
+import { UnloadSessionDialogView } from '@renderer/components/UnloadSessionDialog';
 
 vi.mock('@renderer/api', () => ({ api: { invoke: vi.fn() } }));
 vi.mock('@renderer/components/settings/SettingsSectionPanel', () => ({
@@ -67,6 +68,18 @@ const RENDERERS: Record<string, () => string> = {
         onDone: noopAsync,
       }),
     ),
+  'unload-session': () =>
+    renderToStaticMarkup(createElement(UnloadSessionDialogView, {
+      name: 'demo',
+      state: { kind: 'ready', inspection: { kind: 'live', generation: 'test', agent: null, state: null }, consent: { work: false, input: false, visible: false }, error: null },
+      risk: { work: false, input: false, visible: false },
+      onKeep: noop,
+      onConfirm: noop,
+      onRetry: noop,
+      onKeyDown: noop,
+      panelRef: createRef<HTMLElement>(),
+      keepRef: createRef<HTMLButtonElement>(),
+    })),
 };
 
 const OWNED: readonly string[] = [
@@ -77,6 +90,7 @@ const OWNED: readonly string[] = [
   'prompt-library',
   'scrollback-search',
   'rename-project',
+  'unload-session',
 ];
 
 function surfaceFor(id: string): ModalSurface {
