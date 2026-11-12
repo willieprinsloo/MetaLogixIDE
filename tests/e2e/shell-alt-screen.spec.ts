@@ -55,6 +55,16 @@ test('the shell padding drops while a full-screen app shows and returns after it
   const host = await tab.boundingBox();
   const screen = await tab.locator('.xterm-screen').boundingBox();
   expect(host && screen && Math.abs(screen.x - host.x), 'the app starts at the sheet edge').toBeLessThanOrEqual(1);
+  // No 14px scrollbar reserve: what is left on the right is under one cell wide.
+  const cellWidth = await tab.evaluate((el) => {
+    const probe = el.querySelector('.xterm-char-measure-element') as HTMLElement | null;
+    return probe ? probe.getBoundingClientRect().width / Math.max(1, (probe.textContent ?? '').length) : 10;
+  });
+  await expect.poll(async () => {
+    const h = await tab.boundingBox();
+    const sc = await tab.locator('.xterm-screen').boundingBox();
+    return h && sc ? h.x + h.width - (sc.x + sc.width) : -1;
+  }, { message: `right-hand gap under one cell (${cellWidth.toFixed(1)}px)` }).toBeLessThan(cellWidth);
 
   await tab.click();
   await win.keyboard.type('leave');

@@ -993,7 +993,8 @@ as external there.
 - While a shell shows the alternate screen (opencode, vim, …) its tab drops the
   12px/8px padding, since such apps paint their own margins and background;
   the padding returns when the app leaves the alternate screen. The terminal
-  refits on each change.
+  refits on each change, and while the alternate screen shows it also reclaims
+  the 14px the fit addon reserves for a scrollbar (nothing scrolls there).
 - Diff-rendering TUIs such as opencode debounce SIGWINCH and repaint only
   changed cells. 250 ms after the last resize, `PtyManager` briefly shrinks an
   alternate-screen PTY by one row and restores it, which those apps treat as a

@@ -308,6 +308,14 @@ export function ShellTab({
         if (remote) remote.resize(cols, rows);
         else void api.invoke('shells:resize', { projectId, shellIndex, cols, rows });
       },
+      fullWidthCols: () => {
+        if (term.buffer.active.type !== 'alternate') return null;
+        const host = termHostRef.current;
+        const screen = host?.querySelector<HTMLElement>('.xterm-screen');
+        // The screen is exactly cols × cell width, so it yields the cell width.
+        const cellWidth = screen && term.cols > 0 ? screen.getBoundingClientRect().width / term.cols : 0;
+        return host && cellWidth > 0 ? Math.floor(host.clientWidth / cellWidth) : null;
+      },
     });
     geometrySyncRef.current = synchronizeGeometry;
     const fontUpdater = createTerminalFontUpdater({
