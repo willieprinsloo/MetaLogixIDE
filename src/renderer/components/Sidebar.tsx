@@ -318,7 +318,7 @@ function ProjectRow({
     <div
       onContextMenu={onContextMenu}
       title={`${project.path}\n(right-click for options)`}
-      className={`group w-full h-11 my-1 lg:h-[34px] lg:my-0 flex items-center gap-2.5 px-2.5 text-sm rounded-lg transition-colors ${
+      className={`group w-full h-11 my-1 lg:h-7 lg:my-0 flex items-center gap-2.5 px-2 text-sm rounded-lg transition-colors ${
         selected ? 'bg-[--accent-soft] text-[--text] font-medium' : 'hover:bg-[--surface-hover]'
       }`}
     >
@@ -430,7 +430,7 @@ function RootBlock({
         onClick={toggle}
         aria-expanded={open}
         data-testid="root-toggle"
-        className="w-full text-left px-2.5 py-1 text-xs text-[--text-muted] hover:text-[--text] flex items-center gap-2.5"
+        className="w-full text-left px-2 py-0.5 text-xs text-[--text-muted] hover:text-[--text] flex items-center gap-2.5"
       >
         <RootFolderGlyph color={rootHueVar(root.path)} />
         <span className="truncate flex-1" title={root.path}>{rootFolderName(root.path)}</span>
