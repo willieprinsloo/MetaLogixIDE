@@ -306,7 +306,7 @@ a live shell.
 Section headers (In use, Recents, Projects) align with the filter field and
 show a chevron on the right. The full list is titled "Projects" but stores its
 collapsed state under the legacy key "All projects", so existing state
-survives the rename. Rows are 34px tall. The scroll region runs to the
+survives the rename. Rows are 28px tall with 8px side padding. The scroll region runs to the
 sidebar's edge and never scrolls horizontally.
 
 The default width is 260px (`src/renderer/sidebar-width.ts`). Every existing
