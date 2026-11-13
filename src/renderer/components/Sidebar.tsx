@@ -318,7 +318,7 @@ function ProjectRow({
     <div
       onContextMenu={onContextMenu}
       title={`${project.path}\n(right-click for options)`}
-      className={`group w-full h-11 my-1 lg:h-7 lg:my-0 flex items-center gap-2.5 px-2 text-sm rounded-lg transition-colors ${
+      className={`group w-full h-7 flex items-center gap-2.5 px-2 text-sm rounded-lg transition-colors ${
         selected ? 'bg-[--accent-soft] text-[--text] font-medium' : 'hover:bg-[--surface-hover]'
       }`}
     >
@@ -348,10 +348,10 @@ function ProjectRow({
         <button
           onClick={unload}
           data-testid="row-unload"
-          className={`w-11 h-11 lg:w-4 lg:h-4 flex shrink-0 items-center justify-center rounded transition-colors focus-visible:ring-2 focus-visible:ring-[--accent] ${
+          className={`w-4 h-4 flex shrink-0 items-center justify-center rounded transition-colors focus-visible:ring-2 focus-visible:ring-[--accent] ${
             selected
               ? 'text-[--text-muted] hover:text-[--danger] hover:bg-[--surface-hover] opacity-100'
-              : 'text-[--text-muted] hover:text-[--danger] hover:bg-[--surface-hover] opacity-100 lg:opacity-0 lg:group-hover:opacity-100 lg:focus:opacity-100'
+              : 'text-[--text-muted] hover:text-[--danger] hover:bg-[--surface-hover] opacity-0 group-hover:opacity-100 focus:opacity-100'
           }`}
           title="Unload session (close shell)"
         >
