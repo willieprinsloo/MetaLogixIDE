@@ -1057,7 +1057,7 @@ function MainApp() {
                       <span className="truncate font-medium">{selected.name}</span>
                       {primaryAlive && <button
                         onClick={unloadCurrent}
-                        className="ml-1 text-[--text-muted] hover:text-[--danger] hover:bg-[--panel]/60 w-11 h-11 lg:w-4 lg:h-4 flex shrink-0 items-center justify-center rounded focus-visible:ring-2 focus-visible:ring-[--accent]"
+                        className="ml-1 text-[--text-muted] hover:text-[--danger] hover:bg-[--panel]/60 w-4 h-4 flex shrink-0 items-center justify-center rounded focus-visible:ring-2 focus-visible:ring-[--accent]"
                         title="Unload session (close shell)"
                         aria-label="Unload session (close shell)"
                         data-testid="unload-current"
