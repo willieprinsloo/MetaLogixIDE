@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import { closeApp, guardedLaunch } from './helpers/claude-harness';
 
 /**
- * Full-screen terminal apps (opencode, vim) paint their own margins and background, so the
- * shell's padding drops while the alternate screen shows and returns when it is left.
+ * Full-screen terminal apps (opencode, vim) keep the shell's padding, but reclaim the
+ * scrollbar strip on the right while the alternate screen shows, so left and right match.
  */
 
 // Enters the alternate screen, leaves it after a "leave" line on stdin.
@@ -48,14 +48,14 @@ const padding = (page: Page) => page.getByTestId('shell-tab').first().evaluate((
   return [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft];
 });
 
-test('the shell padding drops while a full-screen app shows and returns after it leaves', async () => {
+test('a full-screen app keeps the shell padding and its right gap matches the left', async () => {
   const tab = win.getByTestId('shell-tab').first();
   await expect(tab).toHaveAttribute('data-alt-screen', 'true', { timeout: 10_000 });
-  expect(await padding(win), 'no frame around a full-screen app').toEqual(['0px', '0px', '0px', '0px']);
+  expect(await padding(win), 'the usual padding around a full-screen app').toEqual(['8px', '12px', '4px', '12px']);
   const host = await tab.boundingBox();
   const screen = await tab.locator('.xterm-screen').boundingBox();
-  expect(host && screen && Math.abs(screen.x - host.x), 'the app starts at the sheet edge').toBeLessThanOrEqual(1);
-  // No 14px scrollbar reserve: what is left on the right is under one cell wide.
+  expect(host && screen && Math.round(screen.x - host.x), 'the app starts after the 12px left padding').toBe(12);
+  // No 14px scrollbar reserve: beyond the padding, what is left on the right is under one cell.
   const cellWidth = await tab.evaluate((el) => {
     const probe = el.querySelector('.xterm-char-measure-element') as HTMLElement | null;
     return probe ? probe.getBoundingClientRect().width / Math.max(1, (probe.textContent ?? '').length) : 10;
@@ -64,7 +64,7 @@ test('the shell padding drops while a full-screen app shows and returns after it
     const h = await tab.boundingBox();
     const sc = await tab.locator('.xterm-screen').boundingBox();
     return h && sc ? h.x + h.width - (sc.x + sc.width) : -1;
-  }, { message: `right-hand gap under one cell (${cellWidth.toFixed(1)}px)` }).toBeLessThan(cellWidth);
+  }, { message: `right-hand gap: 12px padding plus under one cell (${cellWidth.toFixed(1)}px)` }).toBeLessThan(12 + cellWidth);
 
   await tab.click();
   await win.keyboard.type('leave');

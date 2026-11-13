@@ -107,8 +107,8 @@ export function ShellTab({
   const platformRef = useRef(platform);
   platformRef.current = platform;
   const containerRef = useRef<HTMLDivElement>(null);
-  // Full-screen apps (opencode, vim, …) paint their own margins and background; the shell
-  // padding would only frame them in sheet colour, so it drops while the alternate screen shows.
+  // Whether a full-screen app (opencode, vim, …) shows the alternate screen; entering or
+  // leaving it refits, so the terminal reclaims the scrollbar strip only while nothing scrolls.
   const [altScreen, setAltScreen] = useState(false);
   const termHostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -525,7 +525,7 @@ export function ShellTab({
     searchRef.current.findPrevious(q, { caseSensitive: false, wholeWord: false, regex: false });
   }, []);
 
-  // The padding changes with the alternate screen; refit to the new host size once it has laid out.
+  // Entering or leaving the alternate screen changes the usable width (scrollbar strip); refit.
   useEffect(() => {
     geometrySyncRef.current?.();
   }, [altScreen]);
@@ -688,7 +688,7 @@ export function ShellTab({
         setMenu({ x: e.clientX, y: e.clientY });
       }}
       data-alt-screen={altScreen || undefined}
-      className={`relative w-full h-full min-h-0 bg-transparent focus:outline-none ${altScreen ? 'p-0' : 'px-3 pt-2 pb-1'}`}
+      className="relative w-full h-full min-h-0 px-3 pt-2 pb-1 bg-transparent focus:outline-none"
     >
       {/* `isolate` keeps xterm's internal z-indexes (e.g. its link layer) inside the
           host, so the exit overlay, drop hint and search bar always paint above it. */}
