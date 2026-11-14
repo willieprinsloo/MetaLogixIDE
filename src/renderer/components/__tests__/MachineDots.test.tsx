@@ -137,13 +137,14 @@ describe('MachineDots states (AC21, AC28, AC32, AC34)', () => {
   const BUSY_TOWER: MachineDot = { ...TOWER, agentState: 'busy' };
   const BLOCKED_LOCAL: MachineDot = { ...LOCAL, agentState: 'blocked' };
 
-  test('every dot is a glass circle: 10px inactive, 12px active', () => {
+  test('every dot is a glass circle: 8px inactive, 10px active', () => {
     renderDots('atlas');
     for (const m of ALL) has(m.deviceId, 'machine-dot', 'rounded-full');
-    has('tower', 'w-2.5', 'h-2.5');
-    has(LOCAL_MACHINE_ID, 'w-2.5', 'h-2.5');
-    has('atlas', 'w-3', 'h-3');
-    lacks('atlas', 'w-2.5');
+    has('tower', 'w-2', 'h-2');
+    has(LOCAL_MACHINE_ID, 'w-2', 'h-2');
+    has('atlas', 'w-2.5', 'h-2.5');
+    lacks('atlas', 'w-2');
+    lacks('tower', 'w-2.5');
   });
 
   test('only the active dot carries data-active; offline dots carry data-online="0"', () => {
@@ -206,7 +207,8 @@ describe('MachineDots overflow and drag (AC4, AC8)', () => {
 
   test('a busy dot\'s full pulse ring fits inside the row\'s clip box, active or not (AC34)', () => {
     const css = readFileSync(resolve(__dirname, '../../styles.css'), 'utf8');
-    const scale = Number(/@keyframes livePulse\s*\{[^}]*\}\s*to\s*\{[^}]*scale\(([\d.]+)\)/.exec(css)![1]);
+    const pulse = /\.machine-dot\.live-dot::after\s*\{[^}]*animation:\s*([\w-]+)/.exec(css)![1]!;
+    const scale = Number(new RegExp(`@keyframes ${pulse}\\s*\\{[^}]*\\}\\s*to\\s*\\{[^}]*scale\\(([\\d.]+)\\)`).exec(css)![1]);
     const border = Number(/\.machine-dot \{[^}]*border: (\d+)px/.exec(css)![1]);
     const px = (el: Element, prefix: string) => {
       const token = [...el.classList].find((c) => new RegExp(`^${prefix}-[\\d.]+$`).test(c));

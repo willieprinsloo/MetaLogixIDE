@@ -813,7 +813,8 @@ input::placeholder, textarea::placeholder {
 .scrollbar-none::-webkit-scrollbar { display: none; width: 0; height: 0; }
 
 /* Machine switcher dots (AC21, AC32, AC34): frosted-glass circles over the list, tinted by the
- * machine's agent state; an offline dot is a faint edge only. Busy dots pulse via .live-dot. */
+ * machine's agent state; an offline dot is a faint edge only. Busy dots pulse via .live-dot with their
+ * own smaller, desaturated glow; the shared livePulse stays the sidebar status dots' pulse. */
 .machine-dot {
   background: rgb(from var(--panel-strong) r g b / .35);
   backdrop-filter: blur(6px) saturate(1.6);
@@ -823,9 +824,17 @@ input::placeholder, textarea::placeholder {
 .machine-dot[data-agent-state="idle"]    { background: color-mix(in srgb, var(--agent-idle) 65%, transparent); }
 .machine-dot[data-agent-state="busy"]    { background: color-mix(in srgb, var(--agent-busy) 65%, transparent); }
 .machine-dot[data-agent-state="blocked"] { background: color-mix(in srgb, var(--agent-blocked) 65%, transparent); }
-.machine-dot[data-active] { box-shadow: inset 0 1px 0 rgb(255 255 255 / .35), 0 0 0 2px var(--accent); }
+.machine-dot[data-active] { box-shadow: inset 0 1px 0 rgb(255 255 255 / .35), 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, transparent); }
 .machine-dot[data-online="0"] { background: transparent; backdrop-filter: none; opacity: .5; }
 .machine-dot[data-online="0"][data-active] { opacity: 1; }
+@keyframes machineDotPulse {
+  from { transform: scale(1); opacity: .35; }
+  to   { transform: scale(1.8); opacity: 0; }
+}
+.machine-dot.live-dot::after { animation: machineDotPulse 2s var(--ease-out) infinite; filter: saturate(.5); }
+@media (prefers-reduced-motion: reduce) {
+  .machine-dot.live-dot::after { animation: none; opacity: 0; }
+}
 @media (prefers-reduced-transparency: reduce) {
   .machine-dot { background: rgb(from var(--panel-strong) r g b / 1); backdrop-filter: none; border-color: var(--text-muted); }
   .machine-dot[data-agent-state="idle"]    { background: var(--agent-idle); }

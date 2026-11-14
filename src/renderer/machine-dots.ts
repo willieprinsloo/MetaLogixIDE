@@ -197,10 +197,10 @@ export interface DotAttrs {
 
 const DOT_BASE = 'machine-dot block rounded-full transition-[width,height,background-color,opacity,box-shadow] duration-150 motion-reduce:transition-none';
 
-/** Glass dot (AC21, AC32, AC34): 10px, 12px when active; tinted by agent state while online; only a busy online dot pulses (`live-dot`). */
+/** Glass dot (AC21, AC32, AC34): 8px, 10px when active; tinted by agent state while online; only a busy online dot pulses (`live-dot`). */
 export function dotAttrs(m: MachineDot, active: boolean): DotAttrs {
   const tint = m.online ? m.agentState ?? undefined : undefined;
-  const size = active ? 'w-3 h-3' : 'w-2.5 h-2.5';
+  const size = active ? 'w-2.5 h-2.5' : 'w-2 h-2';
   return {
     className: `${DOT_BASE} ${size}${tint === 'busy' ? ' live-dot' : ''}`,
     'data-agent-state': tint,

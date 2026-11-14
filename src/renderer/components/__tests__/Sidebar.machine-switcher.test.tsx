@@ -324,8 +324,54 @@ describe('machine dot styles (AC21, AC32, AC34)', () => {
     expect(tinted).toMatch(new RegExp(`background:\\s*color-mix\\(in srgb, var\\(--agent-${state}\\) \\d+%, transparent\\)`));
   });
 
-  test('the active dot adds a 2px accent ring outside the glass', () => {
-    expect(rule(topLevel, '.machine-dot[data-active]')).toMatch(/box-shadow:[^;]*inset 0 1px 0 [^;]*,\s*0 0 0 2px var\(--accent\)/);
+  test('the active dot adds a 1.5px softened accent ring outside the glass and keeps the inner highlight', () => {
+    const ring = /box-shadow:\s*inset 0 1px 0 [^,;]*\)\s*,\s*0 0 0 1\.5px color-mix\(in srgb, var\(--accent\) (\d+)%, transparent\)/.exec(rule(topLevel, '.machine-dot[data-active]'));
+    expect(ring).not.toBeNull();
+    expect(Number(ring![1])).toBeLessThan(100);
+    expect(Number(ring![1])).toBeGreaterThan(0);
+  });
+
+  const block = (at: string, from = 0) => {
+    const start = css.indexOf(`${at} {`, from);
+    if (start < 0) return '';
+    let depth = 0;
+    for (let i = css.indexOf('{', start); i < css.length; i++) {
+      if (css[i] === '{') depth++;
+      else if (css[i] === '}' && --depth === 0) return css.slice(start, i + 1);
+    }
+    return '';
+  };
+  const frames = (name: string) => {
+    const kf = block(`@keyframes ${name}`);
+    const step = (at: string) => new RegExp(`${at}\\s*\\{([^}]*)\\}`).exec(kf)?.[1] ?? '';
+    const num = (s: string, re: RegExp) => Number(re.exec(s)?.[1]);
+    return { fromScale: num(step('from'), /scale\(([\d.]+)\)/), fromOpacity: num(step('from'), /opacity:\s*([\d.]+)/), toScale: num(step('to'), /scale\(([\d.]+)\)/), toOpacity: num(step('to'), /opacity:\s*([\d.]+)/) };
+  };
+
+  test('a busy machine dot pulses with its own smaller, softer, desaturated glow; the shared status-dot pulse is unchanged', () => {
+    const after = rule(topLevel, '.machine-dot.live-dot::after');
+    const name = /animation:\s*([\w-]+)/.exec(after)?.[1];
+    expect(name).toBeTruthy();
+    expect(name).not.toBe('livePulse');
+    expect(after).toMatch(/filter:\s*saturate\(0?\.\d+\)/);
+    const own = frames(name!);
+    expect(own.fromScale).toBe(1);
+    expect(own.toScale).toBeLessThanOrEqual(2);
+    expect(own.toScale).toBeGreaterThan(1);
+    expect(own.fromOpacity).toBeLessThanOrEqual(0.4);
+    expect(own.fromOpacity).toBeGreaterThan(0);
+    expect(own.toOpacity).toBe(0);
+    expect(frames('livePulse')).toEqual({ fromScale: 1, fromOpacity: 0.6, toScale: 2.6, toOpacity: 0 });
+    expect(rule(css, '.live-dot::after')).toMatch(/animation:\s*livePulse 2s/);
+  });
+
+  test('under reduced motion the machine dot pulse is hidden too, by a rule as specific as its own', () => {
+    const own = css.indexOf('.machine-dot.live-dot::after {');
+    const motion = block('@media (prefers-reduced-motion: reduce)', own);
+    expect(own).toBeGreaterThan(0);
+    const off = rule(motion, '.machine-dot.live-dot::after');
+    expect(off).toMatch(/animation:\s*none/);
+    expect(off).toMatch(/opacity:\s*0\b/);
   });
 
   test('an offline dot is a faint edge with no fill or blur; active offline is not dimmed', () => {

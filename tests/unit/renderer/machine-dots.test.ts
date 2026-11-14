@@ -321,11 +321,11 @@ describe('dotAttrs (AC21, AC32, AC34)', () => {
   );
   const cls = (a: ReturnType<typeof dotAttrs>) => a.className.split(' ');
 
-  it('inactive dots are 10px and active ones 12px, all glass', () => {
-    expect(cls(dotAttrs(dot({}), false))).toEqual(expect.arrayContaining(['machine-dot', 'w-2.5', 'h-2.5']));
-    expect(cls(dotAttrs(dot({}), true))).toEqual(expect.arrayContaining(['machine-dot', 'w-3', 'h-3']));
-    expect(cls(dotAttrs(dot({}), true))).not.toContain('w-2.5');
-    expect(cls(dotAttrs(dot({}), false))).not.toContain('w-3');
+  it('inactive dots are 8px and active ones 10px, all glass', () => {
+    expect(cls(dotAttrs(dot({}), false))).toEqual(expect.arrayContaining(['machine-dot', 'w-2', 'h-2']));
+    expect(cls(dotAttrs(dot({}), true))).toEqual(expect.arrayContaining(['machine-dot', 'w-2.5', 'h-2.5']));
+    expect(cls(dotAttrs(dot({}), true))).not.toContain('w-2');
+    expect(cls(dotAttrs(dot({}), false))).not.toContain('w-2.5');
   });
 
   it('carries no colour utilities: the glass and tint come from styles.css', () => {
