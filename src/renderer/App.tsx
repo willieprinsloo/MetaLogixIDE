@@ -79,6 +79,7 @@ import { shellChipLabel, stripShells } from './shell-label';
 import { useFrostedGlassAttributes } from './hooks/useFrostedGlassAttributes';
 import { useExternalDragGuard } from './hooks/useExternalDragGuard';
 import { isPrimaryVisible } from './unload-session';
+import { resolveFileTarget } from './agent-file-targets';
 import type { SheetContent } from './frosted-chrome-contract';
 
 
@@ -775,7 +776,7 @@ function MainApp() {
       case 'diff':
         return <DiffTab key={project.id} projectId={project.id} />;
       case 'activity':
-        return <ActivityTab key={project.id} projectId={project.id} />;
+        return <ActivityTab key={project.id} projectId={project.id} onOpenTarget={(t) => void openFileTarget(t)} />;
     }
   }
 
@@ -851,6 +852,15 @@ function MainApp() {
     } catch (e) {
       toast('Failed to launch CLI', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
     }
+  }
+
+  /** Resolve an agent tool target (absolute or project-relative) and open it in the Files viewer. */
+  async function openFileTarget(target: string) {
+    if (!selected) return;
+    const hit = await resolveFileTarget(selected.id, target);
+    if (!hit) { toast('Could not resolve that file', { kind: 'info' }); return; }
+    setMainTab('files');
+    setOpenInFiles({ relPath: hit.relPath, line: null });
   }
 
   async function killShell(shellIndex: number) {
