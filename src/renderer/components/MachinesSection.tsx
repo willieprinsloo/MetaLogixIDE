@@ -10,13 +10,10 @@ import type { FleetEntry } from '@shared/p2p-contract';
 import type { Project, Root } from '@shared/types';
 import { ICON_SIZE, ICON_STROKE } from './icon-size';
 
-/** What the sidebar hands to App when a remote project is clicked. */
-export interface OpenPaneRequest {
-  source: { kind: 'remote'; deviceId: string };
-  deviceName: string;
-  projectId: number;
-  projectName: string;
-}
+import type { OpenPaneRequest } from '@renderer/machine-switcher-contract';
+
+// Temporary re-export while this file still exists; the contract now lives in machine-switcher-contract.ts.
+export type { OpenPaneRequest };
 
 function lastSeen(ts: number | null): string {
   if (ts == null) return 'never seen';
