@@ -808,6 +808,35 @@ input::placeholder, textarea::placeholder {
   background: var(--scrollbar-thumb-hover, rgba(128, 128, 128, 0.5));
 }
 
+/* Scrolls without a visible scrollbar (the machine switcher's dot row). */
+.scrollbar-none { scrollbar-width: none; }
+.scrollbar-none::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
+/* Machine switcher (AC21, AC32, AC34): a tight frosted pill (opaque under Reduce transparency) holding
+ * solid status-coloured dots; an offline dot is a hollow outline. A busy dot pulses with its own
+ * smaller, desaturated glow; the shared livePulse stays the sidebar status dots' pulse. */
+.machine-pill {
+  background: rgb(from var(--panel-strong) r g b / .72);
+  backdrop-filter: blur(12px) saturate(1.4);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .machine-pill { background: rgb(from var(--panel-strong) r g b / 1); backdrop-filter: none; }
+}
+.machine-dot { background: var(--text-muted); }
+.machine-dot[data-agent-state="idle"]    { background: var(--agent-idle); }
+.machine-dot[data-agent-state="busy"]    { background: var(--agent-busy); }
+.machine-dot[data-agent-state="blocked"] { background: var(--agent-blocked); }
+.machine-dot[data-online="0"] { background: transparent; border: 1px solid var(--text-muted); opacity: .5; }
+.machine-dot[data-online="0"][data-active] { opacity: 1; }
+@keyframes machineDotPulse {
+  from { transform: scale(1); opacity: .35; }
+  to   { transform: scale(1.8); opacity: 0; }
+}
+.machine-dot.live-dot::after { animation: machineDotPulse 2s var(--ease-out) infinite; filter: saturate(.5); }
+@media (prefers-reduced-motion: reduce) {
+  .machine-dot.live-dot::after { animation: none; opacity: 0; }
+}
+
 /* Focus ring — visible only on keyboard focus, not on click. */
 :focus-visible {
   outline: 2px solid var(--accent);
@@ -1064,8 +1093,8 @@ kbd {
   .fleet-projects-pane {
     position: fixed;
     top: 44px;
-    left: 56px;
-    width: calc(100vw - 56px) !important;
+    left: 80px;
+    width: calc(100vw - 80px) !important;
     height: calc(100dvh - 78px);
     z-index: var(--layer-mobile-sidebar);
     background: var(--surface-chrome);

@@ -257,7 +257,9 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): void {
 
   on('shells.alive', async () => {
     const { shells } = await handlers['shells:alive-list'](s, undefined as never);
-    return shells.map((r) => ({ ...r }));
+    if (!s.agentStatus) return shells.map((r) => ({ ...r }));
+    const states = new Map(s.agentStatus.list().map((e) => [`${e.projectId}:${e.shellIndex}`, e.state]));
+    return shells.map((r) => ({ ...r, agentState: states.get(`${r.projectId}:${r.shellIndex}`) ?? null }));
   });
 
   // RpcError messages below are fixed strings, safe to send to the peer.

@@ -44,6 +44,16 @@ import { GIT_DIFF_MAX_BYTES, readFileDiff } from '@main/git/file-diff';
 import { readDiffSides } from '@main/git/diff-sides';
 import { dropHandlers } from '@main/drops/handlers';
 import { keepAwakeHandlers } from '@main/keep-awake/handlers';
+import { UsageService, usageDepsFor } from '@main/usage/service';
+
+/** `<userData>/usage-debug/` holds the last usage response per provider; undefined outside Electron (unit tests). */
+function usageDebugDir(): string | undefined {
+  try {
+    return join(app.getPath('userData'), 'usage-debug');
+  } catch {
+    return undefined;
+  }
+}
 import { isInsideRoot, resolveInsideRoot } from '@main/domain/path-containment';
 import { decodeStoredSecret, encodeStoredSecret } from '@main/credential-encoding';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -1597,6 +1607,10 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
 
   ...dropHandlers,
   ...keepAwakeHandlers,
+  'usage:get': async (s, req) => {
+    s.usage ??= new UsageService(usageDepsFor(s.homeDir, process.env, usageDebugDir()));
+    return s.usage.get(req?.force === true);
+  },
 };
 
 

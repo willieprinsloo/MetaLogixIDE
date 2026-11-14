@@ -284,4 +284,24 @@ describe('createTerminalGeometrySynchronizer', () => {
       'resize:80x24',
     ]);
   });
+
+  it('widens to the full-width columns for a full-screen app, and only ever widens', () => {
+    const terminal = { options: {}, cols: 80, rows: 24, clearTextureAtlas() {}, refresh() {}, resize(cols: number, rows: number) { this.cols = cols; this.rows = rows; } };
+    const resizes: string[] = [];
+    let wide: number | null = 81;
+    const synchronize = createTerminalGeometrySynchronizer({
+      terminal,
+      fit: { fit: () => { terminal.cols = 80; } },
+      dimensions: () => ({ width: 800, height: 480 }),
+      resize: (cols, rows) => resizes.push(`${cols}x${rows}`),
+      fullWidthCols: () => wide,
+    });
+    synchronize();
+    expect(resizes).toEqual(['81x24']);
+    wide = 79;
+    synchronize();
+    wide = null;
+    synchronize({ forceResize: true });
+    expect(resizes, 'never narrower than the fit; null keeps the fit result').toEqual(['81x24', '80x24', '80x24']);
+  });
 });

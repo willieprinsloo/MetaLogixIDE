@@ -27,7 +27,41 @@ async function untilData(mgr: PtyManager, projectId: number, match: string, time
   });
 }
 
+/** Logs every SIGWINCH size; with `alt`, switches to the alternate screen first like a full-screen TUI. */
+function winchLaunch(alt: boolean) {
+  const script = `${alt ? "process.stdout.write('\\x1b[?1049h');" : ''} process.stdout.write('READY\\n'); process.on('SIGWINCH', () => process.stdout.write(\`W=\${process.stdout.columns}x\${process.stdout.rows}\\n\`)); setTimeout(() => {}, 5000)`;
+  return { argv: ['node', '-e', script], env: {}, cwd: process.cwd(), variant: 'first' as const };
+}
+
 describe('PtyManager', () => {
+  it('nudges an alternate-screen app to repaint once resizes settle (one row shorter, then back)', async () => {
+    const mgr = new PtyManager();
+    const ready = untilData(mgr, 40, 'READY');
+    await mgr.spawn(40, 0, winchLaunch(true));
+    await ready;
+    const seen = untilData(mgr, 40, 'W=120x39', 3000);
+    mgr.resize(40, 0, 110, 40);
+    mgr.resize(40, 0, 120, 40);
+    let out = await seen;
+    out = out + (await untilData(mgr, 40, 'W=120x40', 3000).catch(() => ''));
+    await mgr.kill(40, 0);
+    expect(out.indexOf('W=120x39')).toBeGreaterThan(-1);
+  });
+
+  it('never nudges a plain (main-screen) shell', async () => {
+    const mgr = new PtyManager();
+    const ready = untilData(mgr, 41, 'READY');
+    await mgr.spawn(41, 0, winchLaunch(false));
+    await ready;
+    let buf = '';
+    mgr.on('data', ({ projectId, data }) => { if (projectId === 41) buf += data; });
+    mgr.resize(41, 0, 120, 40);
+    await new Promise((r) => setTimeout(r, 600));
+    await mgr.kill(41, 0);
+    expect(buf).toContain('W=120x40');
+    expect(buf).not.toContain('W=120x39');
+  });
+
   it('spawns a PTY and receives initial banner', async () => {
     const mgr = new PtyManager();
     const p = untilData(mgr, 1, 'mock-claude ready');

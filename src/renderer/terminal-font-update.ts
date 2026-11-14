@@ -14,6 +14,7 @@ export interface TerminalFontUpdatePort {
   readonly rows: number;
   clearTextureAtlas(): void;
   refresh(start: number, end: number): void;
+  resize?(cols: number, rows: number): void;
 }
 
 export interface TerminalGeometryOptions {
@@ -33,6 +34,12 @@ interface TerminalGeometryDependencies {
   readonly fit: { fit(): void };
   readonly dimensions: () => { readonly width: number; readonly height: number } | null;
   readonly resize: (cols: number, rows: number) => void;
+  /**
+   * Columns that fit the full host width, or null to keep the fit addon's result. The fit
+   * addon always holds back 14px for a scrollbar; full-screen apps never scroll, so the
+   * shell reclaims that strip while the alternate screen shows.
+   */
+  readonly fullWidthCols?: () => number | null;
 }
 
 interface TerminalFontUpdaterDependencies {
@@ -82,6 +89,9 @@ export function createTerminalGeometrySynchronizer(
 
     try {
       dependencies.fit.fit();
+      const wide = dependencies.fullWidthCols?.() ?? null;
+      const { cols, rows } = dependencies.terminal;
+      if (wide !== null && wide > cols) dependencies.terminal.resize?.(wide, rows);
     } catch {
       return;
     }

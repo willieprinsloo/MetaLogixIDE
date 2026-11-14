@@ -66,6 +66,11 @@ export function overallSnapshotGetter(getMap: () => AgentStateMap): () => AgentS
   return () => overallStateOf(getMap());
 }
 
+/** Derives this machine's worst agent state, or null with no agent, as a primitive the switcher dot can subscribe to. */
+export function machineSnapshotGetter(getMap: () => AgentStateMap): () => AgentState | null {
+  return () => machineAgentState(Array.from(getMap().values(), (shell) => shell.state));
+}
+
 /** Replaces stale shell data on refresh, reusing unchanged values from the previous snapshot. */
 export function applySnapshot(
   entries: readonly AgentShellStateEntry[],
@@ -96,4 +101,18 @@ export function applyDelta(map: AgentStateMap, entry: AgentShellStateEntry): Age
   if (entry.agent === null) next.delete(key);
   else next.set(key, { agent: entry.agent, state: entry.state });
   return next;
+}
+
+/** Accepts only the three agent-state literals; anything else a peer sends (missing, malformed, hostile) becomes null. */
+export function readAgentState(value: unknown): AgentState | null {
+  return value === 'idle' || value === 'busy' || value === 'blocked' ? value : null;
+}
+
+/** Worst state across a machine's shells (blocked, then busy, then idle), or null when no shell runs a recognised agent. */
+export function machineAgentState(states: Iterable<AgentState | null | undefined>): AgentState | null {
+  let worst: AgentState | null = null;
+  for (const state of states) {
+    if (state && (worst === null || STATE_RANK[state] > STATE_RANK[worst])) worst = state;
+  }
+  return worst;
 }

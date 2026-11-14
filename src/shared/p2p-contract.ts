@@ -16,8 +16,14 @@ export const Project = z.object({ id: z.number().int().positive(), name: z.strin
 export const Root = z.object({ id: z.number().int().positive(), path: z.string() }).passthrough();
 
 export const ShellInfo = z
-  .object({ projectId: z.number().int().positive(), shellIndex: z.number() })
+  .object({
+    projectId: z.number().int().positive(),
+    shellIndex: z.number(),
+    /** Host's agent state for this shell; absent from older hosts or hosts without the tracker, null when no recognised agent runs. */
+    agentState: z.enum(['idle', 'busy', 'blocked']).nullable().optional(),
+  })
   .passthrough();
+export type ShellInfoT = z.infer<typeof ShellInfo>;
 
 export const Dirent = z.object({
   name: z.string(),

@@ -107,6 +107,9 @@ export function ShellTab({
   const platformRef = useRef(platform);
   platformRef.current = platform;
   const containerRef = useRef<HTMLDivElement>(null);
+  // Whether a full-screen app (opencode, vim, …) shows the alternate screen; entering or
+  // leaving it refits, so the terminal reclaims the scrollbar strip only while nothing scrolls.
+  const [altScreen, setAltScreen] = useState(false);
   const termHostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
@@ -305,6 +308,14 @@ export function ShellTab({
         if (remote) remote.resize(cols, rows);
         else void api.invoke('shells:resize', { projectId, shellIndex, cols, rows });
       },
+      fullWidthCols: () => {
+        if (term.buffer.active.type !== 'alternate') return null;
+        const host = termHostRef.current;
+        const screen = host?.querySelector<HTMLElement>('.xterm-screen');
+        // The screen is exactly cols × cell width, so it yields the cell width.
+        const cellWidth = screen && term.cols > 0 ? screen.getBoundingClientRect().width / term.cols : 0;
+        return host && cellWidth > 0 ? Math.floor(host.clientWidth / cellWidth) : null;
+      },
     });
     geometrySyncRef.current = synchronizeGeometry;
     const fontUpdater = createTerminalFontUpdater({
@@ -450,6 +461,7 @@ export function ShellTab({
 
     const ro = new ResizeObserver(passiveSync);
     if (containerRef.current) ro.observe(containerRef.current);
+    const bufferChange = term.buffer.onBufferChange((buffer) => setAltScreen(buffer.type === 'alternate'));
 
     // Intercept every copy from the terminal (Cmd+C, right-click Copy,
     // browser Edit menu) and replace the clipboard payload with a
@@ -486,6 +498,7 @@ export function ShellTab({
       window.removeEventListener('focus', passiveSync);
       offHoldRelease();
       ro.disconnect();
+      bufferChange.dispose();
       media.removeEventListener('change', onScheme);
       themeObserver.disconnect();
       copyHost?.removeEventListener('copy', onCopy);
@@ -511,6 +524,11 @@ export function ShellTab({
     if (!q || !searchRef.current) return;
     searchRef.current.findPrevious(q, { caseSensitive: false, wholeWord: false, regex: false });
   }, []);
+
+  // Entering or leaving the alternate screen changes the usable width (scrollbar strip); refit.
+  useEffect(() => {
+    geometrySyncRef.current?.();
+  }, [altScreen]);
 
   // Push font-size changes into the running instance and immediately remeasure its geometry.
   useEffect(() => {
@@ -669,7 +687,8 @@ export function ShellTab({
         e.preventDefault();
         setMenu({ x: e.clientX, y: e.clientY });
       }}
-      className="relative w-full h-full min-h-0 px-3 pt-2 pb-3 bg-transparent focus:outline-none"
+      data-alt-screen={altScreen || undefined}
+      className="relative w-full h-full min-h-0 px-3 pt-2 pb-1 bg-transparent focus:outline-none"
     >
       {/* `isolate` keeps xterm's internal z-indexes (e.g. its link layer) inside the
           host, so the exit overlay, drop hint and search bar always paint above it. */}

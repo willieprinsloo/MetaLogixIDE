@@ -40,6 +40,11 @@ export class ScreenMirror {
     this.term.write(data);
   }
 
+  /** True while the app shows its alternate screen (full-screen TUIs like opencode or vim). */
+  isAlternateScreen(): boolean {
+    return !this.disposed && this.term.buffer.active.type === 'alternate';
+  }
+
   /** Resize the headless terminal to match the live PTY. */
   resize(cols: number, rows: number): void {
     if (this.disposed) return;

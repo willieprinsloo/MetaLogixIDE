@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AnimatePresence } from 'motion/react';
+import { useCallback, useEffect, useMemo, useLayoutEffect, useRef, useState } from 'react';
+import { AnimatePresence, m, useReducedMotion } from 'motion/react';
 import { Sidebar } from './components/Sidebar';
 import { UnloadSessionDialog } from './components/UnloadSessionDialog';
 import { RemoteProjectPane } from './components/RemoteProjectPane';
-import type { OpenPaneRequest } from './components/MachinesSection';
+import type { OpenPaneRequest } from '@renderer/machine-switcher-contract';
 import { StatusBar } from './components/StatusBar';
 import { useShowStatusBar } from './hooks/useShowStatusBarPorts';
 import { SIDEBAR_WIDTH, useSidebarWidth } from './sidebar-width';
@@ -19,6 +19,7 @@ import { PROJECT_SETTINGS_COPY, PROJECT_SETTINGS_TESTIDS, type ProjectSettingsTa
 import type { SettingsSection } from './components/settings/nav-icons';
 import { ResizeHandle } from './components/ResizeHandle';
 import { NewProjectDialog } from './components/NewProjectDialog';
+import { UsageMeter } from './components/UsageMeter';
 import { ActivityBar, ABButton, type ActivityView } from './components/ActivityBar';
 import { CommandPalette } from './components/CommandPalette';
 import { ShortcutsHelp } from './components/ShortcutsHelp';
@@ -64,6 +65,11 @@ import { Tooltip } from './components/Tooltip';
 import { FoldPane } from './components/FoldPane';
 import { usePrefersReducedMotion } from './hooks/usePrefersReducedMotion';
 import { useTerminalGeometryHold } from './hooks/useTerminalGeometryHold';
+
+/** Status bar fold and sheet margin/rounding transition length. */
+const STATUS_BAR_MS = 200;
+/** The status bar's fixed height (StatusBar's h-[34px]); its slot animates to this. */
+const STATUS_BAR_HEIGHT = 34;
 import { useSplitLifecycle } from './hooks/useSplitLifecycle';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { StatusDot } from './components/StatusDot';
@@ -301,6 +307,17 @@ function MainApp() {
   const activeShellAgentState = useShellAgentState(selected?.id ?? -1, activeShellIndex).state;
   const activeShellAgentStateLabel = activeShellAgentLabel ? activeShellAgentState : null;
   const showStatusBar = useShowStatusBar();
+  const reduceMotion = useReducedMotion() ?? false;
+  // Hold terminal geometry while the status bar folds and the sheet's margins animate, then refit once.
+  const [statusBarAnimating, setStatusBarAnimating] = useState(false);
+  const statusBarFirst = useRef(true);
+  useLayoutEffect(() => {
+    if (statusBarFirst.current) { statusBarFirst.current = false; return; }
+    setStatusBarAnimating(true);
+    const t = window.setTimeout(() => setStatusBarAnimating(false), STATUS_BAR_MS + 80);
+    return () => window.clearTimeout(t);
+  }, [showStatusBar]);
+  useTerminalGeometryHold(statusBarAnimating, showStatusBar);
   const [sidebarOpen, setSidebarOpen] = usePersistedState<boolean>(
     'metaide.sidebarOpen',
     true,
@@ -895,7 +912,7 @@ function MainApp() {
   const mainSheetContent: SheetContent = mainTab === 'shell' ? 'shell' : 'other';
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-[--surface-chrome]" data-chrome-root>
+    <div className="h-screen w-screen overflow-hidden flex flex-col bg-[--surface-chrome]" data-chrome-root>
       <div className="flex-1 flex min-h-0">
         <ActivityBar
           active={activeView}
@@ -924,6 +941,7 @@ function MainApp() {
               <ABButton label={SHORTCUT_COPY.settingsTitle(platform)} onClick={() => setSettingsOpen(true)} active={false} data-testid="settings-open">
                 <GearIcon />
               </ABButton>
+              <UsageMeter />
             </>
           )}
           gitDirty={git.dirty ? Object.keys(git.files).length : undefined}
@@ -993,166 +1011,189 @@ function MainApp() {
             </FoldPane>
           )}
         </AnimatePresence>
-        <main
-          className="flex flex-1 flex-col min-h-0 min-w-0 bg-[--surface-sheet]"
-          data-sheet-content={mainSheetContent}
-        >
-          <div className={`drag flex-wrap items-center gap-1.5 px-3 pt-2.5 pb-1.5 text-xs shrink-0 ${remotePane ? 'hidden' : 'flex'}`} data-testid={DIFF_TESTIDS.tabBar}>
-            <TabButton active={mainTab === 'shell'} onClick={() => setMainTab('shell')}>Shell</TabButton>
-            <TabButton active={mainTab === 'files'} onClick={() => setMainTab('files')}>Files</TabButton>
-            <TabButton
-              active={mainTab === 'diff'}
-              onClick={() => setMainTab('diff')}
-              testId={DIFF_TESTIDS.tab}
-              ariaLabel={diffCount !== null ? DIFF_COPY.tabCountLabel(diffCount) : undefined}
-            >
-              {DIFF_COPY.tabLabel}
-              {diffCount !== null && (
-                <span aria-hidden className="ml-1.5 font-mono text-[10px] text-[--hue-orange-text]" data-testid={DIFF_TESTIDS.tabCount}>
-                  {diffCount}
-                </span>
-              )}
-            </TabButton>
-            <TabButton
-              active={mainTab === 'settings'}
-              onClick={openSelectedProjectSettings}
-              testId={PROJECT_SETTINGS_TESTIDS.tab}
-              ariaLabel={envDirty ? ENV_COPY.tabUnsavedLabel : undefined}
-            >
-              {PROJECT_SETTINGS_COPY.tab}
-              {envDirty && (
-                <span aria-hidden className="ml-1 text-[--accent]" data-testid={ENV_TESTIDS.unsaved}>
-                  {ENV_COPY.tabUnsavedMarker}
-                </span>
-              )}
-            </TabButton>
-            <TabButton active={mainTab === 'activity'} onClick={() => setMainTab('activity')}>Activity</TabButton>
-            <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 pr-2">
-              {selected && (
-                <>
-                  <span className="flex min-w-0 items-center gap-1.5 text-[--text] pl-2 pr-1 py-0.5 rounded-md bg-[--surface-active] text-[11px] max-w-[280px]" title={selected.path}>
-                    <StatusDot state={selectedAgentState} />
-                    <span className="truncate font-medium">{selected.name}</span>
-                    {primaryAlive && <button
-                      onClick={unloadCurrent}
-                      className="ml-1 text-[--text-muted] hover:text-[--danger] hover:bg-[--panel]/60 w-11 h-11 lg:w-4 lg:h-4 flex shrink-0 items-center justify-center rounded focus-visible:ring-2 focus-visible:ring-[--accent]"
-                      title="Unload session (close shell)"
-                      aria-label="Unload session (close shell)"
-                      data-testid="unload-current"
-                    >
-                      <XIcon />
-                    </button>}
+        <div className="flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden" data-testid="main-column">
+          <main
+            className={`flex flex-1 flex-col min-h-0 min-w-0 bg-[--surface-sheet] transition-[margin,border-radius] duration-200 ease-out motion-reduce:transition-none ${
+              showStatusBar ? 'mt-2 mr-2 rounded-[14px]' : 'mt-0 mr-0 rounded-none'
+            }`}
+            data-sheet-content={mainSheetContent}
+            data-status-bar={showStatusBar ? 'shown' : 'hidden'}
+          >
+            <div className={`drag flex-wrap items-center gap-1.5 px-3 pt-2.5 pb-1.5 text-xs shrink-0 ${remotePane ? 'hidden' : 'flex'}`} data-testid={DIFF_TESTIDS.tabBar}>
+              <TabButton active={mainTab === 'shell'} onClick={() => setMainTab('shell')}>Shell</TabButton>
+              <TabButton active={mainTab === 'files'} onClick={() => setMainTab('files')}>Files</TabButton>
+              <TabButton
+                active={mainTab === 'diff'}
+                onClick={() => setMainTab('diff')}
+                testId={DIFF_TESTIDS.tab}
+                ariaLabel={diffCount !== null ? DIFF_COPY.tabCountLabel(diffCount) : undefined}
+              >
+                {DIFF_COPY.tabLabel}
+                {diffCount !== null && (
+                  <span aria-hidden className="ml-1.5 font-mono text-[10px] text-[--hue-orange-text]" data-testid={DIFF_TESTIDS.tabCount}>
+                    {diffCount}
                   </span>
-                  <MetaprojectBoardButton project={selected} onRequestLink={() => setActiveView('chat')} />
-                  <Tooltip label="Prompt library" shortcut={SHORTCUT_COPY.promptsShortcut(platform)}>
-                    <button
-                      onClick={() => setPromptsOpen(true)}
-                      className="text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel-strong]"
-                      data-testid="prompts-open"
-                      aria-label="Open prompt library"
-                    >
-                      <PromptsIcon />
-                    </button>
-                  </Tooltip>
-                  <Tooltip label="Search all shells" shortcut={SHORTCUT_COPY.scrollbackShortcut(platform)}>
-                    <button
-                      onClick={() => setScrollbackOpen(true)}
-                      className="text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel-strong]"
-                      data-testid="scrollback-open"
-                      aria-label="Search across all live shells"
-                    >
-                      <SearchIcon />
-                    </button>
-                  </Tooltip>
-                  <Tooltip label="Reveal project folder in Finder">
-                    <button
-                      onClick={async () => {
-                        try {
-                          await api.invoke('files:reveal', { projectId: selected.id, relPath: '' });
-                        } catch (e) {
-                          toast('Could not open the folder', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
-                        }
-                      }}
-                      className="text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel-strong]"
-                      data-testid="reveal-project-folder"
-                    >
-                      <RevealFolderIcon />
-                    </button>
-                  </Tooltip>
-                  <Tooltip label="Pop the active shell into its own window">
-                    <button
-                      onClick={popoutCurrent}
-                      className="text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel-strong]"
-                      data-testid="popout-shell"
-                    >
-                      <PopoutIcon />
-                    </button>
-                  </Tooltip>
-                </>
-              )}
-            </div>
-          </div>
-          <div className="flex-1 relative min-h-0 flex flex-col">
-            {!remotePane && selected && mainTab === 'shell' && (
-              <ShellTabsBar
-                projectId={selected.id}
-                shells={stripShells(projectShells, rightShellIndex, split.hiddenShells)}
-                active={activeShellIndex}
-                onSelect={setActiveShellIndex}
-                onClose={killShell}
-                defaultCliName={selected.config.defaultCliName ?? null}
-                onDefaultCliChanged={applyDefaultAgentProject}
-                onLaunchProfile={(name) => void launchCliProfile(name, 'tab')}
-                onLaunchPlainTab={newPlainShellAsTab}
-                onLaunchCustom={(name, cmdLine, save) => void launchCustomCli(name, cmdLine, save, 'tab')}
-                splitOn={rightShellIndex != null}
-                onToggleSplit={() => (rightShellIndex != null ? split.closeSplit() : void openSplit())}
-              />
-            )}
-            {activeView === 'fleet'
-              ? <FleetView
-                  localShells={localAliveShells}
-                  onOpenLocal={(projectId, shellIndex) => {
-                    setActiveView('projects');
-                    void api.invoke('projects:open', { id: projectId }).then(() => {
-                      setMainTab('shell');
-                      setActiveShellIndexFor(projectId, shellIndex);
-                    });
-                  }}
-                  onOpenRemote={(req) => { setActiveView('projects'); setRemotePane(req); }}
-                />
-              : remotePane
-              ? <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId} projectName={remotePane.projectName} onClose={() => setRemotePane(null)} />
-              : mainTab === 'settings'
-              ? settingsTarget
-                ? <ProjectSettingsTab key={settingsTarget.id} target={settingsTarget} onSaved={applyDefaultAgentProject}>
-                    <ScrollIntoViewOnRequest request={envFocusRequest}>
-                      <ProjectEnvTab
-                        projectId={settingsTarget.id}
-                        projectName={settingsTarget.name}
-                        drafts={envDrafts}
-                        onOpenAppEnv={() => {
-                          setSettingsSection('env');
-                          setSettingsOpen(true);
+                )}
+              </TabButton>
+              <TabButton
+                active={mainTab === 'settings'}
+                onClick={openSelectedProjectSettings}
+                testId={PROJECT_SETTINGS_TESTIDS.tab}
+                ariaLabel={envDirty ? ENV_COPY.tabUnsavedLabel : undefined}
+              >
+                {PROJECT_SETTINGS_COPY.tab}
+                {envDirty && (
+                  <span aria-hidden className="ml-1 text-[--accent]" data-testid={ENV_TESTIDS.unsaved}>
+                    {ENV_COPY.tabUnsavedMarker}
+                  </span>
+                )}
+              </TabButton>
+              <TabButton active={mainTab === 'activity'} onClick={() => setMainTab('activity')}>Activity</TabButton>
+              <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 pr-2">
+                {selected && (
+                  <>
+                    <span className="flex min-w-0 items-center gap-1.5 text-[--text] pl-2 pr-1 py-0.5 rounded-md bg-[--surface-active] text-[11px] max-w-[280px]" title={selected.path}>
+                      <StatusDot state={selectedAgentState} />
+                      <span className="truncate font-medium">{selected.name}</span>
+                      {primaryAlive && <button
+                        onClick={unloadCurrent}
+                        className="ml-1 text-[--text-muted] hover:text-[--danger] hover:bg-[--panel]/60 w-4 h-4 flex shrink-0 items-center justify-center rounded focus-visible:ring-2 focus-visible:ring-[--accent]"
+                        title="Unload session (close shell)"
+                        aria-label="Unload session (close shell)"
+                        data-testid="unload-current"
+                      >
+                        <XIcon />
+                      </button>}
+                    </span>
+                    <MetaprojectBoardButton project={selected} onRequestLink={() => setActiveView('chat')} />
+                    <Tooltip label="Prompt library" shortcut={SHORTCUT_COPY.promptsShortcut(platform)}>
+                      <button
+                        onClick={() => setPromptsOpen(true)}
+                        className="text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel-strong]"
+                        data-testid="prompts-open"
+                        aria-label="Open prompt library"
+                      >
+                        <PromptsIcon />
+                      </button>
+                    </Tooltip>
+                    <Tooltip label="Search all shells" shortcut={SHORTCUT_COPY.scrollbackShortcut(platform)}>
+                      <button
+                        onClick={() => setScrollbackOpen(true)}
+                        className="text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel-strong]"
+                        data-testid="scrollback-open"
+                        aria-label="Search across all live shells"
+                      >
+                        <SearchIcon />
+                      </button>
+                    </Tooltip>
+                    <Tooltip label="Reveal project folder in Finder">
+                      <button
+                        onClick={async () => {
+                          try {
+                            await api.invoke('files:reveal', { projectId: selected.id, relPath: '' });
+                          } catch (e) {
+                            toast('Could not open the folder', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+                          }
                         }}
-                      />
-                    </ScrollIntoViewOnRequest>
-                  </ProjectSettingsTab>
-                : <section aria-label={PROJECT_SETTINGS_COPY.title} data-testid={PROJECT_SETTINGS_TESTIDS.view}
-                    className="flex-1 min-h-0 min-w-0 overflow-auto p-4 text-base text-[--text-muted] sm:p-6">
-                    {PROJECT_SETTINGS_COPY.noProject}
-                  </section>
-              : selected ? mainBody(selected) : <EmptyState />}
-          </div>
-          {showStatusBar && <StatusBar
-            project={remotePane ? null : selected}
-            aliveCount={aliveCount}
-            activeAgent={activeShellAgentLabel}
-            activeAgentState={activeShellAgentStateLabel}
-            onOpenPalette={() => openPalette('')}
-            keepAwake={keepAwake}
-          />}
-        </main>
+                        className="text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel-strong]"
+                        data-testid="reveal-project-folder"
+                      >
+                        <RevealFolderIcon />
+                      </button>
+                    </Tooltip>
+                    <Tooltip label="Pop the active shell into its own window">
+                      <button
+                        onClick={popoutCurrent}
+                        className="text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel-strong]"
+                        data-testid="popout-shell"
+                      >
+                        <PopoutIcon />
+                      </button>
+                    </Tooltip>
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="flex-1 relative min-h-0 flex flex-col">
+              {!remotePane && selected && mainTab === 'shell' && (
+                <ShellTabsBar
+                  projectId={selected.id}
+                  shells={stripShells(projectShells, rightShellIndex, split.hiddenShells)}
+                  active={activeShellIndex}
+                  onSelect={setActiveShellIndex}
+                  onClose={killShell}
+                  defaultCliName={selected.config.defaultCliName ?? null}
+                  onDefaultCliChanged={applyDefaultAgentProject}
+                  onLaunchProfile={(name) => void launchCliProfile(name, 'tab')}
+                  onLaunchPlainTab={newPlainShellAsTab}
+                  onLaunchCustom={(name, cmdLine, save) => void launchCustomCli(name, cmdLine, save, 'tab')}
+                  splitOn={rightShellIndex != null}
+                  onToggleSplit={() => (rightShellIndex != null ? split.closeSplit() : void openSplit())}
+                />
+              )}
+              {activeView === 'fleet'
+                ? <FleetView
+                    localShells={localAliveShells}
+                    onOpenLocal={(projectId, shellIndex) => {
+                      setActiveView('projects');
+                      void api.invoke('projects:open', { id: projectId }).then(() => {
+                        setMainTab('shell');
+                        setActiveShellIndexFor(projectId, shellIndex);
+                      });
+                    }}
+                    onOpenRemote={(req) => { setActiveView('projects'); setRemotePane(req); }}
+                  />
+                : remotePane
+                ? <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId} projectName={remotePane.projectName} onClose={() => setRemotePane(null)} />
+                : mainTab === 'settings'
+                ? settingsTarget
+                  ? <ProjectSettingsTab key={settingsTarget.id} target={settingsTarget} onSaved={applyDefaultAgentProject}>
+                      <ScrollIntoViewOnRequest request={envFocusRequest}>
+                        <ProjectEnvTab
+                          projectId={settingsTarget.id}
+                          projectName={settingsTarget.name}
+                          drafts={envDrafts}
+                          onOpenAppEnv={() => {
+                            setSettingsSection('env');
+                            setSettingsOpen(true);
+                          }}
+                        />
+                      </ScrollIntoViewOnRequest>
+                    </ProjectSettingsTab>
+                  : <section aria-label={PROJECT_SETTINGS_COPY.title} data-testid={PROJECT_SETTINGS_TESTIDS.view}
+                      className="flex-1 min-h-0 min-w-0 overflow-auto p-4 text-base text-[--text-muted] sm:p-6">
+                      {PROJECT_SETTINGS_COPY.noProject}
+                    </section>
+                : selected ? mainBody(selected) : <EmptyState />}
+            </div>
+          </main>
+          {/* Status bar under the main sheet only (not the sidebar); it folds away (height) when hidden. */}
+          <AnimatePresence initial={false}>
+            {showStatusBar && (
+              <m.div
+                key="status-bar"
+                // The bar hangs from the top of this height-animated slot and the column clips below,
+                // so it slides in/out at the bottom while its upward popovers still overlap the sheet.
+                className="relative z-10 shrink-0"
+                initial={{ height: 0 }}
+                animate={{ height: STATUS_BAR_HEIGHT }}
+                exit={{ height: 0 }}
+                transition={reduceMotion ? { duration: 0 } : { duration: STATUS_BAR_MS / 1000, ease: [0.23, 1, 0.32, 1] }}
+              >
+                <div className="absolute inset-x-0 top-0">
+                  <StatusBar
+                    project={remotePane ? null : selected}
+                    aliveCount={aliveCount}
+                    activeAgent={activeShellAgentLabel}
+                    activeAgentState={activeShellAgentStateLabel}
+                    onOpenPalette={() => openPalette('')}
+                    keepAwake={keepAwake}
+                  />
+                </div>
+              </m.div>
+            )}
+          </AnimatePresence>
+        </div>
       </div>
 
       {unloadTarget && <UnloadSessionDialog key={unloadTarget.id} project={unloadTarget}
