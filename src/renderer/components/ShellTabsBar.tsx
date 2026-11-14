@@ -13,6 +13,7 @@ import type { Project } from '@shared/types';
 import { PROJECT_SETTINGS_COPY } from '@renderer/project-settings-contract';
 import { SHORTCUT_COPY } from '@renderer/shortcut-copy';
 import { useShortcutPlatform } from '@renderer/shortcut-platform';
+import { deriveProfileName } from '@renderer/cli-profile-name';
 import { ICON_SIZE } from './icon-size';
 
 
@@ -138,7 +139,12 @@ export function NewShellMenu({
           <button
             className="flex-1 px-2 py-1.5 rounded pressable bg-[color:var(--accent)] text-[--accent-text] hover:brightness-110 disabled:opacity-40"
             disabled={!customCmd.trim()}
-            onClick={() => onLaunchCustom(customName.trim(), customCmd.trim(), customSave && !!customName.trim())}
+            onClick={() => {
+              const name = customName.trim() || (customSave
+                ? deriveProfileName(customCmd.trim(), profiles.map((p) => p.name))
+                : '');
+              onLaunchCustom(name, customCmd.trim(), customSave);
+            }}
           >
             Run
           </button>
