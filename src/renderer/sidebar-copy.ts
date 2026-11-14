@@ -1,4 +1,5 @@
 import { SHORTCUT_COPY } from './shortcut-copy';
+import { AGGREGATE_STATE_LABEL } from '@shared/agent-state';
 
 /** User-facing copy for the sidebar header, "+" menu and section headings. */
 export const SIDEBAR_COPY = {
@@ -39,6 +40,9 @@ export const MACHINE_COPY = {
   reconnected: (name: string) => `Reconnected to ${name}`,
   reconnectFailed: 'Reconnect failed',
   loading: 'Loading…',
+  /** Status words in tooltips and accessible names (AC35): the app's existing aggregate labels. */
+  agentState: AGGREGATE_STATE_LABEL,
+  agentPrefix: 'agent',
 } as const;
 
 /** Test ids for the machine switcher; deliberately not `machine-` prefixed (AC7). */
