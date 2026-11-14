@@ -336,75 +336,53 @@ test('AC15: unpairing the shown machine falls back to this machine and stays the
   await expect(win.getByTestId(MACHINE_TESTIDS.localList)).toBeVisible();
 });
 
-test('AC21: inactive dots 8px, active 10px with a soft accent ring; offline dots are edge-only at 50% opacity, the active one undimmed', async () => {
-  const accent = await resolveToken(win, '--accent', aside());
+test('AC21: dots are solid (no ring, blur or shadow), inactive 8px, active 10px; offline dots are a 1px outline at 50% opacity', async () => {
+  const muted = await resolveToken(win, '--text-muted', aside());
   const size = async (k: string) => {
     const b = await box(marker(k));
     return { w: Math.round(b.width), h: Math.round(b.height) };
   };
-  const backdrop = (k: string) => marker(k).evaluate((el) => getComputedStyle(el).backdropFilter || 'none');
-  /** The outer (non-inset) zero-blur shadow: its spread and resolved colour, or null when there is none. */
-  const ring = async (k: string) => {
-    const raw = await marker(k).evaluate((el) => {
-      const parts: string[] = [];
-      let depth = 0, cur = '';
-      for (const ch of getComputedStyle(el).boxShadow) {
-        if (ch === '(') depth++;
-        if (ch === ')') depth--;
-        if (ch === ',' && depth === 0) { parts.push(cur.trim()); cur = ''; } else cur += ch;
-      }
-      parts.push(cur.trim());
-      for (const part of parts) {
-        if (part === 'none' || part.includes('inset')) continue;
-        const lengths = part.match(/-?[\d.]+px/g) ?? [];
-        if (lengths.length === 4 && parseFloat(lengths[2]!) === 0 && parseFloat(lengths[3]!) > 0) {
-          return { spread: parseFloat(lengths[3]!), colour: part.replace(/-?[\d.]+px/g, '').trim() };
-        }
-      }
-      return null;
+  const flat = async (k: string, message: string) => {
+    const st = await marker(k).evaluate((el) => {
+      const c = getComputedStyle(el);
+      return { shadow: c.boxShadow, backdrop: c.backdropFilter || 'none' };
     });
-    if (!raw) return null;
-    return { spread: raw.spread, colour: await resolveCssColour(raw.colour) };
+    expect(st.shadow, `${message}: no ring or highlight`).toBe('none');
+    expect(st.backdrop, `${message}: no blur`).toBe('none');
   };
-  /** The ring is the accent hue, translucent, with a ~1.5px spread. */
-  const expectAccentRing = async (k: string, message: string) => {
-    const r = await ring(k);
-    expect(r, `${message}: has an outer ring`).not.toBeNull();
-    expect(r!.spread, `${message}: spread`).toBeGreaterThan(1);
-    expect(r!.spread).toBeLessThan(2.5);
-    expect(r!.colour.a, `${message}: ring is translucent`).toBeLessThan(1);
-    expect(r!.colour.a).toBeGreaterThan(0.2);
-    expect(colourDistance({ ...r!.colour, a: 1 }, { ...accent, a: 1 }), `${message}: ring colour is --accent`).toBeLessThan(14);
-  };
+  const fill = (k: string) => elementColour(win, marker(k), 'background-color');
 
-  // Active online (this machine): 12px, accent ring, glass (blur + translucent fill), not dimmed.
+  // Active online (this machine): 10px, solid fill, flat, not dimmed.
   await expectActive(LOCAL_MACHINE_ID);
   expect(await size(LOCAL_MACHINE_ID)).toEqual({ w: 10, h: 10 });
   await expect(marker(LOCAL_MACHINE_ID)).toHaveAttribute('data-active', '');
-  await expectAccentRing(LOCAL_MACHINE_ID, 'active online');
+  await flat(LOCAL_MACHINE_ID, 'active online');
+  expect((await fill(LOCAL_MACHINE_ID)).a, 'online dot is solid').toBe(1);
   expect(await effectiveOpacity(marker(LOCAL_MACHINE_ID))).toBe(1);
 
-  // Inactive offline: 10px, edge only (no fill, no blur, no ring), 50% opacity.
+  // Inactive offline: 8px, no fill, 1px --text-muted outline, 50% opacity.
   expect(await size(ALPHA)).toEqual({ w: 8, h: 8 });
   await expect(marker(ALPHA)).toHaveAttribute('data-online', '0');
-  expect((await elementColour(win, marker(ALPHA), 'background-color')).a, 'offline dot has no fill').toBe(0);
-  expect(await backdrop(ALPHA), 'offline dot has no blur').toBe('none');
-  expect(parseFloat(await css(marker(ALPHA), 'border-top-width')), 'offline dot keeps a glass edge').toBeGreaterThan(0);
-  expect(await ring(ALPHA), 'inactive dot has no accent ring').toBeNull();
+  await flat(ALPHA, 'inactive offline');
+  expect((await fill(ALPHA)).a, 'offline dot has no fill').toBe(0);
+  expect(await css(marker(ALPHA), 'border-top-width'), 'offline dot is a 1px outline').toBe('1px');
+  const edge = await resolveCssColour(await css(marker(ALPHA), 'border-top-color'));
+  expect(colourDistance({ ...edge, a: 1 }, { ...muted, a: 1 }), 'outline is --text-muted').toBeLessThan(6);
   expect(await effectiveOpacity(marker(ALPHA)), 'inactive offline dot is at 50% opacity').toBeCloseTo(0.5, 1);
 
-  // Offline dots are selectable; active offline: 12px, accent ring, still edge-only, not dimmed.
+  // Offline dots are selectable; active offline: 10px, still an outline, not dimmed.
   await selectDot(ALPHA);
-  await win.waitForTimeout(500); // dot size/opacity/shadow transition runs 150ms
+  await win.waitForTimeout(500); // dot size/opacity transition runs 150ms
   expect(await size(ALPHA)).toEqual({ w: 10, h: 10 });
-  expect((await elementColour(win, marker(ALPHA), 'background-color')).a, 'active offline dot has no fill').toBe(0);
-  expect(await backdrop(ALPHA)).toBe('none');
-  await expectAccentRing(ALPHA, 'active offline');
+  await flat(ALPHA, 'active offline');
+  expect((await fill(ALPHA)).a, 'active offline dot has no fill').toBe(0);
+  expect(await css(marker(ALPHA), 'border-top-width')).toBe('1px');
   expect(await effectiveOpacity(marker(ALPHA)), 'active offline dot is not dimmed').toBe(1);
 
-  // Inactive online (this machine, now deselected): 8px, no ring, glass.
+  // Inactive online (this machine, now deselected): 8px, solid, flat.
   expect(await size(LOCAL_MACHINE_ID)).toEqual({ w: 8, h: 8 });
-  expect(await ring(LOCAL_MACHINE_ID), 'inactive dot has no accent ring').toBeNull();
+  await flat(LOCAL_MACHINE_ID, 'inactive online');
+  expect((await fill(LOCAL_MACHINE_ID)).a).toBe(1);
   expect(await effectiveOpacity(marker(LOCAL_MACHINE_ID))).toBe(1);
   await expect(marker(LOCAL_MACHINE_ID)).not.toHaveAttribute('data-active');
 
@@ -532,12 +510,11 @@ test('AC34/AC35 (this machine): the dot tint follows the local agent state; only
     await sendLine(win, id, 0, command);
     await expect(marker(LOCAL_MACHINE_ID)).toHaveAttribute('data-agent-state', state, { timeout: 15_000 });
     await win.waitForTimeout(400); // fill transition
-    // Tint: the agent colour at partial alpha.
+    // The dot is the solid agent colour.
     const tint = await elementColour(win, marker(LOCAL_MACHINE_ID), 'background-color');
     const want = await resolveToken(win, token, aside());
-    expect(tint.a, `${state} tint is translucent`).toBeGreaterThan(0.3);
-    expect(tint.a).toBeLessThan(1);
-    expect(colourDistance({ ...tint, a: 1 }, { ...want, a: 1 }), `${state} tint matches ${token}`).toBeLessThan(14);
+    expect(tint.a, `${state} dot is solid`).toBe(1);
+    expect(colourDistance(tint, { ...want, a: 1 }), `${state} colour equals ${token}`).toBeLessThan(6);
     // Only busy pulses.
     const pulses = (await marker(LOCAL_MACHINE_ID).getAttribute('class'))!.split(/\s+/).includes('live-dot');
     expect(pulses, `${state}: pulse only while busy`).toBe(state === 'busy');
@@ -566,38 +543,46 @@ test('AC34/AC35 (this machine): the dot tint follows the local agent state; only
   }, id);
   await expect(marker(LOCAL_MACHINE_ID)).not.toHaveAttribute('data-agent-state', { timeout: 15_000 });
   await expect(dot(LOCAL_MACHINE_ID)).toHaveAttribute('aria-label', localAccessibleName());
+  // No agent: the dot is the solid --text-muted (not an agent colour).
+  await win.waitForTimeout(400);
+  const idleGreen = await resolveToken(win, '--agent-idle', aside());
+  const mutedNow = await resolveToken(win, '--text-muted', aside());
+  const noAgent = await elementColour(win, marker(LOCAL_MACHINE_ID), 'background-color');
+  expect(noAgent.a).toBe(1);
+  expect(colourDistance(noAgent, { ...mutedNow, a: 1 }), 'no agent: --text-muted').toBeLessThan(6);
+  expect(colourDistance(noAgent, { ...idleGreen, a: 1 }), 'control: not the idle colour').toBeGreaterThan(30);
 });
 
-test('AC32: the dot row has no background, border or shadow; each online dot is frosted glass', async () => {
-  const rowStyle = await band().evaluate((el) => {
+test('AC32: the pill is a tight frosted capsule (blur, 1px border, translucent, no shadow); its dots have no blur or shadow', async () => {
+  const st = await band().evaluate((el) => {
     const c = getComputedStyle(el);
-    return { bw: [c.borderTopWidth, c.borderRightWidth, c.borderBottomWidth, c.borderLeftWidth], shadow: c.boxShadow,
-      backdrop: c.backdropFilter || 'none' };
+    return { backdrop: c.backdropFilter || 'none', bw: [c.borderTopWidth, c.borderRightWidth, c.borderBottomWidth, c.borderLeftWidth],
+      borderStyle: c.borderTopStyle, shadow: c.boxShadow, radius: c.borderTopLeftRadius };
   });
-  expect((await elementColour(win, band(), 'background-color')).a, 'dot row is transparent').toBe(0);
-  expect(rowStyle.bw, 'no border').toEqual(['0px', '0px', '0px', '0px']);
-  expect(rowStyle.shadow, 'no shadow').toBe('none');
-  expect(rowStyle.backdrop, 'no blur on the row itself').toBe('none');
+  expect(st.backdrop, 'backdrop blur').toContain('blur');
+  expect(st.bw, '1px border').toEqual(['1px', '1px', '1px', '1px']);
+  expect(st.borderStyle).toBe('solid');
+  expect(st.shadow, 'no shadow').toBe('none');
+  expect(parseFloat(st.radius), 'rounded').toBeGreaterThan(8);
+  const bg = await elementColour(win, band(), 'background-color');
+  expect(bg.a, 'translucent (not clear)').toBeGreaterThan(0);
+  expect(bg.a, 'translucent (not opaque)').toBeLessThan(1);
 
-  // Positive control: the online dot (this machine) is glass: blur, translucent fill, 1px translucent edge.
-  const glass = await marker(LOCAL_MACHINE_ID).evaluate((el) => {
+  // Positive control above is the pill; the dots inside are flat.
+  const dotSt = await marker(LOCAL_MACHINE_ID).evaluate((el) => {
     const c = getComputedStyle(el);
-    return { backdrop: c.backdropFilter || 'none', borderW: c.borderTopWidth, borderStyle: c.borderTopStyle };
+    return { backdrop: c.backdropFilter || 'none', shadow: c.boxShadow };
   });
-  expect(glass.backdrop, 'dot backdrop blur').not.toBe('none');
-  expect(glass.borderW, '1px edge').toBe('1px');
-  const fillColour = await elementColour(win, marker(LOCAL_MACHINE_ID), 'background-color');
-  expect(fillColour.a, 'translucent fill (not clear)').toBeGreaterThan(0);
-  expect(fillColour.a, 'translucent fill (not opaque)').toBeLessThan(1);
-  const edge = await resolveCssColour(await css(marker(LOCAL_MACHINE_ID), 'border-top-color'));
-  expect(edge.a, 'edge is translucent').toBeLessThan(1);
+  expect(dotSt.backdrop, 'dot has no blur').toBe('none');
+  expect(dotSt.shadow, 'dot has no shadow').toBe('none');
 
-  // The row hugs the dots and stays within the sidebar minus 16px.
+  // Tight: the pill is 22px tall (20px buttons + 1px borders), hugs the dots, within the sidebar minus 16px.
   const b = await box(band());
   const a = await box(aside());
+  expect(Math.round(b.height), 'pill is 22px tall').toBe(22);
   expect(b.width).toBeLessThanOrEqual(a.width - 16);
   const r = await box(row());
-  expect(b.width, 'row hugs the dots').toBeLessThanOrEqual(r.width + 24);
+  expect(b.width, 'pill hugs the row').toBeLessThanOrEqual(r.width + 4);
 });
 
 test('AC8: the pill and its dots are no-drag; the drag fill and the sidebar area beside the pill stay drag', async () => {
