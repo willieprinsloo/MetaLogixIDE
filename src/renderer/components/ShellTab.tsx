@@ -202,6 +202,9 @@ export function ShellTab({
       cursorBlink: true,
       cursorStyle: 'bar',
       theme: buildTheme(),
+      // Right-click selects the word under the cursor (and then the custom
+      // context menu offers Copy with it already selected).
+      rightClickSelectsWord: true,
       allowProposedApi: true,
       // screenReaderMode is intentionally off — the hidden mirror element
       // it injects into the DOM can drift out of sync during a fast
@@ -255,8 +258,10 @@ export function ShellTab({
             void openPeekedPathRef.current(h.path, h.line);
           },
           hover: (ev: MouseEvent) => {
-            hoverHold.linkEnter();
-            setHover({ x: ev.clientX, y: ev.clientY, projectId, path: h.path, line: h.line });
+            // Dwell: the card opens only after the pointer rests on the
+            // path, so sweeping the mouse across output never pops a card
+            // over text the user is about to select.
+            hoverHold.linkEnter(() => setHover({ x: ev.clientX, y: ev.clientY, projectId, path: h.path, line: h.line }));
           },
           leave: hoverHold.linkLeave,
         })));
@@ -662,6 +667,15 @@ export function ShellTab({
       data-testid="shell-tab"
       tabIndex={-1}
       {...dropHandlers}
+      // Any selection attempt clears a stuck peek card — the card is
+      // pointer-events-auto beside the cursor, so left alone it would
+      // swallow the mousedown and block the drag. Clicks ON the card are
+      // excluded: they open the file, and must not dismiss it first.
+      onMouseDown={(e) => {
+        if ((e.target as HTMLElement).closest('[data-testid="hover-preview"]')) return;
+        hoverHold.dispose();
+        setHover(null);
+      }}
       onContextMenu={(e) => {
         // Only intercept when the click is inside the terminal viewport.
         // Anything else (search bar, drop overlay) uses default browser menu.
