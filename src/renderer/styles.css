@@ -812,6 +812,18 @@ input::placeholder, textarea::placeholder {
 .scrollbar-none { scrollbar-width: none; }
 .scrollbar-none::-webkit-scrollbar { display: none; width: 0; height: 0; }
 
+/* Machine switcher pill: frosted sidebar panel colour floating over the list; opaque, no blur under OS "Reduce transparency". */
+.machine-pill {
+  background: rgb(from var(--panel-strong) r g b / .72);
+  backdrop-filter: blur(12px) saturate(1.4);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .machine-pill {
+    background: rgb(from var(--panel-strong) r g b / 1);
+    backdrop-filter: none;
+  }
+}
+
 /* Focus ring — visible only on keyboard focus, not on click. */
 :focus-visible {
   outline: 2px solid var(--accent);

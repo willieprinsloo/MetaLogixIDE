@@ -137,31 +137,34 @@ export function sameMachines(a: readonly MachineFields[], b: readonly MachineFie
 /** `role`/`id`/`aria-labelledby` the sidebar list area takes while the band is shown; empty otherwise. */
 export type PanelProps = { role: 'tabpanel'; id: string; 'aria-labelledby': string } | Record<string, never>;
 
+const LIST_CLASS = 'flex-initial min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7';
+
 /** How the sidebar lays out for the current switcher state; see {@link switcherLayout}. */
 export interface SwitcherLayout {
   banded: boolean;
   remote: MachineDot | null;
   framing: 'bare' | 'shown' | 'hidden';
   panelProps: PanelProps;
-  fillClass: string;
+  listClass: string;
 }
 
 /**
  * The sidebar's layout decisions in one place: the band shows once a peer exists; the shown dot is
  * `remote` unless it is this machine; the local list is 'bare' (no wrapper, the pre-switcher DOM)
  * without the band, otherwise 'shown' or 'hidden'; the list area is the active dot's tabpanel only
- * with the band; and the drag fill stops at the band's top (-mb-7) instead of the aside's bottom.
+ * with the band; and while the switcher floats over the list, the list gets bottom padding so its
+ * last row scrolls clear above the pill (AC33). Nothing else about the list or drag fill changes.
  */
 export function switcherLayout(s: { machines: readonly MachineDot[]; active: MachineDot; activeId: string }): SwitcherLayout {
   const remote = s.active.self ? null : s.active;
   if (s.machines.length < 2) {
-    return { banded: false, remote: null, framing: 'bare', panelProps: {}, fillClass: 'drag flex-1 min-h-0 -mt-7 -mb-5' };
+    return { banded: false, remote: null, framing: 'bare', panelProps: {}, listClass: LIST_CLASS };
   }
   return {
     banded: true,
     remote,
     framing: remote ? 'hidden' : 'shown',
     panelProps: { role: 'tabpanel', id: SWITCHER_PANEL_ID, 'aria-labelledby': machineTabId(s.activeId) },
-    fillClass: 'drag flex-1 min-h-0 -mt-7 -mb-7',
+    listClass: `${LIST_CLASS} pb-11`,
   };
 }

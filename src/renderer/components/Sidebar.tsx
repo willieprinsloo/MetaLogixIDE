@@ -64,7 +64,7 @@ export function Sidebar({ selectedProjectId, onSelect, onUnloadSession, onNewPro
   const actions = useMemo<RowActions>(() => ({ onSelect, onUnloadSession, onRename: setRenameTarget, onEditEnv, onProjectSettings }),
     [onSelect, onUnloadSession, onEditEnv, onProjectSettings]);
   const switcher = useMachineSwitcher();
-  const { banded, remote, framing, panelProps, fillClass } = switcherLayout(switcher);
+  const { banded, remote, framing, panelProps, listClass } = switcherLayout(switcher);
 
   return (
     <aside
@@ -85,7 +85,7 @@ export function Sidebar({ selectedProjectId, onSelect, onUnloadSession, onNewPro
         />
       </div>
 
-      <div className="flex-initial min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7" {...panelProps}>
+      <div className={listClass} {...panelProps}>
         {remote && <RemoteMachineList key={remote.deviceId} machine={remote} filter={filter} onOpenPane={onOpenPane} />}
         <LocalProjectList
           framing={framing}
@@ -96,8 +96,8 @@ export function Sidebar({ selectedProjectId, onSelect, onUnloadSession, onNewPro
           actions={actions}
         />
       </div>
-      {/* Empty space below the list (and the gap above it) drags the window; with the band it stops at the band's top. */}
-      <div aria-hidden className={fillClass} data-testid="sidebar-drag-fill" />
+      {/* Empty space below the list (and the gap above it) drags the window. */}
+      <div aria-hidden className="drag flex-1 min-h-0 -mt-7 -mb-5" data-testid="sidebar-drag-fill" />
       {banded && <MachineBand switcher={switcher} />}
       <RenameProjectDialog
         project={renameTarget}
@@ -109,13 +109,16 @@ export function Sidebar({ selectedProjectId, onSelect, onUnloadSession, onNewPro
 }
 
 /**
- * The 28px bottom band holding the machine dots. It is flush with the aside's bottom edge (over the
- * 20px bottom padding) and spans its full width so the row centres on the sidebar; its empty sides
- * stay a window drag region while the dot row itself is no-drag.
+ * The machine dots in a frosted pill floating over the bottom of the list (AC2, AC8, AC9, AC32): it
+ * takes no layout space, centres on the aside 8px above its bottom edge, hugs the dots up to the
+ * aside's width minus 16px (the dot row scrolls inside beyond that), and is the only no-drag part.
  */
 function MachineBand({ switcher }: { switcher: MachineSwitcher }) {
   return (
-    <div data-testid={MACHINE_TESTIDS.band} className="drag h-7 -mb-5 -ml-2 shrink-0 flex items-center justify-center">
+    <div
+      data-testid={MACHINE_TESTIDS.band}
+      className="machine-pill no-drag absolute bottom-2 left-1/2 -translate-x-1/2 z-10 flex max-w-[calc(100%-16px)] px-1 rounded-full border border-[--border] shadow-sm"
+    >
       <MachineDots machines={switcher.machines} activeId={switcher.activeId} onSelect={switcher.select} />
     </div>
   );

@@ -7,6 +7,8 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor, within, act } from '@testing-library/react';
 import { Profiler } from 'react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 const invoke = vi.fn();
 vi.mock('@renderer/api', () => ({ api: { invoke: (...a: unknown[]) => invoke(...a), on: () => () => {} } }));
@@ -100,6 +102,7 @@ describe('Sidebar with no paired machine (AC1, AC7)', () => {
     const fill = screen.getByTestId('sidebar-drag-fill');
     expect(kids[3]).toBe(fill);
     expect(fill.className).toBe('drag flex-1 min-h-0 -mt-7 -mb-5');
+    expect(scrollArea().className).toBe('flex-initial min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7');
   });
 });
 
@@ -125,17 +128,26 @@ describe('Sidebar with a paired machine', () => {
     expect(screen.queryByText('Machines')).toBeNull();
   });
 
-  test('puts the 28px band after the drag fill, and stops the fill at the band (AC9)', async () => {
+  test('floats the pill over the bottom of the list without moving the list or the drag fill (AC2, AC8, AC9, AC32, AC33)', async () => {
     await renderSidebar();
-    const band = await screen.findByTestId(MACHINE_TESTIDS.band);
+    const pill = await screen.findByTestId(MACHINE_TESTIDS.band);
     const fill = screen.getByTestId('sidebar-drag-fill');
-    expect(fill.nextElementSibling).toBe(band);
-    expect(band.parentElement).toBe(aside());
-    expect(band.classList).toContain('h-7');
-    expect(band.classList).toContain('drag');
-    expect(fill.classList).toContain('-mb-7');
-    expect(fill.classList).not.toContain('-mb-5');
-    expect(within(band).getByTestId(MACHINE_TESTIDS.row)).toBeTruthy();
+    expect(pill.parentElement).toBe(aside());
+    expect(fill.nextElementSibling).toBe(pill);
+    expect(fill.className).toBe('drag flex-1 min-h-0 -mt-7 -mb-5');
+    expect(scrollArea().className).toBe('flex-initial min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7 pb-11');
+    for (const c of ['machine-pill', 'absolute', 'bottom-2', 'left-1/2', '-translate-x-1/2', 'no-drag', 'rounded-full',
+      'border', 'border-[--border]', 'shadow-sm', 'max-w-[calc(100%-16px)]', 'flex']) expect(pill.classList).toContain(c);
+    for (const c of ['drag', 'h-7', '-mb-5', '-ml-2', 'w-full', 'inset-x-0']) expect(pill.classList).not.toContain(c);
+    expect(pill.firstElementChild).toBe(within(pill).getByTestId(MACHINE_TESTIDS.row));
+  });
+
+  test('the pill sits above the list rows it overlaps', async () => {
+    await renderSidebar();
+    const pill = await screen.findByTestId(MACHINE_TESTIDS.band);
+    const z = [...pill.classList].find((c) => /^z-/.test(c));
+    expect(z).toBe('z-10');
+    expect(scrollArea().querySelector('[class*="z-"]')).toBeNull();
   });
 
   test('labels the list area as the tabpanel of the active dot', async () => {
@@ -240,6 +252,22 @@ describe('Sidebar with an offline machine', () => {
     expect(screen.getByTestId(MACHINE_TESTIDS.remoteLastSeen).textContent).toBe('never seen');
     expect(screen.getByTestId(SIDEBAR_TESTIDS.filter)).toBeTruthy();
     expect(screen.queryByTestId(MACHINE_TESTIDS.remoteProjectRow)).toBeNull();
+  });
+});
+
+describe('machine pill styles (AC32)', () => {
+  const css = readFileSync(resolve(__dirname, '../../styles.css'), 'utf8');
+  const rule = (src: string) => /\.machine-pill\s*\{([^}]*)\}/.exec(src)?.[1] ?? '';
+  const reduced = /@media \(prefers-reduced-transparency: reduce\)\s*\{\s*\.machine-pill\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
+
+  test('is a translucent sidebar panel colour with a backdrop blur', () => {
+    expect(rule(css)).toMatch(/background:\s*rgb\(from var\(--panel-strong\) r g b \/ 0?\.\d+\)/);
+    expect(rule(css)).toMatch(/backdrop-filter:\s*blur\(\d+px\)/);
+  });
+
+  test('is opaque with no blur under Reduce transparency', () => {
+    expect(reduced).toMatch(/background:\s*rgb\(from var\(--panel-strong\) r g b \/ 1\)/);
+    expect(reduced).toMatch(/backdrop-filter:\s*none/);
   });
 });
 

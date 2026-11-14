@@ -244,17 +244,17 @@ describe('switcherLayout', () => {
   const machines = buildMachineList('L', [peer('t', 'Tower')]);
   const [localDot, towerDot] = machines as [MachineDot, MachineDot];
 
-  it('with only this machine: no band, bare local list, no panel attributes, fill to the bottom', () => {
+  it('with only this machine: no switcher, bare local list, no panel attributes, list classes as before', () => {
     expect(switcherLayout({ machines: [localDot], active: localDot, activeId: LOCAL_MACHINE_ID })).toEqual({
-      banded: false, remote: null, framing: 'bare', panelProps: {}, fillClass: 'drag flex-1 min-h-0 -mt-7 -mb-5',
+      banded: false, remote: null, framing: 'bare', panelProps: {}, listClass: 'flex-initial min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7',
     });
   });
 
-  it('with a peer while this machine is shown: band, shown local list, panel labelled by the local dot', () => {
+  it('with a peer while this machine is shown: switcher, shown local list, panel labelled by the local dot, list padded for the pill', () => {
     expect(switcherLayout({ machines, active: localDot, activeId: LOCAL_MACHINE_ID })).toEqual({
       banded: true, remote: null, framing: 'shown',
       panelProps: { role: 'tabpanel', id: 'switcher-panel', 'aria-labelledby': 'switcher-tab-local' },
-      fillClass: 'drag flex-1 min-h-0 -mt-7 -mb-7',
+      listClass: 'flex-initial min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7 pb-11',
     });
   });
 
@@ -262,7 +262,7 @@ describe('switcherLayout', () => {
     expect(switcherLayout({ machines, active: towerDot, activeId: 't' })).toEqual({
       banded: true, remote: towerDot, framing: 'hidden',
       panelProps: { role: 'tabpanel', id: 'switcher-panel', 'aria-labelledby': 'switcher-tab-t' },
-      fillClass: 'drag flex-1 min-h-0 -mt-7 -mb-7',
+      listClass: 'flex-initial min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7 pb-11',
     });
   });
 });
