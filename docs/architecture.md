@@ -57,7 +57,10 @@ Fleet view; a remote project opens in `RemoteProjectPane`, whose terminals
 are `ShellTab` with a remote source (`src/renderer/components/RemoteMachineList.tsx`,
 `FleetView.tsx`, `RemoteProjectPane.tsx`). The fleet list
 (`p2p:fleet-list`) holds paired machines only and never sets
-`FleetEntry.self`, so the renderer adds this machine itself. See
+`FleetEntry.self`, so the renderer adds this machine itself. A host's
+`shells.alive` reply carries each shell's `agentState` (idle, busy, blocked
+or null; absent from older hosts), which tints that machine's switcher dot
+(`src/main/p2p/hub.ts`). See
 `docs/superpowers/specs/2026-10-26-metaide-p2p-design.md` for the protocol,
 identity and pairing design.
 
@@ -318,13 +321,14 @@ clears a stored 288 so the new default applies; any other width is kept.
 The resize handle sits above the sidebar and sheet so it can be dragged and
 double-clicked to reset.
 
-**Machine switcher.** With at least one paired machine, a frosted pill
-floats centred over the bottom of the sidebar list, 8px above the sidebar's
-bottom edge, and holds one dot per machine: this machine first, then paired
-machines sorted by name (deviceId breaks ties). The pill takes no layout
-space; the list scrolls underneath it and gets extra bottom padding (`pb-11`)
-so its last row can scroll clear of the pill. With none paired the pill does
-not render and the sidebar markup is unchanged. Selecting a dot
+**Machine switcher.** With at least one paired machine, a row of
+frosted-glass dots floats centred over the bottom of the sidebar list, 8px
+above the sidebar's bottom edge, with no background behind it: one dot per
+machine, this machine first, then paired machines sorted by name (deviceId
+breaks ties). The row takes no layout space; the list scrolls underneath it
+and gets extra bottom padding (`pb-11`) so its last row can scroll clear of
+the dots. With none paired the row does not render and the sidebar markup is
+unchanged. Selecting a dot
 swaps the sidebar list to that machine and never changes the main pane. The
 selection is not persisted: the app starts on this machine, and if the shown
 machine is missing from a successful fleet refresh the sidebar falls back to
@@ -335,12 +339,21 @@ or "This machine" until it loads.
   filter) live in `src/renderer/machine-dots.ts`. State lives in
   `src/renderer/p2p/useMachineSwitcher.ts` and `useSelfDeviceName.ts`.
 - `MachineDots.tsx` is a `tablist` with one tab stop: Left/Right move and
-  wrap, Home/End jump, Enter/Space select. Inactive dots are 6px (filled when
-  online, hollow and dimmed when offline); the active dot is 8px in the
-  accent colour. Each dot has a tooltip and an accessible name with its state.
-  The pill (`.machine-pill` in `styles.css`: translucent panel colour with a
-  backdrop blur, opaque under Reduce transparency) is the only `no-drag`
-  part; around it the list or the drag-fill keep their own regions.
+  wrap, Home/End jump, Enter/Space select. Dots are 8px glass circles
+  (`.machine-dot` in `styles.css`: translucent fill, backdrop blur, faint
+  edge; opaque under Reduce transparency); the active dot is 10px with a
+  soft 1.5px accent ring; offline dots are a dimmed edge only. Each online
+  dot is tinted with its machine's overall agent status (blocked, then busy,
+  then idle; clear glass when no agent runs), and only a Working dot pulses,
+  with its own smaller `machineDotPulse`. Tooltips and accessible names add
+  the status word (Working, Needs input, Idle). The dot buttons and the gaps
+  between them are the only `no-drag` part; around them the list or the
+  drag-fill keep their own regions.
+- This machine's status comes from `useMachineAgentState`
+  (`src/renderer/hooks/useAgentStates.ts`), which re-renders only when the
+  aggregate changes. Paired machines' status comes from
+  `src/renderer/p2p/useFleetShells.ts`, one `shells.alive` call per online
+  peer every 5s; the same poll feeds the remote list's In use section.
 - `RemoteMachineList.tsx` renders a remote machine: a header (name, state,
   last seen, Reconnect) followed by In use, Recents (6 at most unless
   filtering) and Projects by root. An offline machine shows the header only.
