@@ -23,6 +23,7 @@ import { installCrashObservability } from './startup/crash-observability';
 import { withoutHookConfirmed } from './notifications/claude-notifier';
 import { resolveLoginShellPath } from './domain/login-shell-path';
 import { computeTileLayout } from './window-tiling';
+import { handleMetafileProtocol, registerMetafileScheme } from './protocol/metafile';
 import {
   FROSTED_GLASS_FALLBACK,
   applyVibrancy,
@@ -503,6 +504,10 @@ async function startApp(): Promise<void> {
   bindWindowSettings(services);
   attachKeepAwake(services);
   registerMainIpc(services);
+  // metafile:// serves project files to the renderer's sandboxed HTML
+  // preview iframe; bridge to the live projects repo so renamed/removed
+  // projects stop serving immediately.
+  handleMetafileProtocol((id) => services.projects.get(id)?.path ?? null);
   // P2P needs the IPC broadcaster (rpc stream events) and must never block or fail app startup.
   void startP2P(services, { emit: broadcast }).catch((err: unknown) => log.warn('[p2p] start failed', err));
   installNotifications(services);
@@ -513,6 +518,11 @@ async function startApp(): Promise<void> {
 }
 
 const startupReady = app.whenReady().then(startApp);
+
+// Privileged-scheme registration must precede app ready — the metafile://
+// protocol (rendered HTML preview) needs standard/secure/fetch privileges
+// to load inside a sandboxed iframe. No-op if called after ready.
+registerMetafileScheme();
 
 /** Open windows the user can see or close; excludes the hidden p2p worker. */
 function userWindows(): BrowserWindow[] {

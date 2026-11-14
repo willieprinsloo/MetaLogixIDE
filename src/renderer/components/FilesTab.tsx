@@ -20,7 +20,7 @@ import type { GitFileStatus } from '@shared/ipc-contract';
 import { APP_FILE_DRAG_TYPE } from '@shared/terminal-drop-contract';
 
 interface Entry { name: string; isDir: boolean; relPath: string; }
-interface OpenFile {
+export interface OpenFile {
   relPath: string;
   content: string;                 // last-saved content
   buffer: string;                  // in-flight edits (dirty when != content)
@@ -29,6 +29,7 @@ interface OpenFile {
 }
 
 const MD_EXT   = new Set(['md', 'markdown', 'mdx']);
+const HTML_EXT = new Set(['html', 'htm']);
 const IMG_EXT  = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'avif', 'bmp', 'ico']);
 const PDF_EXT  = new Set(['pdf']);
 
@@ -551,7 +552,7 @@ function FileTreePane({
   );
 }
 
-function FilePreview({
+export function FilePreview({
   projectId, file, scrollToLine, onScrolled, onChange, onToggleEdit, onSave, dirty, onForceText,
   isFullscreen, onFullscreenToggle,
 }: {
@@ -572,6 +573,7 @@ function FilePreview({
   const isMd = MD_EXT.has(ext);
   const isImg = IMG_EXT.has(ext);
   const isPdf = PDF_EXT.has(ext);
+  const isHtml = HTML_EXT.has(ext);
   const editable = file.kind === 'text';
   const editing = file.editing && editable;
   const platform = useShortcutPlatform();
@@ -634,10 +636,10 @@ function FilePreview({
             <button
               onClick={onToggleEdit}
               className={`text-[11px] px-2 py-0.5 rounded border ${editing ? 'border-[color:var(--accent)]/50 text-[color:var(--accent)]' : 'border-[--border] hover:bg-[--panel-strong]'}`}
-              title={editing ? (isMd ? 'Switch to preview' : 'Stop editing') : SHORTCUT_COPY.filesEditTitle(platform)}
+              title={editing ? (isMd || isHtml ? 'Switch to preview' : 'Stop editing') : SHORTCUT_COPY.filesEditTitle(platform)}
               data-testid="file-edit-toggle"
             >
-              {editing ? (isMd ? 'Preview' : 'Done') : 'Edit'}
+              {editing ? (isMd || isHtml ? 'Preview' : 'Done') : 'Edit'}
             </button>
             <button
               onClick={onSave}
@@ -675,10 +677,34 @@ function FilePreview({
         {file.kind === 'text' && !editing && isMd && (
           <MarkdownPreview source={file.buffer} zoom={mdZoom} />
         )}
-        {file.kind === 'text' && !editing && !isMd && (
+        {file.kind === 'text' && !editing && isHtml && (
+          <HtmlPreview projectId={projectId} relPath={file.relPath} />
+        )}
+        {file.kind === 'text' && !editing && !isMd && !isHtml && (
           <SyntaxHighlightedPre content={file.buffer} lang={langForPath(file.relPath)} scrollToLine={scrollToLine} onScrolled={onScrolled} />
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Rendered (not source) view of an HTML file: a fully sandboxed iframe fed
+ * by the metafile:// protocol, so relative <link>/<img>/<script src> resolve
+ * against the project root like they would on a real server, while the
+ * sandbox (no allow-* flags) keeps the page from scripts, forms or
+ * navigation. Edit shows the source; Preview re-renders from disk.
+ */
+export function HtmlPreview({ projectId, relPath }: { projectId: number; relPath: string }) {
+  const src = `metafile://${projectId}/${relPath.split('/').map(encodeURIComponent).join('/')}`;
+  return (
+    <div className="flex-1 min-h-0 bg-white" data-testid="html-preview">
+      <iframe
+        src={src}
+        sandbox=""
+        title={relPath}
+        className="w-full h-full border-0"
+      />
     </div>
   );
 }
