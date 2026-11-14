@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  buildMachineList, dotAccessibleName, dotTooltip, filterByName, lastSeen, remoteSections, resolveActiveId, stepFocus,
+  buildMachineList, dotAccessibleName, sameMachines, switcherLayout, dotTooltip, filterByName, lastSeen, remoteSections, resolveActiveId, stepFocus,
 } from '@renderer/machine-dots';
 import { LOCAL_MACHINE_ID, type MachineDot } from '@renderer/machine-switcher-contract';
 import type { FleetEntry } from '@shared/p2p-contract';
@@ -215,5 +215,54 @@ describe('remoteSections', () => {
     expect(s.inUse.map((p) => p.name)).toEqual(['']);
     expect(ids(s.recents)).toEqual([2]);
     expect(ids(remoteSections(bad, roots, new Set([1]), 'o').projects!.folders[0]!.projects)).toEqual([2]);
+  });
+});
+
+describe('sameMachines', () => {
+  const fleet = [peer('a', 'A', { lastSeenAt: 1 }), peer('b', 'B')];
+  it('is true for content-equal lists built from fresh objects', () => {
+    expect(sameMachines(fleet, fleet.map((m) => ({ ...m })))).toBe(true);
+    expect(sameMachines(buildMachineList('L', fleet), buildMachineList('L', [peer('b', 'B'), peer('a', 'A', { lastSeenAt: 1 })]))).toBe(true);
+  });
+  it('treats a missing self like self: false', () => {
+    expect(sameMachines([peer('a', 'A')], [peer('a', 'A', { self: false })])).toBe(true);
+  });
+  it.each([
+    ['a name', [peer('a', 'A2', { lastSeenAt: 1 }), peer('b', 'B')]],
+    ['online', [peer('a', 'A', { lastSeenAt: 1, online: false }), peer('b', 'B')]],
+    ['lastSeenAt', [peer('a', 'A', { lastSeenAt: 2 }), peer('b', 'B')]],
+    ['self', [peer('a', 'A', { lastSeenAt: 1, self: true }), peer('b', 'B')]],
+    ['a device id', [peer('a', 'A', { lastSeenAt: 1 }), peer('c', 'B')]],
+    ['the order', [peer('b', 'B'), peer('a', 'A', { lastSeenAt: 1 })]],
+    ['the length', [peer('a', 'A', { lastSeenAt: 1 })]],
+  ])('is false when %s differs', (_what, other) => {
+    expect(sameMachines(fleet, other)).toBe(false);
+  });
+});
+
+describe('switcherLayout', () => {
+  const machines = buildMachineList('L', [peer('t', 'Tower')]);
+  const [localDot, towerDot] = machines as [MachineDot, MachineDot];
+
+  it('with only this machine: no band, bare local list, no panel attributes, fill to the bottom', () => {
+    expect(switcherLayout({ machines: [localDot], active: localDot, activeId: LOCAL_MACHINE_ID })).toEqual({
+      banded: false, remote: null, framing: 'bare', panelProps: {}, fillClass: 'drag flex-1 min-h-0 -mt-7 -mb-5',
+    });
+  });
+
+  it('with a peer while this machine is shown: band, shown local list, panel labelled by the local dot', () => {
+    expect(switcherLayout({ machines, active: localDot, activeId: LOCAL_MACHINE_ID })).toEqual({
+      banded: true, remote: null, framing: 'shown',
+      panelProps: { role: 'tabpanel', id: 'switcher-panel', 'aria-labelledby': 'switcher-tab-local' },
+      fillClass: 'drag flex-1 min-h-0 -mt-7 -mb-7',
+    });
+  });
+
+  it('with the peer shown: remote dot, hidden local list, panel labelled by the peer', () => {
+    expect(switcherLayout({ machines, active: towerDot, activeId: 't' })).toEqual({
+      banded: true, remote: towerDot, framing: 'hidden',
+      panelProps: { role: 'tabpanel', id: 'switcher-panel', 'aria-labelledby': 'switcher-tab-t' },
+      fillClass: 'drag flex-1 min-h-0 -mt-7 -mb-7',
+    });
   });
 });

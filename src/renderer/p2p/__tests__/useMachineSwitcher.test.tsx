@@ -115,6 +115,38 @@ describe('useMachineSwitcher', () => {
     expect(result.current.machines).toHaveLength(2);
   });
 
+  test('keeps the same machines array across a poll that changes nothing, and replaces it when a dot changes (F4)', async () => {
+    fleetReplies = [
+      { fleet: [TOWER, ATLAS] },
+      { fleet: [{ ...TOWER }, { ...ATLAS }] },
+      { fleet: [TOWER, { ...ATLAS, online: true }] },
+      { fleet: [TOWER, { ...ATLAS, online: true, lastSeenAt: 9 }] },
+    ];
+    const { result } = renderHook(() => useMachineSwitcher());
+    await flush();
+    const first = result.current.machines;
+    await pollOnce();
+    expect(invoke.mock.calls.filter((c) => c[0] === 'p2p:fleet-list')).toHaveLength(2);
+    expect(result.current.machines).toBe(first);
+    await pollOnce();
+    expect(result.current.machines).not.toBe(first);
+    expect(result.current.machines.find((m) => m.deviceId === 'atlas')!.online).toBe(true);
+    const second = result.current.machines;
+    await pollOnce();
+    expect(result.current.machines).not.toBe(second);
+    expect(result.current.machines.find((m) => m.deviceId === 'atlas')!.lastSeenAt).toBe(9);
+  });
+
+  test('keeps the same machines array across empty polls (zero peers)', async () => {
+    fleetReplies = [{ fleet: [] }, { fleet: [] }, { fleet: [] }];
+    const { result } = renderHook(() => useMachineSwitcher());
+    await flush();
+    const first = result.current.machines;
+    await pollOnce();
+    await pollOnce();
+    expect(result.current.machines).toBe(first);
+  });
+
   test('reads the device name once from P2P settings', async () => {
     const { result } = renderHook(() => useMachineSwitcher());
     await flush();

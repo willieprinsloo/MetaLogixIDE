@@ -17,6 +17,7 @@ export interface MachineSwitcher {
  * starts on this machine and is never persisted. When a successful fleet poll drops the selected
  * peer, the selection resets to this machine, so the peer coming back does not re-select itself; a
  * failed poll keeps the last list (useFleet leaves `machines` untouched on error), so nothing moves.
+ * `machines` keeps its reference across polls that change no machine, because useFleet does.
  */
 export function useMachineSwitcher(): MachineSwitcher {
   const { machines: fleet } = useFleet();

@@ -25,7 +25,7 @@ import { MachineDots } from './MachineDots';
 import { RemoteMachineList } from './RemoteMachineList';
 import { useMachineSwitcher, type MachineSwitcher } from '@renderer/p2p/useMachineSwitcher';
 import type { OpenPaneRequest } from '@renderer/machine-switcher-contract';
-import { SWITCHER_PANEL_ID, filterByName, machineTabId } from '@renderer/machine-dots';
+import { filterByName, switcherLayout } from '@renderer/machine-dots';
 
 interface Props {
   selectedProjectId: number | null;
@@ -64,9 +64,7 @@ export function Sidebar({ selectedProjectId, onSelect, onUnloadSession, onNewPro
   const actions = useMemo<RowActions>(() => ({ onSelect, onUnloadSession, onRename: setRenameTarget, onEditEnv, onProjectSettings }),
     [onSelect, onUnloadSession, onEditEnv, onProjectSettings]);
   const switcher = useMachineSwitcher();
-  const banded = switcher.machines.length > 1;
-  const remote = switcher.active.self ? null : switcher.active;
-  const panel = banded ? { role: 'tabpanel', id: SWITCHER_PANEL_ID, 'aria-labelledby': machineTabId(switcher.activeId) } : {};
+  const { banded, remote, framing, panelProps, fillClass } = switcherLayout(switcher);
 
   return (
     <aside
@@ -87,10 +85,10 @@ export function Sidebar({ selectedProjectId, onSelect, onUnloadSession, onNewPro
         />
       </div>
 
-      <div className="flex-initial min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7" {...panel}>
+      <div className="flex-initial min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7" {...panelProps}>
         {remote && <RemoteMachineList key={remote.deviceId} machine={remote} filter={filter} onOpenPane={onOpenPane} />}
         <LocalProjectList
-          framing={!banded ? 'bare' : remote ? 'hidden' : 'shown'}
+          framing={framing}
           filter={filter}
           roots={roots}
           projects={projects}
@@ -99,7 +97,7 @@ export function Sidebar({ selectedProjectId, onSelect, onUnloadSession, onNewPro
         />
       </div>
       {/* Empty space below the list (and the gap above it) drags the window; with the band it stops at the band's top. */}
-      <div aria-hidden className={`drag flex-1 min-h-0 -mt-7 ${banded ? '-mb-7' : '-mb-5'}`} data-testid="sidebar-drag-fill" />
+      <div aria-hidden className={fillClass} data-testid="sidebar-drag-fill" />
       {banded && <MachineBand switcher={switcher} />}
       <RenameProjectDialog
         project={renameTarget}

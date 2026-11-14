@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useSyncExternalStore } from 'react';
 import { rootHueVar } from '@renderer/root-hue';
 import { api } from '@renderer/api';
 import { toast } from '@renderer/hooks/useToasts';
@@ -8,7 +8,7 @@ import { useRemoteAliveShells } from '@renderer/p2p/useRemoteAliveShells';
 import type { Project, Root } from '@shared/types';
 import type { MachineDot, OpenPaneRequest } from '@renderer/machine-switcher-contract';
 import { MACHINE_COPY, MACHINE_TESTIDS, SIDEBAR_COPY } from '@renderer/sidebar-copy';
-import { lastSeen, remoteSections } from '@renderer/machine-dots';
+import { lastSeen, remoteSections, type RemoteSections } from '@renderer/machine-dots';
 import { RootFolderGlyph, rootFolderName } from './RootFolderGlyph';
 import { ChevronIcon } from './ChevronIcon';
 
@@ -34,19 +34,39 @@ export function RemoteMachineList({ machine, filter, onOpenPane }: Props) {
   );
 }
 
-function RemoteHeader({ machine }: { machine: MachineDot }) {
-  const [busy, setBusy] = useState(false);
-  async function reconnect() {
-    setBusy(true);
-    try {
-      await api.invoke('p2p:reconnect-device', { deviceId: machine.deviceId });
-      toast(MACHINE_COPY.reconnected(machine.name), { kind: 'success', timeoutMs: 1500 });
-    } catch (err) {
-      toast(MACHINE_COPY.reconnectFailed, { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') });
-    } finally {
-      setBusy(false);
-    }
+const inFlight = new Set<string>();
+const inFlightListeners = new Set<() => void>();
+
+function subscribeInFlight(listener: () => void): () => void {
+  inFlightListeners.add(listener);
+  return () => { inFlightListeners.delete(listener); };
+}
+
+function setInFlight(deviceId: string, on: boolean): void {
+  if (on) inFlight.add(deviceId);
+  else inFlight.delete(deviceId);
+  inFlightListeners.forEach((l) => l());
+}
+
+/**
+ * Reconnects a machine and toasts the outcome (AC20). Its id is marked in flight at module level,
+ * outside the `key={deviceId}` subtree, so switching dots away and back keeps that machine's button
+ * disabled until the call settles; other machines' buttons are unaffected.
+ */
+async function reconnect(machine: MachineDot): Promise<void> {
+  setInFlight(machine.deviceId, true);
+  try {
+    await api.invoke('p2p:reconnect-device', { deviceId: machine.deviceId });
+    toast(MACHINE_COPY.reconnected(machine.name), { kind: 'success', timeoutMs: 1500 });
+  } catch (err) {
+    toast(MACHINE_COPY.reconnectFailed, { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') });
+  } finally {
+    setInFlight(machine.deviceId, false);
   }
+}
+
+function RemoteHeader({ machine }: { machine: MachineDot }) {
+  const busy = useSyncExternalStore(subscribeInFlight, () => inFlight.has(machine.deviceId));
   return (
     <div data-testid={MACHINE_TESTIDS.remoteHeader} className="flex items-center gap-2 pl-2">
       <div className="flex-1 min-w-0">
@@ -64,7 +84,7 @@ function RemoteHeader({ machine }: { machine: MachineDot }) {
       </div>
       <button
         type="button"
-        onClick={() => void reconnect()}
+        onClick={() => void reconnect(machine)}
         disabled={busy}
         aria-label={MACHINE_COPY.reconnectLabel(machine.name)}
         data-testid={MACHINE_TESTIDS.remoteReconnect}
@@ -92,8 +112,20 @@ function RemoteMachineProjects({ machine, filter, onOpenPane }: Props) {
     <RemoteProjectRow key={p.id} project={p} alive={aliveProjectIds.has(p.id)} indent={indent} onClick={() => open(p)} />
   );
 
+  if (error || loading || rootsLoading) return <RemoteListStatus error={error} />;
+  return <RemoteSectionsView sections={sections} aliveProjectIds={aliveProjectIds} row={row} />;
+}
+
+function RemoteListStatus({ error }: { error?: string }) {
   if (error) return <div className="pl-2 text-[11px] text-[--danger]">{error}</div>;
-  if (loading || rootsLoading) return <div className="pl-2 text-[11px] text-[--text-muted]">{MACHINE_COPY.loading}</div>;
+  return <div className="pl-2 text-[11px] text-[--text-muted]">{MACHINE_COPY.loading}</div>;
+}
+
+function RemoteSectionsView({ sections, aliveProjectIds, row }: {
+  sections: RemoteSections;
+  aliveProjectIds: ReadonlySet<number>;
+  row: (p: Project, indent?: number) => React.ReactNode;
+}) {
   return (
     <>
       {sections.inUse.length > 0 && (

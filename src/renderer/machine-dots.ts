@@ -125,3 +125,43 @@ export function remoteSections(
     projects: all.length > 0 ? { folders, orphans: shown.filter((p) => !rootIds.has(p.rootId)) } : null,
   };
 }
+
+type MachineFields = Pick<FleetEntry, 'deviceId' | 'name' | 'online' | 'lastSeenAt' | 'self'>;
+const machineKey = (m: MachineFields) => `${m.deviceId}|${m.name}|${m.online}|${m.lastSeenAt}|${m.self === true}`;
+
+/** True when two fleet (or dot) lists hold the same machines in the same order: device id, name, online, last seen and self. */
+export function sameMachines(a: readonly MachineFields[], b: readonly MachineFields[]): boolean {
+  return a.length === b.length && a.every((m, i) => machineKey(m) === machineKey(b[i]!));
+}
+
+/** `role`/`id`/`aria-labelledby` the sidebar list area takes while the band is shown; empty otherwise. */
+export type PanelProps = { role: 'tabpanel'; id: string; 'aria-labelledby': string } | Record<string, never>;
+
+/** How the sidebar lays out for the current switcher state; see {@link switcherLayout}. */
+export interface SwitcherLayout {
+  banded: boolean;
+  remote: MachineDot | null;
+  framing: 'bare' | 'shown' | 'hidden';
+  panelProps: PanelProps;
+  fillClass: string;
+}
+
+/**
+ * The sidebar's layout decisions in one place: the band shows once a peer exists; the shown dot is
+ * `remote` unless it is this machine; the local list is 'bare' (no wrapper, the pre-switcher DOM)
+ * without the band, otherwise 'shown' or 'hidden'; the list area is the active dot's tabpanel only
+ * with the band; and the drag fill stops at the band's top (-mb-7) instead of the aside's bottom.
+ */
+export function switcherLayout(s: { machines: readonly MachineDot[]; active: MachineDot; activeId: string }): SwitcherLayout {
+  const remote = s.active.self ? null : s.active;
+  if (s.machines.length < 2) {
+    return { banded: false, remote: null, framing: 'bare', panelProps: {}, fillClass: 'drag flex-1 min-h-0 -mt-7 -mb-5' };
+  }
+  return {
+    banded: true,
+    remote,
+    framing: remote ? 'hidden' : 'shown',
+    panelProps: { role: 'tabpanel', id: SWITCHER_PANEL_ID, 'aria-labelledby': machineTabId(s.activeId) },
+    fillClass: 'drag flex-1 min-h-0 -mt-7 -mb-7',
+  };
+}

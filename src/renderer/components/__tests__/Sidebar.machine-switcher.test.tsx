@@ -6,6 +6,7 @@
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor, within, act } from '@testing-library/react';
+import { Profiler } from 'react';
 
 const invoke = vi.fn();
 vi.mock('@renderer/api', () => ({ api: { invoke: (...a: unknown[]) => invoke(...a), on: () => () => {} } }));
@@ -239,6 +240,77 @@ describe('Sidebar with an offline machine', () => {
     expect(screen.getByTestId(MACHINE_TESTIDS.remoteLastSeen).textContent).toBe('never seen');
     expect(screen.getByTestId(SIDEBAR_TESTIDS.filter)).toBeTruthy();
     expect(screen.queryByTestId(MACHINE_TESTIDS.remoteProjectRow)).toBeNull();
+  });
+});
+
+describe('Sidebar Reconnect across a switch (AC20)', () => {
+  test('a reconnect still in flight keeps the button disabled after switching away and back', async () => {
+    fleetReplies = [{ fleet: [ATLAS] }];
+    let settle!: (v: unknown) => void;
+    const base = invoke.getMockImplementation()!;
+    invoke.mockImplementation((ch: string, a: unknown) => (
+      ch === 'p2p:reconnect-device' ? new Promise((r) => { settle = r; }) : base(ch, a)
+    ));
+    const button = () => screen.getByTestId(MACHINE_TESTIDS.remoteReconnect) as HTMLButtonElement;
+    await renderSidebar();
+    fireEvent.click(await screen.findByTestId(MACHINE_TESTIDS.dot('atlas')));
+    fireEvent.click(button());
+    expect(button().disabled).toBe(true);
+    fireEvent.click(screen.getByTestId(MACHINE_TESTIDS.dot(LOCAL_MACHINE_ID)));
+    expect(screen.queryByTestId(MACHINE_TESTIDS.remoteReconnect)).toBeNull();
+    fireEvent.click(screen.getByTestId(MACHINE_TESTIDS.dot('atlas')));
+    expect(button().disabled).toBe(true);
+    fireEvent.click(button());
+    expect(calls('p2p:reconnect-device')).toBe(1);
+    await act(async () => { settle({ ok: true }); await Promise.resolve(); });
+    await waitFor(() => expect(button().disabled).toBe(false));
+    fireEvent.click(button());
+    expect(calls('p2p:reconnect-device')).toBe(2);
+    await act(async () => { settle({ ok: true }); await Promise.resolve(); });
+    await waitFor(() => expect(button().disabled).toBe(false));
+  });
+});
+
+describe('Sidebar Reconnect per machine (AC20)', () => {
+  test('a reconnect in flight for one machine leaves another machine\'s Reconnect enabled', async () => {
+    fleetReplies = [{ fleet: [ATLAS, { ...TOWER, online: false }] }];
+    let settle!: (v: unknown) => void;
+    const base = invoke.getMockImplementation()!;
+    invoke.mockImplementation((ch: string, a: unknown) => (
+      ch === 'p2p:reconnect-device' ? new Promise((r) => { settle = r; }) : base(ch, a)
+    ));
+    const button = () => screen.getByTestId(MACHINE_TESTIDS.remoteReconnect) as HTMLButtonElement;
+    await renderSidebar();
+    fireEvent.click(await screen.findByTestId(MACHINE_TESTIDS.dot('atlas')));
+    fireEvent.click(button());
+    fireEvent.click(screen.getByTestId(MACHINE_TESTIDS.dot('tower')));
+    expect(button().disabled).toBe(false);
+    fireEvent.click(screen.getByTestId(MACHINE_TESTIDS.dot('atlas')));
+    expect(button().disabled).toBe(true);
+    await act(async () => { settle({ ok: true }); await Promise.resolve(); });
+    await waitFor(() => expect(button().disabled).toBe(false));
+  });
+});
+
+describe('Sidebar poll cost (F4)', () => {
+  const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+
+  test('with zero peers, unchanged fleet polls stop committing the sidebar; a changed one still does', async () => {
+    fleetReplies = [{ fleet: [] }, { fleet: [] }, { fleet: [] }, { fleet: [] }, { fleet: [] }, { fleet: [TOWER] }];
+    let commits = 0;
+    render(<Profiler id="sidebar" onRender={() => { commits++; }}><Sidebar {...base} /></Profiler>);
+    await screen.findByText('home-app');
+    await settle();
+    await pollOnce();
+    await settle();
+    expect(calls('p2p:fleet-list')).toBe(2);
+    const steady = commits;
+    for (let i = 0; i < 3; i++) { await pollOnce(); await settle(); }
+    expect(calls('p2p:fleet-list')).toBe(5);
+    expect(commits).toBe(steady);
+    await pollOnce();
+    await screen.findByTestId(MACHINE_TESTIDS.band);
+    expect(commits).toBeGreaterThan(steady);
   });
 });
 
