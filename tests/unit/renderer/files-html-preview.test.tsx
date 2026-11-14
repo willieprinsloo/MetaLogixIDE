@@ -25,7 +25,7 @@ describe('FilePreview html rendering', () => {
   it('renders a sandboxed metafile iframe when not editing', () => {
     const html = render(htmlFile(false));
     const iframe = /<iframe\b[^>]*>/.exec(html)?.[0] ?? '';
-    expect(iframe).toContain('src="metafile://7/docs/my%20report.html"');
+    expect(iframe).toContain('src="metafile://p/7/docs/my%20report.html"');
     expect(iframe).toContain('sandbox=""');
   });
 

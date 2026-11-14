@@ -696,7 +696,7 @@ export function FilePreview({
  * navigation. Edit shows the source; Preview re-renders from disk.
  */
 export function HtmlPreview({ projectId, relPath }: { projectId: number; relPath: string }) {
-  const src = `metafile://${projectId}/${relPath.split('/').map(encodeURIComponent).join('/')}`;
+  const src = `metafile://p/${projectId}/${relPath.split('/').map(encodeURIComponent).join('/')}`;
   return (
     <div className="flex-1 min-h-0 bg-white" data-testid="html-preview">
       <iframe
