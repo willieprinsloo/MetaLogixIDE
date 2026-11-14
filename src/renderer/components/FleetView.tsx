@@ -12,7 +12,7 @@ interface AliveShell { projectId: number; projectName: string; projectPath: stri
  * (locally: switch project + shell; remotely: open the remote pane).
  *
  * Builds on existing p2p plumbing — the local shells come from the same
- * `shells:alive-list` IPC the MachinesSection uses; remote shells come
+ * `shells:alive-list` IPC the sidebar uses; remote shells come
  * from `useRemoteAliveShells`.
  */
 export function FleetView({
