@@ -329,3 +329,51 @@ Run `pnpm dev`, then in one sitting verify: (1) add a custom command with NO nam
 - [ ] **Step 3: Final commit if anything drifted; report**
 
 Report back: what was verified live, and remind that the installed /Applications app is still the stale Oct-29 build — installing needs a dist build + quitting the app (user chose dev-only for now).
+
+---
+
+### Task 7: Terminal selection & copy/paste UX (mid-flight user request)
+
+**Files:**
+- Modify: `src/renderer/hover-hold.ts`
+- Modify: `src/renderer/components/ShellTab.tsx` (link provider `hover` callback, terminal host mousedown, Terminal options)
+- Test: `tests/unit/renderer/hover-hold.test.ts` (extend if it exists — check `tests/unit/renderer/` first)
+
+**Interfaces:**
+- Consumes: `createHoverHold(close)` and the link provider wiring at `ShellTab.tsx:258-266` (`hover: (ev) => { hoverHold.linkEnter(); setHover(...) }`); `Terminal` options at `ShellTab.tsx:192`.
+- Produces:
+  - `hover-hold.ts`: new constant `export const PEEK_OPEN_DWELL_MS = 350;` and a changed `HoverHold` — `linkEnter(open: () => void)` now schedules `open` after the dwell, cancelling on `linkLeave`/`dispose`; `cardEnter`/`cardLeave`/`dispose` semantics unchanged; the pending-close logic unchanged. Pure apart from injectable timers (keep the existing `HoldTimers` shape).
+  - `ShellTab.tsx`: link `hover` callback becomes `hoverHold.linkEnter(() => setHover({ x: ev.clientX, y: ev.clientY, projectId, path: h.path, line: h.line }))` (no immediate `setHover`); the terminal host div gets `onMouseDown={() => { hoverHold.dispose(); setHover(null); }}` so any selection attempt instantly clears a stuck card; `new Terminal({...})` gains `rightClickSelectsWord: true`.
+
+- [ ] **Step 1: Write the failing tests (hover dwell)**
+
+In the hover-hold test: (a) `linkEnter(open)` does NOT call `open` synchronously; (b) after the injected timer fires with 350ms, `open` runs once; (c) `linkLeave` before the timer cancels the open; (d) a second `linkEnter` before the first fires resets rather than double-fires; (e) `dispose` cancels a pending open and the existing 200ms close behavior still works.
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `ELECTRON_RUN_AS_NODE=1 electron node_modules/vitest/vitest.mjs run tests/unit/renderer/hover-hold.test.ts`
+Expected: FAIL on the new dwell cases.
+
+- [ ] **Step 3: Implement the dwell in `hover-hold.ts`**
+
+Track `pendingOpen` alongside `pendingClose`: `linkEnter(open)` sets `overLink = true`, cancels any pending open, schedules `open` after `PEEK_OPEN_DWELL_MS`; any `linkLeave`/`dispose` cancels the pending open. Both timers use the injected `HoldTimers`.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: same command. Expected: PASS (new + existing).
+
+- [ ] **Step 5: Wire ShellTab**
+
+Link provider `hover` → `hoverHold.linkEnter(() => setHover(...))` (delete the immediate `setHover`); terminal host div `onMouseDown` → `{ hoverHold.dispose(); setHover(null); }`; add `rightClickSelectsWord: true` to the `Terminal` options.
+
+- [ ] **Step 6: Run full suite + typecheck; manual smoke**
+
+Run: `pnpm test && pnpm typecheck`. Then `pnpm dev`: sweep the mouse across terminal output full of paths — no card pops while moving, one appears after resting ~0.35s on a link; starting a drag anywhere closes the card and selects; right-click on a word selects it and the Copy menu item is enabled.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/renderer/hover-hold.ts src/renderer/components/ShellTab.tsx tests/unit/renderer/hover-hold.test.ts
+git commit -m "fix(terminal): dwell the path preview and stop it blocking selection"
+```
+
