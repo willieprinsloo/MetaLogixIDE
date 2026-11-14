@@ -254,7 +254,7 @@ describe('switcherLayout', () => {
     expect(switcherLayout({ machines, active: localDot, activeId: LOCAL_MACHINE_ID })).toEqual({
       banded: true, remote: null, framing: 'shown',
       panelProps: { role: 'tabpanel', id: 'switcher-panel', 'aria-labelledby': 'switcher-tab-local' },
-      listClass: 'flex-initial min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7 pb-11',
+      listClass: 'flex-initial min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7 pb-9',
     });
   });
 
@@ -262,7 +262,7 @@ describe('switcherLayout', () => {
     expect(switcherLayout({ machines, active: towerDot, activeId: 't' })).toEqual({
       banded: true, remote: towerDot, framing: 'hidden',
       panelProps: { role: 'tabpanel', id: 'switcher-panel', 'aria-labelledby': 'switcher-tab-t' },
-      listClass: 'flex-initial min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7 pb-11',
+      listClass: 'flex-initial min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7 pb-9',
     });
   });
 });
@@ -321,14 +321,14 @@ describe('dotAttrs (AC21, AC32, AC34)', () => {
   );
   const cls = (a: ReturnType<typeof dotAttrs>) => a.className.split(' ');
 
-  it('inactive dots are 8px and active ones 10px, all glass', () => {
+  it('inactive dots are 8px and active ones 10px, all machine-dot circles', () => {
     expect(cls(dotAttrs(dot({}), false))).toEqual(expect.arrayContaining(['machine-dot', 'w-2', 'h-2']));
     expect(cls(dotAttrs(dot({}), true))).toEqual(expect.arrayContaining(['machine-dot', 'w-2.5', 'h-2.5']));
     expect(cls(dotAttrs(dot({}), true))).not.toContain('w-2');
     expect(cls(dotAttrs(dot({}), false))).not.toContain('w-2.5');
   });
 
-  it('carries no colour utilities: the glass and tint come from styles.css', () => {
+  it('carries no colour utilities: the fill and outline come from styles.css', () => {
     for (const a of [dotAttrs(dot({}), true), dotAttrs(dot({ online: false }), false), dotAttrs(dot({ agentState: 'busy' }), false)]) {
       expect(cls(a).filter((c) => /^(bg|border|opacity|shadow)-/.test(c))).toEqual([]);
     }

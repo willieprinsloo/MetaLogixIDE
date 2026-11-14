@@ -139,25 +139,23 @@ describe('Sidebar with a paired machine', () => {
     expect(screen.queryByText('Machines')).toBeNull();
   });
 
-  test('floats a transparent dot row over the bottom of the list without moving the list or the drag fill (AC2, AC8, AC9, AC32, AC33)', async () => {
+  test('floats a tight frosted pill over the bottom of the list without moving the list or the drag fill (AC2, AC8, AC9, AC32, AC33)', async () => {
     await renderSidebar();
     const band = await screen.findByTestId(MACHINE_TESTIDS.band);
     const fill = screen.getByTestId('sidebar-drag-fill');
     expect(band.parentElement).toBe(aside());
     expect(fill.nextElementSibling).toBe(band);
     expect(fill.className).toBe('drag flex-1 min-h-0 -mt-7 -mb-5');
-    expect(scrollArea().className).toBe('flex-initial min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7 pb-11');
-    for (const c of ['absolute', 'bottom-2', 'left-1/2', '-translate-x-1/2', 'no-drag', 'max-w-[calc(100%-16px)]', 'flex']) {
+    expect(scrollArea().className).toBe('flex-initial min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7 pb-9');
+    for (const c of ['machine-pill', 'absolute', 'bottom-2', 'left-1/2', '-translate-x-1/2', 'no-drag', 'max-w-[calc(100%-16px)]', 'flex', 'rounded-full', 'border', 'border-[--border]']) {
       expect(band.classList).toContain(c);
     }
-    for (const c of ['machine-pill', 'rounded-full', 'border', 'border-[--border]', 'shadow-sm', 'px-1', 'drag', 'h-7', 'w-full', 'inset-x-0']) {
-      expect(band.classList).not.toContain(c);
-    }
-    expect([...band.classList].filter((c) => /^(bg|shadow|border|rounded|backdrop)-?/.test(c))).toEqual([]);
+    for (const c of ['drag', 'h-7', 'w-full', 'inset-x-0']) expect(band.classList).not.toContain(c);
+    expect([...band.classList].filter((c) => /^(shadow|bg-|backdrop|p[xytblr]?-)/.test(c))).toEqual([]);
     expect(band.firstElementChild).toBe(within(band).getByTestId(MACHINE_TESTIDS.row));
   });
 
-  test('the dot row sits above the list rows it overlaps', async () => {
+  test('the pill sits above the list rows it overlaps', async () => {
     await renderSidebar();
     const band = await screen.findByTestId(MACHINE_TESTIDS.band);
     const z = [...band.classList].find((c) => /^z-/.test(c));
@@ -303,32 +301,48 @@ describe('Sidebar with an offline machine', () => {
   });
 });
 
-describe('machine dot styles (AC21, AC32, AC34)', () => {
+describe('machine pill and dot styles (AC21, AC32, AC34)', () => {
   const css = readFileSync(resolve(__dirname, '../../styles.css'), 'utf8');
   const reduceBlocks = [...css.matchAll(/@media \(prefers-reduced-transparency: reduce\)\s*\{((?:[^{}]*\{[^}]*\})*)\s*\}/g)].map((m) => m[1]!);
-  const reduced = reduceBlocks.find((b) => b.includes('.machine-dot')) ?? '';
+  const reduced = reduceBlocks.find((b) => b.includes('.machine-pill')) ?? '';
   const topLevel = reduceBlocks.reduce((acc, b) => acc.replace(b, ''), css);
   const esc = (sel: string) => sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const rule = (src: string, sel: string) => new RegExp(`(?:^|[}\\s])${esc(sel)}\\s*\\{([^}]*)\\}`).exec(src)?.[1] ?? '';
 
-  test('every dot is frosted glass: translucent fill, backdrop blur, 1px translucent edge, inner highlight', () => {
+  test('the pill is the translucent sidebar panel colour with a backdrop blur and no shadow', () => {
+    const pill = rule(topLevel, '.machine-pill');
+    expect(pill).toMatch(/background:\s*rgb\(from var\(--panel-strong\) r g b \/ 0?\.\d+\)/);
+    expect(pill).toMatch(/backdrop-filter:\s*blur\(\d+px\)/);
+    expect(pill).not.toMatch(/box-shadow/);
+  });
+
+  test('under Reduce transparency the pill is opaque with no blur', () => {
+    expect(rule(reduced, '.machine-pill')).toMatch(/background:\s*rgb\(from var\(--panel-strong\) r g b \/ 1\)/);
+    expect(rule(reduced, '.machine-pill')).toMatch(/backdrop-filter:\s*none/);
+  });
+
+  test('a dot with no agent is a solid --text-muted circle: no glass, ring, highlight, edge or shadow', () => {
     const base = rule(topLevel, '.machine-dot');
-    expect(base).toMatch(/background:\s*rgb\(from var\(--panel-strong\) r g b \/ 0?\.\d+\)/);
-    expect(base).toMatch(/backdrop-filter:\s*blur\(\d+px\)/);
-    expect(base).toMatch(/border:\s*1px solid rgb\(from var\(--text\) r g b \/ 0?\.\d+\)/);
-    expect(base).toMatch(/box-shadow:\s*inset 0 1px 0 /);
+    expect(base).toMatch(/background:\s*var\(--text-muted\)/);
+    expect(css).not.toMatch(/\.machine-dot[^{]*\{[^}]*(backdrop-filter|box-shadow)/);
+    expect(base).not.toMatch(/border/);
+    expect(css).not.toMatch(/\.machine-dot\[data-active\]\s*\{/);
   });
 
-  test.each(['idle', 'busy', 'blocked'])('a %s dot is tinted with its agent colour', (state) => {
-    const tinted = rule(topLevel, `.machine-dot[data-agent-state="${state}"]`);
-    expect(tinted).toMatch(new RegExp(`background:\\s*color-mix\\(in srgb, var\\(--agent-${state}\\) \\d+%, transparent\\)`));
+  test.each(['idle', 'busy', 'blocked'])('a %s dot is filled with its agent colour at full strength', (state) => {
+    expect(rule(topLevel, `.machine-dot[data-agent-state="${state}"]`).trim()).toBe(`background: var(--agent-${state});`);
   });
 
-  test('the active dot adds a 1.5px softened accent ring outside the glass and keeps the inner highlight', () => {
-    const ring = /box-shadow:\s*inset 0 1px 0 [^,;]*\)\s*,\s*0 0 0 1\.5px color-mix\(in srgb, var\(--accent\) (\d+)%, transparent\)/.exec(rule(topLevel, '.machine-dot[data-active]'));
-    expect(ring).not.toBeNull();
-    expect(Number(ring![1])).toBeLessThan(100);
-    expect(Number(ring![1])).toBeGreaterThan(0);
+  test('an offline dot is a 1px --text-muted outline with no fill at 50%; the active offline dot is not dimmed', () => {
+    const off = rule(topLevel, '.machine-dot[data-online="0"]');
+    expect(off).toMatch(/background:\s*transparent/);
+    expect(off).toMatch(/border:\s*1px solid var\(--text-muted\)/);
+    expect(off).toMatch(/opacity:\s*0?\.5\b/);
+    expect(rule(topLevel, '.machine-dot[data-online="0"][data-active]')).toMatch(/opacity:\s*1\b/);
+  });
+
+  test('Reduce transparency leaves the solid dots alone', () => {
+    for (const b of reduceBlocks) expect(b).not.toMatch(/\.machine-dot/);
   });
 
   const block = (at: string, from = 0) => {
@@ -374,26 +388,6 @@ describe('machine dot styles (AC21, AC32, AC34)', () => {
     expect(off).toMatch(/opacity:\s*0\b/);
   });
 
-  test('an offline dot is a faint edge with no fill or blur; active offline is not dimmed', () => {
-    const off = rule(topLevel, '.machine-dot[data-online="0"]');
-    expect(off).toMatch(/background:\s*transparent/);
-    expect(off).toMatch(/backdrop-filter:\s*none/);
-    expect(off).toMatch(/opacity:\s*0?\.5\b/);
-    expect(rule(topLevel, '.machine-dot[data-online="0"][data-active]')).toMatch(/opacity:\s*1\b/);
-  });
-
-  test('under Reduce transparency there is no blur, clear glass is the solid panel and a tinted dot the solid agent colour', () => {
-    expect(rule(reduced, '.machine-dot')).toMatch(/background:\s*rgb\(from var\(--panel-strong\) r g b \/ 1\)/);
-    expect(rule(reduced, '.machine-dot')).toMatch(/backdrop-filter:\s*none/);
-    for (const state of ['idle', 'busy', 'blocked']) {
-      expect(rule(reduced, `.machine-dot[data-agent-state="${state}"]`)).toMatch(new RegExp(`background:\\s*var\\(--agent-${state}\\)`));
-    }
-    expect(rule(reduced, '.machine-dot[data-online="0"]')).toMatch(/background:\s*transparent/);
-  });
-
-  test('no pill rule remains', () => {
-    expect(css).not.toMatch(/\.machine-pill/);
-  });
 });
 
 describe('Sidebar Reconnect across a switch (AC20)', () => {

@@ -137,7 +137,7 @@ describe('MachineDots states (AC21, AC28, AC32, AC34)', () => {
   const BUSY_TOWER: MachineDot = { ...TOWER, agentState: 'busy' };
   const BLOCKED_LOCAL: MachineDot = { ...LOCAL, agentState: 'blocked' };
 
-  test('every dot is a glass circle: 8px inactive, 10px active', () => {
+  test('every dot is a circle: 8px inactive, 10px active', () => {
     renderDots('atlas');
     for (const m of ALL) has(m.deviceId, 'machine-dot', 'rounded-full');
     has('tower', 'w-2', 'h-2');
@@ -205,11 +205,16 @@ describe('MachineDots overflow and drag (AC4, AC8)', () => {
     for (const c of ['no-drag', 'overflow-x-auto', 'scrollbar-none']) expect(row.classList).toContain(c);
   });
 
+  test('the row adds no padding, so the pill hugs the 20px dot buttons (AC32)', () => {
+    renderDots();
+    expect([...screen.getByTestId(MACHINE_TESTIDS.row).classList].filter((c) => /^p[xytblr]?-/.test(c))).toEqual([]);
+  });
+
   test('a busy dot\'s full pulse ring fits inside the row\'s clip box, active or not (AC34)', () => {
     const css = readFileSync(resolve(__dirname, '../../styles.css'), 'utf8');
     const pulse = /\.machine-dot\.live-dot::after\s*\{[^}]*animation:\s*([\w-]+)/.exec(css)![1]!;
     const scale = Number(new RegExp(`@keyframes ${pulse}\\s*\\{[^}]*\\}\\s*to\\s*\\{[^}]*scale\\(([\\d.]+)\\)`).exec(css)![1]);
-    const border = Number(/\.machine-dot \{[^}]*border: (\d+)px/.exec(css)![1]);
+    const border = Number(/\.machine-dot \{[^}]*border: (\d+)px/.exec(css)?.[1] ?? 0);
     const px = (el: Element, prefix: string) => {
       const token = [...el.classList].find((c) => new RegExp(`^${prefix}-[\\d.]+$`).test(c));
       return token ? Number(token.slice(prefix.length + 1)) * 4 : 0;

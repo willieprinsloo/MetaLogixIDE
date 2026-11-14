@@ -170,7 +170,7 @@ export function switcherLayout(s: { machines: readonly MachineDot[]; active: Mac
     remote,
     framing: remote ? 'hidden' : 'shown',
     panelProps: { role: 'tabpanel', id: SWITCHER_PANEL_ID, 'aria-labelledby': machineTabId(s.activeId) },
-    listClass: `${LIST_CLASS} pb-11`,
+    listClass: `${LIST_CLASS} pb-9`,
   };
 }
 
@@ -187,7 +187,7 @@ export function withAgentStates(
   }));
 }
 
-/** The visible glass circle's class list and state attributes; colours live in styles.css `.machine-dot`. */
+/** The visible dot's class list and state attributes; colours live in styles.css `.machine-dot`. */
 export interface DotAttrs {
   className: string;
   'data-agent-state'?: AgentState;
@@ -195,9 +195,9 @@ export interface DotAttrs {
   'data-active'?: '';
 }
 
-const DOT_BASE = 'machine-dot block rounded-full transition-[width,height,background-color,opacity,box-shadow] duration-150 motion-reduce:transition-none';
+const DOT_BASE = 'machine-dot block rounded-full transition-[width,height,background-color,opacity] duration-150 motion-reduce:transition-none';
 
-/** Glass dot (AC21, AC32, AC34): 8px, 10px when active; tinted by agent state while online; only a busy online dot pulses (`live-dot`). */
+/** Solid dot (AC21, AC32, AC34): 8px, 10px when active; coloured by agent state while online; only a busy online dot pulses (`live-dot`). */
 export function dotAttrs(m: MachineDot, active: boolean): DotAttrs {
   const tint = m.online ? m.agentState ?? undefined : undefined;
   const size = active ? 'w-2.5 h-2.5' : 'w-2 h-2';

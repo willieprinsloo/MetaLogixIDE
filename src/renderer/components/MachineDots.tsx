@@ -14,7 +14,7 @@ const SCROLL: ScrollIntoViewOptions = { inline: 'nearest', block: 'nearest' };
 
 /**
  * The sidebar's machine switcher row (docs/specs/machine-switcher-dots.md AC2, AC4, AC8, AC21,
- * AC25–AC28, AC32, AC34, AC35): a WAI-ARIA tablist of glass dots tinted by agent state, with a
+ * AC25–AC28, AC32, AC34, AC35): a WAI-ARIA tablist of solid dots coloured by agent state, with a
  * roving tab stop on the active dot and manual activation — arrows and Home/End move focus, Enter, Space or a click calls `onSelect` with the dot's device id
  * (never for the dot already active). Each dot has a tooltip on hover and keyboard focus, and the
  * row scrolls sideways with a hidden scrollbar, keeping the active or focused dot in view.
@@ -43,7 +43,7 @@ export function MachineDots({ machines, activeId, onSelect }: Props) {
       role="tablist"
       aria-label={MACHINE_COPY.tablistLabel}
       data-testid={MACHINE_TESTIDS.row}
-      className="no-drag flex items-center gap-1 min-w-0 max-w-full overflow-x-auto scrollbar-none p-1"
+      className="no-drag flex items-center gap-1 min-w-0 max-w-full overflow-x-auto scrollbar-none"
     >
       {machines.map((m, i) => {
         const active = m.deviceId === activeId;

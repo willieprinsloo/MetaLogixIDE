@@ -109,15 +109,16 @@ export function Sidebar({ selectedProjectId, onSelect, onUnloadSession, onNewPro
 }
 
 /**
- * The glass machine dots floating over the bottom of the list (AC2, AC8, AC9, AC32): a transparent
- * row with no layout space, centred on the aside 8px above its bottom edge, hugging the dots up to
- * the aside's width minus 16px (the row scrolls inside beyond that); only the row is no-drag.
+ * The machine dots in a tight frosted pill floating over the bottom of the list (AC2, AC8, AC9, AC32):
+ * no layout space, centred on the aside 8px above its bottom edge, a 1px --border outline and no
+ * shadow, hugging the 20px dot buttons up to the aside's width minus 16px (the row scrolls inside
+ * beyond that); only the pill is no-drag.
  */
 function MachineBand({ switcher }: { switcher: MachineSwitcher }) {
   return (
     <div
       data-testid={MACHINE_TESTIDS.band}
-      className="no-drag absolute bottom-2 left-1/2 -translate-x-1/2 z-10 flex max-w-[calc(100%-16px)]"
+      className="machine-pill no-drag absolute bottom-2 left-1/2 -translate-x-1/2 z-10 flex max-w-[calc(100%-16px)] rounded-full border border-[--border]"
     >
       <MachineDots machines={switcher.machines} activeId={switcher.activeId} onSelect={switcher.select} />
     </div>

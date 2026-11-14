@@ -812,20 +812,21 @@ input::placeholder, textarea::placeholder {
 .scrollbar-none { scrollbar-width: none; }
 .scrollbar-none::-webkit-scrollbar { display: none; width: 0; height: 0; }
 
-/* Machine switcher dots (AC21, AC32, AC34): frosted-glass circles over the list, tinted by the
- * machine's agent state; an offline dot is a faint edge only. Busy dots pulse via .live-dot with their
- * own smaller, desaturated glow; the shared livePulse stays the sidebar status dots' pulse. */
-.machine-dot {
-  background: rgb(from var(--panel-strong) r g b / .35);
-  backdrop-filter: blur(6px) saturate(1.6);
-  border: 1px solid rgb(from var(--text) r g b / .28);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / .35);
+/* Machine switcher (AC21, AC32, AC34): a tight frosted pill (opaque under Reduce transparency) holding
+ * solid status-coloured dots; an offline dot is a hollow outline. A busy dot pulses with its own
+ * smaller, desaturated glow; the shared livePulse stays the sidebar status dots' pulse. */
+.machine-pill {
+  background: rgb(from var(--panel-strong) r g b / .72);
+  backdrop-filter: blur(12px) saturate(1.4);
 }
-.machine-dot[data-agent-state="idle"]    { background: color-mix(in srgb, var(--agent-idle) 65%, transparent); }
-.machine-dot[data-agent-state="busy"]    { background: color-mix(in srgb, var(--agent-busy) 65%, transparent); }
-.machine-dot[data-agent-state="blocked"] { background: color-mix(in srgb, var(--agent-blocked) 65%, transparent); }
-.machine-dot[data-active] { box-shadow: inset 0 1px 0 rgb(255 255 255 / .35), 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, transparent); }
-.machine-dot[data-online="0"] { background: transparent; backdrop-filter: none; opacity: .5; }
+@media (prefers-reduced-transparency: reduce) {
+  .machine-pill { background: rgb(from var(--panel-strong) r g b / 1); backdrop-filter: none; }
+}
+.machine-dot { background: var(--text-muted); }
+.machine-dot[data-agent-state="idle"]    { background: var(--agent-idle); }
+.machine-dot[data-agent-state="busy"]    { background: var(--agent-busy); }
+.machine-dot[data-agent-state="blocked"] { background: var(--agent-blocked); }
+.machine-dot[data-online="0"] { background: transparent; border: 1px solid var(--text-muted); opacity: .5; }
 .machine-dot[data-online="0"][data-active] { opacity: 1; }
 @keyframes machineDotPulse {
   from { transform: scale(1); opacity: .35; }
@@ -834,13 +835,6 @@ input::placeholder, textarea::placeholder {
 .machine-dot.live-dot::after { animation: machineDotPulse 2s var(--ease-out) infinite; filter: saturate(.5); }
 @media (prefers-reduced-motion: reduce) {
   .machine-dot.live-dot::after { animation: none; opacity: 0; }
-}
-@media (prefers-reduced-transparency: reduce) {
-  .machine-dot { background: rgb(from var(--panel-strong) r g b / 1); backdrop-filter: none; border-color: var(--text-muted); }
-  .machine-dot[data-agent-state="idle"]    { background: var(--agent-idle); }
-  .machine-dot[data-agent-state="busy"]    { background: var(--agent-busy); }
-  .machine-dot[data-agent-state="blocked"] { background: var(--agent-blocked); }
-  .machine-dot[data-online="0"] { background: transparent; }
 }
 
 /* Focus ring — visible only on keyboard focus, not on click. */
