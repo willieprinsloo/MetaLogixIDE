@@ -37,9 +37,12 @@ export function resolveMetafileUrl(
   url: string,
   getProjectPath: (projectId: number) => string | null,
 ): { abs: string } | null {
+  // Strip query/fragment before parsing — cache-busted relative assets
+  // (`app.js?v=3`) are common in real HTML and must resolve to the file.
+  const clean = url.replace(/[?#].*$/, '');
   const prefix = `${METAFILE_SCHEME}://${METAFILE_HOST}/`;
-  if (!url.startsWith(prefix)) return null;
-  const rest = url.slice(prefix.length);
+  if (!clean.startsWith(prefix)) return null;
+  const rest = clean.slice(prefix.length);
   const slash = rest.indexOf('/');
   if (slash <= 0) return null; // no projectId, or no pathname after it
   const projectId = Number(rest.slice(0, slash));

@@ -21,7 +21,14 @@ export function isFileToolActivity(entry: ActivityEntry): boolean {
  * other than `projectId` — callers toast rather than open the wrong viewer.
  */
 export async function resolveFileTarget(projectId: number, target: string): Promise<{ relPath: string; projectId: number } | null> {
-  const res = await api.invoke('files:peek', { projectId, relPath: target, maxLines: 1 });
-  if (!res.found || res.projectId !== projectId) return null;
-  return { relPath: res.relPath, projectId: res.projectId };
+  try {
+    const res = await api.invoke('files:peek', { projectId, relPath: target, maxLines: 1 });
+    if (!res.found || res.projectId !== projectId) return null;
+    return { relPath: res.relPath, projectId: res.projectId };
+  } catch {
+    // The peek IPC rejects when the project vanished mid-flight (follow mode
+    // fires autonomously, so this can race a root removal). Null flows to
+    // the caller's toast instead of an unhandled rejection.
+    return null;
+  }
 }

@@ -7,6 +7,7 @@ const peek = vi.hoisted(() => ({
   found: true,
   relPath: 'src/a.ts',
   projectId: 7,
+  failing: false,
   calls: [] as Array<{ projectId: number; relPath: string; maxLines: number }>,
 }));
 
@@ -14,6 +15,7 @@ vi.mock('@renderer/api', () => ({
   api: {
     invoke: async (channel: string, payload: { projectId: number; relPath: string; maxLines?: number }) => {
       if (channel !== 'files:peek') throw new Error(`unexpected channel ${channel}`);
+      if (peek.failing) throw new Error(`no project ${payload.projectId}`);
       peek.calls.push({ projectId: payload.projectId, relPath: payload.relPath, maxLines: payload.maxLines ?? 0 });
       return { found: peek.found, relPath: peek.relPath, projectId: peek.projectId, kind: 'text', head: '', sizeBytes: 0, totalLines: null };
     },
@@ -64,5 +66,12 @@ describe('resolveFileTarget', () => {
     try {
       expect(await resolveFileTarget(7, '/work/9/src/a.ts')).toBeNull();
     } finally { peek.projectId = 7; }
+  });
+
+  it('returns null instead of rejecting when the peek IPC throws (project vanished mid-flight)', async () => {
+    peek.failing = true;
+    try {
+      await expect(resolveFileTarget(7, '/gone/a.ts')).resolves.toBeNull();
+    } finally { peek.failing = false; }
   });
 });

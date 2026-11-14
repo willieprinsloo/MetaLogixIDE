@@ -33,6 +33,13 @@ describe('resolveMetafileUrl', () => {
     expect(hit?.abs).toBe('/work/project-a/docs/my report.html');
   });
 
+  it('strips query strings and fragments from the path', () => {
+    expect(resolveMetafileUrl('metafile://p/1/styles.css?v=3', getProjectPath)?.abs)
+      .toBe('/work/project-a/styles.css');
+    expect(resolveMetafileUrl('metafile://p/1/docs/index.html#section', getProjectPath)?.abs)
+      .toBe('/work/project-a/docs/index.html');
+  });
+
   it('exposes the scheme name', () => {
     expect(METAFILE_SCHEME).toBe('metafile');
   });
