@@ -4,8 +4,8 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { StatusDot } from '@renderer/components/StatusDot';
 import {
-  applyDelta, applySnapshot, keyFor, overallSnapshotGetter, overallStateOf,
-  projectSnapshotGetter, projectStateOf, shellSnapshotGetter, shellStateOf,
+  applyDelta, applySnapshot, keyFor, machineAgentState, machineSnapshotGetter, overallSnapshotGetter, overallStateOf,
+  projectSnapshotGetter, projectStateOf, readAgentState, shellSnapshotGetter, shellStateOf,
 } from '@renderer/agent-state';
 import type { AgentShellStateEntry } from '@shared/agent-state';
 
@@ -149,6 +149,69 @@ describe('live IPC selectors (AC10)', () => {
   });
 });
 
+describe('machine aggregate selector (machine switcher AC34)', () => {
+  it('derives null with no agent, else the worst state, as a primitive snapshot', () => {
+    let map: ReturnType<typeof applySnapshot> = new Map();
+    const get = machineSnapshotGetter(() => map);
+    expect(get()).toBeNull();
+    map = applySnapshot([{ ...claudeBusy, state: 'idle' }], map);
+    expect(get()).toBe('idle');
+    map = applyDelta(applyDelta(map, otherBusy), secondBlocked);
+    expect(get()).toBe('blocked');
+    map = applyDelta(map, { ...secondBlocked, agent: null, state: 'idle' });
+    expect(get()).toBe('busy');
+  });
+
+  it('useMachineAgentState notifies React only when the machine aggregate changes', async () => {
+    const responses: Array<(value: { shells: AgentShellStateEntry[] }) => void> = [];
+    const handlers = new Map<string, (entry: AgentShellStateEntry) => void>();
+    const unsubs: Array<() => void> = [];
+    let renders = 0;
+    vi.doMock('@renderer/api', () => ({
+      api: {
+        invoke: () => new Promise<{ shells: AgentShellStateEntry[] }>((resolve) => { responses.push(resolve); }),
+        on: (channel: string, cb: (entry: AgentShellStateEntry) => void) => {
+          handlers.set(channel, cb);
+          return () => { handlers.delete(channel); };
+        },
+      },
+    }));
+    vi.doMock('react', () => ({
+      useSyncExternalStore: (subscribe: (listener: () => void) => () => void, getSnapshot: () => unknown) => {
+        let last = getSnapshot();
+        unsubs.push(subscribe(() => {
+          const next = getSnapshot();
+          if (!Object.is(last, next)) renders++;
+          last = next;
+        }));
+        return getSnapshot();
+      },
+    }));
+    try {
+      const { useMachineAgentState } = await import('@renderer/hooks/useAgentStates');
+      expect(useMachineAgentState()).toBeNull();
+      responses[0]?.({ shells: [claudeBusy] });
+      await Promise.resolve();
+      expect(useMachineAgentState()).toBe('busy');
+      const afterSnapshot = renders;
+      const subscribers = unsubs.length;
+      handlers.get('agent-state:changed')?.(otherBusy);
+      handlers.get('agent-state:changed')?.({ ...otherBusy, state: 'idle' });
+      expect(renders).toBe(afterSnapshot);
+      handlers.get('agent-state:changed')?.(secondBlocked);
+      expect(useMachineAgentState()).toBe('blocked');
+      expect(renders).toBe(afterSnapshot + subscribers);
+      for (const e of [claudeBusy, secondBlocked, otherBusy]) handlers.get('agent-state:changed')?.({ ...e, agent: null, state: 'idle' });
+      expect(useMachineAgentState()).toBeNull();
+    } finally {
+      for (const unsubscribe of unsubs) unsubscribe();
+      vi.doUnmock('@renderer/api');
+      vi.doUnmock('react');
+      vi.resetModules();
+    }
+  });
+});
+
 describe('status dot accessibility (AC9, AC13)', () => {
   it.each([
     ['claude', 'idle', 'Claude is idle'],
@@ -230,6 +293,8 @@ describe('status dot consumers (AC8, AC9)', () => {
     vi.doMock('@renderer/hooks/useAgentStates', () => ({
       useOverallAgentState: overallState,
       useProjectAgentState: projectState,
+      useAgentStateMap: () => new Map(),
+      useMachineAgentState: () => null,
     }));
     vi.stubGlobal('localStorage', { getItem: () => null });
     try {
@@ -292,5 +357,32 @@ describe('popout shell status (AC9)', () => {
       ]) vi.doUnmock(path);
       vi.resetModules();
     }
+  });
+});
+
+describe('readAgentState (untrusted peer value, machine switcher AC34)', () => {
+  it.each(['idle', 'busy', 'blocked'] as const)('passes %j through', (v) => {
+    expect(readAgentState(v)).toBe(v);
+  });
+  it.each([undefined, null, 1, 'BUSY', 'weird', '', {}, ['busy'], 'idle ', 'constructor', 'toString'])('turns %j into null', (v) => {
+    expect(readAgentState(v)).toBeNull();
+  });
+});
+
+describe('machineAgentState (machine switcher AC34)', () => {
+  it('ranks blocked over busy over idle', () => {
+    expect(machineAgentState(['idle', 'blocked', 'busy'])).toBe('blocked');
+    expect(machineAgentState(['busy', 'idle'])).toBe('busy');
+    expect(machineAgentState(['idle', 'busy', null])).toBe('busy');
+  });
+  it('is null when no shell has a recognised agent', () => {
+    expect(machineAgentState([])).toBeNull();
+    expect(machineAgentState([null, undefined, null])).toBeNull();
+  });
+  it('is idle for a single idle agent among non-agent shells', () => {
+    expect(machineAgentState([null, 'idle', undefined])).toBe('idle');
+  });
+  it('accepts any iterable', () => {
+    expect(machineAgentState(new Set(['busy'] as const).values())).toBe('busy');
   });
 });

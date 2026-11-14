@@ -301,6 +301,10 @@ alongside the device public key.
 
 ### New sidebar section: **Machines**
 
+> Superseded (2026-11-14): the Machines section was replaced by the machine
+> switcher dots at the bottom of the sidebar. See the Sidebar section of
+> `docs/architecture.md`.
+
 Sits above the project list. Each row:
 
 ```

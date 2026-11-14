@@ -52,10 +52,15 @@ signaling relay. The main process starts it after IPC registration and it
 never blocks startup (`src/main/index.ts`, `src/main/p2p/index.ts`). Pairing,
 relay and device settings live in Settings → P2P
 (`src/renderer/components/settings/P2PSettings.tsx`). Paired machines appear
-in the sidebar's Machines section and in the Fleet view; a remote project
-opens in `RemoteProjectPane`, whose terminals are `ShellTab` with a remote
-source (`src/renderer/components/MachinesSection.tsx`, `FleetView.tsx`,
-`RemoteProjectPane.tsx`). See
+in the sidebar's machine switcher (see **Machine switcher** below) and in the
+Fleet view; a remote project opens in `RemoteProjectPane`, whose terminals
+are `ShellTab` with a remote source (`src/renderer/components/RemoteMachineList.tsx`,
+`FleetView.tsx`, `RemoteProjectPane.tsx`). The fleet list
+(`p2p:fleet-list`) holds paired machines only and never sets
+`FleetEntry.self`, so the renderer adds this machine itself. A host's
+`shells.alive` reply carries each shell's `agentState` (idle, busy, blocked
+or null; absent from older hosts), which tints that machine's switcher dot
+(`src/main/p2p/hub.ts`). See
 `docs/superpowers/specs/2026-10-26-metaide-p2p-design.md` for the protocol,
 identity and pairing design.
 
@@ -315,6 +320,47 @@ mount. A one-time migration, guarded by `metaide.sidebarWidth.migrated`,
 clears a stored 288 so the new default applies; any other width is kept.
 The resize handle sits above the sidebar and sheet so it can be dragged and
 double-clicked to reset.
+
+**Machine switcher.** With at least one paired machine, a slim
+frosted pill of dots floats centred over the bottom of the sidebar list, 8px
+above the sidebar's bottom edge: one dot per machine, this machine first,
+then paired machines sorted by name (deviceId breaks ties). The pill
+(`.machine-pill` in `styles.css`) is 22px tall and hugs the dots: translucent
+panel colour, backdrop blur, a 1px border, no shadow; it is opaque under
+Reduce transparency. It takes no layout space; the list scrolls underneath it
+and gets extra bottom padding (`pb-9`) so its last row can scroll clear of
+the pill. With none paired the row does not render and the sidebar markup is
+unchanged. Selecting a dot
+swaps the sidebar list to that machine and never changes the main pane. The
+selection is not persisted: the app starts on this machine, and if the shown
+machine is missing from a successful fleet refresh the sidebar falls back to
+this machine and stays there. This machine's name is the P2P device name,
+or "This machine" until it loads.
+
+- Pure rules (order, fallback, focus steps, labels, remote sections and
+  filter) live in `src/renderer/machine-dots.ts`. State lives in
+  `src/renderer/p2p/useMachineSwitcher.ts` and `useSelfDeviceName.ts`.
+- `MachineDots.tsx` is a `tablist` with one tab stop: Left/Right move and
+  wrap, Home/End jump, Enter/Space select. Dots are solid 8px circles
+  (`.machine-dot` in `styles.css`, no blur or shadow); the active dot is
+  10px; offline dots are a dimmed 1px outline with no fill. Each online
+  dot is filled with its machine's overall agent status colour (blocked,
+  then busy, then idle; the muted text colour when no agent runs), and only a Working dot pulses,
+  with its own smaller `machineDotPulse`. Tooltips and accessible names add
+  the status word (Working, Needs input, Idle). The pill is the only `no-drag`
+  part; around it the list or the drag-fill keep their own regions.
+- This machine's status comes from `useMachineAgentState`
+  (`src/renderer/hooks/useAgentStates.ts`), which re-renders only when the
+  aggregate changes. Paired machines' status comes from
+  `src/renderer/p2p/useFleetShells.ts`, one `shells.alive` call per online
+  peer every 5s; the same poll feeds the remote list's In use section.
+- `RemoteMachineList.tsx` renders a remote machine: a header (name, state,
+  last seen, Reconnect) followed by In use, Recents (6 at most unless
+  filtering) and Projects by root. An offline machine shows the header only.
+  Remote collapse state is not saved and resets on every switch.
+- The local list stays mounted (hidden) while a remote machine is shown, so
+  its order, collapse state and selection survive a switch. The filter field
+  applies to whichever list is shown.
 
 Each sidebar root shows a folder glyph in a stable hue.
 `src/renderer/root-hue.ts` hashes the root path (FNV-1a, trailing separators
@@ -1111,7 +1157,7 @@ The local project-row X, selected-project header X, and palette Unload current s
 open one confirmation dialog. The action stops only shell index 0. Other shells,
 project records, files, and the selected project remain unchanged
 (`src/renderer/App.tsx:288-306,429-460,874-876`;
-`src/renderer/components/Sidebar.tsx:529-649`).
+`src/renderer/components/Sidebar.tsx:282-420`).
 
 The dialog inspects the live PTY generation and the agent state for shell 0.
 It warns when that agent is busy or needs input. It also warns when shell 0
