@@ -14,28 +14,38 @@
  */
 
 // Any path segment character except whitespace and shell metacharacters
-// that reliably terminate a path in normal terminal output.
-const PATH_SEGMENT = "[A-Za-z0-9._\\-@+]";
+// that reliably terminate a path in normal terminal output. `~` so a
+// home-relative path's first segment is matchable.
+const PATH_SEGMENT = "[A-Za-z0-9._\\-@+~]";
 
-// Extensions we care about — this list mirrors the file-icon palette.
-// Sorted longest-first so JS regex alternation picks the specific
-// extension (tsx / jsx / mjs / cjs) instead of stopping at the shorter
-// prefix (ts / js / ...).
-const EXT = [
+// Extensions we care about — this list mirrors the file-icon palette plus
+// the viewers' formats (pdf) and agent-adjacent dotfiles (jsonl, env, …).
+const EXT_LIST = [
   'markdown', 'jsonc', 'html', 'yaml',
   'tsx', 'jsx', 'mjs', 'cjs', 'mdx',
-  'cpp', 'hpp', 'scss', 'jpeg', 'webp',
+  'cpp', 'hpp', 'scss', 'jpeg', 'webp', 'avif', 'tiff', 'graphql',
+  'properties',
   'bash', 'zsh', 'toml', 'sql', 'log', 'csv', 'txt', 'svg', 'gif', 'jpg', 'png', 'xml', 'htm', 'yml', 'json', 'css',
   'ts', 'js', 'md',
   'py', 'rb', 'go', 'rs', 'java', 'kt', 'swift',
   'c', 'h', 'cs', 'sh',
-].join('|');
+  'pdf', 'jsonl', 'env', 'plist', 'ini', 'conf', 'lock', 'bmp', 'ico', 'proto', 'tf',
+];
 
-// Full match:  (path/with/segments.ext)(:line(:col)?)?
+// Longest-first alternation is REQUIRED: without it JS regex alternation
+// stops at the shorter prefix (ts before tsx, js before jsonl) and the
+// match loses its real extension. Sorting guarantees it as the list grows.
+const EXT = [...EXT_LIST].sort((a, b) => b.length - a.length).join('|');
+
+// Full match:  (path/leading/segments)/final(.ext)? — where the final
+// component is either name.ext (notes.md) or a bare dotfile (.env), then
+// an optional :line:col. At least one slash before the final component,
+// so bare filenames never match.
 const PATH_RE = new RegExp(
-  `(?:\\/|(?<![A-Za-z0-9._\\-@/]))` +                           // start of path (leading slash OR a boundary — not mid-word)
-  `${PATH_SEGMENT}+(?:\\/${PATH_SEGMENT}+)+\\.(?:${EXT})` +      // at least one slash + known extension
-  `(?::\\d+(?::\\d+)?)?`,                                        // optional :line:col
+  `(?:\\/|~\\/|(?<![A-Za-z0-9._\\-@+/]))` +                              // start of path (leading slash, ~/, OR a boundary — not mid-word)
+  `${PATH_SEGMENT}+(?:\\/${PATH_SEGMENT}+)*` +                       // leading segments (≥ 0 after the boundary)
+  `\\/(?:${PATH_SEGMENT}*\\.)?(?:${EXT})` +                          // final component: name.ext, or a bare dotfile (.env = empty name + dot + ext)
+  `(?::\\d+(?::\\d+)?)?`,                                            // optional :line:col
   'g',
 );
 
