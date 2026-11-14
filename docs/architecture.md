@@ -321,13 +321,15 @@ clears a stored 288 so the new default applies; any other width is kept.
 The resize handle sits above the sidebar and sheet so it can be dragged and
 double-clicked to reset.
 
-**Machine switcher.** With at least one paired machine, a row of
-frosted-glass dots floats centred over the bottom of the sidebar list, 8px
-above the sidebar's bottom edge, with no background behind it: one dot per
-machine, this machine first, then paired machines sorted by name (deviceId
-breaks ties). The row takes no layout space; the list scrolls underneath it
-and gets extra bottom padding (`pb-11`) so its last row can scroll clear of
-the dots. With none paired the row does not render and the sidebar markup is
+**Machine switcher.** With at least one paired machine, a slim
+frosted pill of dots floats centred over the bottom of the sidebar list, 8px
+above the sidebar's bottom edge: one dot per machine, this machine first,
+then paired machines sorted by name (deviceId breaks ties). The pill
+(`.machine-pill` in `styles.css`) is 22px tall and hugs the dots: translucent
+panel colour, backdrop blur, a 1px border, no shadow; it is opaque under
+Reduce transparency. It takes no layout space; the list scrolls underneath it
+and gets extra bottom padding (`pb-9`) so its last row can scroll clear of
+the pill. With none paired the row does not render and the sidebar markup is
 unchanged. Selecting a dot
 swaps the sidebar list to that machine and never changes the main pane. The
 selection is not persisted: the app starts on this machine, and if the shown
@@ -339,16 +341,14 @@ or "This machine" until it loads.
   filter) live in `src/renderer/machine-dots.ts`. State lives in
   `src/renderer/p2p/useMachineSwitcher.ts` and `useSelfDeviceName.ts`.
 - `MachineDots.tsx` is a `tablist` with one tab stop: Left/Right move and
-  wrap, Home/End jump, Enter/Space select. Dots are 8px glass circles
-  (`.machine-dot` in `styles.css`: translucent fill, backdrop blur, faint
-  edge; opaque under Reduce transparency); the active dot is 10px with a
-  soft 1.5px accent ring; offline dots are a dimmed edge only. Each online
-  dot is tinted with its machine's overall agent status (blocked, then busy,
-  then idle; clear glass when no agent runs), and only a Working dot pulses,
+  wrap, Home/End jump, Enter/Space select. Dots are solid 8px circles
+  (`.machine-dot` in `styles.css`, no blur or shadow); the active dot is
+  10px; offline dots are a dimmed 1px outline with no fill. Each online
+  dot is filled with its machine's overall agent status colour (blocked,
+  then busy, then idle; the muted text colour when no agent runs), and only a Working dot pulses,
   with its own smaller `machineDotPulse`. Tooltips and accessible names add
-  the status word (Working, Needs input, Idle). The dot buttons and the gaps
-  between them are the only `no-drag` part; around them the list or the
-  drag-fill keep their own regions.
+  the status word (Working, Needs input, Idle). The pill is the only `no-drag`
+  part; around it the list or the drag-fill keep their own regions.
 - This machine's status comes from `useMachineAgentState`
   (`src/renderer/hooks/useAgentStates.ts`), which re-renders only when the
   aggregate changes. Paired machines' status comes from
