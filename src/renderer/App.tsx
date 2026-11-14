@@ -80,6 +80,7 @@ import { useFrostedGlassAttributes } from './hooks/useFrostedGlassAttributes';
 import { useExternalDragGuard } from './hooks/useExternalDragGuard';
 import { isPrimaryVisible } from './unload-session';
 import { resolveFileTarget } from './agent-file-targets';
+import { useAgentFileFollow } from './hooks/useAgentFileFollow';
 import type { SheetContent } from './frosted-chrome-contract';
 
 
@@ -776,7 +777,7 @@ function MainApp() {
       case 'diff':
         return <DiffTab key={project.id} projectId={project.id} />;
       case 'activity':
-        return <ActivityTab key={project.id} projectId={project.id} onOpenTarget={(t) => void openFileTarget(t)} />;
+        return <ActivityTab key={project.id} projectId={project.id} onOpenTarget={(t) => void openFileTarget(t)} followFiles={followFiles} onFollowFilesChange={setFollowFiles} />;
     }
   }
 
@@ -862,6 +863,9 @@ function MainApp() {
     setMainTab('files');
     setOpenInFiles({ relPath: hit.relPath, line: null });
   }
+  // Agent file-follow: when on, live-open every file the agent edits.
+  const [followFiles, setFollowFiles] = usePersistedState<boolean>('metaide.followFiles', false, (v): v is boolean => typeof v === 'boolean');
+  useAgentFileFollow(selected?.id ?? null, followFiles, (t) => void openFileTarget(t));
 
   async function killShell(shellIndex: number) {
     if (!selected) return;

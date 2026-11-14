@@ -9,7 +9,12 @@ import { isFileToolActivity } from '@renderer/agent-file-targets';
  * looking at one project see each other's actions live. Filterable by kind;
  * follow-tail mode auto-scrolls to the newest row.
  */
-export function ActivityTab({ projectId, onOpenTarget }: { projectId: number; onOpenTarget?: (target: string) => void }) {
+export function ActivityTab({ projectId, onOpenTarget, followFiles, onFollowFilesChange }: {
+  projectId: number;
+  onOpenTarget?: (target: string) => void;
+  followFiles: boolean;
+  onFollowFilesChange: (v: boolean) => void;
+}) {
   const [entries, setEntries] = useState<ActivityEntry[]>([]);
   const [filter, setFilter] = useState<ActivityKind | 'all'>('all');
   const [follow, setFollow] = useState(true);
@@ -58,6 +63,10 @@ export function ActivityTab({ projectId, onOpenTarget }: { projectId: number; on
         <KindChip active={filter === 'turn-end'}  onClick={() => setFilter('turn-end')}>Turn ends</KindChip>
         <div className="flex-1" />
         <span className="text-[--text-muted] font-mono tabular-nums">{visible.length} / {entries.length}</span>
+        <label className="flex items-center gap-1 text-[--text-muted] cursor-pointer" title="Live-open every file the agent edits in the Files viewer">
+          <input type="checkbox" checked={followFiles} onChange={(e) => onFollowFilesChange(e.target.checked)} className="accent-[color:var(--accent)]" />
+          Follow files
+        </label>
         <label className="flex items-center gap-1 text-[--text-muted] cursor-pointer">
           <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} className="accent-[color:var(--accent)]" />
           Follow
