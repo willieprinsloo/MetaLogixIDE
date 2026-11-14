@@ -86,7 +86,7 @@ export function Sidebar({ selectedProjectId, onSelect, onUnloadSession, onNewPro
       </div>
 
       <div className={listClass} {...panelProps}>
-        {remote && <RemoteMachineList key={remote.deviceId} machine={remote} filter={filter} onOpenPane={onOpenPane} />}
+        {remote && <RemoteMachineList key={remote.deviceId} machine={remote} filter={filter} aliveProjectIds={switcher.shellsFor(remote.deviceId)} onOpenPane={onOpenPane} />}
         <LocalProjectList
           framing={framing}
           filter={filter}
@@ -109,15 +109,15 @@ export function Sidebar({ selectedProjectId, onSelect, onUnloadSession, onNewPro
 }
 
 /**
- * The machine dots in a frosted pill floating over the bottom of the list (AC2, AC8, AC9, AC32): it
- * takes no layout space, centres on the aside 8px above its bottom edge, hugs the dots up to the
- * aside's width minus 16px (the dot row scrolls inside beyond that), and is the only no-drag part.
+ * The glass machine dots floating over the bottom of the list (AC2, AC8, AC9, AC32): a transparent
+ * row with no layout space, centred on the aside 8px above its bottom edge, hugging the dots up to
+ * the aside's width minus 16px (the row scrolls inside beyond that); only the row is no-drag.
  */
 function MachineBand({ switcher }: { switcher: MachineSwitcher }) {
   return (
     <div
       data-testid={MACHINE_TESTIDS.band}
-      className="machine-pill no-drag absolute bottom-2 left-1/2 -translate-x-1/2 z-10 flex max-w-[calc(100%-16px)] px-1 rounded-full border border-[--border] shadow-sm"
+      className="no-drag absolute bottom-2 left-1/2 -translate-x-1/2 z-10 flex max-w-[calc(100%-16px)]"
     >
       <MachineDots machines={switcher.machines} activeId={switcher.activeId} onSelect={switcher.select} />
     </div>

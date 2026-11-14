@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  buildMachineList, dotAccessibleName, sameMachines, switcherLayout, dotTooltip, filterByName, lastSeen, remoteSections, resolveActiveId, stepFocus,
+  buildMachineList, dotAccessibleName, dotAttrs, sameMachines, switcherLayout, withAgentStates, dotTooltip, filterByName, lastSeen, remoteSections, resolveActiveId, stepFocus,
 } from '@renderer/machine-dots';
 import { LOCAL_MACHINE_ID, type MachineDot } from '@renderer/machine-switcher-contract';
 import type { FleetEntry } from '@shared/p2p-contract';
@@ -264,5 +264,95 @@ describe('switcherLayout', () => {
       panelProps: { role: 'tabpanel', id: 'switcher-panel', 'aria-labelledby': 'switcher-tab-t' },
       listClass: 'flex-initial min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7 pb-11',
     });
+  });
+});
+
+describe('status words (AC35)', () => {
+  const tower = (agentState: MachineDot['agentState'], extra: Partial<MachineDot> = {}): MachineDot => (
+    { deviceId: 't', name: 'Studio Mac', online: true, lastSeenAt: null, self: false, agentState, ...extra }
+  );
+  it.each([
+    ['busy', 'Working'], ['blocked', 'Needs input'], ['idle', 'Idle'],
+  ] as const)('an online peer with %s agents reads "%s"', (state, word) => {
+    expect(dotTooltip(tower(state), NOW)).toBe(`Studio Mac · online · ${word}`);
+    expect(dotAccessibleName(tower(state), NOW)).toBe(`Studio Mac, online, agent ${word}`);
+  });
+  it('this machine adds its status after "this machine"', () => {
+    const me = { ...local('Laptop'), agentState: 'busy' as const };
+    expect(dotTooltip(me, NOW)).toBe('Laptop · this machine · Working');
+    expect(dotAccessibleName(me, NOW)).toBe('Laptop, this machine, agent Working');
+  });
+  it('no live agent adds nothing', () => {
+    for (const s of [null, undefined]) {
+      expect(dotTooltip(tower(s), NOW)).toBe('Studio Mac · online');
+      expect(dotAccessibleName(tower(s), NOW)).toBe('Studio Mac, online');
+      expect(dotTooltip({ ...local('Laptop'), agentState: s }, NOW)).toBe('Laptop · this machine');
+    }
+  });
+  it('an offline peer never shows a status', () => {
+    const off = tower('busy', { online: false, lastSeenAt: NOW - 3 * HOUR });
+    expect(dotTooltip(off, NOW)).toBe('Studio Mac · offline · last seen 3h ago');
+    expect(dotAccessibleName(off, NOW)).toBe('Studio Mac, offline, last seen 3h ago');
+  });
+});
+
+describe('withAgentStates (AC34)', () => {
+  const base = buildMachineList('L', [peer('a', 'A'), peer('b', 'B', { online: false }), peer('c', 'C')]);
+  const shells = new Map([
+    ['a', { aliveProjectIds: new Set([1]), agentState: 'blocked' as const }],
+    ['b', { aliveProjectIds: new Set([2]), agentState: 'busy' as const }],
+  ]);
+  it('gives this machine the local state, online peers their polled state, and offline or unpolled peers null', () => {
+    expect(withAgentStates(base, 'busy', shells).map((m) => [m.deviceId, m.agentState])).toEqual([
+      [LOCAL_MACHINE_ID, 'busy'], ['a', 'blocked'], ['b', null], ['c', null],
+    ]);
+  });
+  it('leaves the other dot fields alone', () => {
+    const out = withAgentStates(base, null, shells);
+    expect(out.map((m) => ({ ...m, agentState: undefined }))).toEqual(base.map((m) => ({ ...m, agentState: undefined })));
+    expect(out.map((m) => m.deviceId)).toEqual(base.map((m) => m.deviceId));
+    expect(out[0]!.agentState).toBeNull();
+  });
+});
+
+describe('dotAttrs (AC21, AC32, AC34)', () => {
+  const dot = (extra: Partial<MachineDot>): MachineDot => (
+    { deviceId: 't', name: 'T', online: true, lastSeenAt: null, self: false, agentState: null, ...extra }
+  );
+  const cls = (a: ReturnType<typeof dotAttrs>) => a.className.split(' ');
+
+  it('inactive dots are 10px and active ones 12px, all glass', () => {
+    expect(cls(dotAttrs(dot({}), false))).toEqual(expect.arrayContaining(['machine-dot', 'w-2.5', 'h-2.5']));
+    expect(cls(dotAttrs(dot({}), true))).toEqual(expect.arrayContaining(['machine-dot', 'w-3', 'h-3']));
+    expect(cls(dotAttrs(dot({}), true))).not.toContain('w-2.5');
+    expect(cls(dotAttrs(dot({}), false))).not.toContain('w-3');
+  });
+
+  it('carries no colour utilities: the glass and tint come from styles.css', () => {
+    for (const a of [dotAttrs(dot({}), true), dotAttrs(dot({ online: false }), false), dotAttrs(dot({ agentState: 'busy' }), false)]) {
+      expect(cls(a).filter((c) => /^(bg|border|opacity|shadow)-/.test(c))).toEqual([]);
+    }
+  });
+
+  it('marks state with data attributes', () => {
+    expect(dotAttrs(dot({ agentState: 'blocked' }), true)).toMatchObject({ 'data-agent-state': 'blocked', 'data-online': '1', 'data-active': '' });
+    const off = dotAttrs(dot({ online: false, agentState: 'busy' }), false);
+    expect(off['data-agent-state']).toBeUndefined();
+    expect(off['data-online']).toBe('0');
+    expect(off['data-active']).toBeUndefined();
+    expect(dotAttrs(dot({ agentState: null }), false)['data-agent-state']).toBeUndefined();
+    expect(dotAttrs(dot({ agentState: undefined }), false)['data-agent-state']).toBeUndefined();
+  });
+
+  it('pulses only a busy online dot', () => {
+    expect(cls(dotAttrs(dot({ agentState: 'busy' }), false))).toContain('live-dot');
+    expect(cls(dotAttrs({ ...local('L'), agentState: 'busy' }, true))).toContain('live-dot');
+    for (const a of [dot({ agentState: 'idle' }), dot({ agentState: 'blocked' }), dot({ agentState: null }), dot({ online: false, agentState: 'busy' })]) {
+      expect(cls(dotAttrs(a, false))).not.toContain('live-dot');
+    }
+  });
+
+  it('animates its size by CSS only and stops under reduced motion', () => {
+    expect(cls(dotAttrs(dot({}), false))).toEqual(expect.arrayContaining(['duration-150', 'motion-reduce:transition-none']));
   });
 });

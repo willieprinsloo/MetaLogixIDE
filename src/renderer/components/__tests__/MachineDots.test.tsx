@@ -9,6 +9,8 @@ import { MachineDots } from '../MachineDots';
 import { LOCAL_MACHINE_ID, type MachineDot } from '@renderer/machine-switcher-contract';
 import { MACHINE_TESTIDS } from '@renderer/sidebar-copy';
 import { SWITCHER_PANEL_ID, machineTabId } from '@renderer/machine-dots';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 const HOUR = 3600_000;
 const NOW = Date.UTC(2026, 10, 14, 12);
@@ -129,39 +131,56 @@ describe('MachineDots keyboard (manual activation)', () => {
   });
 });
 
-describe('MachineDots states (AC21, AC28)', () => {
+describe('MachineDots states (AC21, AC28, AC32, AC34)', () => {
   const has = (id: string, ...cls: string[]) => cls.forEach((c) => expect(mark(id).classList).toContain(c));
   const lacks = (id: string, ...cls: string[]) => cls.forEach((c) => expect(mark(id).classList).not.toContain(c));
+  const BUSY_TOWER: MachineDot = { ...TOWER, agentState: 'busy' };
+  const BLOCKED_LOCAL: MachineDot = { ...LOCAL, agentState: 'blocked' };
 
-  test('inactive online is a 6px filled muted dot', () => {
+  test('every dot is a glass circle: 10px inactive, 12px active', () => {
     renderDots('atlas');
-    has('tower', 'w-1.5', 'h-1.5', 'bg-[--text-muted]');
-    lacks('tower', 'opacity-50', 'bg-transparent');
+    for (const m of ALL) has(m.deviceId, 'machine-dot', 'rounded-full');
+    has('tower', 'w-2.5', 'h-2.5');
+    has(LOCAL_MACHINE_ID, 'w-2.5', 'h-2.5');
+    has('atlas', 'w-3', 'h-3');
+    lacks('atlas', 'w-2.5');
   });
 
-  test('inactive offline is a 6px hollow muted dimmed ring', () => {
-    renderDots();
-    has('atlas', 'w-1.5', 'h-1.5', 'border', 'border-[--text-muted]', 'bg-transparent', 'opacity-50');
-  });
-
-  test('active online is an 8px filled accent dot', () => {
-    renderDots('tower');
-    has('tower', 'w-2', 'h-2', 'bg-[--accent]');
-    lacks('tower', 'w-1.5', 'opacity-50', 'bg-transparent');
-  });
-
-  test('active offline is an 8px hollow accent ring at full opacity', () => {
+  test('only the active dot carries data-active; offline dots carry data-online="0"', () => {
     renderDots('atlas');
-    has('atlas', 'w-2', 'h-2', 'border-[--accent]', 'bg-transparent');
-    lacks('atlas', 'opacity-50', 'border-[--text-muted]', 'w-1.5');
+    expect(ALL.map((m) => mark(m.deviceId).hasAttribute('data-active'))).toEqual([false, true, false]);
+    expect(ALL.map((m) => mark(m.deviceId).getAttribute('data-online'))).toEqual(['1', '0', '1']);
   });
 
-  test('this machine reads as online: filled accent when active, filled muted when not', () => {
-    renderDots();
-    has(LOCAL_MACHINE_ID, 'w-2', 'bg-[--accent]');
+  test('data-agent-state carries an online dot\'s status and is absent with no agent or offline', () => {
+    renderDots(LOCAL_MACHINE_ID, [BLOCKED_LOCAL, { ...ATLAS, agentState: 'busy' }, BUSY_TOWER]);
+    expect(mark(LOCAL_MACHINE_ID).getAttribute('data-agent-state')).toBe('blocked');
+    expect(mark('tower').getAttribute('data-agent-state')).toBe('busy');
+    expect(mark('atlas').hasAttribute('data-agent-state')).toBe(false);
     cleanup();
-    renderDots('tower');
-    has(LOCAL_MACHINE_ID, 'w-1.5', 'bg-[--text-muted]');
+    renderDots();
+    for (const m of ALL) expect(mark(m.deviceId).hasAttribute('data-agent-state')).toBe(false);
+  });
+
+  test('only a busy online dot pulses', () => {
+    renderDots(LOCAL_MACHINE_ID, [BLOCKED_LOCAL, { ...ATLAS, agentState: 'busy' }, BUSY_TOWER]);
+    has('tower', 'live-dot');
+    lacks(LOCAL_MACHINE_ID, 'live-dot');
+    lacks('atlas', 'live-dot');
+  });
+
+  test('the accessible name adds the status words (AC35)', () => {
+    renderDots(LOCAL_MACHINE_ID, [BLOCKED_LOCAL, ATLAS, BUSY_TOWER]);
+    expect(tab('tower').getAttribute('aria-label')).toBe('Tower, online, agent Working');
+    expect(tab(LOCAL_MACHINE_ID).getAttribute('aria-label')).toBe('Laptop, this machine, agent Needs input');
+  });
+
+  test('the dot and the row carry no colour, border or shadow utilities', () => {
+    renderDots('atlas', [BLOCKED_LOCAL, ATLAS, BUSY_TOWER]);
+    const row = screen.getByTestId(MACHINE_TESTIDS.row);
+    const painted = (el: Element) => [...el.classList].filter((c) => /^(bg|border|shadow|opacity)-|^border$/.test(c));
+    expect(painted(row)).toEqual([]);
+    for (const m of ALL) expect(painted(mark(m.deviceId))).toEqual([]);
   });
 
   test('size changes animate by CSS only and stop under reduced motion', () => {
@@ -183,6 +202,26 @@ describe('MachineDots overflow and drag (AC4, AC8)', () => {
     renderDots();
     const row = screen.getByTestId(MACHINE_TESTIDS.row);
     for (const c of ['no-drag', 'overflow-x-auto', 'scrollbar-none']) expect(row.classList).toContain(c);
+  });
+
+  test('a busy dot\'s full pulse ring fits inside the row\'s clip box, active or not (AC34)', () => {
+    const css = readFileSync(resolve(__dirname, '../../styles.css'), 'utf8');
+    const scale = Number(/@keyframes livePulse\s*\{[^}]*\}\s*to\s*\{[^}]*scale\(([\d.]+)\)/.exec(css)![1]);
+    const border = Number(/\.machine-dot \{[^}]*border: (\d+)px/.exec(css)![1]);
+    const px = (el: Element, prefix: string) => {
+      const token = [...el.classList].find((c) => new RegExp(`^${prefix}-[\\d.]+$`).test(c));
+      return token ? Number(token.slice(prefix.length + 1)) * 4 : 0;
+    };
+    renderDots('tower', [LOCAL, { ...TOWER, agentState: 'busy' }, { ...LOCAL, deviceId: 'b2', self: false, agentState: 'busy' }]);
+    const pad = px(screen.getByTestId(MACHINE_TESTIDS.row), 'p');
+    for (const id of ['tower', 'b2']) {
+      expect(mark(id).classList).toContain('live-dot');
+      const size = px(mark(id), 'w');
+      const ring = ((size - 2 * border) / 2) * scale;
+      const clearance = pad + Math.max(px(tab(id), 'min-h'), size) / 2;
+      expect(ring).toBeLessThanOrEqual(clearance);
+      expect(ring).toBeGreaterThan(size / 2);
+    }
   });
 
   test('scrolls the active dot into view on mount and whenever the active dot changes', () => {

@@ -26,6 +26,7 @@ function proj(id: number, name: string, rootId: number, lastOpenedAt: string | n
 }
 
 let projectsReply: () => Promise<unknown>;
+const LIVE: ReadonlySet<number> = new Set([1]);
 const PROJECTS = [
   proj(1, 'live', 1, iso(0)),
   proj(2, 'older', 1, iso(5)),
@@ -41,7 +42,6 @@ beforeEach(() => {
   invoke.mockImplementation(async (ch: string, a: { method?: string }) => {
     if (ch === 'p2p:rpc-call' && a.method === 'projects.list') return projectsReply();
     if (ch === 'p2p:rpc-call' && a.method === 'roots.list') return { result: [{ id: 1, path: '/work' }, { id: 2, path: '/play' }] };
-    if (ch === 'p2p:rpc-call' && a.method === 'shells.alive') return { result: [{ projectId: 1, shellIndex: 0 }] };
     throw new Error(`unexpected ${ch}`);
   });
 });
@@ -53,7 +53,7 @@ const projectListCalls = () => rpc().filter((c) => c.method === 'projects.list')
 const rowNames = (el: HTMLElement = document.body) =>
   within(el).queryAllByTestId(MACHINE_TESTIDS.remoteProjectRow).map((r) => r.textContent);
 const show = (machine: MachineDot = TOWER, filter = '', onOpenPane = vi.fn()) =>
-  render(<RemoteMachineList machine={machine} filter={filter} onOpenPane={onOpenPane} />);
+  render(<RemoteMachineList aliveProjectIds={LIVE} machine={machine} filter={filter} onOpenPane={onOpenPane} />);
 
 describe('RemoteMachineList online (AC16, AC31)', () => {
   test('lists In use, Recents, then folders per root with orphans last, fetching only this device', async () => {
@@ -69,7 +69,7 @@ describe('RemoteMachineList online (AC16, AC31)', () => {
     expect([...list.querySelectorAll('[data-testid]')].map((e) => e.getAttribute('data-testid')).filter((id) => sections.includes(id!)))
       .toEqual(sections);
     expect(new Set(rpc().map((c) => c.deviceId))).toEqual(new Set(['tower']));
-    expect(new Set(rpc().map((c) => c.method))).toEqual(new Set(['projects.list', 'roots.list', 'shells.alive']));
+    expect(new Set(rpc().map((c) => c.method))).toEqual(new Set(['projects.list', 'roots.list']));
     expect(projectListCalls()).toBe(1);
   });
 
@@ -105,6 +105,20 @@ describe('RemoteMachineList online (AC16, AC31)', () => {
     await waitFor(() => expect(rowNames()).toEqual(['solo']));
     expect(screen.queryByTestId(MACHINE_TESTIDS.remoteInUse)).toBeNull();
     expect(screen.queryByTestId(MACHINE_TESTIDS.remoteRecents)).toBeNull();
+  });
+});
+
+describe('RemoteMachineList live shells come from the shared poll (AC34)', () => {
+  test('In use and the live dots follow the aliveProjectIds prop, and the list issues no shells.alive of its own', async () => {
+    const { rerender } = show();
+    await waitFor(() => expect(rowNames(screen.getByTestId(MACHINE_TESTIDS.remoteInUse))).toEqual(['live']));
+    rerender(<RemoteMachineList aliveProjectIds={new Set([4, 5])} machine={TOWER} filter="" />);
+    expect(rowNames(screen.getByTestId(MACHINE_TESTIDS.remoteInUse))).toEqual(['plain', 'stray']);
+    expect(rowNames(screen.getByTestId(MACHINE_TESTIDS.remoteRecents))).toEqual(['live', 'newer', 'older']);
+    rerender(<RemoteMachineList aliveProjectIds={new Set()} machine={TOWER} filter="" />);
+    expect(screen.queryByTestId(MACHINE_TESTIDS.remoteInUse)).toBeNull();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(rpc().filter((c) => c.method === 'shells.alive')).toEqual([]);
   });
 });
 
@@ -171,7 +185,7 @@ describe('RemoteMachineList filter (AC19)', () => {
   test('narrows every section by name, case-insensitively', async () => {
     const { rerender } = show();
     await waitFor(() => expect(rowNames()).toHaveLength(8));
-    rerender(<RemoteMachineList machine={TOWER} filter="NEW" />);
+    rerender(<RemoteMachineList aliveProjectIds={LIVE} machine={TOWER} filter="NEW" />);
     expect(screen.queryByTestId(MACHINE_TESTIDS.remoteInUse)).toBeNull();
     expect(rowNames(screen.getByTestId(MACHINE_TESTIDS.remoteRecents))).toEqual(['newer']);
     expect(rowNames(screen.getByTestId(MACHINE_TESTIDS.remoteFolders))).toEqual(['newer']);
@@ -181,7 +195,7 @@ describe('RemoteMachineList filter (AC19)', () => {
   test('with no matches keeps only the Projects heading, with no rows and no message', async () => {
     const { rerender } = show();
     await screen.findByTestId(MACHINE_TESTIDS.remoteFolders);
-    rerender(<RemoteMachineList machine={TOWER} filter="zzz" />);
+    rerender(<RemoteMachineList aliveProjectIds={LIVE} machine={TOWER} filter="zzz" />);
     expect(screen.queryByTestId(MACHINE_TESTIDS.remoteInUse)).toBeNull();
     expect(screen.queryByTestId(MACHINE_TESTIDS.remoteRecents)).toBeNull();
     const folders = screen.getByTestId(MACHINE_TESTIDS.remoteFolders);
@@ -212,7 +226,7 @@ describe('RemoteMachineList offline (AC22, AC23, AC24)', () => {
   test('going offline while shown hides the rows and shows the offline header', async () => {
     const { rerender } = show();
     await waitFor(() => expect(rowNames().length).toBeGreaterThan(0));
-    rerender(<RemoteMachineList machine={OFFLINE} filter="" />);
+    rerender(<RemoteMachineList aliveProjectIds={LIVE} machine={OFFLINE} filter="" />);
     expect(rowNames()).toEqual([]);
     expect(screen.getByTestId(MACHINE_TESTIDS.remoteLastSeen).textContent).toBe('last seen 3h ago');
     expect(screen.queryByText('online')).toBeNull();
@@ -221,7 +235,7 @@ describe('RemoteMachineList offline (AC22, AC23, AC24)', () => {
   test('coming online while shown loads the project list', async () => {
     const { rerender } = show(OFFLINE);
     expect(projectListCalls()).toBe(0);
-    rerender(<RemoteMachineList machine={TOWER} filter="" />);
+    rerender(<RemoteMachineList aliveProjectIds={LIVE} machine={TOWER} filter="" />);
     await waitFor(() => expect(rowNames().length).toBeGreaterThan(0));
     expect(projectListCalls()).toBe(1);
     expect(screen.queryByTestId(MACHINE_TESTIDS.remoteLastSeen)).toBeNull();
@@ -265,7 +279,7 @@ describe('RemoteMachineList Reconnect (AC20)', () => {
 
 describe('RemoteMachineList collapse state (AC14 remote half, AC17)', () => {
   test('sections and roots collapse locally, and a remount resets them to open and refetches', async () => {
-    const { rerender } = render(<RemoteMachineList key="a" machine={TOWER} filter="" />);
+    const { rerender } = render(<RemoteMachineList aliveProjectIds={LIVE} key="a" machine={TOWER} filter="" />);
     await waitFor(() => expect(rowNames(screen.getByTestId(MACHINE_TESTIDS.remoteRecents))).toEqual(['newer', 'older']));
     const recentsToggle = within(screen.getByTestId(MACHINE_TESTIDS.remoteRecents)).getByRole('button', { name: 'Recents' });
     fireEvent.click(recentsToggle);
@@ -276,7 +290,7 @@ describe('RemoteMachineList collapse state (AC14 remote half, AC17)', () => {
     expect(workToggle.getAttribute('aria-expanded')).toBe('false');
     expect(rowNames(screen.getByTestId(MACHINE_TESTIDS.remoteFolders))).toEqual(['newer', 'plain', 'stray']);
 
-    rerender(<RemoteMachineList key="b" machine={TOWER} filter="" />);
+    rerender(<RemoteMachineList aliveProjectIds={LIVE} key="b" machine={TOWER} filter="" />);
     await waitFor(() => expect(rowNames(screen.getByTestId(MACHINE_TESTIDS.remoteRecents))).toEqual(['newer', 'older']));
     expect(rowNames(screen.getByTestId(MACHINE_TESTIDS.remoteFolders))).toEqual(['live', 'older', 'newer', 'plain', 'stray']);
     expect(projectListCalls()).toBe(2);

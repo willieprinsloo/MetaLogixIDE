@@ -4,7 +4,6 @@ import { api } from '@renderer/api';
 import { toast } from '@renderer/hooks/useToasts';
 import { useRemoteProjects } from '@renderer/p2p/useRemoteProjects';
 import { useRemoteRoots } from '@renderer/p2p/useRemoteRoots';
-import { useRemoteAliveShells } from '@renderer/p2p/useRemoteAliveShells';
 import type { Project, Root } from '@shared/types';
 import type { MachineDot, OpenPaneRequest } from '@renderer/machine-switcher-contract';
 import { MACHINE_COPY, MACHINE_TESTIDS, SIDEBAR_COPY } from '@renderer/sidebar-copy';
@@ -16,6 +15,8 @@ interface Props {
   machine: MachineDot;
   /** The sidebar's shared filter text; applies to the project rows, not to the offline panel. */
   filter: string;
+  /** Live project ids from the switcher's shared `shells.alive` poll; the list polls nothing itself. */
+  aliveProjectIds: ReadonlySet<number>;
   onOpenPane?: (req: OpenPaneRequest) => void;
 }
 
@@ -25,11 +26,11 @@ interface Props {
  * only while the machine is online — In use, Recents and Projects fetched for that device. Mount it
  * under `key={deviceId}` so each switch starts with fresh, all-open sections and refetches.
  */
-export function RemoteMachineList({ machine, filter, onOpenPane }: Props) {
+export function RemoteMachineList({ machine, filter, aliveProjectIds, onOpenPane }: Props) {
   return (
     <div data-testid={MACHINE_TESTIDS.remoteList} className="flex flex-col gap-7">
       <RemoteHeader machine={machine} />
-      {machine.online && <RemoteMachineProjects machine={machine} filter={filter} onOpenPane={onOpenPane} />}
+      {machine.online && <RemoteMachineProjects machine={machine} filter={filter} aliveProjectIds={aliveProjectIds} onOpenPane={onOpenPane} />}
     </div>
   );
 }
@@ -96,10 +97,9 @@ function RemoteHeader({ machine }: { machine: MachineDot }) {
   );
 }
 
-function RemoteMachineProjects({ machine, filter, onOpenPane }: Props) {
+function RemoteMachineProjects({ machine, filter, aliveProjectIds, onOpenPane }: Props) {
   const { projects, loading, error } = useRemoteProjects(machine.deviceId);
   const { roots, loading: rootsLoading } = useRemoteRoots(machine.deviceId);
-  const { aliveProjectIds } = useRemoteAliveShells(machine.deviceId);
   const sections = useMemo(
     () => remoteSections(projects, roots, aliveProjectIds, filter),
     [projects, roots, aliveProjectIds, filter],

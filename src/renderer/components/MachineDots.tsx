@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { Tooltip } from './Tooltip';
 import type { MachineDot } from '@renderer/machine-switcher-contract';
 import { MACHINE_COPY, MACHINE_TESTIDS } from '@renderer/sidebar-copy';
-import { SWITCHER_PANEL_ID, dotAccessibleName, dotTooltip, machineTabId, stepFocus } from '@renderer/machine-dots';
+import { SWITCHER_PANEL_ID, dotAccessibleName, dotAttrs, dotTooltip, machineTabId, stepFocus } from '@renderer/machine-dots';
 
 interface Props {
   machines: readonly MachineDot[];
@@ -11,19 +11,11 @@ interface Props {
 }
 
 const SCROLL: ScrollIntoViewOptions = { inline: 'nearest', block: 'nearest' };
-const DOT_BASE = 'block rounded-full transition-[width,height,background-color,border-color,opacity] duration-150 motion-reduce:transition-none';
-
-function dotClass(m: MachineDot, active: boolean): string {
-  if (active) return m.online ? 'w-2 h-2 bg-[--accent]' : 'w-2 h-2 border-[1.5px] border-[--accent] bg-transparent';
-  return m.online
-    ? 'w-1.5 h-1.5 bg-[--text-muted] group-hover:bg-[--text]'
-    : 'w-1.5 h-1.5 border border-[--text-muted] bg-transparent opacity-50 group-hover:opacity-80';
-}
 
 /**
  * The sidebar's machine switcher row (docs/specs/machine-switcher-dots.md AC2, AC4, AC8, AC21,
- * AC25–AC28): a WAI-ARIA tablist with a roving tab stop on the active dot and manual activation —
- * arrows and Home/End move focus, Enter, Space or a click calls `onSelect` with the dot's device id
+ * AC25–AC28, AC32, AC34, AC35): a WAI-ARIA tablist of glass dots tinted by agent state, with a
+ * roving tab stop on the active dot and manual activation — arrows and Home/End move focus, Enter, Space or a click calls `onSelect` with the dot's device id
  * (never for the dot already active). Each dot has a tooltip on hover and keyboard focus, and the
  * row scrolls sideways with a hidden scrollbar, keeping the active or focused dot in view.
  */
@@ -72,7 +64,7 @@ export function MachineDots({ machines, activeId, onSelect }: Props) {
               onFocus={(e) => e.currentTarget.scrollIntoView(SCROLL)}
               className="group shrink-0 min-w-5 min-h-5 flex items-center justify-center"
             >
-              <span aria-hidden data-dot className={`${DOT_BASE} ${dotClass(m, active)}`} />
+              <span aria-hidden data-dot {...dotAttrs(m, active)} />
             </button>
           </Tooltip>
         );

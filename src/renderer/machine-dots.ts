@@ -4,6 +4,7 @@
  * a remote machine's project list. No React and no IPC, so every rule is unit-testable on its own.
  */
 import type { FleetEntry } from '@shared/p2p-contract';
+import type { AgentState } from '@shared/agent-state';
 import type { Project, Root } from '@shared/types';
 import { LOCAL_MACHINE_ID, type MachineDot } from './machine-switcher-contract';
 import { MACHINE_COPY } from './sidebar-copy';
@@ -75,14 +76,18 @@ function stateParts(m: MachineDot, now: number): string[] {
   return m.online ? [MACHINE_COPY.online] : [MACHINE_COPY.offline, lastSeen(m.lastSeenAt, now)];
 }
 
-/** Tooltip text for a dot (AC25): "<name> · online", "<name> · offline · <last seen>", "<name> · this machine" or "This machine". */
-export function dotTooltip(m: MachineDot, now: number): string {
-  return [m.name, ...stateParts(m, now)].join(' · ');
+function agentWord(m: MachineDot): string[] {
+  return m.agentState && m.online ? [MACHINE_COPY.agentState[m.agentState]] : [];
 }
 
-/** Accessible name for a dot (AC26): the tooltip's parts joined with ", ". */
+/** Tooltip text for a dot (AC25, AC35): "<name> · online", "<name> · offline · <last seen>", "<name> · this machine" or "This machine", then " · <status>" while an agent runs. */
+export function dotTooltip(m: MachineDot, now: number): string {
+  return [m.name, ...stateParts(m, now), ...agentWord(m)].join(' · ');
+}
+
+/** Accessible name for a dot (AC26, AC35): the tooltip's parts joined with ", ", the status read as "agent <status>". */
 export function dotAccessibleName(m: MachineDot, now: number): string {
-  return [m.name, ...stateParts(m, now)].join(', ');
+  return [m.name, ...stateParts(m, now), ...agentWord(m).map((w) => `${MACHINE_COPY.agentPrefix} ${w}`)].join(', ');
 }
 
 /** Rows whose name contains `filter` case-insensitively; every row when `filter` is empty. A non-string name never matches and never throws. */
@@ -166,5 +171,40 @@ export function switcherLayout(s: { machines: readonly MachineDot[]; active: Mac
     framing: remote ? 'hidden' : 'shown',
     panelProps: { role: 'tabpanel', id: SWITCHER_PANEL_ID, 'aria-labelledby': machineTabId(s.activeId) },
     listClass: `${LIST_CLASS} pb-11`,
+  };
+}
+
+/** One peer's latest `shells.alive` result: its live project ids and its overall agent state. */
+export interface PeerShells { aliveProjectIds: ReadonlySet<number>; agentState: AgentState | null }
+
+/** The dots with their agent state (AC34): this machine takes `localState`, an online peer its polled state, anything else null. */
+export function withAgentStates(
+  base: readonly MachineDot[], localState: AgentState | null, shells: ReadonlyMap<string, PeerShells>,
+): MachineDot[] {
+  return base.map((m) => ({
+    ...m,
+    agentState: m.self ? localState : (m.online ? shells.get(m.deviceId)?.agentState ?? null : null),
+  }));
+}
+
+/** The visible glass circle's class list and state attributes; colours live in styles.css `.machine-dot`. */
+export interface DotAttrs {
+  className: string;
+  'data-agent-state'?: AgentState;
+  'data-online': '0' | '1';
+  'data-active'?: '';
+}
+
+const DOT_BASE = 'machine-dot block rounded-full transition-[width,height,background-color,opacity,box-shadow] duration-150 motion-reduce:transition-none';
+
+/** Glass dot (AC21, AC32, AC34): 10px, 12px when active; tinted by agent state while online; only a busy online dot pulses (`live-dot`). */
+export function dotAttrs(m: MachineDot, active: boolean): DotAttrs {
+  const tint = m.online ? m.agentState ?? undefined : undefined;
+  const size = active ? 'w-3 h-3' : 'w-2.5 h-2.5';
+  return {
+    className: `${DOT_BASE} ${size}${tint === 'busy' ? ' live-dot' : ''}`,
+    'data-agent-state': tint,
+    'data-online': m.online ? '1' : '0',
+    'data-active': active ? '' : undefined,
   };
 }

@@ -8,6 +8,8 @@ import { renderHook, act } from '@testing-library/react';
 
 const invoke = vi.fn();
 vi.mock('../../api', () => ({ api: { invoke: (...a: unknown[]) => invoke(...a) } }));
+let localAgentState: 'idle' | 'busy' | 'blocked' | null = null;
+vi.mock('../../hooks/useAgentStates', () => ({ useMachineAgentState: () => localAgentState }));
 
 import { useMachineSwitcher } from '../useMachineSwitcher';
 import { LOCAL_MACHINE_ID } from '../../machine-switcher-contract';
@@ -15,6 +17,7 @@ import { LOCAL_MACHINE_ID } from '../../machine-switcher-contract';
 type Reply = { fleet?: unknown } | Error | Promise<unknown>;
 let fleetReplies: Reply[];
 let settings: () => Promise<unknown>;
+let shells: Record<string, () => Promise<unknown>>;
 
 const TOWER = { deviceId: 'tower', name: 'Tower', online: true, lastSeenAt: 1 };
 const ATLAS = { deviceId: 'atlas', name: 'Atlas', online: false, lastSeenAt: null };
@@ -36,9 +39,12 @@ beforeEach(() => {
   invoke.mockReset();
   fleetReplies = [{ fleet: [] }];
   settings = async () => ({ deviceName: 'Laptop' });
-  invoke.mockImplementation((ch: string) => {
+  shells = {};
+  localAgentState = null;
+  invoke.mockImplementation((ch: string, a?: { deviceId: string; method: string }) => {
     if (ch === 'p2p:fleet-list') return nextFleet();
     if (ch === 'p2p:settings-get') return settings();
+    if (ch === 'p2p:rpc-call' && a?.method === 'shells.alive') return (shells[a.deviceId] ?? (async () => ({ result: [] })))();
     return Promise.reject(new Error(`unexpected ${ch}`));
   });
 });
@@ -174,5 +180,57 @@ describe('useMachineSwitcher', () => {
     const { result } = renderHook(() => useMachineSwitcher());
     await flush();
     expect(result.current.machines[0]!.name).toBe('This machine');
+  });
+
+  test('this machine\'s dot takes the local machine aggregate, null with no agent (AC34)', async () => {
+    localAgentState = 'blocked';
+    const { result, rerender } = renderHook(() => useMachineSwitcher());
+    await flush();
+    expect(result.current.machines[0]!.agentState).toBe('blocked');
+    localAgentState = null;
+    rerender();
+    expect(result.current.machines[0]!.agentState).toBeNull();
+  });
+
+  test('a peer\'s dot takes the state from its shells.alive poll; an offline peer has none (AC34)', async () => {
+    fleetReplies = [{ fleet: [TOWER, ATLAS] }];
+    shells.tower = async () => ({ result: [{ projectId: 4, shellIndex: 0, agentState: 'busy' }] });
+    shells.atlas = async () => ({ result: [{ projectId: 5, shellIndex: 0, agentState: 'blocked' }] });
+    const { result } = renderHook(() => useMachineSwitcher());
+    await flush();
+    await flush();
+    expect(result.current.machines.find((m) => m.deviceId === 'tower')!.agentState).toBe('busy');
+    expect(result.current.machines.find((m) => m.deviceId === 'atlas')!.agentState).toBeNull();
+    expect(invoke.mock.calls.filter((c) => c[0] === 'p2p:rpc-call').map((c) => (c[1] as { deviceId: string }).deviceId)).toEqual(['tower']);
+  });
+
+  test('shellsFor returns a peer\'s live project ids, and an empty set for an unknown machine', async () => {
+    fleetReplies = [{ fleet: [TOWER] }];
+    shells.tower = async () => ({ result: [{ projectId: 4, shellIndex: 0 }, { projectId: 7, shellIndex: 1 }] });
+    const { result } = renderHook(() => useMachineSwitcher());
+    await flush();
+    await flush();
+    expect([...result.current.shellsFor('tower')].sort()).toEqual([4, 7]);
+    expect(result.current.shellsFor('nope').size).toBe(0);
+    expect(result.current.shellsFor(LOCAL_MACHINE_ID).size).toBe(0);
+    expect(result.current.shellsFor('nope')).toBe(result.current.shellsFor(LOCAL_MACHINE_ID));
+  });
+
+  test('machines keeps its reference across fleet and shells polls that change nothing', async () => {
+    fleetReplies = [{ fleet: [TOWER] }, { fleet: [{ ...TOWER }] }, { fleet: [{ ...TOWER }] }];
+    shells.tower = async () => ({ result: [{ projectId: 4, shellIndex: 0, agentState: 'idle' }] });
+    const { result, rerender } = renderHook(() => useMachineSwitcher());
+    await flush();
+    await flush();
+    const first = result.current.machines;
+    expect(first.find((m) => m.deviceId === 'tower')!.agentState).toBe('idle');
+    await pollOnce();
+    await pollOnce();
+    rerender();
+    expect(result.current.machines).toBe(first);
+    shells.tower = async () => ({ result: [{ projectId: 4, shellIndex: 0, agentState: 'busy' }] });
+    await pollOnce();
+    expect(result.current.machines).not.toBe(first);
+    expect(result.current.machines.find((m) => m.deviceId === 'tower')!.agentState).toBe('busy');
   });
 });
