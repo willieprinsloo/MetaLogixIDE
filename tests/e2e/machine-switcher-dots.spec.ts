@@ -1,5 +1,5 @@
 import { test, expect, _electron as electron, type ElectronApplication, type Locator, type Page } from '@playwright/test';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { MACHINE_COPY, MACHINE_TESTIDS } from '../../src/renderer/sidebar-copy';
 import { LOCAL_MACHINE_ID } from '../../src/renderer/machine-switcher-contract';
@@ -28,6 +28,8 @@ const ALPHA = peerPub(2);
 const STUDIO = peerPub(3);
 const ZED = peerPub(1);
 const PROJECT = 'switcher-proj';
+/** Enough local projects (about 28px each) that the list overflows a 900px-high window. */
+const FILLER_COUNT = 40;
 const NEVER_SEEN = 'never seen';
 const WIDTH_KEY = 'metaide.sidebarWidth';
 
@@ -37,6 +39,9 @@ let isolatedHome: string;
 let userData: string;
 let demoRoot: string;
 let selfName: string;
+/** Boxes of the scroll area and drag-fill with zero peers, captured by the first test (AC9). */
+let zeroPeer: { list: Box; fill: Box; listPadBottom: number } | undefined;
+type Box = { x: number; y: number; width: number; height: number };
 
 type Api = { invoke: (c: string, r: unknown) => Promise<unknown> };
 
@@ -59,6 +64,13 @@ test.beforeAll(async () => {
     userData = join(isolatedHome, 'userData');
     mkdirSync(join(demoRoot, PROJECT), { recursive: true });
     writeFileSync(join(demoRoot, PROJECT, 'package.json'), JSON.stringify({ name: 'fixture', scripts: { dev: 'echo dev' } }));
+    // Filler projects so the local list scrolls (AC33); the self-check below asserts they exist.
+    for (let i = 0; i < FILLER_COUNT; i++) {
+      const dir = join(demoRoot, `filler-${String(i).padStart(2, '0')}`);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: `filler-${i}`, scripts: { dev: 'echo dev' } }));
+    }
+    if (readdirSync(demoRoot).length !== FILLER_COUNT + 1) throw new Error('switcher seed self-check failed: expected the filler projects plus the main project in the root');
     // Seed self-check: the fixture file must be accepted by loadKnownDevices (checked in writeFleet) and start empty.
     writeFleet(isolatedHome, []);
 
@@ -99,6 +111,9 @@ async function readSelfName(): Promise<string> {
 
 const aside = () => win.locator('aside[data-view="projects"]');
 const band = () => win.getByTestId(MACHINE_TESTIDS.band);
+/** The sidebar's scrolling list area (a direct child of the aside, scrolls vertically). */
+const scrollArea = () => aside().locator(':scope > .overflow-y-auto');
+const fill = () => win.getByTestId('sidebar-drag-fill');
 const row = () => win.getByTestId(MACHINE_TESTIDS.row);
 const dot = (key: string) => win.getByTestId(MACHINE_TESTIDS.dot(key));
 const tabs = () => row().getByRole('tab');
@@ -174,22 +189,31 @@ test('AC1/AC7 (zero peers): no band, no Machines section, no machine-* test ids;
   await expect(row()).toHaveCount(0);
   await expect(aside().getByText('Machines', { exact: true })).toHaveCount(0);
   await expect(win.locator('[data-testid^="machine-"]')).toHaveCount(0);
+  zeroPeer = { list: await box(scrollArea()), fill: await box(fill()), listPadBottom: parseFloat(await css(scrollArea(), 'padding-bottom')) };
+  expect(zeroPeer.list.height, 'control: the list has height').toBeGreaterThan(100);
 });
 
 test('AC9/AC2/AC5/AC10/AC6: pairing three machines mid-run adds the band within one poll: 4 dots, name-sorted, local first and active', async () => {
   writeFleet(isolatedHome, PEERS);
   await expectDotCount(4);
 
-  // Band geometry (AC9): 28px tall, no divider, flush with the sidebar bottom; below the scrolling list (AC2).
+  // Floating pill (AC9/AC2): takes no layout space, bottom edge 8px above the aside's bottom edge.
   const a = await box(aside());
   const b = await box(band());
-  expect(b.height, 'band is 28px tall').toBe(28);
-  expect(Math.round(b.y + b.height), 'band bottom is flush with the sidebar bottom').toBe(Math.round(a.y + a.height));
-  expect(await css(band(), 'border-top-width'), 'no divider line').toBe('0px');
-  expect(await css(band(), 'border-bottom-width')).toBe('0px');
-  // The list wrapper is `display: contents` (no box); the scrolling area is the tabpanel the dots control.
-  const list = await box(win.getByRole('tabpanel'));
-  expect(b.y, 'band sits below the scrollable list').toBeGreaterThanOrEqual(list.y + list.height - 1);
+  expect(Math.round(a.y + a.height - (b.y + b.height)), 'pill bottom is 8px above the sidebar bottom').toBe(8);
+  expect(b.height, 'control: the pill has a real box').toBeGreaterThan(20);
+  const near = (x: number, y: number) => Math.abs(x - y) <= 0.5;
+  const listNow = await box(scrollArea());
+  const fillNow = await box(fill());
+  const z = zeroPeer!;
+  for (const k of ['x', 'y', 'width', 'height'] as const) {
+    expect(near(listNow[k], z.list[k]), `list ${k} unchanged by the switcher (${z.list[k]} -> ${listNow[k]})`).toBe(true);
+    expect(near(fillNow[k], z.fill[k]), `drag-fill ${k} unchanged by the switcher (${z.fill[k]} -> ${fillNow[k]})`).toBe(true);
+  }
+  // The pill floats over the list: it lies inside the list's box, not below it.
+  expect(b.y + b.height, 'pill overlaps the list box').toBeLessThanOrEqual(listNow.y + listNow.height + 0.5);
+  expect(b.y, 'pill starts inside the list box').toBeGreaterThan(listNow.y);
+  expect(parseFloat(await css(scrollArea(), 'padding-bottom')), 'AC33: list gains bottom padding while the pill shows').toBeGreaterThan(z.listPadBottom);
 
   // Order (AC5): this machine, then paired machines by name. Accessible names carry the machine name (AC26).
   const names = await tabs().evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') ?? e.textContent ?? ''));
@@ -462,26 +486,68 @@ test('AC28: every dot button is at least 20x20 and keyboard focus draws the 2px 
   expect(colourDistance({ ...outline, a: 1 }, { ...accent, a: 1 }), 'focus ring is the accent colour').toBeLessThan(12);
 });
 
-test('AC8: only the dots are no-drag; the empty band and the sidebar drag fill stay drag', async () => {
-  const region = (l: Locator) => css(l, '-webkit-app-region');
-  expect(await region(win.getByTestId('sidebar-drag-fill')), 'positive control: drag fill is a drag region').toBe('drag');
-  expect(await region(band())).toBe('drag');
-  expect(await region(row())).toBe('no-drag');
-  for (const k of [LOCAL_MACHINE_ID, ALPHA, STUDIO, ZED]) expect(await region(dot(k)), `${k} dot`).toBe('no-drag');
-  // The no-drag row hugs the dots; the band's empty sides remain draggable.
-  const rb = await box(row());
-  const bb = await box(band());
-  expect(rb.width, 'row is narrower than the band, leaving drag area on both sides').toBeLessThan(bb.width - 40);
+test('AC32: the pill is rounded, bordered 1px, translucent, with a backdrop blur', async () => {
+  const cs = await band().evaluate((el) => {
+    const c = getComputedStyle(el);
+    return { backdrop: c.backdropFilter || c.getPropertyValue('-webkit-backdrop-filter'), borderW: c.borderTopWidth, borderStyle: c.borderTopStyle,
+      radius: c.borderTopLeftRadius, shadow: c.boxShadow };
+  });
+  expect(cs.backdrop, 'backdrop blur').not.toBe('none');
+  expect(cs.backdrop).not.toBe('');
+  expect(cs.borderW, '1px outline').toBe('1px');
+  expect(cs.borderStyle).toBe('solid');
+  expect(parseFloat(cs.radius), 'rounded').toBeGreaterThan(4);
+  expect(cs.shadow, 'small shadow').not.toBe('none');
+  const bg = await elementColour(win, band(), 'background-color');
+  expect(bg.a, 'translucent (not transparent)').toBeGreaterThan(0);
+  expect(bg.a, 'translucent (not opaque)').toBeLessThan(1);
+  // Hugs the dots and stays within the sidebar minus 16px.
+  const b = await box(band());
+  const a = await box(aside());
+  expect(b.width).toBeLessThanOrEqual(a.width - 16);
+  const r = await box(row());
+  expect(b.width, 'pill hugs the row').toBeLessThanOrEqual(r.width + 24);
 });
 
-test('AC3: the dots are centred on the sidebar within 2px at the default and the minimum width', async () => {
+test('AC8: the pill and its dots are no-drag; the drag fill and the sidebar area beside the pill stay drag', async () => {
+  const region = (l: Locator) => css(l, '-webkit-app-region');
+  expect(await region(fill()), 'positive control: drag fill is a drag region').toBe('drag');
+  expect(await region(band())).toBe('no-drag');
+  // The strip under the pill (8px) and the area left of it resolve to a drag region: walk up from the element
+  // painted there to the first ancestor that sets an app region.
+  const b = await box(band());
+  const a = await box(aside());
+  const effective = (x: number, y: number) => win.evaluate(({ x, y }) => {
+    for (let n = document.elementFromPoint(x, y); n; n = n.parentElement) {
+      const r = getComputedStyle(n).getPropertyValue('-webkit-app-region');
+      if (r && r !== 'none') return r;
+    }
+    return 'none';
+  }, { x, y });
+  // The dot buttons set no region themselves; they sit inside the no-drag pill, so the effective region is no-drag.
+  for (const k of [LOCAL_MACHINE_ID, ALPHA, STUDIO, ZED]) {
+    const d = await box(dot(k));
+    expect(await effective(d.x + d.width / 2, d.y + d.height / 2), `${k} dot`).toBe('no-drag');
+  }
+  // With the 40-project list filling the sidebar, the area beside/under the pill is the list's own padding
+  // (no app region, as the list rows always were); the drag fill has no height here. What AC8 requires of the
+  // pill is that its no-drag carve-out stops at the pill: just outside it nothing is no-drag.
+  expect(await effective(b.x + b.width / 2, a.y + a.height - 2), 'strip under the pill is not no-drag').not.toBe('no-drag');
+  expect(await effective(b.x - 6, b.y + b.height / 2), 'area left of the pill is not no-drag').not.toBe('no-drag');
+  expect(await effective(b.x + b.width + 6, b.y + b.height / 2), 'area right of the pill is not no-drag').not.toBe('no-drag');
+  expect(await effective(b.x + b.width / 2, b.y + b.height / 2), 'control: the pill itself is no-drag').toBe('no-drag');
+});
+
+test('AC3: the pill is centred on the sidebar within 2px at the default and the minimum width', async () => {
   for (const width of [SIDEBAR_WIDTH.default, SIDEBAR_WIDTH.min]) {
     await setSidebarWidth(width);
     await expectDotCount(4);
     const a = await box(aside());
     const first = await box(dot(LOCAL_MACHINE_ID));
     const last = await box(dot(ZED));
-    const dotsCentre = (first.x + last.x + last.width) / 2;
+    const pill = await box(band());
+    const dotsCentre = pill.x + pill.width / 2;
+    expect(Math.abs((first.x + last.x + last.width) / 2 - dotsCentre), 'dots are centred in the pill').toBeLessThanOrEqual(2);
     const asideCentre = a.x + a.width / 2;
     expect(Math.abs(dotsCentre - asideCentre), `centre offset at ${width}px`).toBeLessThanOrEqual(2);
     // Control: all four dots fit inside the sidebar at this width.
@@ -527,6 +593,27 @@ test('AC4: with too many dots the row scrolls sideways with no scrollbar, and th
   writeFleet(isolatedHome, PEERS);
   await expectDotCount(4);
   await setSidebarWidth(SIDEBAR_WIDTH.default);
+});
+
+test('AC33: scrolled to the end, the last list row sits above the pill and can be clicked', async () => {
+  await selectDot(LOCAL_MACHINE_ID);
+  await expectDotCount(4);
+  const area = scrollArea();
+  const dims = await area.evaluate((el) => ({ sh: el.scrollHeight, ch: el.clientHeight }));
+  expect(dims.sh, 'control: the list overflows, so it scrolls').toBeGreaterThan(dims.ch + 100);
+  await area.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  await expect.poll(() => area.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop), { message: 'scrolled to the end' }).toBeLessThanOrEqual(1);
+  const last = win.getByTestId('section-all').locator('[data-testid="project-row"]').last();
+  const lb = await box(last);
+  const pb = await box(band());
+  expect(lb.y + lb.height, 'last row bottom is at or above the pill top').toBeLessThanOrEqual(pb.y + 0.5);
+  // The pill really overlays the list (control): the list box extends beneath it.
+  const ab = await box(area);
+  expect(ab.y + ab.height).toBeGreaterThanOrEqual(pb.y + pb.height - 0.5);
+  const name = /filler-\d+|switcher-proj/.exec((await last.textContent()) ?? '')?.[0];
+  expect(name, 'last row has a known project name').toBeTruthy();
+  await last.click();
+  await expect(win.getByTestId('status-bar')).toContainText(name!);
 });
 
 test('AC10: the selected machine is not remembered across a restart', async () => {
