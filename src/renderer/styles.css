@@ -808,6 +808,10 @@ input::placeholder, textarea::placeholder {
   background: var(--scrollbar-thumb-hover, rgba(128, 128, 128, 0.5));
 }
 
+/* Scrolls without a visible scrollbar (the machine switcher's dot row). */
+.scrollbar-none { scrollbar-width: none; }
+.scrollbar-none::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
 /* Focus ring — visible only on keyboard focus, not on click. */
 :focus-visible {
   outline: 2px solid var(--accent);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { rootHueVar } from '@renderer/root-hue';
 import { useRoots } from '@renderer/hooks/useRoots';
 import { useProjects } from '@renderer/hooks/useProjects';
@@ -15,12 +15,17 @@ import { ModalFrame } from './ModalFrame';
 import { StatusDot } from './StatusDot';
 import { RootFolderGlyph, rootFolderName } from './RootFolderGlyph';
 import { ENV_COPY } from '@renderer/project-env-copy';
-import { SIDEBAR_COPY, SIDEBAR_TESTIDS, SECTION_PERSIST_KEYS } from '@renderer/sidebar-copy';
+import { MACHINE_TESTIDS, SIDEBAR_COPY, SIDEBAR_TESTIDS, SECTION_PERSIST_KEYS } from '@renderer/sidebar-copy';
 import { SIDEBAR_WIDTH } from '@renderer/sidebar-width';
 import { SidebarHeader } from './SidebarHeader';
 import { PROJECT_SETTINGS_COPY, type ProjectSettingsTarget } from '@renderer/project-settings-contract';
 import { ICON_SIZE, ICON_STROKE } from './icon-size';
-import { MachinesSection, type OpenPaneRequest } from './MachinesSection';
+import { ChevronIcon } from './ChevronIcon';
+import { MachineDots } from './MachineDots';
+import { RemoteMachineList } from './RemoteMachineList';
+import { useMachineSwitcher, type MachineSwitcher } from '@renderer/p2p/useMachineSwitcher';
+import type { OpenPaneRequest } from '@renderer/machine-switcher-contract';
+import { SWITCHER_PANEL_ID, filterByName, machineTabId } from '@renderer/machine-dots';
 
 interface Props {
   selectedProjectId: number | null;
@@ -35,57 +40,33 @@ interface Props {
   width?: number;
 }
 
-/** Shows paired machines, live and recent projects, then local folders. */
+/** Callbacks every local project row takes. */
+interface RowActions {
+  onSelect: (p: Project) => void;
+  onUnloadSession: (project: Project, opener: HTMLElement) => void;
+  onRename: (p: Project) => void;
+  onEditEnv: (p: Project) => void;
+  onProjectSettings: (target: ProjectSettingsTarget) => void;
+}
+
+/**
+ * The project sidebar: filter header, then one machine's list at a time — this machine's In use /
+ * Recents / Projects, or a paired machine's `RemoteMachineList` — and, once a machine is paired,
+ * the machine switcher band at the bottom (docs/specs/machine-switcher-dots.md). The local list
+ * stays mounted (hidden) while a remote machine is shown, so its order, collapse state and data
+ * survive a switch. With no paired machine the markup is exactly the pre-switcher sidebar.
+ */
 export function Sidebar({ selectedProjectId, onSelect, onUnloadSession, onNewProject, onEditEnv, onProjectSettings, onOpenPane, width }: Props) {
   const { roots, refresh: refreshRoots } = useRoots();
   const { projects, refresh: refreshProjects } = useProjects();
-  const { recents } = useRecents(10);
-  const { aliveIds, primaryIds } = useAliveShellIds();
-  const overallAgentState = useOverallAgentState();
   const [filter, setFilter] = useState('');
-
-  // Stable order for the "In use" section: each project keeps the seq
-  // number it was first observed alive with. Clicking a row updates
-  // last_opened_at (which reshuffles the underlying projects list), but
-  // the seq map is not touched, so the visible order stays put. When
-  // a shell exits, its seq is dropped; if it comes back later, it gets
-  // a fresh (higher) seq and lands at the bottom.
-  const inUseSeq = useRef<Map<number, number>>(new Map());
-  const inUseNextSeq = useRef(1);
-  useEffect(() => {
-    const map = inUseSeq.current;
-    for (const id of aliveIds) if (!map.has(id)) map.set(id, inUseNextSeq.current++);
-    for (const id of [...map.keys()]) if (!aliveIds.has(id)) map.delete(id);
-  }, [aliveIds]);
-
-  const inUse = useMemo(() => {
-    const seq = inUseSeq.current;
-    const list = projects.filter((p) => aliveIds.has(p.id));
-    const sorted = list.slice().sort((a, b) => (seq.get(a.id) ?? 0) - (seq.get(b.id) ?? 0));
-    if (filter) return sorted.filter((p) => p.name.toLowerCase().includes(filter.toLowerCase()));
-    return sorted;
-  }, [projects, aliveIds, filter]);
-
-  const grouped = useMemo(() => {
-    const byRoot = new Map<number, Project[]>();
-    for (const p of projects) {
-      if (filter && !p.name.toLowerCase().includes(filter.toLowerCase())) continue;
-      if (!byRoot.has(p.rootId)) byRoot.set(p.rootId, []);
-      byRoot.get(p.rootId)!.push(p);
-    }
-    return byRoot;
-  }, [projects, filter]);
-
   const [renameTarget, setRenameTarget] = useState<Project | null>(null);
-  const askRename = useCallback((p: Project) => setRenameTarget(p), []);
-
-  // Recents excluding the ones already shown in "In use".
-  const recentsShown = useMemo(() => {
-    const skip = new Set(inUse.map((p) => p.id));
-    const list = recents.filter((p) => !skip.has(p.id));
-    if (filter) return list.filter((p) => p.name.toLowerCase().includes(filter.toLowerCase()));
-    return list.slice(0, 6);
-  }, [recents, inUse, filter]);
+  const actions = useMemo<RowActions>(() => ({ onSelect, onUnloadSession, onRename: setRenameTarget, onEditEnv, onProjectSettings }),
+    [onSelect, onUnloadSession, onEditEnv, onProjectSettings]);
+  const switcher = useMachineSwitcher();
+  const banded = switcher.machines.length > 1;
+  const remote = switcher.active.self ? null : switcher.active;
+  const panel = banded ? { role: 'tabpanel', id: SWITCHER_PANEL_ID, 'aria-labelledby': machineTabId(switcher.activeId) } : {};
 
   return (
     <aside
@@ -106,73 +87,134 @@ export function Sidebar({ selectedProjectId, onSelect, onUnloadSession, onNewPro
         />
       </div>
 
-      <div className="flex-initial min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7">
-        <MachinesSection onOpenPane={onOpenPane} />
-
-        {inUse.length > 0 && (
-          <Section title="In use" testId="section-in-use" accent dotState={overallAgentState}>
-            {inUse.map((p) => (
-              <ProjectRow
-                key={p.id}
-                project={p}
-                selected={selectedProjectId === p.id}
-                alive
-                primaryAlive={primaryIds.has(p.id)}
-                onUnloadSession={onUnloadSession}
-                onSelect={onSelect}
-                onRename={askRename}
-                onEditEnv={onEditEnv}
-                onProjectSettings={onProjectSettings}
-              />
-            ))}
-          </Section>
-        )}
-
-        {recentsShown.length > 0 && (
-          <Section title="Recents" testId="section-recents">
-            {recentsShown.map((p) => (
-              <ProjectRow
-                key={p.id}
-                project={p}
-                selected={selectedProjectId === p.id}
-                alive={aliveIds.has(p.id)}
-                primaryAlive={primaryIds.has(p.id)}
-                onUnloadSession={onUnloadSession}
-                onSelect={onSelect}
-                onRename={askRename}
-                onEditEnv={onEditEnv}
-                onProjectSettings={onProjectSettings}
-              />
-            ))}
-          </Section>
-        )}
-
-        <Section title={SIDEBAR_COPY.projectsHeading} persistKey={SECTION_PERSIST_KEYS.projects} testId={SIDEBAR_TESTIDS.sectionAll}>
-          {roots.map((r) => (
-            <RootBlock
-              key={r.id}
-              root={r}
-              projects={grouped.get(r.id) ?? []}
-              selectedProjectId={selectedProjectId}
-              aliveIds={aliveIds}
-              primaryIds={primaryIds}
-              onUnloadSession={onUnloadSession}
-              onSelect={onSelect}
-              onRename={askRename}
-              onEditEnv={onEditEnv}
-              onProjectSettings={onProjectSettings}
-            />
-          ))}
-        </Section>
+      <div className="flex-initial min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7" {...panel}>
+        {remote && <RemoteMachineList key={remote.deviceId} machine={remote} filter={filter} onOpenPane={onOpenPane} />}
+        <LocalProjectList
+          framing={!banded ? 'bare' : remote ? 'hidden' : 'shown'}
+          filter={filter}
+          roots={roots}
+          projects={projects}
+          selectedProjectId={selectedProjectId}
+          actions={actions}
+        />
       </div>
-      {/* Empty space below the list (and the gap above it) drags the window. */}
-      <div aria-hidden className="drag flex-1 min-h-0 -mt-7 -mb-5" data-testid="sidebar-drag-fill" />
+      {/* Empty space below the list (and the gap above it) drags the window; with the band it stops at the band's top. */}
+      <div aria-hidden className={`drag flex-1 min-h-0 -mt-7 ${banded ? '-mb-7' : '-mb-5'}`} data-testid="sidebar-drag-fill" />
+      {banded && <MachineBand switcher={switcher} />}
       <RenameProjectDialog
         project={renameTarget}
         onClose={() => setRenameTarget(null)}
         onDone={async () => { setRenameTarget(null); await refreshProjects(); }}
       />
     </aside>
+  );
+}
+
+/**
+ * The 28px bottom band holding the machine dots. It is flush with the aside's bottom edge (over the
+ * 20px bottom padding) and spans its full width so the row centres on the sidebar; its empty sides
+ * stay a window drag region while the dot row itself is no-drag.
+ */
+function MachineBand({ switcher }: { switcher: MachineSwitcher }) {
+  return (
+    <div data-testid={MACHINE_TESTIDS.band} className="drag h-7 -mb-5 -ml-2 shrink-0 flex items-center justify-center">
+      <MachineDots machines={switcher.machines} activeId={switcher.activeId} onSelect={switcher.select} />
+    </div>
+  );
+}
+
+/**
+ * This machine's In use / Recents / per-root lists, filtered by name. In use keeps a stable order:
+ * each project keeps the sequence number it was first seen alive with, so clicking a row (which
+ * reshuffles `projects` by last-opened time) does not move it; a shell that exits drops its number
+ * and lands at the bottom when it comes back.
+ */
+function useLocalSections(projects: Project[], filter: string) {
+  const { recents } = useRecents(10);
+  const { aliveIds, primaryIds } = useAliveShellIds();
+  const inUseSeq = useRef<Map<number, number>>(new Map());
+  const inUseNextSeq = useRef(1);
+  useEffect(() => {
+    const map = inUseSeq.current;
+    for (const id of aliveIds) if (!map.has(id)) map.set(id, inUseNextSeq.current++);
+    for (const id of [...map.keys()]) if (!aliveIds.has(id)) map.delete(id);
+  }, [aliveIds]);
+
+  const inUse = useMemo(() => {
+    const seq = inUseSeq.current;
+    const sorted = projects.filter((p) => aliveIds.has(p.id)).sort((a, b) => (seq.get(a.id) ?? 0) - (seq.get(b.id) ?? 0));
+    return filterByName(sorted, filter);
+  }, [projects, aliveIds, filter]);
+
+  const grouped = useMemo(() => {
+    const byRoot = new Map<number, Project[]>();
+    for (const p of filterByName(projects, filter)) {
+      if (!byRoot.has(p.rootId)) byRoot.set(p.rootId, []);
+      byRoot.get(p.rootId)!.push(p);
+    }
+    return byRoot;
+  }, [projects, filter]);
+
+  const recentsShown = useMemo(() => {
+    const skip = new Set(inUse.map((p) => p.id));
+    const list = recents.filter((p) => !skip.has(p.id));
+    return filter ? filterByName(list, filter) : list.slice(0, 6);
+  }, [recents, inUse, filter]);
+
+  return { inUse, grouped, recentsShown, aliveIds, primaryIds };
+}
+
+/**
+ * Renders this machine's sections. `framing` is 'bare' with no paired machine (sections sit
+ * directly in the scroll area, as before the switcher), else a `switcher-local-list` wrapper that is
+ * 'shown' or 'hidden' — hidden keeps everything mounted while a remote machine is on screen.
+ */
+function LocalProjectList({ framing, filter, roots, projects, selectedProjectId, actions }: {
+  framing: 'bare' | 'shown' | 'hidden';
+  filter: string;
+  roots: Root[];
+  projects: Project[];
+  selectedProjectId: number | null;
+  actions: RowActions;
+}) {
+  const overallAgentState = useOverallAgentState();
+  const { inUse, grouped, recentsShown, aliveIds, primaryIds } = useLocalSections(projects, filter);
+  const row = (p: Project, alive: boolean) => (
+    <ProjectRow key={p.id} project={p} selected={selectedProjectId === p.id} alive={alive} primaryAlive={primaryIds.has(p.id)} {...actions} />
+  );
+  const sections = (
+    <>
+      {inUse.length > 0 && (
+        <Section title="In use" testId="section-in-use" accent dotState={overallAgentState}>
+          {inUse.map((p) => row(p, true))}
+        </Section>
+      )}
+      {recentsShown.length > 0 && (
+        <Section title="Recents" testId="section-recents">
+          {recentsShown.map((p) => row(p, aliveIds.has(p.id)))}
+        </Section>
+      )}
+      <Section title={SIDEBAR_COPY.projectsHeading} persistKey={SECTION_PERSIST_KEYS.projects} testId={SIDEBAR_TESTIDS.sectionAll}>
+        {roots.map((r) => (
+          <RootBlock
+            key={r.id}
+            root={r}
+            projects={grouped.get(r.id) ?? []}
+            selectedProjectId={selectedProjectId}
+            aliveIds={aliveIds}
+            primaryIds={primaryIds}
+            {...actions}
+          />
+        ))}
+      </Section>
+    </>
+  );
+  if (framing === 'bare') return sections;
+  const hidden = framing === 'hidden';
+  return (
+    <div data-testid={MACHINE_TESTIDS.localList} hidden={hidden} className={hidden ? 'hidden' : 'contents'}>
+      {sections}
+    </div>
   );
 }
 const SECTION_COLLAPSED_KEY = 'metaide.sectionsCollapsed';
@@ -551,25 +593,3 @@ export function RenameProjectDialog({
     </ModalFrame>
   );
 }
-
-/** Collapse chevron for section and root-group toggles: points down when open, right when collapsed. */
-function ChevronIcon({ collapsed }: { collapsed: boolean }) {
-  return (
-    <svg
-      aria-hidden
-      width={ICON_SIZE.sm}
-      height={ICON_SIZE.sm}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={ICON_STROKE.outline}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="shrink-0 text-[--text-muted] transition-transform duration-150"
-      style={{ transform: collapsed ? 'rotate(-90deg)' : 'none' }}
-    >
-      <path d="M6 9l6 6 6-6" />
-    </svg>
-  );
-}
-

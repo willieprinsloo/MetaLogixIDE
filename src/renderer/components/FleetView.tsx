@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useFleet } from '@renderer/p2p/useFleet';
 import { useRemoteAliveShells } from '@renderer/p2p/useRemoteAliveShells';
 import type { FleetEntry } from '@shared/p2p-contract';
-import type { OpenPaneRequest } from './MachinesSection';
+import type { OpenPaneRequest } from '@renderer/machine-switcher-contract';
 
 interface AliveShell { projectId: number; projectName: string; projectPath: string; shellIndex: number; launchArgv: string[]; }
 

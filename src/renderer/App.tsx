@@ -3,7 +3,7 @@ import { AnimatePresence, m, useReducedMotion } from 'motion/react';
 import { Sidebar } from './components/Sidebar';
 import { UnloadSessionDialog } from './components/UnloadSessionDialog';
 import { RemoteProjectPane } from './components/RemoteProjectPane';
-import type { OpenPaneRequest } from './components/MachinesSection';
+import type { OpenPaneRequest } from '@renderer/machine-switcher-contract';
 import { StatusBar } from './components/StatusBar';
 import { useShowStatusBar } from './hooks/useShowStatusBarPorts';
 import { SIDEBAR_WIDTH, useSidebarWidth } from './sidebar-width';
