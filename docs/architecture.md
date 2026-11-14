@@ -318,10 +318,13 @@ clears a stored 288 so the new default applies; any other width is kept.
 The resize handle sits above the sidebar and sheet so it can be dragged and
 double-clicked to reset.
 
-**Machine switcher.** With at least one paired machine, a 28px band at the
-bottom of the sidebar holds one dot per machine: this machine first, then
-paired machines sorted by name (deviceId breaks ties). With none paired the
-band does not render and the sidebar markup is unchanged. Selecting a dot
+**Machine switcher.** With at least one paired machine, a frosted pill
+floats centred over the bottom of the sidebar list, 8px above the sidebar's
+bottom edge, and holds one dot per machine: this machine first, then paired
+machines sorted by name (deviceId breaks ties). The pill takes no layout
+space; the list scrolls underneath it and gets extra bottom padding (`pb-11`)
+so its last row can scroll clear of the pill. With none paired the pill does
+not render and the sidebar markup is unchanged. Selecting a dot
 swaps the sidebar list to that machine and never changes the main pane. The
 selection is not persisted: the app starts on this machine, and if the shown
 machine is missing from a successful fleet refresh the sidebar falls back to
@@ -335,7 +338,9 @@ or "This machine" until it loads.
   wrap, Home/End jump, Enter/Space select. Inactive dots are 6px (filled when
   online, hollow and dimmed when offline); the active dot is 8px in the
   accent colour. Each dot has a tooltip and an accessible name with its state.
-  The dot row is `no-drag`; the rest of the band stays a window drag region.
+  The pill (`.machine-pill` in `styles.css`: translucent panel colour with a
+  backdrop blur, opaque under Reduce transparency) is the only `no-drag`
+  part; around it the list or the drag-fill keep their own regions.
 - `RemoteMachineList.tsx` renders a remote machine: a header (name, state,
   last seen, Reconnect) followed by In use, Recents (6 at most unless
   filtering) and Projects by root. An offline machine shows the header only.
