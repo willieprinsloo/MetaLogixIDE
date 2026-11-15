@@ -23,9 +23,12 @@ import { ICON_SIZE, ICON_STROKE } from './icon-size';
 import { ChevronIcon } from './ChevronIcon';
 import { MachineDots } from './MachineDots';
 import { RemoteMachineList } from './RemoteMachineList';
+import { RemoteInUseRows } from './SharedInUseSection';
 import { useMachineSwitcher, type MachineSwitcher } from '@renderer/p2p/useMachineSwitcher';
+import { useFleetInUse } from '@renderer/p2p/useFleetInUse';
 import type { OpenPaneRequest } from '@renderer/machine-switcher-contract';
 import { filterByName, switcherLayout } from '@renderer/machine-dots';
+import { inUseHeadingState, remoteInUseRows, type RemoteInUseRow } from '@renderer/fleet-in-use';
 
 interface Props {
   selectedProjectId: number | null;
@@ -49,10 +52,15 @@ interface RowActions {
   onProjectSettings: (target: ProjectSettingsTarget) => void;
 }
 
+/** Renders one local project row with the sidebar's selection and actions; `alive` picks the status dot. */
+type LocalRow = (p: Project, alive: boolean) => React.ReactNode;
+
 /**
  * The project sidebar: filter header, then one machine's list at a time — this machine's In use /
  * Recents / Projects, or a paired machine's `RemoteMachineList` — and, once a machine is paired,
- * the machine switcher band at the bottom (docs/specs/machine-switcher-dots.md). The local list
+ * the machine switcher band at the bottom (docs/specs/machine-switcher-dots.md). Once paired, In use
+ * moves out of the per-machine lists into one shared section at the top of the list, whichever dot
+ * is selected: this machine's live projects, then each online peer's (AC36–AC40). The local list
  * stays mounted (hidden) while a remote machine is shown, so its order, collapse state and data
  * survive a switch. With no paired machine the markup is exactly the pre-switcher sidebar.
  */
@@ -65,6 +73,16 @@ export function Sidebar({ selectedProjectId, onSelect, onUnloadSession, onNewPro
     [onSelect, onUnloadSession, onEditEnv, onProjectSettings]);
   const switcher = useMachineSwitcher();
   const { banded, remote, framing, panelProps, listClass } = switcherLayout(switcher);
+  const local = useLocalSections(projects, filter);
+  const fleetNames = useFleetInUse(switcher.shells);
+  const remoteInUse = useMemo(
+    () => remoteInUseRows(switcher.machines, switcher.shells, fleetNames, filter),
+    [switcher.machines, switcher.shells, fleetNames, filter],
+  );
+  const localRow: LocalRow = (p, alive) => (
+    <ProjectRow key={p.id} project={p} selected={selectedProjectId === p.id} alive={alive} primaryAlive={local.primaryIds.has(p.id)} {...actions} />
+  );
+  const inUse = <InUseSection local={local.inUse} remote={remoteInUse} row={localRow} onOpenPane={onOpenPane} />;
 
   return (
     <aside
@@ -86,14 +104,25 @@ export function Sidebar({ selectedProjectId, onSelect, onUnloadSession, onNewPro
       </div>
 
       <div className={listClass} {...panelProps}>
-        {remote && <RemoteMachineList key={remote.deviceId} machine={remote} filter={filter} aliveProjectIds={switcher.shellsFor(remote.deviceId)} onOpenPane={onOpenPane} />}
+        {banded && inUse}
+        {remote && (
+          <RemoteMachineList
+            key={remote.deviceId}
+            machine={remote}
+            filter={filter}
+            aliveProjectIds={switcher.shellsFor(remote.deviceId)}
+            projectStates={switcher.statesFor(remote.deviceId)}
+            onOpenPane={onOpenPane}
+          />
+        )}
         <LocalProjectList
           framing={framing}
-          filter={filter}
+          inUse={banded ? null : inUse}
+          sections={local}
           roots={roots}
-          projects={projects}
           selectedProjectId={selectedProjectId}
           actions={actions}
+          row={localRow}
         />
       </div>
       {/* Empty space below the list (and the gap above it) drags the window. */}
@@ -166,31 +195,48 @@ function useLocalSections(projects: Project[], filter: string) {
   return { inUse, grouped, recentsShown, aliveIds, primaryIds };
 }
 
+type LocalSections = ReturnType<typeof useLocalSections>;
+
 /**
- * Renders this machine's sections. `framing` is 'bare' with no paired machine (sections sit
- * directly in the scroll area, as before the switcher), else a `switcher-local-list` wrapper that is
- * 'shown' or 'hidden' — hidden keeps everything mounted while a remote machine is on screen.
+ * The In use section: this machine's live rows (stable order, `ProjectRow`), then the paired
+ * machines' rows, under a heading whose status dot is the worst state across the machines with rows
+ * (AC40); with no paired machine `remote` is empty and the heading is this machine's overall state,
+ * as before. Renders nothing when there are no rows.
  */
-function LocalProjectList({ framing, filter, roots, projects, selectedProjectId, actions }: {
-  framing: 'bare' | 'shown' | 'hidden';
-  filter: string;
-  roots: Root[];
-  projects: Project[];
-  selectedProjectId: number | null;
-  actions: RowActions;
+function InUseSection({ local, remote, row, onOpenPane }: {
+  local: Project[];
+  remote: readonly RemoteInUseRow[];
+  row: LocalRow;
+  onOpenPane?: (req: OpenPaneRequest) => void;
 }) {
   const overallAgentState = useOverallAgentState();
-  const { inUse, grouped, recentsShown, aliveIds, primaryIds } = useLocalSections(projects, filter);
-  const row = (p: Project, alive: boolean) => (
-    <ProjectRow key={p.id} project={p} selected={selectedProjectId === p.id} alive={alive} primaryAlive={primaryIds.has(p.id)} {...actions} />
+  if (local.length === 0 && remote.length === 0) return null;
+  return (
+    <Section title="In use" testId="section-in-use" accent dotState={inUseHeadingState(local.length > 0 ? overallAgentState : null, remote)}>
+      {local.map((p) => row(p, true))}
+      <RemoteInUseRows rows={remote} onOpenPane={onOpenPane} />
+    </Section>
   );
+}
+
+/**
+ * Renders this machine's sections. `framing` is 'bare' with no paired machine (sections sit
+ * directly in the scroll area, as before the switcher, with `inUse` first), else a
+ * `switcher-local-list` wrapper that is 'shown' or 'hidden' — hidden keeps everything mounted while
+ * a remote machine is on screen — and `inUse` is null because the shared section is above it.
+ */
+function LocalProjectList({ framing, inUse, sections: { grouped, recentsShown, aliveIds, primaryIds }, roots, selectedProjectId, actions, row }: {
+  framing: 'bare' | 'shown' | 'hidden';
+  inUse: React.ReactNode;
+  sections: LocalSections;
+  roots: Root[];
+  selectedProjectId: number | null;
+  actions: RowActions;
+  row: LocalRow;
+}) {
   const sections = (
     <>
-      {inUse.length > 0 && (
-        <Section title="In use" testId="section-in-use" accent dotState={overallAgentState}>
-          {inUse.map((p) => row(p, true))}
-        </Section>
-      )}
+      {inUse}
       {recentsShown.length > 0 && (
         <Section title="Recents" testId="section-recents">
           {recentsShown.map((p) => row(p, aliveIds.has(p.id)))}
