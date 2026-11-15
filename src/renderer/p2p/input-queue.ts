@@ -1,8 +1,10 @@
+import { errMessage } from './err-message';
+
 /**
  * Ordered, coalescing send queue for remote shell input. At most one `send` is in flight; bytes
  * pushed meanwhile accumulate and are flushed in frames of at most `INPUT_CHUNK_BYTES` UTF-8
  * bytes, split on code-point boundaries so the host never decodes half a character. A single
- * push over `MAX_REMOTE_PASTE_BYTES` is refused whole (`onError` too-large, nothing sent). A
+ * push that would take the not-yet-sent buffer over `MAX_REMOTE_PASTE_BYTES` is refused whole (`onError` too-large, nothing sent). A
  * rejected send drops everything pending and reports `failed`.
  */
 export const INPUT_CHUNK_BYTES = 256 * 1024;
@@ -21,11 +23,15 @@ export interface InputQueue {
   push(text: string): void;
 }
 
+function utf8Length(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
 function takeChunk(text: string, maxBytes: number): number {
   let bytes = 0;
   let i = 0;
   while (i < text.length) {
-    const cp = text.codePointAt(i) as number;
+    const cp = text.codePointAt(i) ?? 0;
     const size = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
     if (bytes + size > maxBytes) break;
     bytes += size;
@@ -34,6 +40,7 @@ function takeChunk(text: string, maxBytes: number): number {
   return i;
 }
 
+/** Creates a queue that delivers pushed text through `opts.send` in order; see the module doc for framing and refusal rules. */
 export function createInputQueue(opts: InputQueueOptions): InputQueue {
   let pending = '';
   let inFlight = false;
@@ -49,7 +56,7 @@ export function createInputQueue(opts: InputQueueOptions): InputQueue {
       (err: unknown) => {
         inFlight = false;
         pending = '';
-        opts.onError({ kind: 'failed', message: err instanceof Error ? err.message : String(err) });
+        opts.onError({ kind: 'failed', message: errMessage(err) });
       },
     );
   };
@@ -57,7 +64,7 @@ export function createInputQueue(opts: InputQueueOptions): InputQueue {
   return {
     push(text) {
       if (text === '') return;
-      if (new TextEncoder().encode(text).length > MAX_REMOTE_PASTE_BYTES) {
+      if (utf8Length(pending) + utf8Length(text) > MAX_REMOTE_PASTE_BYTES) {
         opts.onError({ kind: 'too-large', limitBytes: MAX_REMOTE_PASTE_BYTES });
         return;
       }

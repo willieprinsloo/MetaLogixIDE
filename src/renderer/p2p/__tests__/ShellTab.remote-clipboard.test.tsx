@@ -155,6 +155,15 @@ describe('remote ShellTab clipboard (diagnosis)', () => {
     expect(toast).toHaveBeenCalledWith('Copy failed', expect.objectContaining({ kind: 'error', detail: 'Document is not focused' }));
   });
 
+  test('repeated OSC 52 clipboard rejections within 5 s give one toast', async () => {
+    writeText.mockRejectedValue(new Error('Document is not focused'));
+    renderRemote();
+    for (let i = 0; i < 3; i++) await osc(`c;${b64('x')}`);
+    expect(toast.mock.calls.filter((c) => c[0] === 'Copy failed')).toHaveLength(1);
+    writeText.mockReset();
+    writeText.mockResolvedValue(undefined);
+  });
+
   test('the OSC 52 handler is disposed on unmount', () => {
     const { unmount } = renderRemote();
     expect(fake.osc.has(52)).toBe(true);

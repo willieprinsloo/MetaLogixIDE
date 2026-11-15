@@ -54,6 +54,15 @@ describe('createInputQueue', () => {
     expect(errors).toEqual([{ kind: 'too-large', limitBytes: MAX_REMOTE_PASTE_BYTES }]);
   });
 
+  test('a push that would grow the pending buffer past 4 MiB is refused, earlier data still flows', () => {
+    const { q, send, errors } = setup();
+    q.push('a');
+    q.push('x'.repeat(MAX_REMOTE_PASTE_BYTES));
+    q.push('y');
+    expect(errors).toEqual([{ kind: 'too-large', limitBytes: MAX_REMOTE_PASTE_BYTES }]);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   test('exactly 4 MiB is accepted', () => {
     const { q, send, errors } = setup();
     q.push('x'.repeat(MAX_REMOTE_PASTE_BYTES));

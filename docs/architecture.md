@@ -1070,7 +1070,7 @@ as external there.
   fullscreen mode. Read queries (`?`) are never answered. The base64 length
   is checked before decoding, and payloads over 1 MiB of text, invalid base64
   and invalid UTF-8 are ignored. A clipboard rejection shows the Copy failed
-  toast. Any program in a terminal can therefore replace the clipboard, as in
+  toast, shown at most once per 5 s. Any program in a terminal can therefore replace the clipboard, as in
   iTerm and kitty.
 - **Forced selection.** The terminal sets `macOptionClickForcesSelection`, so
   Option+drag on macOS selects text while a program tracks the mouse.
@@ -1078,10 +1078,13 @@ as external there.
   input one `shells.input` call at a time and merges input that arrives
   meanwhile. Large pastes are split into frames of at most 256 KiB of UTF-8,
   on code-point boundaries, because the host decodes each frame on its own.
-  A single paste over 4 MiB is refused. Send and resize failures reach
-  `RemoteShellHandle.onInputError` (`src/renderer/p2p/remoteShellBridge.ts`);
-  the shell tab shows one toast per kind per 5 s, naming the host
-  (`src/renderer/toast-throttle.ts`, `REMOTE_INPUT_COPY`).
+  A push that would take the not-yet-sent buffer over 4 MiB is refused.
+  Send and resize failures reach `RemoteShellHandle.onInputError`
+  (`src/renderer/p2p/remoteShellBridge.ts`), including input typed after the
+  remote stream has ended (host shutdown, revoked link, failed attach). Only
+  a close the user requested stays silent. The shell tab shows one toast per
+  kind per 5 s, naming the host (`src/renderer/remote-toasts.ts`,
+  `src/renderer/toast-throttle.ts`, `REMOTE_INPUT_COPY`).
 
 ### Shell tab overlays
 

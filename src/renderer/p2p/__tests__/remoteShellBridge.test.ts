@@ -186,4 +186,70 @@ describe('openRemoteShell', () => {
     expect(frames.length).toBeGreaterThan(1);
     expect(frames.join('')).toBe(text);
   });
+
+  describe('input after the stream ends', () => {
+    const errsOf = (h: ReturnType<typeof openRemoteShell>) => { const e: Array<{ kind: string; message?: string }> = []; h.onInputError((x) => e.push(x)); return e; };
+
+    test('after a remote close event, send reports one failed naming the reason', async () => {
+      const h = openRemoteShell('tower', 3, 1);
+      const errs = errsOf(h);
+      await flush();
+      emit({ deviceId: 'tower', streamId: 7, closed: true, reason: 'shutdown' });
+      h.send('x');
+      await flush();
+      expect(errs).toHaveLength(1);
+      expect(errs[0]?.kind).toBe('failed');
+      expect(errs[0]?.message).toContain('shutdown');
+      expect(invoke.mock.calls.some((c) => (c[1] as { method?: string }).method === 'shells.input')).toBe(false);
+    });
+
+    test('after a failed attach, send reports failed', async () => {
+      invoke.mockRejectedValueOnce(new Error('unknown_shell'));
+      const h = openRemoteShell('tower', 3, 1);
+      const errs = errsOf(h);
+      await flush();
+      h.send('x');
+      await flush();
+      expect(errs).toHaveLength(1);
+      expect(errs[0]?.message).toContain('unknown_shell');
+    });
+
+    test('after the user closes, send stays silent', async () => {
+      const h = openRemoteShell('tower', 3, 1);
+      const errs = errsOf(h);
+      await flush();
+      h.close();
+      h.send('x');
+      await flush();
+      expect(errs).toEqual([]);
+    });
+
+    test('a send rejecting after the user closed is not reported', async () => {
+      const h = openRemoteShell('tower', 3, 1);
+      const errs = errsOf(h);
+      await flush();
+      let fail!: (e: Error) => void;
+      invoke.mockImplementation((_c: string, req: { method?: string }) =>
+        req.method === 'shells.input' ? new Promise((_r, rej) => { fail = rej; }) : Promise.resolve({ result: {} }));
+      h.send('x');
+      await flush();
+      h.close();
+      fail(new Error('late'));
+      await flush();
+      expect(errs).toEqual([]);
+    });
+
+    test('Electron invoke prefix is stripped from the reported message', async () => {
+      const h = openRemoteShell('tower', 3, 1);
+      const errs = errsOf(h);
+      await flush();
+      invoke.mockImplementation(async (_c: string, req: { method?: string }) => {
+        if (req.method === 'shells.input') throw new Error("Error invoking remote method 'p2p:rpc-call': RpcError: rpc peer closed");
+        return { result: {} };
+      });
+      h.send('x');
+      await flush();
+      expect(errs[0]?.message).toBe('rpc peer closed');
+    });
+  });
 });

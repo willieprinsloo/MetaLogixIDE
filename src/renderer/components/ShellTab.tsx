@@ -29,7 +29,7 @@ import { createTerminalKeyHandler, terminalTabAction } from '@renderer/terminal-
 import type { TerminalTabAction } from '@renderer/shortcut-contract';
 import { SHORTCUT_COPY, REMOTE_INPUT_COPY } from '@renderer/shortcut-copy';
 import { registerClipboardOsc } from '@renderer/osc52';
-import { createToastThrottle } from '@renderer/toast-throttle';
+import { createCopyFailedToast, subscribeRemoteInputToasts } from '@renderer/remote-toasts';
 import { useShortcutPlatform } from '@renderer/shortcut-platform';
 import { useFontSettings } from '@renderer/fonts/font-settings-context';
 import { useTerminalFontSize } from '@renderer/fonts/terminal-font-size-context';
@@ -231,7 +231,7 @@ export function ShellTab({
     }));
     const oscDisposable = registerClipboardOsc(term, {
       writeText: (text) => navigator.clipboard.writeText(text),
-      onError: (err) => toast(SHORTCUT_COPY.clipboardErrorTitle('copy'), { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') }),
+      onError: createCopyFailedToast(),
     });
     const search = new SearchAddon();
     term.loadAddon(search);
@@ -295,13 +295,7 @@ export function ShellTab({
       remote.onData((d) => { setReconnecting(false); streamHandlersRef.current.data(d); });
       remote.onExit((code) => streamHandlersRef.current.exit(code));
       remote.onClose((reason) => { if (reason === 'reconnecting') setReconnecting(true); });
-      const inputToasts = createToastThrottle({ windowMs: 5000 });
-      remote.onInputError((e) => {
-        if (!inputToasts.shouldShow(e.kind)) return;
-        const host = remoteHostNameRef.current;
-        if (e.kind === 'too-large') toast(REMOTE_INPUT_COPY.tooLargeTitle(host), { kind: 'error', detail: REMOTE_INPUT_COPY.tooLargeDetail(e.limitBytes) });
-        else toast(REMOTE_INPUT_COPY.failedTitle(host), { kind: 'error', detail: e.message });
-      });
+      subscribeRemoteInputToasts(remote, () => remoteHostNameRef.current);
     }
     term.onData((data) => {
       if (remote) remote.send(data);
