@@ -284,7 +284,8 @@ type Frame =
   in order, at most 256 KiB raw per chunk
 - `drops.uploadCommit(uploadId)` → `{ path, platform }`; the host's staged
   path in its drop folder
-- `drops.uploadAbort(uploadId)` → `{ ok }`; deletes the partial file
+- `drops.uploadAbort(uploadId)` → `{ ok }`; deletes the partial file, or the
+  staged file when the upload committed less than 60 s ago
 
 **Filesystem**
 - `fs.list(path)` → `Dirent[]`
