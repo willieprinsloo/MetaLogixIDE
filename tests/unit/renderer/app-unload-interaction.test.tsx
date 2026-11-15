@@ -51,7 +51,11 @@ vi.mock('@renderer/api', () => ({
     },
   },
 }));
-vi.mock('motion/react', () => ({ AnimatePresence: ({ children }: { children: ReactNode }) => children }));
+vi.mock('motion/react', () => ({
+  AnimatePresence: ({ children }: { children: ReactNode }) => children,
+  useReducedMotion: () => true,
+  m: { div: ({ children, className }: { children: ReactNode; className?: string }) => <div className={className}>{children}</div> },
+}));
 vi.mock('@renderer/fonts/use-apply-ui-font', () => ({ useApplyUiFont: () => undefined }));
 vi.mock('@renderer/hooks/useTheme', () => ({ useTheme: () => ({
   mode: 'dark', effective: 'dark', cycle: () => undefined, setMode: () => undefined, setPalette: () => undefined,

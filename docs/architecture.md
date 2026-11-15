@@ -52,10 +52,15 @@ signaling relay. The main process starts it after IPC registration and it
 never blocks startup (`src/main/index.ts`, `src/main/p2p/index.ts`). Pairing,
 relay and device settings live in Settings → P2P
 (`src/renderer/components/settings/P2PSettings.tsx`). Paired machines appear
-in the sidebar's Machines section and in the Fleet view; a remote project
-opens in `RemoteProjectPane`, whose terminals are `ShellTab` with a remote
-source (`src/renderer/components/MachinesSection.tsx`, `FleetView.tsx`,
-`RemoteProjectPane.tsx`). See
+in the sidebar's machine switcher (see **Machine switcher** below) and in the
+Fleet view; a remote project opens in `RemoteProjectPane`, whose terminals
+are `ShellTab` with a remote source (`src/renderer/components/RemoteMachineList.tsx`,
+`FleetView.tsx`, `RemoteProjectPane.tsx`). The fleet list
+(`p2p:fleet-list`) holds paired machines only and never sets
+`FleetEntry.self`, so the renderer adds this machine itself. A host's
+`shells.alive` reply carries each shell's `agentState` (idle, busy, blocked
+or null; absent from older hosts), which tints that machine's switcher dot
+(`src/main/p2p/hub.ts`). See
 `docs/superpowers/specs/2026-10-26-metaide-p2p-design.md` for the protocol,
 identity and pairing design.
 
@@ -284,7 +289,7 @@ the lights on the 44px bar. The title-bar buttons are 32px with 3px right
 padding, so the last glyph ends 12px from the edge and mirrors the lights.
 The document title (`<project> — MetaLogix IDE`) is unchanged.
 
-**Activity bar and status bar.** The activity bar is 56px wide with 36px
+**Activity bar and status bar.** The activity bar is 80px wide (room for the macOS window controls) with 36px
 buttons; count badges sit at the top-right of their button. Settings is
 reached from the title-bar gear or ⌘,. The status bar is 34px at 12px text.
 
@@ -306,7 +311,7 @@ a live shell.
 Section headers (In use, Recents, Projects) align with the filter field and
 show a chevron on the right. The full list is titled "Projects" but stores its
 collapsed state under the legacy key "All projects", so existing state
-survives the rename. Rows are 34px tall. The scroll region runs to the
+survives the rename. Rows are 28px tall with 8px side padding. The scroll region runs to the
 sidebar's edge and never scrolls horizontally.
 
 The default width is 260px (`src/renderer/sidebar-width.ts`). Every existing
@@ -315,6 +320,47 @@ mount. A one-time migration, guarded by `metaide.sidebarWidth.migrated`,
 clears a stored 288 so the new default applies; any other width is kept.
 The resize handle sits above the sidebar and sheet so it can be dragged and
 double-clicked to reset.
+
+**Machine switcher.** With at least one paired machine, a slim
+frosted pill of dots floats centred over the bottom of the sidebar list, 8px
+above the sidebar's bottom edge: one dot per machine, this machine first,
+then paired machines sorted by name (deviceId breaks ties). The pill
+(`.machine-pill` in `styles.css`) is 22px tall and hugs the dots: translucent
+panel colour, backdrop blur, a 1px border, no shadow; it is opaque under
+Reduce transparency. It takes no layout space; the list scrolls underneath it
+and gets extra bottom padding (`pb-9`) so its last row can scroll clear of
+the pill. With none paired the row does not render and the sidebar markup is
+unchanged. Selecting a dot
+swaps the sidebar list to that machine and never changes the main pane. The
+selection is not persisted: the app starts on this machine, and if the shown
+machine is missing from a successful fleet refresh the sidebar falls back to
+this machine and stays there. This machine's name is the P2P device name,
+or "This machine" until it loads.
+
+- Pure rules (order, fallback, focus steps, labels, remote sections and
+  filter) live in `src/renderer/machine-dots.ts`. State lives in
+  `src/renderer/p2p/useMachineSwitcher.ts` and `useSelfDeviceName.ts`.
+- `MachineDots.tsx` is a `tablist` with one tab stop: Left/Right move and
+  wrap, Home/End jump, Enter/Space select. Dots are solid 8px circles
+  (`.machine-dot` in `styles.css`, no blur or shadow); the active dot is
+  10px; offline dots are a dimmed 1px outline with no fill. Each online
+  dot is filled with its machine's overall agent status colour (blocked,
+  then busy, then idle; the muted text colour when no agent runs), and only a Working dot pulses,
+  with its own smaller `machineDotPulse`. Tooltips and accessible names add
+  the status word (Working, Needs input, Idle). The pill is the only `no-drag`
+  part; around it the list or the drag-fill keep their own regions.
+- This machine's status comes from `useMachineAgentState`
+  (`src/renderer/hooks/useAgentStates.ts`), which re-renders only when the
+  aggregate changes. Paired machines' status comes from
+  `src/renderer/p2p/useFleetShells.ts`, one `shells.alive` call per online
+  peer every 5s; the same poll feeds the remote list's In use section.
+- `RemoteMachineList.tsx` renders a remote machine: a header (name, state,
+  last seen, Reconnect) followed by In use, Recents (6 at most unless
+  filtering) and Projects by root. An offline machine shows the header only.
+  Remote collapse state is not saved and resets on every switch.
+- The local list stays mounted (hidden) while a remote machine is shown, so
+  its order, collapse state and selection survive a switch. The filter field
+  applies to whichever list is shown.
 
 Each sidebar root shows a folder glyph in a stable hue.
 `src/renderer/root-hue.ts` hashes the root path (FNV-1a, trailing separators
@@ -988,6 +1034,17 @@ clears on any `pointerdown`, and on a `mousemove` with no button pressed.
 Neither event occurs during a drag, so a lost `dragend` cannot leave the
 guard disabled. A drag from the main window into a popped-out window counts
 as external there.
+### Full-screen terminal apps
+
+- While a shell shows the alternate screen (opencode, vim, …) the terminal
+  reclaims the 14px the fit addon reserves for a scrollbar (nothing scrolls
+  there), so the gap on the right matches the left padding. It refits on
+  entering and leaving the alternate screen; the shell padding never changes.
+- Diff-rendering TUIs such as opencode debounce SIGWINCH and repaint only
+  changed cells. 250 ms after the last resize, `PtyManager` briefly shrinks an
+  alternate-screen PTY by one row and restores it, which those apps treat as a
+  forced full repaint, so cells drawn at a stale size are cleaned up.
+
 ### Shell tab overlays
 
 `ShellTab.tsx` draws three overlays above its terminal: the exit overlay
@@ -1079,8 +1136,12 @@ Rules:
   remains idle.
 - The same foreground check recognises Codex and opencode typed into a
   terminal (by executable name or argv[0]). The tab is then labelled as that
-  agent while it runs, and the project records it as resumable. Only Claude's
-  screen is classified, so Codex and opencode read idle while they run.
+  agent while it runs, and the project records it as resumable.
+- Codex and opencode screens are classified from the bottom rows of the live
+  viewport (`agent-screen.ts`). Codex is busy while "esc to interrupt" shows
+  and blocked on a "Would you like to …" approval with answer choices.
+  opencode is busy while "esc interrupt" shows and blocked on "Permission
+  required" with Allow/Reject choices.
 - Claude shows busy for a working OSC title or recognized live activity,
   including a spinner above the persistent input box. A known current approval
   or confirmation form takes precedence and shows blocked. Unknown or stale
@@ -1096,7 +1157,7 @@ The local project-row X, selected-project header X, and palette Unload current s
 open one confirmation dialog. The action stops only shell index 0. Other shells,
 project records, files, and the selected project remain unchanged
 (`src/renderer/App.tsx:288-306,429-460,874-876`;
-`src/renderer/components/Sidebar.tsx:529-649`).
+`src/renderer/components/Sidebar.tsx:282-420`).
 
 The dialog inspects the live PTY generation and the agent state for shell 0.
 It warns when that agent is busy or needs input. It also warns when shell 0
@@ -1334,6 +1395,32 @@ Rules:
   the panel then records it as trusted, the same as a run in a terminal.
 - On a project switch the panel and the badge clear at once. A reply for a
   project the user has left is dropped.
+
+### AI usage meter
+
+The activity bar's bottom item shows Claude and OpenAI Codex subscription usage
+(`src/main/usage/`, `src/renderer/components/UsageMeter.tsx`). A thin bar per
+signed-in provider shows the weekly window; hovering opens a popover with the
+weekly and 5-hour windows and their reset countdowns. Claude's per-model weekly
+limits (`limits[]` entries of kind `weekly_scoped` with `scope.model`, e.g.
+Fable; older `seven_day_<model>` windows too) get their own popover row (no
+activity-bar bar). Plans without a 5-hour window (Claude and OpenAI top
+tiers) simply show no 5-hour row. Colours follow usage, lower is better: green below 70%,
+amber from 70%, red from 90%; only the bars are coloured, never the icon.
+
+- Main reads each CLI's own sign-in, read-only and never refreshed: Claude Code's
+  `Claude Code-credentials` keychain item (or `~/.claude/.credentials.json`) and
+  `~/.codex/auth.json`. It calls `api.anthropic.com/api/oauth/usage` and
+  `chatgpt.com/backend-api/wham/usage`. Only percentages and reset times cross IPC
+  (`usage:get`). The last raw response per provider is kept in
+  `<userData>/usage-debug/<provider>.json` (figures only) to diagnose field changes.
+- Each provider is cached for 10 minutes; a click refresh fetches at most once a
+  minute. HTTP 429 starts a backoff (Retry-After, at least 10 minutes) that a
+  click cannot skip, and the last good figures stay on show with a note.
+- Under `METAIDE_TEST_MODE=1` the keychain and network are never touched:
+  `METAIDE_USAGE_FIXTURE` (JSON keyed by provider, each `{ status, body,
+  retryAfter }`) stands in for the endpoints, and without it both providers are
+  signed out. `tests/e2e/usage-meter.spec.ts` drives the meter this way.
 
 ### Keep awake (macOS)
 

@@ -18,6 +18,7 @@ import { runMigrations } from '../../db/migrator';
 import { RootsRepo } from '../../repos/roots-repo';
 import { ProjectsRepo } from '../../repos/projects-repo';
 import { waitFor } from './_mockRelay';
+import { ShellInfo } from '../../../shared/p2p-contract';
 
 const MOCK = resolve(__dirname, '../../../../scripts/mock-claude.mjs');
 const migrationsDir = resolve(__dirname, '../../../../migrations');
@@ -29,7 +30,7 @@ let projects: ProjectsRepo;
 let pty: PtyManager;
 let projectId: number;
 
-function setup(extra: { auditMaxBytes?: number; events?: { aliveShellsChanged(): void; projectsChanged(): void } } = {}) {
+function setup(extra: { agentStatus?: { list(): unknown[] } | null; auditMaxBytes?: number; events?: { aliveShellsChanged(): void; projectsChanged(): void } } = {}) {
   const [ta, tb] = pairedTransports();
   const client = new RpcPeer(ta.asTransport());
   const server = new RpcPeer(tb.asTransport());
@@ -37,9 +38,10 @@ function setup(extra: { auditMaxBytes?: number; events?: { aliveShellsChanged():
   server.on('error', () => {});
   wireHub(server, {
     remoteDeviceId: 'dev-xyz',
-    services: { projects, ptyManager: pty } as never,
+    services: { projects, ptyManager: pty, ...('agentStatus' in extra ? { agentStatus: extra.agentStatus } : {}) } as never,
     auditLogPath: auditPath,
-    ...extra,
+    auditMaxBytes: extra.auditMaxBytes,
+    events: extra.events,
   });
   return { client, server };
 }
@@ -285,5 +287,71 @@ describe('audit log', () => {
     expect(existsSync(auditPath + '.2')).toBe(true);
     expect(existsSync(auditPath + '.3')).toBe(false);
     expect(readFileSync(auditPath, 'utf8').length).toBeLessThanOrEqual(300);
+  });
+});
+
+describe('shells.alive agent state', () => {
+  const aliveRows = [
+    { projectId: 1, shellIndex: 0, projectName: 'p', projectPath: '/p' },
+    { projectId: 1, shellIndex: 1, projectName: 'p', projectPath: '/p' },
+    { projectId: 2, shellIndex: 0, projectName: 'q', projectPath: '/q' },
+  ];
+  const entry = (projectId: number, shellIndex: number, state: string) => ({ projectId, shellIndex, agent: 'claude', state });
+  const alive = (extra: Parameters<typeof setup>[0]) => {
+    vi.spyOn(handlers, 'shells:alive-list').mockResolvedValue({ shells: aliveRows.map((r) => ({ ...r })) } as never);
+    return setup(extra).client.call('shells.alive', {}) as Promise<Array<Record<string, unknown>>>;
+  };
+
+  test.each(['idle', 'busy', 'blocked'] as const)('carries %s for a tracked shell and null for an untracked one', async (state) => {
+    const rows = await alive({ agentStatus: { list: () => [entry(1, 0, state)] } });
+    expect(rows.find((r) => r.projectId === 1 && r.shellIndex === 0)?.agentState).toBe(state);
+    expect(rows.find((r) => r.projectId === 1 && r.shellIndex === 1)?.agentState).toBeNull();
+    expect(rows.find((r) => r.projectId === 2)?.agentState).toBeNull();
+  });
+
+  test('keys state by project and shell, not by shell index alone', async () => {
+    const rows = await alive({ agentStatus: { list: () => [entry(2, 0, 'blocked'), entry(1, 1, 'busy')] } });
+    expect(rows.map((r) => r.agentState)).toEqual([null, 'busy', 'blocked']);
+  });
+
+  test('leaves the field off when no tracker is installed', async () => {
+    const rows = await alive({ agentStatus: null });
+    expect(rows).toHaveLength(3);
+    for (const r of rows) expect(r).not.toHaveProperty('agentState');
+  });
+
+  test('leaves the field off when the services carry no tracker at all', async () => {
+    const rows = await alive({});
+    for (const r of rows) expect(r).not.toHaveProperty('agentState');
+  });
+
+  test('keeps projectId, shellIndex and the other columns unchanged', async () => {
+    const rows = await alive({ agentStatus: { list: () => [entry(1, 0, 'busy')] } });
+    expect(rows.map((r) => [r.projectId, r.shellIndex, r.projectName, r.projectPath])).toEqual(
+      aliveRows.map((r) => [r.projectId, r.shellIndex, r.projectName, r.projectPath]),
+    );
+  });
+
+  test('every row parses with the ShellInfo schema, with and without a tracker', async () => {
+    for (const agentStatus of [{ list: () => [entry(1, 0, 'busy')] }, null]) {
+      const rows = await alive({ agentStatus });
+      for (const r of rows) expect(ShellInfo.safeParse(r).success).toBe(true);
+    }
+  });
+
+  test('does not change the local shells:alive-list result', async () => {
+    const spy = vi.spyOn(handlers, 'shells:alive-list').mockResolvedValue({ shells: aliveRows.map((r) => ({ ...r })) } as never);
+    await setup({ agentStatus: { list: () => [entry(1, 0, 'busy')] } }).client.call('shells.alive', {});
+    const local = await spy.mock.results[0]!.value;
+    for (const r of local.shells as object[]) expect(r).not.toHaveProperty('agentState');
+  });
+});
+
+describe('ShellInfo contract', () => {
+  test('accepts the old shape, null and each literal; rejects other values', () => {
+    expect(ShellInfo.safeParse({ projectId: 1, shellIndex: 0 }).success).toBe(true);
+    expect(ShellInfo.safeParse({ projectId: 1, shellIndex: 0, agentState: null }).success).toBe(true);
+    for (const v of ['idle', 'busy', 'blocked']) expect(ShellInfo.safeParse({ projectId: 1, shellIndex: 0, agentState: v }).success).toBe(true);
+    expect(ShellInfo.safeParse({ projectId: 1, shellIndex: 0, agentState: 'weird' }).success).toBe(false);
   });
 });

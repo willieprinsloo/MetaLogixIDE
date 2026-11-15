@@ -25,9 +25,9 @@ function badgeOf(html: string, id: string): { classes: string[]; text: string } 
 }
 
 describe('ActivityBar geometry (AC10)', () => {
-  it('bar is 56px wide', () => {
+  it('bar is 80px wide', () => {
     const c = classesOf(navTag(render()));
-    expect(c).toContain('w-14');
+    expect(c).toContain('w-20');
     expect(c).not.toContain('w-11');
   });
   it('every rail button offers a 44px touch target with 10px radius', () => {

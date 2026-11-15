@@ -122,16 +122,23 @@ describe('Agent status transitions', () => {
     expect(tracker.readForGuard(1, 0, 'g2')).toEqual({ agent: 'claude', state: 'busy' });
   });
 
-  it('detects Codex and opencode started by hand in a terminal; they read idle and clear when they exit', async () => {
+  it('detects Codex and opencode started by hand and classifies their screens; they clear when they exit', async () => {
     let running: AgentKind | null = 'codex';
+    let rows = ['• Working (4s • esc to interrupt)'];
     const observe = vi.fn(async (): Promise<AgentKind | null> => running);
-    const liveStatus = vi.fn(async () => ({ rows: ['✻ Thinking…', 'esc to interrupt'], title: '' }));
+    const liveStatus = vi.fn(async () => ({ rows, title: '' }));
     const tracker = new AgentStatusTracker({ liveShell: () => ({ pid: 10, generation: 'g1', agent: null }), liveStatus }, observe, 'darwin');
     tracker.spawn({ ...identity, agent: null });
     await tracker.refresh();
-    expect(tracker.list()).toEqual([{ ...shell, agent: 'codex', state: 'idle' }]);
-    expect(liveStatus, 'only Claude screens are classified').not.toHaveBeenCalled();
+    expect(tracker.list()).toEqual([{ ...shell, agent: 'codex', state: 'busy' }]);
+    rows = ['Would you like to run the following command?', '› 1. Yes, proceed (y)'];
+    await tracker.refresh();
+    expect(tracker.list()).toEqual([{ ...shell, agent: 'codex', state: 'blocked' }]);
     running = 'opencode';
+    rows = ['  ⠋ esc interrupt'];
+    await tracker.refresh();
+    expect(tracker.list()).toEqual([{ ...shell, agent: 'opencode', state: 'busy' }]);
+    rows = ['  Ask anything…'];
     await tracker.refresh();
     expect(tracker.list()).toEqual([{ ...shell, agent: 'opencode', state: 'idle' }]);
     running = null;

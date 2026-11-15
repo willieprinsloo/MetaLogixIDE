@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useFleet } from '@renderer/p2p/useFleet';
 import { useRemoteAliveShells } from '@renderer/p2p/useRemoteAliveShells';
 import type { FleetEntry } from '@shared/p2p-contract';
-import type { OpenPaneRequest } from './MachinesSection';
+import type { OpenPaneRequest } from '@renderer/machine-switcher-contract';
 
 interface AliveShell { projectId: number; projectName: string; projectPath: string; shellIndex: number; launchArgv: string[]; }
 
@@ -12,7 +12,7 @@ interface AliveShell { projectId: number; projectName: string; projectPath: stri
  * (locally: switch project + shell; remotely: open the remote pane).
  *
  * Builds on existing p2p plumbing — the local shells come from the same
- * `shells:alive-list` IPC the MachinesSection uses; remote shells come
+ * `shells:alive-list` IPC the sidebar uses; remote shells come
  * from `useRemoteAliveShells`.
  */
 export function FleetView({

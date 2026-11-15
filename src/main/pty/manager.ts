@@ -35,7 +35,14 @@ interface Entry {
   /** Output received but not yet emitted; flushed as one `data` event per OUTPUT_FLUSH_MS. */
   pending: string[];
   flushTimer: ReturnType<typeof setTimeout> | null;
+  /** Pending full-screen repaint nudge after resizes settle; see `scheduleRepaintNudge`. */
+  repaintTimer: ReturnType<typeof setTimeout> | null;
 }
+
+/** Quiet period after the last resize before a full-screen app is nudged to repaint. */
+export const REPAINT_SETTLE_MS = 250;
+/** Gap between the two nudge resizes; well inside opentui's 100 ms resize debounce. */
+const REPAINT_NUDGE_GAP_MS = 30;
 
 const key = (p: number, s: number) => `${p}:${s}`;
 const EARLY_BUFFER_MS = 3000;
@@ -131,7 +138,7 @@ export class PtyManager extends EventEmitter {
       scrollback: new RollingScrollback(), screen: new ScreenMirror(cols, rows),
       cmdStartedAt: null, lastDataAt: Date.now(), cmdNotified: false,
       ports: new Set<number>(),
-      pending: [], flushTimer: null,
+      pending: [], flushTimer: null, repaintTimer: null,
     };
     this.entries.set(k, entry);
     pty.onData((data: string) => this.receive(entry, data));
@@ -298,6 +305,30 @@ export class PtyManager extends EventEmitter {
     e.pty.resize(cols, rows);
     e.screen.resize(cols, rows);
     e.cols = cols; e.rows = rows;
+    this.scheduleRepaintNudge(e);
+  }
+
+  /**
+   * Diff-rendering full-screen TUIs (opencode/opentui) debounce SIGWINCH and keep drawing
+   * old-size frames meanwhile, and on open the replayed snapshot may not match their size;
+   * the stale cells then never get repainted. Once resizes settle, briefly shrink the PTY
+   * one row and restore it: a debounced resize that ends at an unchanged size makes such
+   * apps repaint every cell. Only alternate-screen apps are nudged, never a plain shell.
+   */
+  private scheduleRepaintNudge(e: Entry): void {
+    if (e.repaintTimer) clearTimeout(e.repaintTimer);
+    e.repaintTimer = setTimeout(() => {
+      e.repaintTimer = null;
+      const live = this.entries.get(key(e.projectId, e.shellIndex));
+      if (live !== e || e.rows < 3 || !e.screen.isAlternateScreen()) return;
+      const { cols, rows } = e;
+      try { e.pty.resize(cols, rows - 1); } catch { return; }
+      e.repaintTimer = setTimeout(() => {
+        e.repaintTimer = null;
+        if (this.entries.get(key(e.projectId, e.shellIndex)) !== e) return;
+        try { e.pty.resize(e.cols, e.rows); } catch { /* exited between the two resizes */ }
+      }, REPAINT_NUDGE_GAP_MS);
+    }, REPAINT_SETTLE_MS);
   }
 
   /** Signals only the current primary launch; missing and replaced generations never reach the PTY. */
@@ -392,6 +423,7 @@ export class PtyManager extends EventEmitter {
   /** Drop the entry and its headless terminal, unless a respawn already replaced it. */
   private releaseEntry(k: string, entry: Entry): void {
     if (this.entries.get(k) !== entry) return;
+    if (entry.repaintTimer) { clearTimeout(entry.repaintTimer); entry.repaintTimer = null; }
     entry.screen.dispose();
     this.entries.delete(k);
     this.clearPorts(entry);

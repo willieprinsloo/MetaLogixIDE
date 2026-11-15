@@ -8,7 +8,7 @@ vi.mock('@renderer/api', () => ({ api: { invoke: (...a: unknown[]) => invoke(...
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
     unicode = { activeVersion: '' }; cols = 80; rows = 24; options: Record<string, unknown> = {};
-    buffer = { active: { getLine: () => undefined } };
+    buffer = { active: { getLine: () => undefined }, onBufferChange: () => ({ dispose() {} }) };
     loadAddon() {} open() {} write() {} reset() {} dispose() {} focus() {} paste() {} refresh() {}
     attachCustomKeyEventHandler() {} registerLinkProvider = vi.fn(() => ({ dispose() {} }));
     onData() { return { dispose() {} }; } onResize() { return { dispose() {} }; } onSelectionChange() { return { dispose() {} }; }

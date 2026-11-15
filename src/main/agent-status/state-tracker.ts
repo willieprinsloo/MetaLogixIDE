@@ -1,7 +1,7 @@
 /** Live per-PTY agent identity and dot state, never changed by Claude hooks. */
 import type { AgentKind, AgentShellStateEntry, AgentState } from '@shared/agent-state';
 import type { ShellKey } from '@main/claude-hooks/session-registry';
-import { classifyClaudeScreen } from './claude-screen';
+import { classifyAgentScreen } from './agent-screen';
 
 /** Immutable identity emitted after each PTY spawn, before its first status observation. */
 export interface SpawnIdentity extends ShellKey {
@@ -48,7 +48,7 @@ export class AgentStatusTracker {
       identity,
       agent: identity.agent,
       state: 'idle',
-      unavailable: identity.agent === 'claude' || (identity.agent === null && this.platform !== 'win32'),
+      unavailable: identity.agent !== null || this.platform !== 'win32',
     });
     if (identity.agent) this.publish(identity, identity.agent, 'idle');
   }
@@ -121,14 +121,13 @@ export class AgentStatusTracker {
     }
     if (!this.current(entry)) return;
     let state: AgentState = 'idle';
-    // Only Claude's screen is classified; Codex and opencode read idle while they run.
-    if (agent === 'claude') {
+    if (agent) {
       try {
         const { rows, title } = await this.pty.liveStatus(
           entry.identity.projectId,
           entry.identity.shellIndex,
         );
-        state = classifyClaudeScreen(rows, title);
+        state = classifyAgentScreen(agent, rows, title);
       } catch {
         console.warn('[agent-status] screen sample unavailable');
         unavailable = true;

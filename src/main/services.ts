@@ -22,6 +22,7 @@ import { createDropStaging, defaultDropDir, type DropStaging } from './drops/sta
 import { createClipboardImage, type ClipboardImage } from './drops/clipboard-image';
 import { listMiseTasks, type MiseLister } from './domain/mise-cli';
 import type { KeepAwakeController } from './keep-awake/port';
+import type { UsageService } from './usage/service';
 import type { P2PServices } from './p2p/types';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -53,6 +54,8 @@ export interface Services {
   keepAwake: KeepAwakeController | null;
   homeDir: string;
   migrationsDir: string;
+  /** Subscription usage meters; created on first `usage:get`. */
+  usage?: UsageService;
   /** Attached by `startP2P`; absent until the P2P lifecycle has started. */
   p2p?: P2PServices;
 }

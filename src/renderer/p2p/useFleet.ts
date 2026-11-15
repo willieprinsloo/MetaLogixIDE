@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import type { FleetEntry } from '../../shared/p2p-contract';
+import { sameMachines } from '../machine-dots';
 
 // TODO: replace polling with a push channel once main emits `p2p:fleet-changed`
 // (not present in IpcEvents yet).
@@ -16,7 +17,7 @@ export function useFleet(): { machines: FleetEntry[]; loading: boolean; error?: 
     api.invoke('p2p:fleet-list', undefined).then(
       (res) => {
         if (!alive.current) return;
-        setMachines(res.fleet);
+        setMachines((prev) => (sameMachines(prev, res.fleet) ? prev : res.fleet));
         setError(undefined);
         setLoading(false);
       },

@@ -413,7 +413,7 @@ test('AC24b: the scroll region never overflows sideways and every row sits insid
   }
 });
 
-test('AC24c: project rows are 34px tall with 10px side padding, 8px radius and a 10px dot-to-name gap', async () => {
+test('AC24c: project rows are 28px tall with 8px side padding, 8px radius and a 10px dot-to-name gap', async () => {
   await seedSections();
   await markScrollRegion();
   const rows = win.locator('[data-e2e="scroll-region"] [data-testid="project-row"]');
@@ -424,8 +424,8 @@ test('AC24c: project rows are 34px tall with 10px side padding, 8px radius and a
   for (const row of await rows.all()) {
     const name = (await row.textContent())?.trim() ?? '';
     const wrapper = row.locator('xpath=..');
-    expect((await box(wrapper)).height, `${name} height`).toBe(34);
-    expect([await css(wrapper, 'padding-left'), await css(wrapper, 'padding-right')], `${name} padding`).toEqual(['10px', '10px']);
+    expect((await box(wrapper)).height, `${name} height`).toBe(28);
+    expect([await css(wrapper, 'padding-left'), await css(wrapper, 'padding-right')], `${name} padding`).toEqual(['8px', '8px']);
     expect(await radii(wrapper), `${name} radius`).toEqual(['8px', '8px', '8px', '8px']);
     const gap = await row.evaluate((el) => {
       const [dot, label] = [...el.children];

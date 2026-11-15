@@ -81,6 +81,7 @@ vi.mock('@xterm/xterm', () => ({
       normal: { baseY: 0, viewportY: 0 },
       alternate: { baseY: 0, viewportY: 0 },
       active: { baseY: 0, viewportY: 0 },
+      onBufferChange: () => ({ dispose() {} }),
     };
     writes: string[] = [];
     pending: Array<() => void> = [];
