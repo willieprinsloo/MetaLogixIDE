@@ -353,10 +353,23 @@ or "This machine" until it loads.
   (`src/renderer/hooks/useAgentStates.ts`), which re-renders only when the
   aggregate changes. Paired machines' status comes from
   `src/renderer/p2p/useFleetShells.ts`, one `shells.alive` call per online
-  peer every 5s; the same poll feeds the remote list's In use section.
+  peer every 5s. The same poll gives each peer's live project ids and each
+  project's worst agent state; remote live rows show the same `StatusDot`
+  as local ones (no agent, or an old host, reads as idle).
+- **Shared In use.** With a machine paired, one In use section
+  (`section-in-use`) is the first item of the list on every dot: this
+  machine's live projects first (stable order), then each online peer's, in
+  dot order and by name, each with a muted machine-name tag. Remote rows
+  (`RemoteInUseRows` in `SharedInUseSection.tsx`) open the remote pane and
+  never switch the dot. Order and filter rules live in
+  `src/renderer/fleet-in-use.ts`; peer project names come from
+  `src/renderer/p2p/useFleetInUse.ts`, which calls `projects.list` only when
+  a peer's live set holds an unknown id (one request per peer at a time,
+  retried on a later poll after a failure). The heading dot shows the worst
+  state across the rows shown. Neither machine list repeats In use.
 - `RemoteMachineList.tsx` renders a remote machine: a header (name, state,
-  last seen, Reconnect) followed by In use, Recents (6 at most unless
-  filtering) and Projects by root. An offline machine shows the header only.
+  last seen, Reconnect) followed by Recents (6 at most unless
+  filtering, without live projects) and Projects by root. An offline machine shows the header only.
   Remote collapse state is not saved and resets on every switch.
 - The local list stays mounted (hidden) while a remote machine is shown, so
   its order, collapse state and selection survive a switch. The filter field
