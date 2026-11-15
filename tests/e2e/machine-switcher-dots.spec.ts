@@ -276,7 +276,6 @@ test('AC11/AC22/AC31/AC13/AC14: selecting an offline machine shows its header, l
   await expect(win.getByTestId(MACHINE_TESTIDS.remoteProjectRow), 'offline panel lists no projects').toHaveCount(0);
   await expect(win.getByTestId(MACHINE_TESTIDS.localList), 'local list swapped out').toBeHidden();
   await expect(win.getByTestId('sidebar-filter'), 'filter stays visible for the offline panel (AC31)').toBeVisible();
-  await expect(win.getByTestId(MACHINE_TESTIDS.remoteInUse)).toHaveCount(0);
   await expect(win.getByTestId(MACHINE_TESTIDS.remoteRecents)).toHaveCount(0);
   // AC31: the header is the first item of the scrolling list area.
   expect(await win.getByTestId(MACHINE_TESTIDS.remoteList).evaluate((el, id) => el.firstElementChild?.getAttribute('data-testid') === id,
@@ -499,6 +498,74 @@ test('AC28: every dot button is at least 20x20 and keyboard focus draws the 2px 
   expect(colourDistance({ ...outline, a: 1 }, { ...accent, a: 1 }), 'focus ring is the accent colour').toBeLessThan(12);
 });
 
+/** In document order, the first of the sidebar's list blocks (In use, remote header, Recents, Projects) inside the scroll area. */
+const listBlockOrder = () => scrollArea().evaluate((el, ids) => {
+  const found = ids.flatMap((id) => {
+    const n = el.querySelector(`[data-testid="${id}"]`);
+    return n ? [{ id, n }] : [];
+  });
+  found.sort((a, b) => (a.n.compareDocumentPosition(b.n) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+  return found.map((f) => f.id);
+}, ['section-in-use', MACHINE_TESTIDS.remoteHeader, 'section-recents', 'section-all']);
+const inUse = () => win.getByTestId('section-in-use');
+const inUseDot = () => win.getByTestId('section-in-use-toggle').getByTestId('claude-dot');
+
+test('AC36/AC31/AC16 (this machine, offline peers): the shared In use section is first on the local dot and stays first, above the remote header, on an offline peer dot', async () => {
+  await selectDot(LOCAL_MACHINE_ID);
+  const id = await projectId(win, PROJECT);
+  await waitForShell(win, id, 0, 'mock-claude ready');
+  const lbl = AGGREGATE_STATE_LABEL;
+
+  // Local dot: In use is present (positive control: the live project is listed), exactly once, and first.
+  await expect(inUse()).toBeVisible();
+  await expect(inUse().locator('[data-testid="project-row"]').filter({ has: win.getByText(PROJECT, { exact: true }) })).toHaveCount(1);
+  await expect(aside().getByText('In use', { exact: true }), 'AC36: local list has no second In use').toHaveCount(1);
+  await expect(win.getByTestId('section-in-use')).toHaveCount(1);
+  expect((await listBlockOrder())[0], 'In use is the first list block on the local dot').toBe('section-in-use');
+  await expect(inUse().getByTestId('in-use-machine-tag'), 'AC37: local rows have no machine tag').toHaveCount(0);
+
+  // Offline peer dot: In use stays visible and first; the remote header is below it (AC31); no remote In use of its own (AC16).
+  for (const key of [ALPHA, ZED]) {
+    await selectDot(key);
+    await expect(win.getByTestId(MACHINE_TESTIDS.remoteHeader)).toBeVisible();
+    await expect(inUse()).toBeVisible();
+    await expect(win.getByTestId('section-in-use'), 'exactly one In use').toHaveCount(1);
+    await expect(win.getByTestId('switcher-remote-in-use'), 'no remote-owned In use').toHaveCount(0);
+    await expect(inUse().locator('[data-testid="project-row"]').filter({ has: win.getByText(PROJECT, { exact: true }) }), 'live local project still listed').toHaveCount(1);
+    const order = await listBlockOrder();
+    expect(order[0], 'In use is first on an offline peer dot').toBe('section-in-use');
+    expect(order[1], 'remote header directly below In use').toBe(MACHINE_TESTIDS.remoteHeader);
+    await expect(win.getByTestId('section-all'), 'local Projects section is hidden in the remote view').toBeHidden();
+    const iu = await box(inUse());
+    const hd = await box(win.getByTestId(MACHINE_TESTIDS.remoteHeader));
+    expect(iu.y + iu.height, 'header is laid out below In use').toBeLessThanOrEqual(hd.y + 0.5);
+    // It scrolls with the list (AC31): both live inside the scrolling area.
+    expect(await scrollArea().evaluate((el) => el.contains(document.querySelector('[data-testid="section-in-use"]')) && el.contains(document.querySelector('[data-testid="switcher-remote-header"]')))).toBe(true);
+  }
+
+  // AC40 (local part) is asserted in the AC34/AC35 test below, which drives the agent state; a command sent here would scroll the banner that test waits for.
+  await expect(inUseDot(), 'heading dot renders').toHaveCount(1);
+  await selectDot(LOCAL_MACHINE_ID);
+});
+
+test('AC41: with no paired machine, In use is unchanged: first, local rows only, no tags, no band', async () => {
+  writeFleet(isolatedHome, []);
+  await expectDotCount(0);
+  await expect(band()).toHaveCount(0);
+  await expect(projectRow(PROJECT), 'positive control: list renders').toBeVisible();
+  await expect(inUse()).toBeVisible();
+  await expect(win.getByTestId('section-in-use')).toHaveCount(1);
+  await expect(inUse().locator('[data-testid="project-row"]').filter({ has: win.getByText(PROJECT, { exact: true }) })).toHaveCount(1);
+  expect((await listBlockOrder())[0]).toBe('section-in-use');
+  await expect(win.locator('[data-testid^="machine-"]')).toHaveCount(0);
+  await expect(inUseDot()).toHaveCount(1);
+
+  // Restore the shared fixture for the remaining tests.
+  writeFleet(isolatedHome, PEERS);
+  await expectDotCount(4);
+  await expectActive(LOCAL_MACHINE_ID);
+});
+
 test('AC34/AC35 (this machine): the dot tint follows the local agent state; only busy pulses; tooltip and name carry the status word', async () => {
   await selectDot(LOCAL_MACHINE_ID);
   const id = await projectId(win, PROJECT);
@@ -509,6 +576,12 @@ test('AC34/AC35 (this machine): the dot tint follows the local agent state; only
   const step = async (command: string, state: AgentState, token: '--agent-idle' | '--agent-busy' | '--agent-blocked') => {
     await sendLine(win, id, 0, command);
     await expect(marker(LOCAL_MACHINE_ID)).toHaveAttribute('data-agent-state', state, { timeout: 15_000 });
+    // AC40 (local part): the In use heading dot shows the same state, here and with an offline peer's dot selected.
+    await expect(inUseDot()).toHaveAttribute('data-claude-state', state, { timeout: 15_000 });
+    await expect(inUseDot()).toHaveAttribute('aria-label', lbl[state]);
+    await selectDot(ALPHA);
+    await expect(inUseDot(), 'AC40: shared heading dot persists on an offline peer dot').toHaveAttribute('data-claude-state', state);
+    await selectDot(LOCAL_MACHINE_ID);
     await win.waitForTimeout(400); // fill transition
     // The dot is the solid agent colour.
     const tint = await elementColour(win, marker(LOCAL_MACHINE_ID), 'background-color');
