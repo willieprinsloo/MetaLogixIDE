@@ -460,6 +460,22 @@ describe('Sidebar shared In use section (AC36–AC42)', () => {
     expect(localRows()).toEqual(['home-app']);
   });
 
+  test('a live peer project whose name the shared section has not got yet stays in that peer\'s Recents (AC36)', async () => {
+    let settle!: (v: unknown) => void;
+    let towerCalls = 0;
+    const towerRows = { result: [{ ...REMOTE_PROJECTS[0]!, lastOpenedAt: '2026-01-01T00:00:00.000Z' }] };
+    remoteProjects.tower = () => (++towerCalls === 1 ? new Promise((r) => { settle = r; }) : Promise.resolve(towerRows));
+    await renderSidebar();
+    await waitFor(() => expect(towerCalls).toBe(1));
+    fireEvent.click(await screen.findByTestId(MACHINE_TESTIDS.dot('tower')));
+    const recents = await screen.findByTestId(MACHINE_TESTIDS.remoteRecents);
+    expect(within(recents).getAllByTestId(MACHINE_TESTIDS.remoteProjectRow).map((r) => r.textContent)).toEqual(['alpha']);
+    expect(remoteView()).toEqual(['zulu@Orbit']);
+    await act(async () => { settle(towerRows); await Promise.resolve(); });
+    await waitFor(() => expect(remoteView()).toEqual(['zulu@Orbit', 'alpha@Tower']));
+    expect(screen.queryByTestId(MACHINE_TESTIDS.remoteRecents)).toBeNull();
+  });
+
   test('collapsing the section hides local and remote rows together', async () => {
     await renderSidebar();
     await waitFor(() => expect(remoteRows()).toHaveLength(3));

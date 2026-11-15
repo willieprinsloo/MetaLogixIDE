@@ -19,6 +19,8 @@ interface Props {
   filter: string;
   /** Live project ids from the switcher's shared `shells.alive` poll; the list polls nothing itself. */
   aliveProjectIds: ReadonlySet<number>;
+  /** The ids the shared In use section shows for this machine; Recents leaves out these and only these (AC36). */
+  inUseProjectIds: ReadonlySet<number>;
   /** Each live project's worst agent state from the same poll; a live id with no entry reads as idle. */
   projectStates: ReadonlyMap<number, AgentState>;
   onOpenPane?: (req: OpenPaneRequest) => void;
@@ -32,11 +34,12 @@ interface Props {
  * carry the peer's agent status dot (AC42). Mount it under `key={deviceId}` so each switch starts
  * with fresh, all-open sections and refetches.
  */
-export function RemoteMachineList({ machine, filter, aliveProjectIds, projectStates, onOpenPane }: Props) {
+export function RemoteMachineList(props: Props) {
+  const { machine } = props;
   return (
     <div data-testid={MACHINE_TESTIDS.remoteList} className="flex flex-col gap-7">
       <RemoteHeader machine={machine} />
-      {machine.online && <RemoteMachineProjects machine={machine} filter={filter} aliveProjectIds={aliveProjectIds} projectStates={projectStates} onOpenPane={onOpenPane} />}
+      {machine.online && <RemoteMachineProjects {...props} />}
     </div>
   );
 }
@@ -103,12 +106,12 @@ function RemoteHeader({ machine }: { machine: MachineDot }) {
   );
 }
 
-function RemoteMachineProjects({ machine, filter, aliveProjectIds, projectStates, onOpenPane }: Props) {
+function RemoteMachineProjects({ machine, filter, aliveProjectIds, inUseProjectIds, projectStates, onOpenPane }: Props) {
   const { projects, loading, error } = useRemoteProjects(machine.deviceId);
   const { roots, loading: rootsLoading } = useRemoteRoots(machine.deviceId);
   const sections = useMemo(
-    () => remoteSections(projects, roots, aliveProjectIds, filter),
-    [projects, roots, aliveProjectIds, filter],
+    () => remoteSections(projects, roots, inUseProjectIds, filter),
+    [projects, roots, inUseProjectIds, filter],
   );
   const open = (p: Project) => onOpenPane?.({
     source: { kind: 'remote', deviceId: machine.deviceId },

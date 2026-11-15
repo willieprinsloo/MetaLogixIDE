@@ -514,7 +514,6 @@ test('AC36/AC31/AC16 (this machine, offline peers): the shared In use section is
   await selectDot(LOCAL_MACHINE_ID);
   const id = await projectId(win, PROJECT);
   await waitForShell(win, id, 0, 'mock-claude ready');
-  const lbl = AGGREGATE_STATE_LABEL;
 
   // Local dot: In use is present (positive control: the live project is listed), exactly once, and first.
   await expect(inUse()).toBeVisible();
@@ -530,7 +529,6 @@ test('AC36/AC31/AC16 (this machine, offline peers): the shared In use section is
     await expect(win.getByTestId(MACHINE_TESTIDS.remoteHeader)).toBeVisible();
     await expect(inUse()).toBeVisible();
     await expect(win.getByTestId('section-in-use'), 'exactly one In use').toHaveCount(1);
-    await expect(win.getByTestId('switcher-remote-in-use'), 'no remote-owned In use').toHaveCount(0);
     await expect(inUse().locator('[data-testid="project-row"]').filter({ has: win.getByText(PROJECT, { exact: true }) }), 'live local project still listed').toHaveCount(1);
     const order = await listBlockOrder();
     expect(order[0], 'In use is first on an offline peer dot').toBe('section-in-use');

@@ -1,9 +1,9 @@
 /**
  * Shared In use rules (docs/specs/machine-switcher-dots.md AC36, AC39, AC40): which paired
- * machines' live projects show, in what order, under the filter, and the heading's agent state.
+ * machines' live projects show, in what order, under the filter, which ids each machine shows, and the heading's agent state.
  */
 import { describe, expect, it } from 'vitest';
-import { inUseHeadingState, remoteInUseRows } from '@renderer/fleet-in-use';
+import { inUseHeadingState, inUseIdsByMachine, remoteInUseRows } from '@renderer/fleet-in-use';
 import { LOCAL_MACHINE_ID, type MachineDot } from '@renderer/machine-switcher-contract';
 import type { PeerShells } from '@renderer/machine-dots';
 import type { AgentState } from '@shared/agent-state';
@@ -79,5 +79,20 @@ describe('inUseHeadingState', () => {
     expect(inUseHeadingState(null, [row('busy')])).toBe('busy');
     expect(inUseHeadingState(null, [])).toBe('idle');
     expect(inUseHeadingState('busy', [])).toBe('busy');
+  });
+});
+
+describe('inUseIdsByMachine', () => {
+  const row = (deviceId: string, projectId: number) => ({ deviceId, deviceName: deviceId, projectId, name: `p${projectId}`, state: 'idle' as const });
+
+  it('groups the shown rows\' project ids by machine', () => {
+    const byMachine = inUseIdsByMachine([row('a', 5), row('t', 2), row('t', 1)]);
+    expect([...byMachine.keys()]).toEqual(['a', 't']);
+    expect([...byMachine.get('t')!]).toEqual([2, 1]);
+    expect([...byMachine.get('a')!]).toEqual([5]);
+  });
+
+  it('is empty with no rows, so a machine with none shown has no entry', () => {
+    expect(inUseIdsByMachine([]).size).toBe(0);
   });
 });

@@ -44,3 +44,13 @@ export function remoteInUseRows(
 export function inUseHeadingState(local: AgentState | null, rows: readonly RemoteInUseRow[]): AgentState {
   return machineAgentState([local, ...rows.map((r) => r.state)]) ?? 'idle';
 }
+
+/** The project ids the shared In use section shows, per machine (AC36): a remote list's Recents leaves out exactly these. A machine with no shown row has no entry. */
+export function inUseIdsByMachine(rows: readonly RemoteInUseRow[]): ReadonlyMap<string, ReadonlySet<number>> {
+  const byMachine = new Map<string, Set<number>>();
+  for (const r of rows) {
+    const ids = byMachine.get(r.deviceId) ?? new Set<number>();
+    byMachine.set(r.deviceId, ids.add(r.projectId));
+  }
+  return byMachine;
+}
