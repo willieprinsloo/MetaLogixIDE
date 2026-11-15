@@ -1049,6 +1049,21 @@ clears on any `pointerdown`, and on a `mousemove` with no button pressed.
 Neither event occurs during a drag, so a lost `dragend` cannot leave the
 guard disabled. A drag from the main window into a popped-out window counts
 as external there.
+
+### Remote terminal uploads
+
+A file dropped on, or an image pasted into, a remote terminal is sent to that
+machine and staged in its own drop folder; the path typed is the host's path,
+escaped for the host's platform. Limits and copy live in
+`src/shared/remote-upload-contract.ts`.
+
+| Layer | Where | What |
+|---|---|---|
+| Renderer routing | `src/renderer/remote-upload/` | `planRemoteDrop` refuses folders, refuses files over 50 MB, asks once per drop for files over 10 MB, uploads one file at a time and types the successes in order; a cancel types nothing. `remote-clipboard-deps.ts` sends the clipboard image (confirming over 10 MB). `useUploadProgress` drives `UploadProgressOverlay.tsx`, which appears after 500 ms with Cancel. Local tabs keep the local deps unchanged. |
+| Viewer main | `src/main/p2p/upload-client.ts`, IPC `p2p:upload`, `p2p:upload-cancel`, `drops:stat-app-file` | Reads the bytes (OS file from the renderer, Files-tab file and clipboard image in main), calls `drops.uploadBegin` before any bytes so an old host fails fast, sends 256 KiB chunks one at a time, emits `p2p:upload-progress`, and maps host errors to a typed `UploadResult`. It never rejects. |
+| Host | `src/main/p2p/uploads.ts`, `hub.ts` (`drops.upload*`) | Per-link sessions share one host-wide quota (`createUploadQuota`). Begin refuses over 50 MB, over 4 uploads per device across all its links, or when the drop folder plus every open upload's reserved bytes would exceed 500 MB after pruning files older than 24 h. Chunks must arrive in order and never overrun. Abort, a 60 s idle timeout and link close delete the partial file; an abort or link close while a commit is in flight removes the staged file too, and so does an abort within 60 s after the commit. A link close after the commit keeps the file, because the viewer may already have typed its path. Audit lines record names and sizes, never bytes. |
+| Staging | `src/main/drops/staging.ts` | `openUpload` writes an owner-only `.<random>.part` file and finalises it with a no-overwrite link under the cleaned file name; `usageBytes` counts the folder. |
+
 ### Full-screen terminal apps
 
 - While a shell shows the alternate screen (opencode, vim, …) the terminal

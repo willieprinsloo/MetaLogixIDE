@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   chmodSync,
   existsSync,
+  symlinkSync,
+  writeFileSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -10,7 +12,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { dropHandlers } from '@main/drops/handlers';
+import { dropHandlers, locateAppFile } from '@main/drops/handlers';
 import { createDropStaging } from '@main/drops/staging';
 import type { ClipboardImage } from '@main/drops/clipboard-image';
 import type { Services } from '@main/services';
@@ -51,6 +53,8 @@ const resolveAppFile = (req: unknown) =>
   dropHandlers['drops:resolve-app-file'](services(), req as AppFileDragPayload);
 const stageFile = (req: unknown) =>
   dropHandlers['drops:stage-file'](services(), req as StageFileRequest);
+const statAppFile = (req: unknown) =>
+  dropHandlers['drops:stat-app-file'](services(), req as AppFileDragPayload);
 const stageClipboard = () => dropHandlers['drops:stage-clipboard-image'](services(), undefined);
 
 beforeEach(() => {
@@ -231,6 +235,74 @@ describe('drops:stage-clipboard-image (AC12, AC13, AC14)', () => {
     await expect(dropHandlers['drops:stage-clipboard-image'](s, undefined)).resolves.toEqual({
       kind: 'failed',
       reason: 'clipboard unavailable',
+    });
+  });
+});
+
+describe('drops:stat-app-file (AC-D2, AC-D9, B-S7)', () => {
+  beforeEach(() => {
+    writeFileSync(join(projectRoot, 'src', 'main.ts'), 'x'.repeat(42));
+  });
+
+  it('returns the base name and size of a file inside the project', async () => {
+    await expect(statAppFile({ projectId: 7, relPath: 'src/main.ts' })).resolves.toEqual({
+      kind: 'ok',
+      name: 'main.ts',
+      size: 42,
+      isDirectory: false,
+    });
+  });
+
+  it('flags a directory', async () => {
+    await expect(statAppFile({ projectId: 7, relPath: 'src' })).resolves.toEqual({
+      kind: 'ok',
+      name: 'src',
+      size: expect.any(Number),
+      isDirectory: true,
+    });
+  });
+
+  it.each([
+    ['a parent escape', () => '../proj-evil'],
+    ['a sibling-prefix escape', () => '../proj-evil/x'],
+    ['an absolute path', () => resolve(projectRoot, 'src', 'main.ts')],
+  ])('refuses %s', async (_label, relPath) => {
+    const result = await statAppFile({ projectId: 7, relPath: relPath() });
+    expect(result.kind).toBe('failed');
+  });
+
+  it('fails for an unknown project', async () => {
+    await expect(statAppFile({ projectId: 99, relPath: 'src/main.ts' })).resolves.toEqual({
+      kind: 'failed',
+      reason: 'unknown project 99',
+    });
+  });
+
+  it.each([null, 'src/main.ts', { projectId: '7', relPath: 'x' }, { projectId: 7 }])(
+    'fails for a malformed request %j',
+    async (req) => {
+      await expect(statAppFile(req)).resolves.toEqual({ kind: 'failed', reason: 'invalid request' });
+    },
+  );
+
+  it('fails for a missing file without throwing', async () => {
+    const result = await statAppFile({ projectId: 7, relPath: 'src/nope.ts' });
+    expect(result.kind).toBe('failed');
+  });
+
+  it.runIf(posix)('reports a symlink to a directory as a directory', async () => {
+    symlinkSync(join(projectRoot, 'src'), join(projectRoot, 'link'));
+    const result = await statAppFile({ projectId: 7, relPath: 'link' });
+    expect(result).toMatchObject({ kind: 'ok', isDirectory: true });
+  });
+
+  it('locateAppFile also returns the absolute path for the upload client', async () => {
+    await expect(locateAppFile(services(), { projectId: 7, relPath: 'src/main.ts' })).resolves.toEqual({
+      kind: 'ok',
+      path: resolve(projectRoot, 'src/main.ts'),
+      name: 'main.ts',
+      size: 42,
+      isDirectory: false,
     });
   });
 });

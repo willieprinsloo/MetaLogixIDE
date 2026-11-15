@@ -24,11 +24,15 @@ export interface DropFile {
   arrayBuffer(): Promise<ArrayBuffer>;
 }
 
-/** What the drop handler copies out of the `DataTransfer` before the event returns. */
+/**
+ * What the drop handler copies out of the `DataTransfer` before the event returns. `isDirectory`
+ * runs parallel to `files` (a folder arrives as a zero-size file); only remote drops read it.
+ */
 export interface DropSnapshot<F extends DropFile> {
   readonly appFile: string;
   readonly files: readonly F[];
   readonly text: string;
+  readonly isDirectory?: readonly boolean[];
 }
 
 /** Injected effects; `pathForFile` returns `''` for a file with no path on disk. */
@@ -42,7 +46,7 @@ export interface DropDeps<F extends DropFile> {
 
 const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
-function parseAppFile(raw: string): AppFileDragPayload | null {
+export function parseAppFile(raw: string): AppFileDragPayload | null {
   try {
     const value: unknown = JSON.parse(raw);
     if (typeof value !== 'object' || value === null) return null;

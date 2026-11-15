@@ -1437,6 +1437,8 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'p2p:reconnect-device':   async (s, { deviceId }) => { await p2pApi(s).reconnectDevice(deviceId); return { ok: true } as const; },
   'p2p:rpc-call':           async (s, { deviceId, method, params }) => ({ result: await p2pApi(s).rpcCall(deviceId, method, params ?? {}) }),
   'p2p:rpc-close-stream':   async (s, { streamId }) => { p2pApi(s).rpcCloseStream(streamId); return { ok: true } as const; },
+  'p2p:upload':             async (s, req) => (s.p2p ? s.p2p.api.upload(req) : { kind: 'failed', reason: 'p2p_not_started' }),
+  'p2p:upload-cancel':      async (s, req) => { if (typeof req?.uploadId === 'string') s.p2p?.api.cancelUpload(req.uploadId); return { ok: true } as const; },
 
   /* ─── Prompt library ─── */
   'prompts:list':   async (s, { projectId }) => ({ prompts: s.prompts.list(projectId) }),

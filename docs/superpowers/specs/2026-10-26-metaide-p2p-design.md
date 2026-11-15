@@ -275,6 +275,18 @@ type Frame =
   `shells:launch` IPC
 - `shells.kill(projectId, shellIndex)`
 
+**Drops (remote upload)** — added 2026-11-15, see
+`src/shared/remote-upload-contract.ts` and `docs/architecture.md`
+("Remote terminal uploads")
+- `drops.uploadBegin(name, mime, size, kind)` → `{ uploadId, chunkBytes }`;
+  sent before any bytes, so an old host answers `unknown_method`
+- `drops.uploadChunk(uploadId, offset, data)` → `{ received }`; base64,
+  in order, at most 256 KiB raw per chunk
+- `drops.uploadCommit(uploadId)` → `{ path, platform }`; the host's staged
+  path in its drop folder
+- `drops.uploadAbort(uploadId)` → `{ ok }`; deletes the partial file, or the
+  staged file when the upload committed less than 60 s ago
+
 **Filesystem**
 - `fs.list(path)` → `Dirent[]`
 - `fs.read(path)` → `{ content, encoding }` (text in v1; binary later)

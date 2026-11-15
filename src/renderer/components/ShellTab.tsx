@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { Terminal, type IDisposable, type ITheme, type ILinkProvider, type IBufferCellPosition } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
@@ -12,7 +12,10 @@ import { openRemoteShell, type RemoteShellHandle } from '@renderer/p2p/remoteShe
 import { useShellStream } from '@renderer/hooks/useShellStream';
 import { useTerminalDrop } from '@renderer/hooks/useTerminalDrop';
 import { useTerminalPaste } from '@renderer/hooks/useTerminalPaste';
-import { DROP_COPY } from '@shared/terminal-drop-contract';
+import { dropOverlayLabel } from '@renderer/remote-upload/remote-drop';
+import { uploadClient } from '@renderer/remote-upload/upload-client';
+import { useUploadProgress, type RemoteTarget } from '@renderer/remote-upload/useUploadProgress';
+import { UploadProgressOverlay } from './UploadProgressOverlay';
 import { terminalFocus } from '@renderer/hooks/useWindowTerminalFocus';
 import { detectPaths } from '@shared/detect-paths';
 import { sanitizeTerminalCopy } from '@shared/sanitize-terminal-copy';
@@ -78,6 +81,35 @@ function buildTheme(): ITheme {
   };
 }
 
+type StreamHandlers = { data: (d: string) => void; exit: (code: number | null) => void };
+
+interface RemoteShellWiring {
+  readonly handlers: MutableRefObject<StreamHandlers>;
+  readonly setReconnecting: (on: boolean) => void;
+  readonly hostName: () => string;
+  readonly cancelUploads: () => void;
+}
+
+/** Wires a remote shell's stream, reconnect flag and input-error toasts; exit or close cancels uploads (AC-D8). */
+function wireRemoteShell(remote: RemoteShellHandle, wiring: RemoteShellWiring): void {
+  remote.onData((d) => { wiring.setReconnecting(false); wiring.handlers.current.data(d); });
+  remote.onExit((code) => { wiring.cancelUploads(); wiring.handlers.current.exit(code); });
+  remote.onClose((reason) => {
+    wiring.cancelUploads();
+    if (reason === 'reconnecting') wiring.setReconnecting(true);
+  });
+  subscribeRemoteInputToasts(remote, wiring.hostName);
+}
+
+/** The remote upload target for a remote tab, or undefined for a local one; the same object while its inputs hold. */
+function useRemoteTarget(deviceId: string | null, hostName: string, uploads: RemoteTarget['uploads']): RemoteTarget | undefined {
+  const ref = useRef<RemoteTarget | undefined>(undefined);
+  const held = ref.current;
+  if (!deviceId) ref.current = undefined;
+  else if (held?.deviceId !== deviceId || held.hostName !== hostName || held.uploads !== uploads) ref.current = { deviceId, hostName, uploads };
+  return ref.current;
+}
+
 const ZOOM_STEP: Readonly<Record<Exclude<TerminalTabAction, 'find'>, 'in' | 'out' | 'reset'>> = {
   'zoom-in': 'in',
   'zoom-out': 'out',
@@ -105,7 +137,7 @@ export function ShellTab({
   remoteHostNameRef.current = (typeof source === 'object' && source.deviceName) || REMOTE_INPUT_COPY.hostFallback;
   const remoteRef = useRef<RemoteShellHandle | null>(null);
   // Live-data / exit handlers shared by the local pty stream and the remote bridge (assigned below).
-  const streamHandlersRef = useRef<{ data: (d: string) => void; exit: (code: number | null) => void }>({ data: () => {}, exit: () => {} });
+  const streamHandlersRef = useRef<StreamHandlers>({ data: () => {}, exit: () => {} });
   const [reconnecting, setReconnecting] = useState(false);
   const platform = useShortcutPlatform();
   const platformRef = useRef(platform);
@@ -187,10 +219,13 @@ export function ShellTab({
   primaryRef.current = primary;
   const shellExitedRef = useRef(false);
   const pasteIntoTerminal = useCallback((text: string) => { termRef.current?.paste(text); }, []);
-  const pasteFromText = useTerminalPaste(termHostRef, pasteIntoTerminal);
+  const uploads = useUploadProgress(uploadClient());
+  const remoteTarget = useRemoteTarget(remoteDeviceId, remoteHostNameRef.current, uploads.tracker);
+  const pasteFromText = useTerminalPaste(termHostRef, pasteIntoTerminal, remoteTarget);
   const { overlay: dropOverlay, handlers: dropHandlers } = useTerminalDrop({
     paste: pasteIntoTerminal,
     isExited: () => shellExitedRef.current,
+    remote: remoteTarget,
   });
 
   useEffect(() => {
@@ -292,10 +327,7 @@ export function ShellTab({
     const remote = remoteDeviceId ? openRemoteShell(remoteDeviceId, projectId, shellIndex) : null;
     remoteRef.current = remote;
     if (remote) {
-      remote.onData((d) => { setReconnecting(false); streamHandlersRef.current.data(d); });
-      remote.onExit((code) => streamHandlersRef.current.exit(code));
-      remote.onClose((reason) => { if (reason === 'reconnecting') setReconnecting(true); });
-      subscribeRemoteInputToasts(remote, () => remoteHostNameRef.current);
+      wireRemoteShell(remote, { handlers: streamHandlersRef, setReconnecting, hostName: () => remoteHostNameRef.current, cancelUploads: uploads.tracker.cancel });
     }
     term.onData((data) => {
       if (remote) remote.send(data);
@@ -530,7 +562,7 @@ export function ShellTab({
     };
     // Font metric changes must not recreate the terminal. Dedicated effects below
     // apply font size, weight and family updates to the live instance instead.
-  }, [projectId, shellIndex, remoteDeviceId, pasteFromText, hoverHold]);
+  }, [projectId, shellIndex, remoteDeviceId, pasteFromText, hoverHold, uploads.tracker]);
 
   const findNext = useCallback((q: string) => {
     if (!q || !searchRef.current) return;
@@ -844,9 +876,10 @@ export function ShellTab({
       )}
       {dropOverlay && (
         <div className="absolute inset-2 pointer-events-none rounded-md border-2 border-dashed border-[color:var(--accent-mark,var(--accent))] bg-[color:var(--accent)]/10 flex items-center justify-center text-xs text-[--text] font-medium">
-          {dropOverlay === 'path' ? DROP_COPY.overlayPath : DROP_COPY.overlayText}
+          {dropOverlayLabel(dropOverlay, remoteDeviceId ? remoteHostNameRef.current : null)}
         </div>
       )}
+      {remoteDeviceId && <UploadProgressOverlay view={uploads.view} onCancel={uploads.cancel} />}
       {searchOpen && (
         <div
           className="absolute top-2 right-3 z-10 flex items-center gap-1 bg-[--panel-strong] border border-[--border] rounded-md shadow-lg px-1.5 py-1"
