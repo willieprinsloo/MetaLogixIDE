@@ -146,7 +146,7 @@ describe('remoteSections', () => {
   const roots = [root(1, '/work'), root(2, '/play')];
   const t = (h: number) => new Date(NOW - h * HOUR).toISOString();
 
-  it('builds In use, Recents (newest first, minus In use), folders per root, then orphans', () => {
+  it('builds Recents (newest first, minus live projects), folders per root, then orphans, with no In use of its own', () => {
     const projects = [
       project(1, 'live', { lastOpenedAt: t(0) }),
       project(2, 'old', { lastOpenedAt: t(10) }),
@@ -155,7 +155,7 @@ describe('remoteSections', () => {
       project(5, 'stray', { rootId: 99 }),
     ];
     const s = remoteSections(projects, roots, new Set([1]), '');
-    expect(ids(s.inUse)).toEqual([1]);
+    expect(Object.keys(s).sort()).toEqual(['projects', 'recents']);
     expect(ids(s.recents)).toEqual([3, 2]);
     expect(s.projects!.folders.map((f) => [f.root.id, ids(f.projects)])).toEqual([[1, [1, 2, 4]], [2, [3]]]);
     expect(ids(s.projects!.orphans)).toEqual([5]);
@@ -167,9 +167,8 @@ describe('remoteSections', () => {
     expect(ids(remoteSections(projects, roots, new Set(), 'p').recents)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
   });
 
-  it('returns empty In use and Recents when nothing is live or opened', () => {
+  it('returns empty Recents when nothing is opened', () => {
     const s = remoteSections([project(1, 'a')], roots, new Set(), '');
-    expect(s.inUse).toEqual([]);
     expect(s.recents).toEqual([]);
   });
 
@@ -191,16 +190,14 @@ describe('remoteSections', () => {
       project(4, 'alpine', { rootId: 99 }),
     ];
     const s = remoteSections(projects, roots, new Set([1, 2]), 'ALP');
-    expect(ids(s.inUse)).toEqual([1]);
     expect(ids(s.recents)).toEqual([]);
     expect(s.projects!.folders.map((f) => [f.root.id, ids(f.projects)])).toEqual([[1, [1]]]);
     expect(ids(s.projects!.orphans)).toEqual([4]);
   });
 
-  it('with no matches hides In use and Recents but keeps an empty Projects section', () => {
+  it('with no matches hides Recents but keeps an empty Projects section', () => {
     const projects = [project(1, 'a', { lastOpenedAt: t(0) }), project(2, 'b')];
     const s = remoteSections(projects, roots, new Set([2]), 'zzz');
-    expect(s.inUse).toEqual([]);
     expect(s.recents).toEqual([]);
     expect(s.projects).toEqual({ folders: [], orphans: [] });
   });
@@ -212,7 +209,7 @@ describe('remoteSections', () => {
     ];
     expect(() => remoteSections(bad, roots, new Set([1]), '')).not.toThrow();
     const s = remoteSections(bad, roots, new Set([1]), '');
-    expect(s.inUse.map((p) => p.name)).toEqual(['']);
+    expect(s.projects!.folders[0]!.projects.map((p) => p.name)).toEqual(['', 'ok']);
     expect(ids(s.recents)).toEqual([2]);
     expect(ids(remoteSections(bad, roots, new Set([1]), 'o').projects!.folders[0]!.projects)).toEqual([2]);
   });
@@ -299,8 +296,8 @@ describe('status words (AC35)', () => {
 describe('withAgentStates (AC34)', () => {
   const base = buildMachineList('L', [peer('a', 'A'), peer('b', 'B', { online: false }), peer('c', 'C')]);
   const shells = new Map([
-    ['a', { aliveProjectIds: new Set([1]), agentState: 'blocked' as const }],
-    ['b', { aliveProjectIds: new Set([2]), agentState: 'busy' as const }],
+    ['a', { aliveProjectIds: new Set([1]), agentState: 'blocked' as const, projectStates: new Map() }],
+    ['b', { aliveProjectIds: new Set([2]), agentState: 'busy' as const, projectStates: new Map() }],
   ]);
   it('gives this machine the local state, online peers their polled state, and offline or unpolled peers null', () => {
     expect(withAgentStates(base, 'busy', shells).map((m) => [m.deviceId, m.agentState])).toEqual([

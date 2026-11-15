@@ -20,8 +20,9 @@ vi.mock('@renderer/api', () => ({
 }));
 vi.mock('@renderer/hooks/useAgentStates', async (importOriginal) => ({
   ...await importOriginal<typeof import('@renderer/hooks/useAgentStates')>(),
-  useOverallAgentState: () => 'idle', useProjectAgentState: () => 'idle',
+  useOverallAgentState: () => localOverall, useProjectAgentState: () => 'idle',
 }));
+let localOverall: 'idle' | 'busy' | 'blocked' = 'idle';
 let agentSnapshot: Array<{ projectId: number; shellIndex: number; agent: string | null; state: string }> = [];
 const agentDelta = (entry: { projectId: number; shellIndex: number; agent: string | null; state: string }) => act(() => { handlers.get('agent-state:changed')?.(entry); });
 
@@ -39,6 +40,9 @@ const LOCAL_PROJECT = {
 const REMOTE_PROJECTS = [{ id: 7, name: 'alpha', path: '/a/alpha', rootId: 1, lastOpenedAt: null, config: {} }];
 
 let fleetReplies: Array<{ fleet: unknown[] } | Error>;
+let localAlive: Array<{ projectId: number; shellIndex: number }>;
+let remoteAlive: Record<string, unknown[]>;
+let remoteProjects: Record<string, () => Promise<unknown>>;
 
 function nextFleet() {
   const r = fleetReplies.length > 1 ? fleetReplies.shift()! : fleetReplies[0]!;
@@ -52,17 +56,22 @@ beforeEach(() => {
   invoke.mockReset();
   fleetReplies = [{ fleet: [] }];
   agentSnapshot = [];
-  invoke.mockImplementation(async (ch: string, a: { method?: string }) => {
+  localOverall = 'idle';
+  localAlive = [];
+  remoteAlive = {};
+  remoteProjects = {};
+  invoke.mockImplementation(async (ch: string, a: { method?: string; deviceId?: string }) => {
     switch (ch) {
       case 'p2p:fleet-list': return nextFleet();
       case 'p2p:settings-get': return { deviceName: 'Laptop' };
       case 'projects:list': return { projects: [LOCAL_PROJECT] };
       case 'roots:list': return { roots: [{ id: 1, path: '/work', addedAt: '', sortOrder: 0 }] };
       case 'projects:recents': return { projects: [] };
-      case 'shells:alive-list': return { shells: [] };
+      case 'shells:alive-list': return { shells: localAlive };
       case 'agent-state:list': return { shells: agentSnapshot };
       case 'p2p:rpc-call':
-        if (a.method === 'projects.list') return { result: REMOTE_PROJECTS };
+        if (a.method === 'projects.list') return remoteProjects[a.deviceId!]?.() ?? { result: REMOTE_PROJECTS };
+        if (a.method === 'shells.alive') return { result: remoteAlive[a.deviceId!] ?? [] };
         if (a.method === 'roots.list') return { result: [{ id: 1, path: '/remote' }] };
         return { result: [] };
       default: throw new Error(`unexpected ${ch}`);
@@ -84,7 +93,7 @@ const scrollArea = () => screen.getByTestId(SIDEBAR_TESTIDS.sectionAll).closest(
 async function renderSidebar(props: Partial<typeof base> & { onOpenPane?: () => void } = {}) {
   const utils = render(<Sidebar {...base} {...props} />);
   await waitFor(() => expect(calls('p2p:fleet-list')).toBe(1));
-  await screen.findByText('home-app');
+  await screen.findAllByText('home-app');
   return utils;
 }
 
@@ -178,17 +187,14 @@ describe('Sidebar with a paired machine', () => {
     expect(screen.getByTestId(MACHINE_TESTIDS.dot(LOCAL_MACHINE_ID)).getAttribute('aria-label')).toBe('Laptop, this machine, agent Working');
   });
 
-  test('the remote In use list reads the shared poll: one shells.alive per peer per 5 s (AC34)', async () => {
-    const base = invoke.getMockImplementation()!;
-    invoke.mockImplementation((ch: string, a: { method?: string }) => (
-      a?.method === 'shells.alive' ? Promise.resolve({ result: [{ projectId: 7, shellIndex: 0, agentState: 'idle' }] }) : base(ch, a)
-    ));
+  test('the shared In use section reads the shared poll: one shells.alive per peer per 5 s (AC34)', async () => {
+    remoteAlive.tower = [{ projectId: 7, shellIndex: 0, agentState: 'idle' }];
     const alive = () => invoke.mock.calls.filter((c) => (c[1] as { method?: string } | undefined)?.method === 'shells.alive').length;
     await renderSidebar();
     await waitFor(() => expect(alive()).toBe(1));
     fireEvent.click(screen.getByTestId(MACHINE_TESTIDS.dot('tower')));
-    const inUse = await screen.findByTestId(MACHINE_TESTIDS.remoteInUse);
-    expect(within(inUse).getAllByTestId(MACHINE_TESTIDS.remoteProjectRow).map((r) => r.textContent)).toEqual(['alpha']);
+    const inUse = await screen.findByTestId('section-in-use');
+    await waitFor(() => expect(within(inUse).getAllByTestId(MACHINE_TESTIDS.inUseRemoteRow).map((r) => r.getAttribute('title'))).toEqual(['alpha on Tower']));
     expect(alive()).toBe(1);
     await pollOnce();
     await waitFor(() => expect(alive()).toBe(2));
@@ -287,6 +293,208 @@ describe('Sidebar with a paired machine', () => {
     expect(screen.queryByTestId(MACHINE_TESTIDS.remoteProjectRow)).toBeNull();
     fireEvent.change(screen.getByTestId(SIDEBAR_TESTIDS.filter), { target: { value: 'ALP' } });
     expect(screen.getAllByTestId(MACHINE_TESTIDS.remoteProjectRow).map((r) => r.textContent)).toEqual(['alpha']);
+  });
+});
+
+describe('Sidebar shared In use section (AC36–AC42)', () => {
+  const ORBIT = { deviceId: 'orbit', name: 'Orbit', online: true, lastSeenAt: 1 };
+  const inUse = () => screen.getByTestId('section-in-use');
+  const remoteRows = () => within(inUse()).queryAllByTestId(MACHINE_TESTIDS.inUseRemoteRow);
+  const localRows = () => within(inUse()).queryAllByTestId('project-row').map((r) => r.textContent);
+  const remoteView = () => remoteRows().map((r) => [
+    within(r).getByTestId(MACHINE_TESTIDS.inUseRowName).textContent, within(r).getByTestId(MACHINE_TESTIDS.inUseMachineTag).textContent,
+  ].join('@'));
+  const headingDot = () => screen.getByTestId('section-in-use-toggle').querySelector('[data-testid="claude-dot"]')!;
+
+  beforeEach(() => {
+    fleetReplies = [{ fleet: [TOWER, ORBIT] }];
+    localAlive = [{ projectId: 11, shellIndex: 0 }];
+    remoteAlive = {
+      tower: [{ projectId: 7, shellIndex: 0, agentState: 'busy' }, { projectId: 8, shellIndex: 0, agentState: null }],
+      orbit: [{ projectId: 3, shellIndex: 0, agentState: 'idle' }],
+    };
+    remoteProjects = {
+      tower: async () => ({ result: [...REMOTE_PROJECTS, { id: 8, name: 'aardvark', path: '/a/aardvark', rootId: 1, lastOpenedAt: null, config: {} }] }),
+      orbit: async () => ({ result: [{ id: 3, name: 'zulu', path: '/o/zulu', rootId: 1, lastOpenedAt: null, config: {} }] }),
+    };
+  });
+
+  test('is the first item of the list on this machine\'s dot: local rows first, then each peer in dot order, by name (AC36, AC37)', async () => {
+    await renderSidebar();
+    await waitFor(() => expect(remoteView()).toEqual(['zulu@Orbit', 'aardvark@Tower', 'alpha@Tower']));
+    expect(scrollArea().firstElementChild).toBe(inUse());
+    expect(localRows()).toEqual(['home-app']);
+    const rows = [...inUse().querySelectorAll('[data-testid="project-row"], [data-testid="in-use-remote-row"]')];
+    expect(rows[0]!.getAttribute('data-testid')).toBe('project-row');
+    expect(screen.getAllByTestId('section-in-use')).toHaveLength(1);
+    expect(within(screen.getByTestId(MACHINE_TESTIDS.localList)).queryByText('In use')).toBeNull();
+  });
+
+  test('stays first, once, whichever dot is selected; the remote header comes right after it (AC31, AC36)', async () => {
+    await renderSidebar();
+    fireEvent.click(await screen.findByTestId(MACHINE_TESTIDS.dot('tower')));
+    await waitFor(() => expect(remoteRows()).toHaveLength(3));
+    expect(scrollArea().firstElementChild).toBe(inUse());
+    expect(inUse().nextElementSibling).toBe(screen.getByTestId(MACHINE_TESTIDS.remoteList));
+    expect(screen.getByTestId(MACHINE_TESTIDS.remoteList).firstElementChild).toBe(screen.getByTestId(MACHINE_TESTIDS.remoteHeader));
+    expect(screen.getAllByTestId('section-in-use')).toHaveLength(1);
+    expect(within(screen.getByTestId(MACHINE_TESTIDS.remoteList)).queryByText('In use')).toBeNull();
+    expect(localRows()).toEqual(['home-app']);
+  });
+
+  test('local rows keep today\'s behaviour: selection highlight and the unload button (AC37)', async () => {
+    await renderSidebar({ selectedProjectId: 11 });
+    await waitFor(() => expect(localRows()).toEqual(['home-app']));
+    const row = within(inUse()).getByTestId('project-row').closest('[title]')!;
+    expect(row.className).toContain('bg-[--accent-soft]');
+    expect(within(inUse()).getByTestId('row-unload')).toBeTruthy();
+    expect(within(row as HTMLElement).queryByTestId(MACHINE_TESTIDS.inUseMachineTag)).toBeNull();
+  });
+
+  test('a remote row opens the remote pane as AC18 does, without switching the dot or selecting a local project (AC38)', async () => {
+    const onOpenPane = vi.fn();
+    const onSelect = vi.fn();
+    await renderSidebar({ onOpenPane, onSelect });
+    await waitFor(() => expect(remoteRows()).toHaveLength(3));
+    fireEvent.click(remoteRows().find((r) => r.getAttribute('title') === 'alpha on Tower')!);
+    expect(onOpenPane.mock.calls).toEqual([[{
+      source: { kind: 'remote', deviceId: 'tower' }, deviceName: 'Tower', projectId: 7, projectName: 'alpha',
+    }]]);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.getByTestId(MACHINE_TESTIDS.dot(LOCAL_MACHINE_ID)).getAttribute('aria-selected')).toBe('true');
+    expect(screen.queryByTestId(MACHINE_TESTIDS.remoteList)).toBeNull();
+  });
+
+  test('a remote row is a keyboard-operable button named by its status, project and machine (AC37, AC42)', async () => {
+    await renderSidebar();
+    await waitFor(() => expect(remoteRows()).toHaveLength(3));
+    const alpha = screen.getByRole('button', { name: 'Working alpha Tower' });
+    expect(alpha.tagName).toBe('BUTTON');
+    expect(alpha.getAttribute('type')).toBe('button');
+  });
+
+  test('the machine tag truncates after the project name does, with the full names in the row title (AC37)', async () => {
+    const long = 'An extremely long machine name that cannot fit in a sidebar';
+    fleetReplies = [{ fleet: [{ ...TOWER, name: long }] }];
+    await renderSidebar();
+    await waitFor(() => expect(remoteRows()).toHaveLength(2));
+    const row = remoteRows()[1]!;
+    const tag = within(row).getByTestId(MACHINE_TESTIDS.inUseMachineTag);
+    const name = within(row).getByTestId(MACHINE_TESTIDS.inUseRowName);
+    expect(tag.textContent).toBe(long);
+    expect(tag.classList).toContain('truncate');
+    expect(tag.classList).toContain('shrink-0');
+    expect(name.classList).toContain('truncate');
+    expect(name.classList).toContain('min-w-0');
+    expect(name.classList).toContain('flex-1');
+    expect(row.getAttribute('title')).toBe(`alpha on ${long}`);
+  });
+
+  test('remote rows carry the per-project StatusDot; no agent reads as idle (AC42)', async () => {
+    await renderSidebar();
+    await waitFor(() => expect(remoteRows()).toHaveLength(3));
+    const dot = (title: string) => remoteRows().find((r) => r.getAttribute('title') === title)!.querySelector('[data-testid="claude-dot"]')!;
+    expect(dot('alpha on Tower').getAttribute('data-claude-state')).toBe('busy');
+    expect(dot('aardvark on Tower').getAttribute('data-claude-state')).toBe('idle');
+    expect(dot('zulu on Orbit').getAttribute('aria-label')).toBe('Idle');
+  });
+
+  test('the selected peer\'s own list shows the same per-project StatusDot on its live rows (AC42)', async () => {
+    await renderSidebar();
+    fireEvent.click(await screen.findByTestId(MACHINE_TESTIDS.dot('tower')));
+    const folders = await screen.findByTestId(MACHINE_TESTIDS.remoteFolders);
+    const row = (n: string) => within(folders).getAllByTestId(MACHINE_TESTIDS.remoteProjectRow).find((r) => r.textContent === n)!;
+    await waitFor(() => expect(row('alpha').querySelector('[data-testid="claude-dot"]')?.getAttribute('data-claude-state')).toBe('busy'));
+  });
+
+  test('the heading dot is the worst state across machines with rows (AC40)', async () => {
+    remoteAlive.orbit = [{ projectId: 3, shellIndex: 0, agentState: 'blocked' }];
+    await renderSidebar();
+    await waitFor(() => expect(headingDot().getAttribute('data-claude-state')).toBe('blocked'));
+    fireEvent.change(screen.getByTestId(SIDEBAR_TESTIDS.filter), { target: { value: 'a' } });
+    expect(remoteView()).toEqual(['aardvark@Tower', 'alpha@Tower']);
+    expect(headingDot().getAttribute('data-claude-state')).toBe('busy');
+  });
+
+  test('the heading takes this machine\'s state only while it has rows (AC40)', async () => {
+    localOverall = 'blocked';
+    await renderSidebar();
+    await waitFor(() => expect(remoteRows()).toHaveLength(3));
+    expect(headingDot().getAttribute('data-claude-state')).toBe('blocked');
+    fireEvent.change(screen.getByTestId(SIDEBAR_TESTIDS.filter), { target: { value: 'alpha' } });
+    expect(localRows()).toEqual([]);
+    expect(headingDot().getAttribute('data-claude-state')).toBe('busy');
+  });
+
+  test('the filter applies by project name, and the section hides with no rows (AC36, AC39)', async () => {
+    await renderSidebar();
+    await waitFor(() => expect(remoteRows()).toHaveLength(3));
+    fireEvent.change(screen.getByTestId(SIDEBAR_TESTIDS.filter), { target: { value: 'ZUL' } });
+    expect(remoteView()).toEqual(['zulu@Orbit']);
+    expect(localRows()).toEqual([]);
+    fireEvent.change(screen.getByTestId(SIDEBAR_TESTIDS.filter), { target: { value: 'nothing' } });
+    expect(screen.queryByTestId('section-in-use')).toBeNull();
+  });
+
+  test('an offline peer contributes no rows and its list follows the section (AC36, AC39)', async () => {
+    fleetReplies = [{ fleet: [ATLAS] }];
+    await renderSidebar();
+    await waitFor(() => expect(localRows()).toEqual(['home-app']));
+    fireEvent.click(await screen.findByTestId(MACHINE_TESTIDS.dot('atlas')));
+    expect(scrollArea().firstElementChild).toBe(inUse());
+    expect(inUse().nextElementSibling).toBe(screen.getByTestId(MACHINE_TESTIDS.remoteList));
+    expect(remoteRows()).toEqual([]);
+  });
+
+  test('a peer\'s rows wait for its project names; a failed projects.list leaves only that peer out (AC39)', async () => {
+    let settle!: (v: unknown) => void;
+    remoteProjects.tower = () => new Promise((r) => { settle = r; });
+    remoteProjects.orbit = async () => { throw new Error('peer_unreachable'); };
+    await renderSidebar();
+    await waitFor(() => expect(calls('p2p:rpc-call')).toBeGreaterThanOrEqual(4));
+    await act(async () => { await Promise.resolve(); });
+    expect(remoteRows()).toEqual([]);
+    expect(localRows()).toEqual(['home-app']);
+    await act(async () => { settle({ result: REMOTE_PROJECTS }); await Promise.resolve(); });
+    await waitFor(() => expect(remoteView()).toEqual(['alpha@Tower']));
+    expect(localRows()).toEqual(['home-app']);
+  });
+
+  test('a live peer project whose name the shared section has not got yet stays in that peer\'s Recents (AC36)', async () => {
+    let settle!: (v: unknown) => void;
+    let towerCalls = 0;
+    const towerRows = { result: [{ ...REMOTE_PROJECTS[0]!, lastOpenedAt: '2026-01-01T00:00:00.000Z' }] };
+    remoteProjects.tower = () => (++towerCalls === 1 ? new Promise((r) => { settle = r; }) : Promise.resolve(towerRows));
+    await renderSidebar();
+    await waitFor(() => expect(towerCalls).toBe(1));
+    fireEvent.click(await screen.findByTestId(MACHINE_TESTIDS.dot('tower')));
+    const recents = await screen.findByTestId(MACHINE_TESTIDS.remoteRecents);
+    expect(within(recents).getAllByTestId(MACHINE_TESTIDS.remoteProjectRow).map((r) => r.textContent)).toEqual(['alpha']);
+    expect(remoteView()).toEqual(['zulu@Orbit']);
+    await act(async () => { settle(towerRows); await Promise.resolve(); });
+    await waitFor(() => expect(remoteView()).toEqual(['zulu@Orbit', 'alpha@Tower']));
+    expect(screen.queryByTestId(MACHINE_TESTIDS.remoteRecents)).toBeNull();
+  });
+
+  test('collapsing the section hides local and remote rows together', async () => {
+    await renderSidebar();
+    await waitFor(() => expect(remoteRows()).toHaveLength(3));
+    fireEvent.click(screen.getByTestId('section-in-use-toggle'));
+    expect(remoteRows()).toEqual([]);
+    expect(localRows()).toEqual([]);
+  });
+});
+
+describe('Sidebar In use with no paired machine (AC41)', () => {
+  test('lists only this machine\'s live projects in place, and asks no peer for names', async () => {
+    localAlive = [{ projectId: 11, shellIndex: 0 }];
+    await renderSidebar();
+    const inUse = await screen.findByTestId('section-in-use');
+    expect(inUse.parentElement).toBe(scrollArea());
+    expect(inUse.nextElementSibling).toBe(screen.getByTestId(SIDEBAR_TESTIDS.sectionAll));
+    expect(within(inUse).getAllByTestId('project-row').map((r) => r.textContent)).toEqual(['home-app']);
+    expect(within(inUse).queryAllByTestId(MACHINE_TESTIDS.inUseRemoteRow)).toEqual([]);
+    expect(calls('p2p:rpc-call')).toBe(0);
   });
 });
 

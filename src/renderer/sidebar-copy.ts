@@ -28,7 +28,7 @@ export const SIDEBAR_TESTIDS = {
 /** localStorage collapse keys; 'All projects' is the pre-rename key, kept so stored state survives. */
 export const SECTION_PERSIST_KEYS = { projects: 'All projects' } as const;
 
-/** User-facing copy for the machine switcher (docs/specs/machine-switcher-dots.md AC6, AC17, AC20, AC25, AC26). */
+/** User-facing copy for the machine switcher (docs/specs/machine-switcher-dots.md AC6, AC17, AC20, AC25, AC26, AC37). */
 export const MACHINE_COPY = {
   tablistLabel: 'Machines',
   thisMachineFallback: 'This machine',
@@ -43,6 +43,8 @@ export const MACHINE_COPY = {
   /** Status words in tooltips and accessible names (AC35): the app's existing aggregate labels. */
   agentState: AGGREGATE_STATE_LABEL,
   agentPrefix: 'agent',
+  /** Title of a paired machine's row in the shared In use section (AC37): full names, however the tag truncates. */
+  inUseRowTitle: (project: string, machine: string) => `${project} on ${machine}`,
 } as const;
 
 /** Test ids for the machine switcher; deliberately not `machine-` prefixed (AC7). */
@@ -55,8 +57,10 @@ export const MACHINE_TESTIDS = {
   remoteHeader: 'switcher-remote-header',
   remoteReconnect: 'switcher-remote-reconnect',
   remoteLastSeen: 'switcher-remote-last-seen',
-  remoteInUse: 'switcher-remote-in-use',
   remoteRecents: 'switcher-remote-recents',
   remoteFolders: 'switcher-remote-folders',
   remoteProjectRow: 'remote-project-row',
+  inUseRemoteRow: 'in-use-remote-row',
+  inUseRowName: 'in-use-row-name',
+  inUseMachineTag: 'in-use-machine-tag',
 } as const;
