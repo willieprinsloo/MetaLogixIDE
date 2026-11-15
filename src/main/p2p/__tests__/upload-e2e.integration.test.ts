@@ -131,12 +131,14 @@ describe('viewer upload client ↔ host hub', () => {
 
   test('a hub disposed while an upload is open discards it; the viewer then fails cleanly', async () => {
     const { viewerPeer, hub } = link();
-    let disposed = false;
+    let disposing: Promise<void> | null = null;
     const client = viewer(viewerPeer, () => {
-      if (!disposed) { disposed = true; void hub!.dispose(); }
+      disposing ??= hub!.dispose();
     });
     const result = await client.upload(request(new Uint8Array(randomBytes(1024 * 1024))));
     expect(result).toEqual({ kind: 'failed', reason: 'upload_unknown' });
+    // The viewer can see the refusal before the host has finished deleting the partial file.
+    await disposing;
     expect(readdirSync(dropDir)).toEqual(['existing.txt']);
   });
 });
