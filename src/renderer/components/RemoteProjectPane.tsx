@@ -61,7 +61,7 @@ export function RemoteProjectPane({ deviceId, deviceName, projectId, projectName
             projectId={projectId}
             shellIndex={shellIndex}
             primary
-            source={{ kind: 'remote', deviceId }}
+            source={{ kind: 'remote', deviceId, deviceName }}
           />
         )}
       </div>

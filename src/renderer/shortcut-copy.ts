@@ -55,3 +55,12 @@ export const SHORTCUT_COPY = {
   clipboardErrorTitle: (op: 'copy' | 'paste'): string =>
     op === 'copy' ? 'Copy failed' : 'Paste failed',
 } as const;
+
+/** Toast copy for remote-terminal input failures (host name falls back to "the remote machine"). */
+export const REMOTE_INPUT_COPY = {
+  hostFallback: 'the remote machine',
+  failedTitle: (host: string): string => `Could not send input to ${host}`,
+  tooLargeTitle: (host: string): string => `Paste too large for ${host}`,
+  tooLargeDetail: (limitBytes: number): string =>
+    `Pastes into a remote terminal are limited to ${limitBytes / (1024 * 1024)} MB.`,
+} as const;

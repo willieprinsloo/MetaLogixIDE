@@ -133,4 +133,57 @@ describe('openRemoteShell', () => {
     emit({ deviceId: 'tower', streamId: 9, data: { kind: 'out', bytes: 'live' } });
     expect(got).toEqual(['scrollback-1', 'live']);
   });
+
+  test('a rejected shells.input reaches onInputError instead of being swallowed', async () => {
+    const h = openRemoteShell('tower', 3, 1);
+    const errs: unknown[] = [];
+    h.onInputError((e) => errs.push(e));
+    await flush();
+    invoke.mockImplementation(async (_ch: string, req: { method?: string }) => {
+      if (req.method === 'shells.input') throw new Error('closed');
+      return { result: {} };
+    });
+    h.send('x');
+    await flush();
+    expect(errs).toEqual([{ kind: 'failed', message: 'closed' }]);
+  });
+
+  test('a rejected shells.resize reaches onInputError', async () => {
+    const h = openRemoteShell('tower', 3, 1);
+    const errs: unknown[] = [];
+    h.onInputError((e) => errs.push(e));
+    await flush();
+    invoke.mockImplementation(async (_ch: string, req: { method?: string }) => {
+      if (req.method === 'shells.resize') throw new Error('gone');
+      return { result: {} };
+    });
+    h.resize(10, 10);
+    await flush();
+    expect(errs).toEqual([{ kind: 'failed', message: 'gone' }]);
+  });
+
+  test('a paste over 4 MiB reports too-large and sends nothing', async () => {
+    const h = openRemoteShell('tower', 3, 1);
+    const errs: Array<{ kind: string }> = [];
+    h.onInputError((e) => errs.push(e));
+    await flush();
+    h.send('x'.repeat(5 * 1024 * 1024));
+    await flush();
+    expect(errs.map((e) => e.kind)).toEqual(['too-large']);
+    expect(invoke.mock.calls.some((c) => (c[1] as { method?: string }).method === 'shells.input')).toBe(false);
+  });
+
+  test('a 2 MB multibyte paste arrives as ordered frames that decode to the original', async () => {
+    const h = openRemoteShell('tower', 3, 1);
+    await flush();
+    const text = '🎉日é'.repeat(200_000);
+    h.send(text);
+    for (let i = 0; i < 40; i++) await flush();
+    const dec = new TextDecoder('utf-8', { fatal: true });
+    const frames = invoke.mock.calls
+      .filter((c) => (c[1] as { method?: string }).method === 'shells.input')
+      .map((c) => dec.decode(Uint8Array.from(atob((c[1] as { params: { bytes: string } }).params.bytes), (ch) => ch.charCodeAt(0))));
+    expect(frames.length).toBeGreaterThan(1);
+    expect(frames.join('')).toBe(text);
+  });
 });

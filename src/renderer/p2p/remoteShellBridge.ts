@@ -1,4 +1,5 @@
 import { api } from '../api';
+import { createInputQueue, type InputError } from './input-queue';
 
 /** Handle for one attached remote shell. Mirrors what ShellTab needs from the local IPC path. */
 export interface RemoteShellHandle {
@@ -7,6 +8,8 @@ export interface RemoteShellHandle {
   onExit(cb: (code: number | null) => void): void;
   /** Stream ended: `'closed'` (local close()), the server's reason (e.g. `'remote_ended'`), `'reconnecting'` when the link dropped, or `'attach_failed: ...'`. */
   onClose(cb: (reason: string) => void): void;
+  /** Input/resize delivery failed (link gone) or a paste was refused as too large. Replaces the old silent swallow. */
+  onInputError(cb: (e: InputError) => void): void;
   send(bytes: string): void;
   resize(cols: number, rows: number): void;
   close(): void;
@@ -29,6 +32,8 @@ export function openRemoteShell(deviceId: string, projectId: number, shellIndex:
   const dataCbs: Array<(d: string) => void> = [];
   const exitCbs: Array<(c: number | null) => void> = [];
   const closeCbs: Array<(r: string) => void> = [];
+  const inputErrCbs: Array<(e: InputError) => void> = [];
+  const reportInputError = (e: InputError) => { for (const cb of inputErrCbs) cb(e); };
   let streamId: number | null = null;
   let finished = false;
   let closeRequested = false;
@@ -72,19 +77,28 @@ export function openRemoteShell(deviceId: string, projectId: number, shellIndex:
       return null;
     });
 
-  const call = (method: string, params: Record<string, unknown>) => {
-    void ready.then((id) => {
-      if (id === null || finished) return;
-      return api.invoke('p2p:rpc-call', { deviceId, method, params: { stream: id, ...params } }).catch(() => { /* link gone: onClose handles it */ });
+  const call = (method: string, params: Record<string, unknown>): Promise<unknown> =>
+    ready.then((id) => {
+      if (id === null || finished) return undefined;
+      return api.invoke('p2p:rpc-call', { deviceId, method, params: { stream: id, ...params } });
     });
-  };
+
+  const inputQueue = createInputQueue({
+    send: (text) => call('shells.input', { bytes: toBase64(text) }),
+    onError: reportInputError,
+  });
 
   return {
     onData: (cb) => { dataCbs.push(cb); },
     onExit: (cb) => { exitCbs.push(cb); },
     onClose: (cb) => { closeCbs.push(cb); },
-    send: (bytes) => call('shells.input', { bytes: toBase64(bytes) }),
-    resize: (cols, rows) => call('shells.resize', { cols, rows }),
+    onInputError: (cb) => { inputErrCbs.push(cb); },
+    send: (bytes) => inputQueue.push(bytes),
+    resize: (cols, rows) => {
+      call('shells.resize', { cols, rows }).catch((err: unknown) => {
+        reportInputError({ kind: 'failed', message: err instanceof Error ? err.message : String(err) });
+      });
+    },
     close: () => {
       if (closeRequested) return;
       closeRequested = true;

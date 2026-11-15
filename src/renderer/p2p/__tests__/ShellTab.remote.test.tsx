@@ -9,6 +9,7 @@ vi.mock('@xterm/xterm', () => ({
   Terminal: class {
     unicode = { activeVersion: '' }; cols = 80; rows = 24; options: Record<string, unknown> = {};
     buffer = { active: { getLine: () => undefined }, onBufferChange: () => ({ dispose() {} }) };
+    parser = { registerOscHandler: () => ({ dispose() {} }) };
     loadAddon() {} open() {} write() {} reset() {} dispose() {} focus() {} paste() {} refresh() {}
     attachCustomKeyEventHandler() {} registerLinkProvider = vi.fn(() => ({ dispose() {} }));
     onData() { return { dispose() {} }; } onResize() { return { dispose() {} }; } onSelectionChange() { return { dispose() {} }; }
@@ -37,7 +38,7 @@ vi.mock('@renderer/terminal-geometry-hold', () => ({ isTerminalGeometryHeld: () 
 
 const handle = {
   exit: undefined as undefined | ((c: number | null) => void),
-  onData: vi.fn(), onClose: vi.fn(), send: vi.fn(), resize: vi.fn(), close: vi.fn(),
+  onData: vi.fn(), onClose: vi.fn(), onInputError: vi.fn(), send: vi.fn(), resize: vi.fn(), close: vi.fn(),
   onExit(cb: (c: number | null) => void) { handle.exit = cb; },
 };
 const openRemoteShell = vi.fn(() => handle);
