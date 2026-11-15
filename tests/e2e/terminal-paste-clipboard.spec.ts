@@ -136,8 +136,12 @@ test('AC13: an empty clipboard pastes nothing and shows no error, by every route
   const { app, win, right } = f;
   for (const route of ROUTES) {
     const writesBefore = (await shellWrites(app, right)).length;
+    const stagesBefore = (await channelCalls(app, 'drops:stage-clipboard-image')).length;
     await clearClipboard(app);
     await route.paste(app, win);
+    // webContents.paste() returns before the paste event fires; setting the sentinel first lets this paste read it.
+    await expect.poll(async () => (await channelCalls(app, 'drops:stage-clipboard-image')).length - stagesBefore,
+      { timeout: 8000, message: `${route.name}: the empty-clipboard paste asks for a clipboard image` }).toBe(1);
 
     // Positive control: the same route still pastes once the clipboard has text.
     const sentinel = marker('ac13-sentinel');
