@@ -91,3 +91,15 @@ describe('resolveClipboardPaste with no text (AC12, AC13, AC14)', () => {
     expect(notify).toHaveBeenCalledWith(DROP_COPY.clipboardImageFailedTitle, 'channel closed');
   });
 });
+
+describe('resolveClipboardPaste with a remotely staged image (AC-U2)', () => {
+  it('escapes in the style the staged result carries, over the injected style', async () => {
+    const { d } = deps({ kind: 'staged', path: 'C:\\drops\\a b.png', style: 'windows' }, 'posix');
+    await expect(resolveClipboardPaste('', d)).resolves.toBe('"C:\\drops\\a b.png"');
+  });
+
+  it('a POSIX result style wins over a Windows injected style', async () => {
+    const { d } = deps({ kind: 'staged', path: '/tmp/a b.png', style: 'posix' }, 'windows');
+    await expect(resolveClipboardPaste('', d)).resolves.toBe('/tmp/a\\ b.png');
+  });
+});

@@ -13,7 +13,10 @@ import {
   type PathStyle,
 } from '@shared/terminal-drop-contract';
 
-/** Injected effects; `stageClipboardImage` wraps the `drops:stage-clipboard-image` channel. */
+/**
+ * Injected effects; `stageClipboardImage` wraps the `drops:stage-clipboard-image` channel locally,
+ * or a remote upload. `style` escapes the path unless the staged result carries its own style.
+ */
 export interface ClipboardPasteDeps {
   readonly style: PathStyle;
   stageClipboardImage(): Promise<ClipboardImageResult>;
@@ -25,7 +28,7 @@ const CLIPBOARD_IMAGE_NAME = 'Clipboard image';
 async function stagedImagePath(deps: ClipboardPasteDeps): Promise<string | null> {
   try {
     const result = await deps.stageClipboardImage();
-    if (result.kind === 'staged') return escapePath(result.path, deps.style);
+    if (result.kind === 'staged') return escapePath(result.path, result.style ?? deps.style);
     if (result.kind === 'too-large') {
       deps.notify(DROP_COPY.tooLargeTitle, DROP_COPY.tooLargeDetail(CLIPBOARD_IMAGE_NAME));
     } else if (result.kind === 'failed') {
