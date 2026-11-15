@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@renderer/api';
 import type { ActivityEntry, ActivityKind } from '@shared/activity';
+import { isFileToolActivity } from '@renderer/agent-file-targets';
 
 /**
  * Shared agent timeline. Reads the project's `.metaide/activity.jsonl` on
@@ -8,7 +9,12 @@ import type { ActivityEntry, ActivityKind } from '@shared/activity';
  * looking at one project see each other's actions live. Filterable by kind;
  * follow-tail mode auto-scrolls to the newest row.
  */
-export function ActivityTab({ projectId }: { projectId: number }) {
+export function ActivityTab({ projectId, onOpenTarget, followFiles, onFollowFilesChange }: {
+  projectId: number;
+  onOpenTarget?: (target: string) => void;
+  followFiles: boolean;
+  onFollowFilesChange: (v: boolean) => void;
+}) {
   const [entries, setEntries] = useState<ActivityEntry[]>([]);
   const [filter, setFilter] = useState<ActivityKind | 'all'>('all');
   const [follow, setFollow] = useState(true);
@@ -57,6 +63,10 @@ export function ActivityTab({ projectId }: { projectId: number }) {
         <KindChip active={filter === 'turn-end'}  onClick={() => setFilter('turn-end')}>Turn ends</KindChip>
         <div className="flex-1" />
         <span className="text-[--text-muted] font-mono tabular-nums">{visible.length} / {entries.length}</span>
+        <label className="flex items-center gap-1 text-[--text-muted] cursor-pointer" title="Live-open every file the agent edits in the Files viewer">
+          <input type="checkbox" checked={followFiles} onChange={(e) => onFollowFilesChange(e.target.checked)} className="accent-[color:var(--accent)]" />
+          Follow files
+        </label>
         <label className="flex items-center gap-1 text-[--text-muted] cursor-pointer">
           <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} className="accent-[color:var(--accent)]" />
           Follow
@@ -69,7 +79,7 @@ export function ActivityTab({ projectId }: { projectId: number }) {
             <br /><span className="opacity-60">Tail from a terminal: <code>tail -f .metaide/activity.jsonl</code></span>
           </div>
         )}
-        {visible.map((e) => <ActivityRow key={e.id} entry={e} />)}
+        {visible.map((e) => <ActivityRow key={e.id} entry={e} onOpenTarget={onOpenTarget} />)}
       </div>
     </div>
   );
@@ -86,7 +96,7 @@ function KindChip({ active, onClick, children }: { active: boolean; onClick: () 
   );
 }
 
-function ActivityRow({ entry }: { entry: ActivityEntry }) {
+function ActivityRow({ entry, onOpenTarget }: { entry: ActivityEntry; onOpenTarget?: (target: string) => void }) {
   const t = entry.ts.slice(11, 19); // HH:MM:SS
   const color =
     entry.kind === 'tool'         ? 'text-[color:var(--accent)]' :
@@ -105,7 +115,18 @@ function ActivityRow({ entry }: { entry: ActivityEntry }) {
       <span className="text-[--text-muted] tabular-nums shrink-0">{t}</span>
       <span className="text-[--text-muted] tabular-nums shrink-0 opacity-70">s{entry.shellIndex}</span>
       <span className={`shrink-0 w-24 truncate ${color}`} title={entry.agent}>{label}{ok}</span>
-      <span className="flex-1 min-w-0 truncate text-[--text]" title={target}>{target}</span>
+      {onOpenTarget && isFileToolActivity(entry) ? (
+        <button
+          type="button"
+          onClick={() => onOpenTarget(entry.target!)}
+          className="flex-1 min-w-0 truncate text-left text-[--text] hover:underline cursor-pointer"
+          title={target}
+        >
+          {target}
+        </button>
+      ) : (
+        <span className="flex-1 min-w-0 truncate text-[--text]" title={target}>{target}</span>
+      )}
     </div>
   );
 }

@@ -51,4 +51,27 @@ describe('detectPaths', () => {
   it('does not match unknown extensions', () => {
     expect(detectPaths('cache/tmp.bin is stale')).toEqual([]);
   });
+
+  it('finds pdf files', () => {
+    const r = detectPaths('Generated docs/report-2026.pdf for review.');
+    expect(r).toHaveLength(1);
+    expect(r[0]?.path).toBe('docs/report-2026.pdf');
+    expect(r[0]?.line).toBeNull();
+  });
+
+  it('finds jsonl and dotfiles like .env', () => {
+    expect(detectPaths('appending to .metaide/activity.jsonl')[0]?.path).toBe('.metaide/activity.jsonl');
+    expect(detectPaths('loaded .metaide/.env for defaults')[0]?.path).toBe('.metaide/.env');
+  });
+
+  it('finds ~-relative paths', () => {
+    const r = detectPaths('see ~/Documents/dev/foo.ts for details');
+    expect(r[0]?.path).toBe('~/Documents/dev/foo.ts');
+  });
+
+  it('longest-first extension ordering prefers tsx over ts', () => {
+    const r = detectPaths('renamed src/renderer/components/ShellTabsBar.tsx:99');
+    expect(r[0]?.path).toBe('src/renderer/components/ShellTabsBar.tsx');
+    expect(r[0]?.line).toBe(99);
+  });
 });

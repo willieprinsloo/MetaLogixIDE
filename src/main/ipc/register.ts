@@ -55,6 +55,7 @@ function usageDebugDir(): string | undefined {
   }
 }
 import { isInsideRoot, resolveInsideRoot } from '@main/domain/path-containment';
+import { MIME_BY_EXT } from '@shared/mime';
 import { decodeStoredSecret, encodeStoredSecret } from '@main/credential-encoding';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { StopPrimarySessionRequest } from '@shared/unload-session-contract';
@@ -64,20 +65,6 @@ import { readMetaIdeEnv, readMetaIdeCliProfiles } from '@main/domain/metaide-con
 
 const GIT_DIFF_KINDS: ReadonlySet<GitDiffKind> = new Set(['staged', 'unstaged', 'untracked']);
 const execFileAsync = promisify(execFile);
-
-/** MIME lookup for the binary-byte reader. Ships what the image + PDF viewers need. */
-const MIME_BY_EXT: Record<string, string> = {
-  pdf: 'application/pdf',
-  png: 'image/png',
-  jpg: 'image/jpeg', jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  svg: 'image/svg+xml',
-  webp: 'image/webp',
-  avif: 'image/avif',
-  bmp: 'image/bmp',
-  ico: 'image/x-icon',
-  tif: 'image/tiff', tiff: 'image/tiff',
-};
 
 /** Spawn env overlay for a non-template spawn site: `templateEnv` ⊕ the project's interpolated variables. */
 function projectSpawnEnv(
