@@ -1437,6 +1437,10 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'p2p:reconnect-device':   async (s, { deviceId }) => { await p2pApi(s).reconnectDevice(deviceId); return { ok: true } as const; },
   'p2p:rpc-call':           async (s, { deviceId, method, params }) => ({ result: await p2pApi(s).rpcCall(deviceId, method, params ?? {}) }),
   'p2p:rpc-close-stream':   async (s, { streamId }) => { p2pApi(s).rpcCloseStream(streamId); return { ok: true } as const; },
+  // Setup stubs for the remote upload contract; the backend slice replaces these.
+  'p2p:upload':             async () => ({ kind: 'failed', reason: 'not implemented' }) as const,
+  'p2p:upload-cancel':      async () => ({ ok: true }) as const,
+  'drops:stat-app-file':    async () => ({ kind: 'failed', reason: 'not implemented' }) as const,
 
   /* ─── Prompt library ─── */
   'prompts:list':   async (s, { projectId }) => ({ prompts: s.prompts.list(projectId) }),

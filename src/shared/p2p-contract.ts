@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { MAX_STAGED_BYTES } from './terminal-drop-contract';
+import { UPLOAD_CHUNK_MAX_B64_CHARS } from './remote-upload-contract';
 
 /** Shapes for the RPC catalogue in docs/superpowers/specs/2026-10-26-metaide-p2p-design.md §5. */
 
@@ -67,6 +69,29 @@ export const RpcMethods = {
   'fs.read': {
     params: z.object({ projectId: z.number().int().positive(), path: z.string() }),
     result: z.object({ content: z.string(), encoding: z.enum(['utf8']) }),
+  },
+  // Remote upload (src/shared/remote-upload-contract.ts). Begin is sent before any bytes, so an
+  // old host answers `unknown_method` without a wasted transfer (AC-U12).
+  'drops.uploadBegin': {
+    params: z.object({
+      name: z.string().max(1024),
+      mime: z.string().max(255),
+      size: z.number().int().min(0).max(MAX_STAGED_BYTES),
+      kind: z.enum(['file', 'clipboard-image']),
+    }),
+    result: z.object({ uploadId: z.string(), chunkBytes: z.number().int().positive() }),
+  },
+  'drops.uploadChunk': {
+    params: z.object({ uploadId: z.string().max(64), offset: z.number().int().min(0), data: z.string().max(UPLOAD_CHUNK_MAX_B64_CHARS) }),
+    result: z.object({ received: z.number().int().min(0) }),
+  },
+  'drops.uploadCommit': {
+    params: z.object({ uploadId: z.string().max(64) }),
+    result: z.object({ path: z.string(), platform: z.string() }),
+  },
+  'drops.uploadAbort': {
+    params: z.object({ uploadId: z.string().max(64) }),
+    result: z.object({ ok: z.literal(true) }),
   },
 } as const;
 
