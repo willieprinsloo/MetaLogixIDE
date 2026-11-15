@@ -1082,7 +1082,8 @@ as external there.
   Send and resize failures reach `RemoteShellHandle.onInputError`
   (`src/renderer/p2p/remoteShellBridge.ts`), including input typed after the
   remote stream has ended (host shutdown, revoked link, failed attach). Only
-  a close the user requested stays silent. The shell tab shows one toast per
+  a close the user requested stays silent, and resizes after the stream ends
+  are dropped silently (a window resize is not user input). The shell tab shows one toast per
   kind per 5 s, naming the host (`src/renderer/remote-toasts.ts`,
   `src/renderer/toast-throttle.ts`, `REMOTE_INPUT_COPY`).
 

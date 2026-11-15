@@ -99,7 +99,9 @@ export function openRemoteShell(deviceId: string, projectId: number, shellIndex:
     onInputError: (cb) => { inputErrCbs.push(cb); },
     send: (bytes) => inputQueue.push(bytes),
     resize: (cols, rows) => {
+      if (finished) return;
       call('shells.resize', { cols, rows }).catch((err: unknown) => {
+        if (finished) return;
         reportInputError({ kind: 'failed', message: errMessage(err) });
       });
     },

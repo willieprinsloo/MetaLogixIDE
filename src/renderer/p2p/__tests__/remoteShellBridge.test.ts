@@ -148,6 +148,33 @@ describe('openRemoteShell', () => {
     expect(errs).toEqual([{ kind: 'failed', message: 'closed' }]);
   });
 
+  test('resize after the stream ended is dropped silently while input still reports failed', async () => {
+    const h = openRemoteShell('tower', 3, 1);
+    const errs: Array<{ kind: string }> = [];
+    h.onInputError((e) => errs.push(e));
+    await flush();
+    emit({ deviceId: 'tower', streamId: 7, closed: true, reason: 'remote_ended' });
+    h.resize(80, 24);
+    await flush();
+    expect(errs).toEqual([]);
+    expect(invoke).not.toHaveBeenCalledWith('p2p:rpc-call', expect.objectContaining({ method: 'shells.resize' }));
+    h.send('x');
+    await flush();
+    expect(errs.map((e) => e.kind)).toEqual(['failed']);
+  });
+
+  test('resize queued before a failed attach is dropped silently', async () => {
+    let reject!: (e: Error) => void;
+    invoke.mockImplementationOnce(() => new Promise((_, r) => { reject = r; }));
+    const h = openRemoteShell('tower', 3, 1);
+    const errs: Array<{ kind: string }> = [];
+    h.onInputError((e) => errs.push(e));
+    h.resize(80, 24);
+    reject(new Error('no route'));
+    await flush();
+    expect(errs).toEqual([]);
+  });
+
   test('a rejected shells.resize reaches onInputError', async () => {
     const h = openRemoteShell('tower', 3, 1);
     const errs: unknown[] = [];
