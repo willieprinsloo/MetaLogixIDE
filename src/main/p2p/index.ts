@@ -14,7 +14,8 @@ import { Secret, SignalingTypes, type Envelope } from '../../shared/signaling-wi
 import { runMigrations } from '../db/migrator';
 import { emitAliveShellsChanged, emitProjectsChanged } from '../ipc/register';
 import type { Services } from '../services';
-import { wireHub, setHubServices } from './hub';
+import { wireHub, setHubServices, type HubHandle } from './hub';
+import { createUploadClient, uploadClientDeps, type UploadClient } from './upload-client';
 import {
   addKnownDevice,
   canonicalPubHex,
@@ -84,7 +85,7 @@ const DC_LABEL = 'metaide';
 /** Must match the message peerEngine emits when it rejects a data channel. */
 const CHANNEL_NOT_RELIABLE_MSG = 'data channel must be ordered and reliable';
 
-type EmitFn = <E extends 'p2p:rpc-event'>(channel: E, payload: IpcEvents[E]) => void;
+type EmitFn = <E extends 'p2p:rpc-event' | 'p2p:upload-progress'>(channel: E, payload: IpcEvents[E]) => void;
 
 /** The slice of McClient the lifecycle uses; tests supply a double. */
 export interface SignalingClient extends EventEmitter {
@@ -176,6 +177,8 @@ interface Link {
   expectedDevice?: string;
   remoteDevice?: string;
   rpc?: RpcPeer;
+  /** Host links: the hub, disposed with the link so its partial uploads are discarded (AC-U6). */
+  hub?: HubHandle;
   secure?: SecureTransport;
   handshakeStarted: boolean;
   closed: boolean;
@@ -217,6 +220,8 @@ class P2PRuntime {
   #dialTimer: NodeJS.Timeout | null = null;
   /** Auto-dial back-off per device id: earliest next attempt and the delay that produced it. */
   readonly #dialBackoff = new Map<string, { next: number; delay: number }>();
+  /** Viewer-side uploads to paired hosts (`p2p:upload`). */
+  readonly uploads: UploadClient;
 
   constructor(readonly services: Services, readonly opts: StartP2POpts) {
     this.home = opts.homeDir ?? services.homeDir;
@@ -225,6 +230,14 @@ class P2PRuntime {
     this.hostIdentity = loadHostIdentity(this.identityPath);
     this.deviceKey = loadOrCreateDeviceKey(join(this.home, '.metaide', 'device.key'));
     this.pairing = new PairingSession({ maxAttempts: opts.pairingMaxAttempts, now: opts.now });
+    this.uploads = createUploadClient(uploadClientDeps(
+      services,
+      async (deviceId, method, params) => {
+        const id = canonicalPubHex(deviceId);
+        return this.#callWithReconnect(id, await this.ensureConn(id), method, params as never) as never;
+      },
+      (e) => this.opts.emit?.('p2p:upload-progress', e),
+    ));
   }
 
   nowMs(): number {
@@ -578,7 +591,7 @@ class P2PRuntime {
     }
     const rpc = new RpcPeer(secure.asRpcTransport());
     rpc.on('error', () => { /* audited in the hub; channel stays up */ });
-    wireHub(rpc, {
+    link.hub = wireHub(rpc, {
       remoteDeviceId: remote,
       services: this.services,
       auditLogPath: this.opts.auditLogPath ?? join(this.home, '.metaide', 'logs', 'p2p-audit.log'),
@@ -682,6 +695,7 @@ class P2PRuntime {
       }
     }
     link.settle?.({ ok: false, error: reason });
+    link.hub?.dispose().catch(() => { /* best effort: the idle timeout backstops it */ });
     try { link.rpc?.close(); } catch { /* already closed */ }
     try { link.secure?.close(); } catch { /* already closed */ }
     try { link.transport?.close(); } catch { /* already closed */ }
@@ -916,6 +930,8 @@ export function createP2P(services: Services, opts: StartP2POpts = {}): P2PHandl
       const s = need().streams.get(streamId);
       if (s) { need().streams.delete(streamId); s.handle.close(); }
     },
+    upload: (req) => (rt ? rt.uploads.upload(req) : Promise.resolve({ kind: 'failed', reason: 'p2p_not_started' })),
+    cancelUpload: (uploadId) => rt?.uploads.cancel(uploadId),
   };
   return {
     api,

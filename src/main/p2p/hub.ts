@@ -6,6 +6,8 @@ import { RpcMethods, type Params, type Result, type RpcMethodName } from '../../
 import type { Services } from '../services';
 import { emitAliveShellsChanged, emitProjectsChanged, handlers } from '../ipc/register';
 import { RpcError, type HandlerContext, type RpcPeer } from './rpc';
+import { safeFileName } from '../drops/file-name';
+import { createUploadService, type UploadOutcome } from './uploads';
 
 /*
  * Server-side RPC hub: one per peer/session. Methods call the same implementations the renderer
@@ -22,6 +24,12 @@ export interface HubOptions {
   auditMaxBytes?: number;
   /** Local-UI refresh hooks; default to the register.ts broadcasters. Injectable for tests. */
   events?: { aliveShellsChanged(): void; projectsChanged(): void };
+}
+
+/** Returned by `wireHub`; the link owner calls `dispose` when the link closes. */
+export interface HubHandle {
+  /** Aborts this link's in-progress uploads so no partial file outlives it (AC-U6). */
+  dispose(): Promise<void>;
 }
 
 let defaultServices: Services | null = null;
@@ -72,6 +80,14 @@ export function scrubParams(method: string, params: unknown, opts: { keepUnknown
     // Keystrokes may include passwords: log only the size.
     const { bytes, ...rest } = p as Record<string, unknown>;
     p = { ...rest, bytes: typeof bytes === 'string' ? `<${bytes.length} b64 chars>` : undefined };
+  }
+  if (method === 'drops.uploadChunk' && p && typeof p === 'object') {
+    const { data, ...rest } = p as Record<string, unknown>;
+    p = { ...rest, data: `<${String(data).length} b64 chars>` };
+  }
+  if (method === 'drops.uploadBegin' && p && typeof p === 'object') {
+    const { name, mime } = p as { name: string; mime: string };
+    p = { ...p, name: safeFileName(name, mime, new Date()) };
   }
   return redact(p);
 }
@@ -206,7 +222,11 @@ function attachStream(
 
 // ---- wiring ----
 
-export function wireHub(peer: RpcPeer, opts: HubOptions): void {
+/**
+ * Registers every RPC method on `peer` for one link and returns the handle whose
+ * `dispose` must be called when that link closes.
+ */
+export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
   const s = opts.services ?? defaultServices;
   if (!s) throw new Error('wireHub: no services (pass opts.services or call setHubServices)');
   const audit = new AuditLog(opts.auditLogPath ?? defaultAuditLogPath(), opts.auditMaxBytes ?? AUDIT_MAX_BYTES);
@@ -313,4 +333,17 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): void {
     if (buf.subarray(0, 8192).includes(0)) throw new RpcError('binary_file', 'binary files are not supported');
     return { content: buf.toString('utf8'), encoding: 'utf8' as const };
   });
+
+  // Upload sessions are scoped to this link: an id from another peer is unknown here (B-S2).
+  const uploads = createUploadService({
+    staging: s.dropStaging,
+    platform: process.platform,
+    onOutcome: (o: UploadOutcome) => audit.write({ ts: Date.now(), remoteDeviceId: opts.remoteDeviceId, method: 'drops.upload', ...o }),
+  });
+  on('drops.uploadBegin', (p) => uploads.begin(p));
+  on('drops.uploadChunk', (p) => uploads.chunk(p));
+  on('drops.uploadCommit', (p) => uploads.commit(p));
+  on('drops.uploadAbort', (p) => uploads.abort(p));
+
+  return { dispose: () => uploads.disposeAll() };
 }
