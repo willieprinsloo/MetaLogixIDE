@@ -42,6 +42,11 @@ and shell, the remote ones open a remote pane.
 - Long-lasting connections: known devices are dialled eagerly on startup
   with exponential backoff; one side revoking is an explicit `peer_revoked`
   wire message.
+- Remote terminals behave like local ones for the clipboard. Text a program
+  copies (OSC 52, as Claude Code does on Linux) lands on your clipboard, and
+  Option+drag selects while a program tracks the mouse. Dropping a file or
+  pasting an image sends it to that machine (up to 50 MB; files over 10 MB
+  ask first) and types its path there.
 
 ### metaproject integration
 First-class bridge to the MetaLogix metaproject board: project linking,
