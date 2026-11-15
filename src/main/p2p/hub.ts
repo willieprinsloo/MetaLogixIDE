@@ -7,7 +7,7 @@ import type { Services } from '../services';
 import { emitAliveShellsChanged, emitProjectsChanged, handlers } from '../ipc/register';
 import { RpcError, type HandlerContext, type RpcPeer } from './rpc';
 import { safeFileName } from '../drops/file-name';
-import { createUploadService, type UploadOutcome } from './uploads';
+import { createUploadQuota, createUploadService, type UploadOutcome, type UploadQuota } from './uploads';
 
 /*
  * Server-side RPC hub: one per peer/session. Methods call the same implementations the renderer
@@ -24,7 +24,12 @@ export interface HubOptions {
   auditMaxBytes?: number;
   /** Local-UI refresh hooks; default to the register.ts broadcasters. Injectable for tests. */
   events?: { aliveShellsChanged(): void; projectsChanged(): void };
+  /** Test knob; defaults to the one host-wide quota every link shares (AC-U8). */
+  uploadQuota?: UploadQuota;
 }
+
+/** The host's single upload quota: caps count across all links, not per link. */
+const hostUploadQuota = createUploadQuota();
 
 /** Returned by `wireHub`; the link owner calls `dispose` when the link closes. */
 export interface HubHandle {
@@ -62,6 +67,19 @@ function redact(v: unknown): unknown {
   return v;
 }
 
+type ParamScrubber = (p: Record<string, unknown>) => Record<string, unknown>;
+
+/** Per-method rewrites of payloads that would put user content in the audit log. */
+const PARAM_SCRUBBERS: ReadonlyMap<string, ParamScrubber> = new Map(Object.entries({
+  // Keystrokes may include passwords: log only the size.
+  'shells.input': ({ bytes, ...rest }) => ({ ...rest, bytes: typeof bytes === 'string' ? `<${bytes.length} b64 chars>` : undefined }),
+  'drops.uploadChunk': ({ data, ...rest }) => ({ ...rest, data: `<${String(data).length} b64 chars>` }),
+  'drops.uploadBegin': (p) => {
+    const { name, mime } = p as { name: string; mime: string };
+    return { ...p, name: safeFileName(name, mime, new Date()) };
+  },
+} satisfies Record<string, ParamScrubber>));
+
 /**
  * Audit-safe params: unknown fields are dropped by the method's schema (`.strip()`) and any
  * token/secret/password key is replaced. `keepUnknown` skips the strip (redaction only) and
@@ -76,19 +94,8 @@ export function scrubParams(method: string, params: unknown, opts: { keepUnknown
       .safeParse(params);
     p = parsed.success ? parsed.data : undefined;
   }
-  if (method === 'shells.input' && p && typeof p === 'object') {
-    // Keystrokes may include passwords: log only the size.
-    const { bytes, ...rest } = p as Record<string, unknown>;
-    p = { ...rest, bytes: typeof bytes === 'string' ? `<${bytes.length} b64 chars>` : undefined };
-  }
-  if (method === 'drops.uploadChunk' && p && typeof p === 'object') {
-    const { data, ...rest } = p as Record<string, unknown>;
-    p = { ...rest, data: `<${String(data).length} b64 chars>` };
-  }
-  if (method === 'drops.uploadBegin' && p && typeof p === 'object') {
-    const { name, mime } = p as { name: string; mime: string };
-    p = { ...p, name: safeFileName(name, mime, new Date()) };
-  }
+  const scrub = PARAM_SCRUBBERS.get(method);
+  if (scrub && p && typeof p === 'object') p = scrub(p as Record<string, unknown>);
   return redact(p);
 }
 
@@ -334,10 +341,12 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
     return { content: buf.toString('utf8'), encoding: 'utf8' as const };
   });
 
-  // Upload sessions are scoped to this link: an id from another peer is unknown here (B-S2).
+  // Upload sessions are scoped to this link (B-S2); the caps are host-wide via the shared quota.
   const uploads = createUploadService({
     staging: s.dropStaging,
     platform: process.platform,
+    quota: opts.uploadQuota ?? hostUploadQuota,
+    remoteDeviceId: opts.remoteDeviceId,
     onOutcome: (o: UploadOutcome) => audit.write({ ts: Date.now(), remoteDeviceId: opts.remoteDeviceId, method: 'drops.upload', ...o }),
   });
   on('drops.uploadBegin', (p) => uploads.begin(p));

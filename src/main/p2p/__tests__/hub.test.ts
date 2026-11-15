@@ -20,6 +20,7 @@ import { ProjectsRepo } from '../../repos/projects-repo';
 import { waitFor } from './_mockRelay';
 import { ShellInfo } from '../../../shared/p2p-contract';
 import { createDropStaging } from '../../drops/staging';
+import { createUploadQuota } from '../uploads';
 import { RpcError } from '../rpc';
 import { UPLOAD_CHUNK_MAX_B64_CHARS } from '../../../shared/remote-upload-contract';
 
@@ -46,6 +47,7 @@ function setup(extra: { agentStatus?: { list(): unknown[] } | null; auditMaxByte
     auditLogPath: auditPath,
     auditMaxBytes: extra.auditMaxBytes,
     events: extra.events,
+    uploadQuota: createUploadQuota(),
   });
   return { client, server, hub };
 }
@@ -459,5 +461,30 @@ describe('drops.upload* (AC-U1, AC-U10, B-S1, B-S6)', () => {
     const { uploadId } = await a.client.call('drops.uploadBegin', { name: 'a.txt', mime: '', size: 3, kind: 'file' });
     expect(await codeOf(b.client.call('drops.uploadChunk', { uploadId, offset: 0, data: b64('abc') }))).toBe('upload_unknown');
     await expect(a.client.call('drops.uploadChunk', { uploadId, offset: 0, data: b64('abc') })).resolves.toEqual({ received: 3 });
+  });
+});
+
+describe('upload caps are host-wide across links (AC-U8)', () => {
+  test('two links from the same device share its four upload slots by default', async () => {
+    const link = (remoteDeviceId = 'dev-xyz') => {
+      const [ta, tb] = pairedTransports();
+      const client = new RpcPeer(ta.asTransport());
+      const server = new RpcPeer(tb.asTransport());
+      client.on('error', () => {});
+      server.on('error', () => {});
+      const hub = wireHub(server, { remoteDeviceId, services: { dropStaging: staging() } as never, auditLogPath: auditPath });
+      return { client, hub };
+    };
+    const a = link();
+    const b = link();
+    const begin = (c: RpcPeer) => c.call('drops.uploadBegin', { name: 'a.txt', mime: '', size: 1, kind: 'file' });
+    await Promise.all([begin(a.client), begin(a.client), begin(b.client), begin(b.client)]);
+    await expect(begin(b.client)).rejects.toMatchObject({ code: 'too_many_uploads' });
+    await expect(begin(a.client)).rejects.toMatchObject({ code: 'too_many_uploads' });
+    await a.hub.dispose();
+    await expect(begin(b.client)).resolves.toBeDefined();
+    const other = link('dev-other');
+    await expect(Promise.all([1, 2, 3, 4].map(() => begin(other.client)))).resolves.toHaveLength(4);
+    await Promise.all([b.hub.dispose(), other.hub.dispose()]);
   });
 });

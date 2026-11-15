@@ -8,7 +8,7 @@
  */
 import { readFile } from 'node:fs/promises';
 import { pathStyleFor } from '../../shared/shell-escape';
-import type { Params, Result } from '../../shared/p2p-contract';
+import { RpcMethods, type Params, type Result } from '../../shared/p2p-contract';
 import { locateAppFile, type LocatedAppFile } from '../drops/handlers';
 import type { Services } from '../services';
 import type { UploadKind } from '../drops/staging';
@@ -137,77 +137,100 @@ function newActive(): Active {
   return active;
 }
 
+/** One transfer in progress: the renderer request, its cancellation handle and the host's upload id. */
+interface Transfer {
+  readonly req: UploadRequest;
+  readonly a: Active;
+  readonly hostId: string;
+}
+
+/** Awaits `p` unless the upload is cancelled first, in which case it throws `CANCELLED`. */
+async function step<T>(a: Active, p: Promise<T>): Promise<T> {
+  p.catch(() => undefined);
+  const r = await Promise.race([p, a.signal]);
+  if (r === CANCELLED) throw CANCELLED;
+  return r as T;
+}
+
+/** Calls a host method whose reply the viewer acts on and checks it against the method's result schema (L4). */
+async function callChecked<M extends 'drops.uploadBegin' | 'drops.uploadCommit'>(
+  deps: UploadClientDeps,
+  deviceId: string,
+  method: M,
+  params: Params<M>,
+): Promise<Result<M>> {
+  const parsed = RpcMethods[method].result.safeParse(await deps.call(deviceId, method, params));
+  if (!parsed.success) throw new Error(`host sent an invalid ${method} reply`);
+  return parsed.data as Result<M>;
+}
+
+/** Fire-and-forget host abort; the host's idle timeout backstops a lost one. */
+function abortQuietly(deps: UploadClientDeps, deviceId: string, uploadId: string): void {
+  deps.call(deviceId, 'drops.uploadAbort', { uploadId }).catch(() => undefined);
+}
+
+/** Sends `bytes` in ordered chunks, one in flight, emitting throttled progress. */
+async function sendChunks(deps: UploadClientDeps, t: Transfer, bytes: Uint8Array, chunkBytes: number): Promise<void> {
+  const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let lastEmit = Number.NEGATIVE_INFINITY;
+  for (let offset = 0; offset < buf.byteLength; offset += chunkBytes) {
+    if (t.a.cancelled) throw CANCELLED;
+    const data = buf.subarray(offset, offset + chunkBytes).toString('base64');
+    await step(t.a, deps.call(t.req.deviceId, 'drops.uploadChunk', { uploadId: t.hostId, offset, data }));
+    const sentBytes = Math.min(offset + chunkBytes, buf.byteLength);
+    const now = deps.now();
+    if (now - lastEmit < PROGRESS_INTERVAL_MS && sentBytes < buf.byteLength) continue;
+    lastEmit = now;
+    deps.emitProgress({ uploadId: t.req.uploadId, sentBytes, totalBytes: buf.byteLength });
+  }
+}
+
+/** Begin, chunks and commit for a prepared upload; any failure aborts the host side unless the link is gone. */
+async function transfer(deps: UploadClientDeps, req: UploadRequest, a: Active, p: Prepared): Promise<UploadResult> {
+  const beginP = callChecked(deps, req.deviceId, 'drops.uploadBegin', { name: p.name, mime: p.mime, size: p.size, kind: p.kind });
+  let hostId: string | undefined;
+  try {
+    const begun = await step(a, beginP);
+    hostId = begun.uploadId;
+    const bytes = await step(a, p.load());
+    if (bytes.byteLength !== p.size) throw new Error('file changed while reading');
+    await sendChunks(deps, { req, a, hostId }, bytes, Math.min(begun.chunkBytes, UPLOAD_CHUNK_BYTES));
+    const { path, platform } = await step(a, callChecked(deps, req.deviceId, 'drops.uploadCommit', { uploadId: hostId }));
+    return { kind: 'staged', path, style: pathStyleFor(platform) };
+  } catch (err) {
+    const result = err === CANCELLED ? ({ kind: 'cancelled' } as const) : resultForError(err);
+    if (hostId !== undefined && result.kind !== 'link-lost') abortQuietly(deps, req.deviceId, hostId);
+    if (hostId === undefined && err === CANCELLED) beginP.then((r) => abortQuietly(deps, req.deviceId, r.uploadId), () => undefined);
+    return result;
+  }
+}
+
+/** Prepares, gates and transfers one request. */
+async function run(deps: UploadClientDeps, req: UploadRequest, a: Active): Promise<UploadResult> {
+  const prepared = await prepare(req.source, deps);
+  if (!('load' in prepared)) return prepared;
+  return gate(prepared, req) ?? (await transfer(deps, req, a, prepared));
+}
+
+/** See `UploadClient.upload`; `active` holds the cancellation handle of every upload in progress. */
+async function upload(deps: UploadClientDeps, active: Map<string, Active>, req: UploadRequest): Promise<UploadResult> {
+  if (!isUploadRequest(req)) return { kind: 'failed', reason: 'invalid request' };
+  if (active.has(req.uploadId)) return { kind: 'failed', reason: 'upload id already in use' };
+  const a = newActive();
+  active.set(req.uploadId, a);
+  try {
+    return await run(deps, req, a);
+  } catch (err) {
+    return { kind: 'failed', reason: messageOf(err) };
+  } finally {
+    active.delete(req.uploadId);
+  }
+}
+
 /** Builds the upload client over `deps`. */
 export function createUploadClient(deps: UploadClientDeps): UploadClient {
   const active = new Map<string, Active>();
-
-  /** Awaits `p` unless the upload is cancelled first, in which case it throws `CANCELLED`. */
-  async function step<T>(a: Active, p: Promise<T>): Promise<T> {
-    p.catch(() => undefined);
-    const r = await Promise.race([p, a.signal]);
-    if (r === CANCELLED) throw CANCELLED;
-    return r as T;
-  }
-
-  function abortQuietly(deviceId: string, uploadId: string): void {
-    deps.call(deviceId, 'drops.uploadAbort', { uploadId }).catch(() => undefined);
-  }
-
-  async function sendChunks(req: UploadRequest, a: Active, hostId: string, bytes: Uint8Array, chunkBytes: number): Promise<void> {
-    const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    let lastEmit = Number.NEGATIVE_INFINITY;
-    for (let offset = 0; offset < buf.byteLength; offset += chunkBytes) {
-      if (a.cancelled) throw CANCELLED;
-      const data = buf.subarray(offset, offset + chunkBytes).toString('base64');
-      await step(a, deps.call(req.deviceId, 'drops.uploadChunk', { uploadId: hostId, offset, data }));
-      const sentBytes = Math.min(offset + chunkBytes, buf.byteLength);
-      const now = deps.now();
-      if (now - lastEmit < PROGRESS_INTERVAL_MS && sentBytes < buf.byteLength) continue;
-      lastEmit = now;
-      deps.emitProgress({ uploadId: req.uploadId, sentBytes, totalBytes: buf.byteLength });
-    }
-  }
-
-  async function transfer(req: UploadRequest, a: Active, p: Prepared): Promise<UploadResult> {
-    const beginP = deps.call(req.deviceId, 'drops.uploadBegin', { name: p.name, mime: p.mime, size: p.size, kind: p.kind });
-    let hostId: string | undefined;
-    try {
-      const begun = await step(a, beginP);
-      hostId = begun.uploadId;
-      const bytes = await step(a, p.load());
-      if (bytes.byteLength !== p.size) throw new Error('file changed while reading');
-      await sendChunks(req, a, hostId, bytes, Math.min(begun.chunkBytes, UPLOAD_CHUNK_BYTES));
-      const { path, platform } = await step(a, deps.call(req.deviceId, 'drops.uploadCommit', { uploadId: hostId }));
-      return { kind: 'staged', path, style: pathStyleFor(platform) };
-    } catch (err) {
-      const result = err === CANCELLED ? ({ kind: 'cancelled' } as const) : resultForError(err);
-      if (hostId !== undefined && result.kind !== 'link-lost') abortQuietly(req.deviceId, hostId);
-      if (hostId === undefined && err === CANCELLED) beginP.then((r) => abortQuietly(req.deviceId, r.uploadId), () => undefined);
-      return result;
-    }
-  }
-
-  async function run(req: UploadRequest, a: Active): Promise<UploadResult> {
-    const prepared = await prepare(req.source, deps);
-    if (!('load' in prepared)) return prepared;
-    return gate(prepared, req) ?? (await transfer(req, a, prepared));
-  }
-
-  async function upload(req: UploadRequest): Promise<UploadResult> {
-    if (!isUploadRequest(req)) return { kind: 'failed', reason: 'invalid request' };
-    if (active.has(req.uploadId)) return { kind: 'failed', reason: 'upload id already in use' };
-    const a = newActive();
-    active.set(req.uploadId, a);
-    try {
-      return await run(req, a);
-    } catch (err) {
-      return { kind: 'failed', reason: messageOf(err) };
-    } finally {
-      active.delete(req.uploadId);
-    }
-  }
-
-  return { upload, cancel: (uploadId) => active.get(uploadId)?.fire() };
+  return { upload: (req) => upload(deps, active, req), cancel: (uploadId) => active.get(uploadId)?.fire() };
 }
 
 /**

@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { createDropStaging, type DropStaging, type UploadSink } from '@main/drops/staging';
 
-const faults = vi.hoisted(() => ({ linkCode: null as string | null }));
+const faults = vi.hoisted(() => ({ linkCode: null as string | null, shortWrites: false }));
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const real = await importOriginal<typeof import('node:fs/promises')>();
@@ -24,6 +24,17 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     link: async (...args: Parameters<typeof real.link>) => {
       if (faults.linkCode) throw Object.assign(new Error(faults.linkCode), { code: faults.linkCode });
       await real.link(...args);
+    },
+    open: async (...args: Parameters<typeof real.open>) => {
+      const handle = await real.open(...args);
+      if (!faults.shortWrites) return handle;
+      return new Proxy(handle, {
+        get(target, prop) {
+          if (prop === 'write') return (b: Uint8Array) => target.write(b.subarray(0, Math.ceil(b.byteLength / 2)));
+          const value = Reflect.get(target, prop, target) as unknown;
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
     },
   };
 });
@@ -63,6 +74,7 @@ beforeEach(() => {
 
 afterEach(() => {
   faults.linkCode = null;
+  faults.shortWrites = false;
   chmodSync(root, 0o700);
   rmSync(root, { recursive: true, force: true });
 });
@@ -262,5 +274,38 @@ describe('usageBytes (R3)', () => {
     mkdirSync(dir, { mode: 0o755 });
     chmodSync(dir, 0o755);
     await expect(staging().usageBytes()).rejects.toThrow(/mode 755/);
+  });
+});
+
+describe('UploadSink append on short writes', () => {
+  it('writes every byte even when the handle accepts only part of each write', async () => {
+    faults.shortWrites = true;
+    const sink = await openSink();
+    await sink.append(bytes('hello '));
+    await sink.append(bytes('world'));
+    const path = stagedPath(await sink.commit('w.txt', 'text/plain', 'file'));
+    expect(readFileSync(path, 'utf8')).toBe('hello world');
+  });
+});
+
+describe('removeStaged', () => {
+  it('removes a staged file inside the directory', async () => {
+    const sink = await openSink();
+    const path = stagedPath(await sink.commit('gone.txt', 'text/plain', 'file'));
+    await staging().removeStaged(path);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('resolves when the file is already gone', async () => {
+    mkdirSync(dir, { mode: 0o700 });
+    await expect(staging().removeStaged(join(dir, 'never.txt'))).resolves.toBeUndefined();
+  });
+
+  it('refuses a path outside the directory and leaves it in place', async () => {
+    const outside = join(root, 'outside.txt');
+    writeFileSync(outside, 'x');
+    await expect(staging().removeStaged(outside)).rejects.toThrow(/outside/);
+    await expect(staging().removeStaged(join(dir, '..', 'outside.txt'))).rejects.toThrow(/outside/);
+    expect(existsSync(outside)).toBe(true);
   });
 });

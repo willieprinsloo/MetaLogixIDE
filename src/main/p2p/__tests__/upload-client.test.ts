@@ -411,3 +411,39 @@ describe('uploadClientDeps (production wiring)', () => {
     }
   });
 });
+
+describe('host replies are validated (L4)', () => {
+  /** A host whose begin or commit reply is replaced; it cancels after a few chunks so a stuck loop cannot hang. */
+  function lyingHost(reply: Partial<Record<'drops.uploadBegin' | 'drops.uploadCommit', unknown>>) {
+    const host = fakeHost();
+    let chunks = 0;
+    let cancel: () => void = () => {};
+    const call = vi.fn(async (deviceId: string, method: UploadMethod, params: Params<UploadMethod>) => {
+      const real = await host.call(deviceId, method, params);
+      if (method === 'drops.uploadChunk' && ++chunks > 3) cancel();
+      return method in reply ? reply[method as keyof typeof reply] : real;
+    });
+    return { host, call, setCancel: (fn: () => void) => { cancel = fn; } };
+  }
+
+  test.each([0, -5, 1.5, 'big'])('a begin reply with chunkBytes %s fails the upload before any chunk', async (chunkBytes) => {
+    const liar = lyingHost({ 'drops.uploadBegin': { uploadId: 'host-1', chunkBytes } });
+    const { uc } = client(liar.host, { call: liar.call as unknown as UploadClientDeps['call'] });
+    liar.setCancel(() => uc.cancel('u1'));
+    const result = await uc.upload(bytesReq(10));
+    expect(result.kind).toBe('failed');
+    expect(liar.host.methods()).not.toContain('drops.uploadChunk');
+  });
+
+  test('a commit reply without a path fails instead of typing undefined', async () => {
+    const liar = lyingHost({ 'drops.uploadCommit': { platform: 'linux' } });
+    const { uc } = client(liar.host, { call: liar.call as unknown as UploadClientDeps['call'] });
+    expect(await uc.upload(bytesReq(4))).toMatchObject({ kind: 'failed' });
+  });
+
+  test('a commit reply that is not an object fails', async () => {
+    const liar = lyingHost({ 'drops.uploadCommit': null });
+    const { uc } = client(liar.host, { call: liar.call as unknown as UploadClientDeps['call'] });
+    expect(await uc.upload(bytesReq(4))).toMatchObject({ kind: 'failed' });
+  });
+});

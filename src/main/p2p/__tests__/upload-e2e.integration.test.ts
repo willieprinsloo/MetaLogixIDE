@@ -101,6 +101,18 @@ describe('viewer upload client ↔ host hub', () => {
     await vi.waitFor(() => expect(readdirSync(dropDir)).toEqual(['existing.txt']));
   });
 
+  test('a cancel once the last chunk is sent, while commit is in flight, leaves no staged file (AC-U6)', async () => {
+    const { viewerPeer } = link();
+    let client!: UploadClient;
+    const size = 64 * 1024;
+    client = viewer(viewerPeer, (e) => { if (e.sentBytes === size) client.cancel('r-1'); });
+    const result = await client.upload(request(new Uint8Array(randomBytes(size))));
+    expect(result).toEqual({ kind: 'cancelled' });
+    await vi.waitFor(() => expect(readdirSync(dropDir)).toEqual(['existing.txt']));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(readdirSync(dropDir)).toEqual(['existing.txt']);
+  });
+
   test('the link closing mid-upload is link-lost and the host keeps no partial file (AC-U6)', async () => {
     const { viewerPeer } = link();
     const client = viewer(viewerPeer, () => { ta.close(); tb.close(); });

@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDropStaging, DROP_MAX_AGE_MS, type DropStaging, type UploadSink } from '../../drops/staging';
-import { createUploadService, type UploadOutcome, type UploadService } from '../uploads';
+import { createUploadQuota, createUploadService, type UploadOutcome, type UploadQuota, type UploadService } from '../uploads';
 import { RpcError } from '../rpc';
 import {
   MAX_STAGED_BYTES,
@@ -403,5 +403,166 @@ describe('abort, idle timeout and dispose (AC-U6)', () => {
     const svc = createUploadService({ staging, platform: 'linux', onOutcome: () => {}, maxTotalBytes: 20 });
     await expect(begin(svc, 10)).resolves.toBeDefined();
     expect(readdirSync(dir).filter((n) => n === 'old.bin')).toEqual([]);
+  });
+});
+
+describe('host-wide caps shared across links (AC-U8)', () => {
+  const linkService = (quota: UploadQuota, remoteDeviceId: string, staging = fakeStaging().staging, maxTotalBytes?: number) =>
+    createUploadService({ staging, platform: 'linux', onOutcome: (o) => outcomes.push(o), quota, remoteDeviceId, maxTotalBytes });
+
+  test('bytes reserved on one link count toward the total checked on another', async () => {
+    const quota = createUploadQuota();
+    const a = linkService(quota, 'dev-a', fakeStaging().staging, 100);
+    const b = linkService(quota, 'dev-b', fakeStaging().staging, 100);
+    await begin(a, 60);
+    expect(await rpcCode(begin(b, 60))).toBe('drop_folder_full');
+    await expect(begin(b, 40)).resolves.toBeDefined();
+  });
+
+  test('a reservation is released when its upload ends, freeing room on the other link', async () => {
+    const quota = createUploadQuota();
+    const a = linkService(quota, 'dev-a', fakeStaging().staging, 100);
+    const b = linkService(quota, 'dev-b', fakeStaging().staging, 100);
+    const { uploadId } = await begin(a, 60);
+    await a.abort({ uploadId });
+    await expect(begin(b, 60)).resolves.toBeDefined();
+  });
+
+  test('a refused begin releases its reservation', async () => {
+    const quota = createUploadQuota();
+    const { staging } = fakeStaging();
+    staging.openUpload.mockImplementationOnce((async () => ({ kind: 'failed', reason: 'disk' })) as unknown as typeof staging.openUpload);
+    const a = linkService(quota, 'dev-a', staging, 100);
+    expect(await rpcCode(begin(a, 60))).toMatch(/^non-rpc:.*disk/);
+    await expect(begin(linkService(quota, 'dev-b', fakeStaging().staging, 100), 60)).resolves.toBeDefined();
+  });
+
+  test('the fifth upload from one device is refused even when split across two links', async () => {
+    const quota = createUploadQuota();
+    const a = linkService(quota, 'dev-1');
+    const b = linkService(quota, 'dev-1');
+    await Promise.all([begin(a, 1), begin(a, 1), begin(a, 1), begin(b, 1)]);
+    expect(await rpcCode(begin(b, 1))).toBe('too_many_uploads');
+    expect(await rpcCode(begin(a, 1))).toBe('too_many_uploads');
+    await expect(begin(linkService(quota, 'dev-2'), 1)).resolves.toBeDefined();
+  });
+
+  test('a device slot frees when an upload ends on either link, and on dispose', async () => {
+    const quota = createUploadQuota();
+    const a = linkService(quota, 'dev-1');
+    const b = linkService(quota, 'dev-1');
+    const first = await begin(a, 1);
+    await Promise.all([begin(a, 1), begin(b, 1), begin(b, 1)]);
+    await a.abort({ uploadId: first.uploadId });
+    await expect(begin(b, 1)).resolves.toBeDefined();
+    await b.disposeAll();
+    await expect(Promise.all([begin(a, 1), begin(a, 1), begin(a, 1)])).resolves.toHaveLength(3);
+    expect(await rpcCode(begin(a, 1))).toBe('too_many_uploads');
+  });
+
+  test('a failed write that races a commit releases the slot only once', async () => {
+    const quota = createUploadQuota();
+    const { staging } = fakeStaging();
+    let failWrite!: (e: Error) => void;
+    staging.openUpload.mockImplementationOnce(async () => ({
+      kind: 'open',
+      sink: {
+        append: () => new Promise<void>((_r, reject) => { failWrite = reject; }),
+        commit: async () => ({ kind: 'staged', path: '/staged/x' }) as const,
+        abort: async () => {},
+      },
+    }) as const);
+    const a = linkService(quota, 'dev-1', staging);
+    const { uploadId } = await begin(a, 3);
+    await begin(linkService(quota, 'dev-1'), 1);
+    const chunk = a.chunk({ uploadId, offset: 0, data: b64('abc') });
+    const commit = a.commit({ uploadId });
+    await vi.waitFor(() => expect(failWrite).toBeDefined());
+    failWrite(new Error('disk'));
+    await Promise.allSettled([chunk, commit]);
+    await Promise.all([begin(a, 1), begin(a, 1), begin(a, 1)]);
+    expect(await rpcCode(begin(a, 1))).toBe('too_many_uploads');
+  });
+});
+
+describe('cancel or link loss during commit leaves no staged file (AC-U6)', () => {
+  /** A staging double whose single sink commit waits for `finish()`; `removeStaged` records paths. */
+  function gatedStaging() {
+    let finish!: () => void;
+    const gate = new Promise<void>((r) => { finish = r; });
+    const removed: string[] = [];
+    const staging = {
+      ...fakeStaging().staging,
+      openUpload: vi.fn(async () => ({
+        kind: 'open',
+        sink: {
+          append: async () => {},
+          commit: async () => { await gate; return { kind: 'staged', path: '/staged/x' } as const; },
+          abort: async () => {},
+        } satisfies UploadSink,
+      }) as const),
+      removeStaged: vi.fn(async (path: string) => { removed.push(path); }),
+    };
+    return { staging, removed, finish };
+  }
+
+  test('an abort that arrives while commit is in flight removes the staged file and fails the commit', async () => {
+    const { staging, removed, finish } = gatedStaging();
+    const svc = service(staging);
+    const { uploadId } = await begin(svc, 0);
+    const commit = svc.commit({ uploadId });
+    await expect(svc.abort({ uploadId })).resolves.toEqual({ ok: true });
+    finish();
+    expect(await rpcCode(commit)).toBe('upload_unknown');
+    expect(removed).toEqual(['/staged/x']);
+    expect(outcomes.map((o) => o.outcome)).toEqual(['aborted:cancelled']);
+  });
+
+  test('an abort right after commit returned removes the just-staged file', async () => {
+    const { staging, removed, finish } = gatedStaging();
+    const svc = service(staging);
+    const { uploadId } = await begin(svc, 0);
+    finish();
+    await svc.commit({ uploadId });
+    await expect(svc.abort({ uploadId })).resolves.toEqual({ ok: true });
+    expect(removed).toEqual(['/staged/x']);
+    expect(outcomes.map((o) => o.outcome)).toEqual(['staged', 'aborted:cancelled']);
+    await svc.abort({ uploadId });
+    expect(removed).toHaveLength(1);
+  });
+
+  test('an abort long after commit leaves the staged file alone', async () => {
+    vi.useFakeTimers();
+    const { staging, removed, finish } = gatedStaging();
+    const svc = service(staging);
+    const { uploadId } = await begin(svc, 0);
+    finish();
+    await svc.commit({ uploadId });
+    await vi.advanceTimersByTimeAsync(UPLOAD_IDLE_TIMEOUT_MS);
+    await svc.abort({ uploadId });
+    expect(removed).toEqual([]);
+    expect(outcomes.map((o) => o.outcome)).toEqual(['staged']);
+  });
+
+  test('the link closing while commit is in flight removes the staged file', async () => {
+    const { staging, removed, finish } = gatedStaging();
+    const svc = service(staging);
+    const { uploadId } = await begin(svc, 0);
+    const commit = svc.commit({ uploadId });
+    const disposed = svc.disposeAll();
+    finish();
+    expect(await rpcCode(commit)).toBe('closed');
+    await disposed;
+    expect(removed).toEqual(['/staged/x']);
+    expect(outcomes.map((o) => o.outcome)).toEqual(['aborted:link-closed']);
+  });
+
+  test('on real staging, an abort right after commit leaves the folder as before', async () => {
+    const svc = service();
+    const { uploadId } = await begin(svc, 3, 'c.txt');
+    await svc.chunk({ uploadId, offset: 0, data: b64('abc') });
+    await svc.commit({ uploadId });
+    await svc.abort({ uploadId });
+    expect(readdirSync(dir)).toEqual([]);
   });
 });

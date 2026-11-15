@@ -9,7 +9,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { constants as fsConstants, copyFile, link, lstat, mkdir, open, readdir, unlink, type FileHandle } from 'node:fs/promises';
-import { extname, join, resolve } from 'node:path';
+import { dirname, extname, join, resolve } from 'node:path';
 import { MAX_STAGED_BYTES, type StageResult } from '@shared/terminal-drop-contract';
 import { MAX_NAME_LENGTH, pastedImageName, safeFileName } from './file-name';
 
@@ -42,7 +42,7 @@ export type UploadKind = 'file' | 'clipboard-image';
  * of `commit` or `abort` finishes it; afterwards `append` rejects and `abort` is a no-op.
  */
 export interface UploadSink {
-  /** Appends `bytes` at the end of the temp file. */
+  /** Appends every byte of `bytes` at the end of the temp file; a short OS write is continued, never truncated. */
   append(bytes: Uint8Array): Promise<void>;
   /** Re-verifies the directory, then links the temp file under a free final name without clobbering. */
   commit(name: string, mime: string, kind: UploadKind): Promise<StageResult>;
@@ -66,6 +66,8 @@ export interface DropStaging {
   openUpload(): Promise<OpenUploadResult>;
   /** Bytes held by regular files in the directory, `.part` files included; rejects when it is untrusted. */
   usageBytes(): Promise<number>;
+  /** Deletes a staged file directly inside the directory; resolves when already gone, rejects for any other path or an untrusted directory. */
+  removeStaged(path: string): Promise<void>;
 }
 
 /** Default staging location: `<tmp>/metaide-drops-<uid>` on POSIX, `<tmp>/metaide-drops` on Windows. */
@@ -236,7 +238,7 @@ function createUploadSink(
   return {
     append: async (bytes) => {
       if (finished) throw new Error('upload already finished');
-      await handle.write(bytes);
+      await handle.writeFile(bytes);
     },
     commit,
     abort: async () => {
@@ -245,78 +247,103 @@ function createUploadSink(
   };
 }
 
+/** The resolved directory plus the clock and uid every staging operation needs. */
+interface StagingCtx {
+  readonly dir: string;
+  readonly uid: number | null;
+  readonly now: () => Date;
+}
+
+/** Names in `ctx.dir` after the trust check, or null when the directory does not exist yet; `verb` labels a refusal. */
+async function trustedEntries(ctx: StagingCtx, verb: string): Promise<string[] | null> {
+  try {
+    const refusal = await untrustedReason(ctx.dir, ctx.uid);
+    if (refusal !== null) throw new Error(`refusing to ${verb}: ${refusal}`);
+    return await readdir(ctx.dir);
+  } catch (err) {
+    if (errorCode(err) === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+/** Writes `bytes` under the first free form of `fileName` in the verified directory. */
+async function writeStaged(ctx: StagingCtx, fileName: string, bytes: Uint8Array): Promise<StageResult> {
+  if (bytes.byteLength > MAX_STAGED_BYTES)
+    return { kind: 'too-large', limitBytes: MAX_STAGED_BYTES };
+  try {
+    const refusal = await ensureTrustedDir(ctx.dir, ctx.uid);
+    if (refusal !== null) return { kind: 'failed', reason: refusal };
+    return { kind: 'staged', path: await writeUnderFreeName(ctx.dir, fileName, bytes) };
+  } catch (err) {
+    return { kind: 'failed', reason: reasonOf(err) };
+  }
+}
+
+/** See `DropStaging.pruneOlderThan`. */
+async function pruneOlderThan(ctx: StagingCtx, maxAgeMs: number): Promise<PruneSummary> {
+  const names = await trustedEntries(ctx, 'prune');
+  if (names === null) return { removed: 0, failed: 0 };
+  const cutoffMs = ctx.now().getTime() - maxAgeMs;
+  const outcomes = await Promise.allSettled(names.map((n) => pruneEntry(join(ctx.dir, n), cutoffMs)));
+  return {
+    removed: outcomes.filter((o) => o.status === 'fulfilled' && o.value).length,
+    failed: outcomes.filter((o) => o.status === 'rejected').length,
+  };
+}
+
+/** See `DropStaging.usageBytes`. */
+async function usageBytes(ctx: StagingCtx): Promise<number> {
+  const names = await trustedEntries(ctx, 'measure');
+  if (names === null) return 0;
+  const sizes = await Promise.all(names.map((n) => regularFileBytes(join(ctx.dir, n))));
+  return sizes.reduce((sum, n) => sum + n, 0);
+}
+
+/** The staged name for a finished upload of `kind`. */
+function finalUploadName(ctx: StagingCtx, name: string, mime: string, kind: UploadKind): string {
+  return kind === 'clipboard-image' ? pastedImageName(ctx.now()) : safeFileName(name, mime, ctx.now());
+}
+
+/** See `DropStaging.openUpload`. */
+async function openUpload(ctx: StagingCtx): Promise<OpenUploadResult> {
+  try {
+    const refusal = await ensureTrustedDir(ctx.dir, ctx.uid);
+    if (refusal !== null) return { kind: 'failed', reason: refusal };
+    // A leading dot never survives safeFileName, so a temp name cannot collide with a staged one.
+    const temp = join(ctx.dir, `.${randomBytes(12).toString('hex')}.part`);
+    const handle = await open(temp, 'wx', OWNER_ONLY_FILE);
+    const finalName = (name: string, mime: string, kind: UploadKind): string => finalUploadName(ctx, name, mime, kind);
+    const sink = createUploadSink(ctx.dir, temp, handle, finalName, () => untrustedReason(ctx.dir, ctx.uid));
+    return { kind: 'open', sink };
+  } catch (err) {
+    return { kind: 'failed', reason: reasonOf(err) };
+  }
+}
+
+/** See `DropStaging.removeStaged`. */
+async function removeStaged(ctx: StagingCtx, path: string): Promise<void> {
+  const target = resolve(path);
+  if (dirname(target) !== ctx.dir) throw new Error(`refusing to remove ${path}: outside the drop directory`);
+  const refusal = await untrustedReason(ctx.dir, ctx.uid);
+  if (refusal !== null) throw new Error(`refusing to remove: ${refusal}`);
+  try {
+    await unlink(target);
+  } catch (err) {
+    if (errorCode(err) !== 'ENOENT') throw err;
+  }
+}
+
 /** Builds the staging service over `opts.dir`; nothing touches disk until the first call. */
 export function createDropStaging(opts: DropStagingOptions): DropStaging {
-  const dir = resolve(opts.dir);
-
-  async function writeStaged(fileName: string, bytes: Uint8Array): Promise<StageResult> {
-    if (bytes.byteLength > MAX_STAGED_BYTES)
-      return { kind: 'too-large', limitBytes: MAX_STAGED_BYTES };
-    try {
-      const refusal = await ensureTrustedDir(dir, opts.uid);
-      if (refusal !== null) return { kind: 'failed', reason: refusal };
-      return { kind: 'staged', path: await writeUnderFreeName(dir, fileName, bytes) };
-    } catch (err) {
-      return { kind: 'failed', reason: reasonOf(err) };
-    }
-  }
-
-  async function pruneOlderThan(maxAgeMs: number): Promise<PruneSummary> {
-    let names: string[];
-    try {
-      const refusal = await untrustedReason(dir, opts.uid);
-      if (refusal !== null) throw new Error(`refusing to prune: ${refusal}`);
-      names = await readdir(dir);
-    } catch (err) {
-      if (errorCode(err) === 'ENOENT') return { removed: 0, failed: 0 };
-      throw err;
-    }
-    const cutoffMs = opts.now().getTime() - maxAgeMs;
-    const outcomes = await Promise.allSettled(names.map((n) => pruneEntry(join(dir, n), cutoffMs)));
-    return {
-      removed: outcomes.filter((o) => o.status === 'fulfilled' && o.value).length,
-      failed: outcomes.filter((o) => o.status === 'rejected').length,
-    };
-  }
-
-  const finalName = (name: string, mime: string, kind: UploadKind): string =>
-    kind === 'clipboard-image' ? pastedImageName(opts.now()) : safeFileName(name, mime, opts.now());
-
-  async function openUpload(): Promise<OpenUploadResult> {
-    try {
-      const refusal = await ensureTrustedDir(dir, opts.uid);
-      if (refusal !== null) return { kind: 'failed', reason: refusal };
-      // A leading dot never survives safeFileName, so a temp name cannot collide with a staged one.
-      const temp = join(dir, `.${randomBytes(12).toString('hex')}.part`);
-      const handle = await open(temp, 'wx', OWNER_ONLY_FILE);
-      const sink = createUploadSink(dir, temp, handle, finalName, () => untrustedReason(dir, opts.uid));
-      return { kind: 'open', sink };
-    } catch (err) {
-      return { kind: 'failed', reason: reasonOf(err) };
-    }
-  }
-
-  async function usageBytes(): Promise<number> {
-    let names: string[];
-    try {
-      const refusal = await untrustedReason(dir, opts.uid);
-      if (refusal !== null) throw new Error(`refusing to measure: ${refusal}`);
-      names = await readdir(dir);
-    } catch (err) {
-      if (errorCode(err) === 'ENOENT') return 0;
-      throw err;
-    }
-    const sizes = await Promise.all(names.map((n) => regularFileBytes(join(dir, n))));
-    return sizes.reduce((sum, n) => sum + n, 0);
-  }
-
+  const ctx: StagingCtx = { dir: resolve(opts.dir), uid: opts.uid, now: opts.now };
   return {
-    dir,
-    stage: (name, mime, bytes) => writeStaged(safeFileName(name, mime, opts.now()), bytes),
-    stagePastedImage: (png) => writeStaged(pastedImageName(opts.now()), png),
-    pruneOlderThan,
-    openUpload,
-    usageBytes,
+    dir: ctx.dir,
+    stage: (name, mime, bytes) => writeStaged(ctx, safeFileName(name, mime, ctx.now()), bytes),
+    stagePastedImage: (png) => writeStaged(ctx, pastedImageName(ctx.now()), png),
+    pruneOlderThan: (maxAgeMs) => pruneOlderThan(ctx, maxAgeMs),
+    openUpload: () => openUpload(ctx),
+    usageBytes: () => usageBytes(ctx),
+    removeStaged: (path) => removeStaged(ctx, path),
   };
 }
 
