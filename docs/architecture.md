@@ -1060,6 +1060,33 @@ as external there.
   alternate-screen PTY by one row and restores it, which those apps treat as a
   forced full repaint, so cells drawn at a stale size are cleaned up.
 
+### Terminal copy and remote input
+
+- **OSC 52.** Every shell tab, local or remote, registers an OSC 52 handler
+  (`registerClipboardOsc` in `src/renderer/osc52.ts`). A program that writes
+  the clipboard with `ESC ] 52 ; c ; <base64>` puts the decoded text on this
+  machine's clipboard through `navigator.clipboard.writeText`. This is how
+  Claude Code copies on a Linux host without xclip or wl-copy, and in its
+  fullscreen mode. Read queries (`?`) are never answered. The base64 length
+  is checked before decoding, and payloads over 1 MiB of text, invalid base64
+  and invalid UTF-8 are ignored. A clipboard rejection shows the Copy failed
+  toast, shown at most once per 5 s. Any program in a terminal can therefore replace the clipboard, as in
+  iTerm and kitty.
+- **Forced selection.** The terminal sets `macOptionClickForcesSelection`, so
+  Option+drag on macOS selects text while a program tracks the mouse.
+- **Remote input.** `src/renderer/p2p/input-queue.ts` sends a remote shell's
+  input one `shells.input` call at a time and merges input that arrives
+  meanwhile. Large pastes are split into frames of at most 256 KiB of UTF-8,
+  on code-point boundaries, because the host decodes each frame on its own.
+  A push that would take the not-yet-sent buffer over 4 MiB is refused.
+  Send and resize failures reach `RemoteShellHandle.onInputError`
+  (`src/renderer/p2p/remoteShellBridge.ts`), including input typed after the
+  remote stream has ended (host shutdown, revoked link, failed attach). Only
+  a close the user requested stays silent, and resizes after the stream ends
+  are dropped silently (a window resize is not user input). The shell tab shows one toast per
+  kind per 5 s, naming the host (`src/renderer/remote-toasts.ts`,
+  `src/renderer/toast-throttle.ts`, `REMOTE_INPUT_COPY`).
+
 ### Shell tab overlays
 
 `ShellTab.tsx` draws three overlays above its terminal: the exit overlay

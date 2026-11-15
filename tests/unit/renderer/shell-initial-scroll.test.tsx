@@ -74,6 +74,7 @@ const terminals = vi.hoisted(() => ({ instances: [] as TerminalProbe[] }));
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
     options: Record<string, unknown> = {};
+    parser = { registerOscHandler: () => ({ dispose() {} }) };
     cols = 80;
     rows = 24;
     unicode = { activeVersion: '11' };
