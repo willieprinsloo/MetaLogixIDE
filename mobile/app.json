@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "MetaLogix IDE",
+    "slug": "metaide-mobile",
+    "scheme": "metaide",
+    "version": "0.1.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.metalogix.metaide.mobile",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "Connects directly to your paired machines when they are on the same network.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.metalogix.metaide.mobile",
+      "softwareKeyboardLayoutMode": "resize",
+      "permissions": ["android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE"],
+      "adaptiveIcon": {
+        "backgroundColor": "#0d1014",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-build-properties"
+    ]
+  }
+}

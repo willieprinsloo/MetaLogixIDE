@@ -64,6 +64,13 @@ or null; absent from older hosts), which tints that machine's switcher dot
 `docs/superpowers/specs/2026-10-26-metaide-p2p-design.md` for the protocol,
 identity and pairing design.
 
+The mobile app in `mobile/` is a viewer-only fleet member. `mobile/src/core`
+ports the viewer half of `src/main/p2p` (relay client, Noise initiator, secure
+channel, RPC client) and `mobile/src/core/__tests__/interop.test.ts` runs it
+against the host code here, so a wire change that breaks the phone fails
+`pnpm test`. It pairs like any machine but sends no connect code, so desktops
+never dial it.
+
 ### Main-process responsiveness
 
 The Electron main thread also pumps the window event loop. If it stays busy

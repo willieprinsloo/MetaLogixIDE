@@ -48,6 +48,11 @@ and shell, the remote ones open a remote pane.
   pasting an image sends it to that machine (up to 50 MB; files over 10 MB
   ask first) and types its path there.
 
+### Mobile companion
+A React Native app in [`mobile/`](mobile/README.md) pairs with your machines as a
+viewer. Swipe between machines, see each one's active projects, and tap a
+project to open its terminal.
+
 ### metaproject integration
 First-class bridge to the MetaLogix metaproject board: project linking,
 chat pane fed by the metaproject socket, status-bar badges for the active
