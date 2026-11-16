@@ -68,8 +68,13 @@ The mobile app in `mobile/` is a viewer-only fleet member. `mobile/src/core`
 ports the viewer half of `src/main/p2p` (relay client, Noise initiator, secure
 channel, RPC client) and `mobile/src/core/__tests__/interop.test.ts` runs it
 against the host code here, so a wire change that breaks the phone fails
-`pnpm test`. It pairs like any machine but sends no connect code, so desktops
-never dial it.
+`pnpm test`. It pairs like any machine but sends `viewer: true` and no connect code in the
+pairing hello. The host records that in `known_devices.json`, and
+`fleet()` flags the entry `viewer` (also for any device with no connect code,
+since nothing can dial it). `useFleet` returns such devices under `devices`
+only, so the machine switcher, Fleet view and shared In use never show them;
+Settings → P2P still lists them, marked "viewer only", so they can be revoked.
+Auto-dial skips them too.
 
 ### Main-process responsiveness
 

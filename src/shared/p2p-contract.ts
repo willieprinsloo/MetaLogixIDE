@@ -121,7 +121,16 @@ export const Frame = z.union([
 ]);
 export type Frame = z.infer<typeof Frame>;
 
-export type FleetEntry = { deviceId: string; name: string; online: boolean; lastSeenAt: number | null; /** True for this machine's own entry, when the fleet includes it. */ self?: boolean };
+export type FleetEntry = {
+  deviceId: string;
+  name: string;
+  online: boolean;
+  lastSeenAt: number | null;
+  /** True for this machine's own entry, when the fleet includes it. */
+  self?: boolean;
+  /** True for a paired device that only connects in (the mobile app). Listed for revoking, never shown as a machine. */
+  viewer?: boolean;
+};
 
 /** Stored in `p2p_settings` (singleton row, id = 1). */
 export interface P2PSettings {

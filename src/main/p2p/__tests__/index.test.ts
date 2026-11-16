@@ -297,6 +297,10 @@ describe('pairing over the full stack', () => {
     expect((await pair(host, viewer)).result).toEqual({ ok: true });
     await waitFor(() => known(host).length === 1);
     expect(known(host)[0]!.code).toBeUndefined();
+    // Nothing can dial it, so it is listed as a viewer (revocable) rather than a fleet machine.
+    expect(await host.p2p.api.fleetList()).toEqual([expect.objectContaining({ deviceId: idOf(viewer), name: 'Laptop', viewer: true })]);
+    // The machine it joined is dialable, so on its side that one is an ordinary fleet machine.
+    expect((await viewer.p2p.api.fleetList())[0]!.viewer).toBeUndefined();
   });
 
   test('the pair modal code is the host code: joining your own code is refused, unknown codes are denied by the relay', async () => {

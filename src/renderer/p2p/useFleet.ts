@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import type { FleetEntry } from '../../shared/p2p-contract';
 import { sameMachines } from '../machine-dots';
@@ -7,8 +7,12 @@ import { sameMachines } from '../machine-dots';
 // (not present in IpcEvents yet).
 const POLL_MS = 5000;
 
-export function useFleet(): { machines: FleetEntry[]; loading: boolean; error?: string; refresh: () => void } {
-  const [machines, setMachines] = useState<FleetEntry[]>([]);
+/**
+ * `machines` are the fleet: paired machines this one can open. `devices` is every paired device, including
+ * viewer-only ones such as the mobile app, which Settings lists so they can be revoked.
+ */
+export function useFleet(): { machines: FleetEntry[]; devices: FleetEntry[]; loading: boolean; error?: string; refresh: () => void } {
+  const [devices, setDevices] = useState<FleetEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
   const alive = useRef(true);
@@ -17,7 +21,7 @@ export function useFleet(): { machines: FleetEntry[]; loading: boolean; error?: 
     api.invoke('p2p:fleet-list', undefined).then(
       (res) => {
         if (!alive.current) return;
-        setMachines((prev) => (sameMachines(prev, res.fleet) ? prev : res.fleet));
+        setDevices((prev) => (sameMachines(prev, res.fleet) && prev.every((d, i) => !d.viewer === !res.fleet[i]!.viewer) ? prev : res.fleet));
         setError(undefined);
         setLoading(false);
       },
@@ -36,5 +40,7 @@ export function useFleet(): { machines: FleetEntry[]; loading: boolean; error?: 
     return () => { alive.current = false; clearInterval(t); };
   }, [load]);
 
-  return { machines, loading, error, refresh: load };
+  const machines = useMemo(() => devices.filter((d) => !d.viewer), [devices]);
+
+  return { machines, devices, loading, error, refresh: load };
 }

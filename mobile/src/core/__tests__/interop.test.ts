@@ -192,7 +192,7 @@ describe('phone core against the desktop implementation', () => {
     expect(r).toEqual({ deviceId: host.id, name: 'Studio', code: HOST_CODE });
     await until(() => host.trusted.size === 1);
     expect(host.trusted.get(canonicalPubHex(key.pub))).toBe('Pixel');
-    expect(host.hellos).toEqual([{ hello: 'Pixel' }]);
+    expect(host.hellos).toEqual([{ hello: 'Pixel', viewer: true }]);
   });
 
   it('refuses to pair when the host has no pairing window open (prologue mismatch)', async () => {

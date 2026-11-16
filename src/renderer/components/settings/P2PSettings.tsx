@@ -158,7 +158,7 @@ export function P2PSettings() {
   const [pairing, setPairing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
-  const { machines, error: fleetError, refresh } = useFleet();
+  const { devices, error: fleetError, refresh } = useFleet();
 
   useEffect(() => {
     let alive = true;
@@ -228,7 +228,7 @@ export function P2PSettings() {
     }
   };
 
-  const members = machines.filter((m) => !m.self);
+  const members = devices.filter((m) => !m.self);
 
   return (
     <div className="space-y-6">
@@ -310,7 +310,7 @@ export function P2PSettings() {
               <li key={m.deviceId} className="flex items-center justify-between gap-3 rounded-lg bg-[--panel] px-3 py-2">
                 <div className="min-w-0">
                   <div className="truncate text-sm">{m.name}</div>
-                  <div className="font-mono text-xs text-[--text-muted]" title={m.deviceId}>{truncateId(m.deviceId)}</div>
+                  <div className="font-mono text-xs text-[--text-muted]" title={m.deviceId}>{truncateId(m.deviceId)}{m.viewer ? ' · viewer only' : ''}</div>
                 </div>
                 <button type="button" className={BUTTON_CLASS} aria-label={`Revoke ${m.name}`} disabled={revokingId === m.deviceId} onClick={() => void revoke(m.deviceId, m.name)}>
                   Revoke

@@ -163,7 +163,8 @@ const reasonOf = (e: unknown): string => {
 
 /**
  * Pairs with the desktop that currently shows `code` under "Pair a new machine". Both sides swap
- * `{hello: name, code?}`; the phone sends no code because it never hosts.
+ * `{hello: name, code?}`; the phone sends no code because it never hosts, and `viewer: true` so the
+ * desktop keeps it out of its fleet views.
  */
 export async function pairWith(o: LinkOpts & { deviceName: string }): Promise<PairResult> {
   const { peer, sessionId, closeSignalling } = await openChannel(o);
@@ -186,7 +187,8 @@ export async function pairWith(o: LinkOpts & { deviceName: string }): Promise<Pa
         resolve({ name: name.slice(0, 80) || deviceId.slice(0, 8), code });
       });
       secure.start();
-      secure.send(utf8Encode(JSON.stringify({ hello: o.deviceName })));
+      // `viewer` tells the desktop this device only connects in, so it stays out of its fleet views.
+      secure.send(utf8Encode(JSON.stringify({ hello: o.deviceName, viewer: true })));
     });
     return { deviceId, name: hello.name, code: hello.code ?? o.code.trim() };
   } catch (e) {

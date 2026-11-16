@@ -54,7 +54,8 @@ team, or pass `--device` to `npx expo run:ios`.
 1. On the desktop: Settings → P2P → **Pair a new machine**. Keep the window open.
 2. On the phone: tap **＋**, enter the pair code, tap **Pair**.
 
-The phone then appears in the desktop's device list. To unpair, long-press the machine name
+The phone then appears under Settings → P2P on the desktop, marked "viewer only". It is not a
+fleet machine: desktops never show it in the sidebar or Fleet view. To unpair, long-press the machine name
 on the phone and remove the phone under Settings → P2P on the desktop.
 
 ## Good to know
