@@ -325,10 +325,15 @@ describe('shells.alive agent state', () => {
     expect(rows.map((r) => r.agentState)).toEqual([null, 'busy', 'blocked']);
   });
 
+  test('carries the detected agent with the state, and null for a shell with none', async () => {
+    const rows = await alive({ agentStatus: { list: () => [{ projectId: 1, shellIndex: 1, agent: 'opencode', state: 'busy' }] } });
+    expect(rows.map((r) => r.agent)).toEqual([null, 'opencode', null]);
+  });
+
   test('leaves the field off when no tracker is installed', async () => {
     const rows = await alive({ agentStatus: null });
     expect(rows).toHaveLength(3);
-    for (const r of rows) expect(r).not.toHaveProperty('agentState');
+    for (const r of rows) { expect(r).not.toHaveProperty('agentState'); expect(r).not.toHaveProperty('agent'); }
   });
 
   test('leaves the field off when the services carry no tracker at all', async () => {

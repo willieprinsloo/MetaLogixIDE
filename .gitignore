@@ -10,3 +10,4 @@ test-results/
 
 # Session-local scratch from Claude Code
 .claude/
+.probe-tmp.mjs

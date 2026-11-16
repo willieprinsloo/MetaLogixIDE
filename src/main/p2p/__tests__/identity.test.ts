@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadOrCreateDeviceKey, fingerprintFromPub, loadKnownDevices, saveKnownDevices, canonicalPubHex, addKnownDevice, isTrustedDevice, removeKnownDevice } from '../identity';
+import { loadOrCreateDeviceKey, fingerprintFromPub, loadKnownDevices, saveKnownDevices, canonicalPubHex, addKnownDevice, isTrustedDevice, removeKnownDevice, isViewerOnly } from '../identity';
 import { EFF_SHORT_WORDLIST } from '../_wordlist';
 
 let dir: string;
@@ -80,6 +80,27 @@ describe('known devices', () => {
     saveKnownDevices([], f);
     expect(loadKnownDevices(f)).toEqual([]);
     expect(fs.readdirSync(dir)).toEqual(['known_devices.json']);
+  });
+  it('remembers a viewer-only device, and a re-pair that says nothing keeps the flag and the code', () => {
+    const f = path.join(dir, 'viewers.json');
+    const phone = '34'.repeat(32);
+    const tower = '56'.repeat(32);
+    addKnownDevice(phone, 'iPhone', f, 1, undefined, true);
+    addKnownDevice(tower, 'Tower', f, 2, 'ABCD-1234');
+    expect(loadKnownDevices(f)).toEqual([
+      { pub: phone, name: 'iPhone', addedAt: 1, viewer: true },
+      { pub: tower, name: 'Tower', addedAt: 2, code: 'ABCD-1234' },
+    ]);
+    expect(loadKnownDevices(f).map(isViewerOnly)).toEqual([true, false]);
+    addKnownDevice(phone, 'iPhone 2', f, 3);
+    addKnownDevice(tower, 'Tower 2', f, 4);
+    expect(loadKnownDevices(f)).toEqual([
+      { pub: phone, name: 'iPhone 2', addedAt: 3, viewer: true },
+      { pub: tower, name: 'Tower 2', addedAt: 4, code: 'ABCD-1234' },
+    ]);
+    // A device paired without a connect code cannot be dialled either, flag or not.
+    expect(isViewerOnly({ pub: phone, name: 'old', addedAt: 1 })).toBe(true);
+    expect(isViewerOnly({ pub: tower, name: 'flagged', addedAt: 1, code: 'ABCD-1234', viewer: true })).toBe(true);
   });
   it('rejects invalid entries', () => {
     const f = path.join(dir, 'k.json');

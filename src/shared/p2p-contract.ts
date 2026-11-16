@@ -23,6 +23,8 @@ export const ShellInfo = z
     shellIndex: z.number(),
     /** Host's agent state for this shell; absent from older hosts or hosts without the tracker, null when no recognised agent runs. */
     agentState: z.enum(['idle', 'busy', 'blocked']).nullable().optional(),
+    /** The agent the host detects running in this shell (`claude`, `codex`, `opencode`); labels the viewer's tab. Absent from older hosts. */
+    agent: z.string().nullable().optional(),
   })
   .passthrough();
 export type ShellInfoT = z.infer<typeof ShellInfo>;
@@ -121,7 +123,16 @@ export const Frame = z.union([
 ]);
 export type Frame = z.infer<typeof Frame>;
 
-export type FleetEntry = { deviceId: string; name: string; online: boolean; lastSeenAt: number | null; /** True for this machine's own entry, when the fleet includes it. */ self?: boolean };
+export type FleetEntry = {
+  deviceId: string;
+  name: string;
+  online: boolean;
+  lastSeenAt: number | null;
+  /** True for this machine's own entry, when the fleet includes it. */
+  self?: boolean;
+  /** True for a paired device that only connects in (the mobile app). Listed for revoking, never shown as a machine. */
+  viewer?: boolean;
+};
 
 /** Stored in `p2p_settings` (singleton row, id = 1). */
 export interface P2PSettings {

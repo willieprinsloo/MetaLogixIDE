@@ -74,8 +74,19 @@ export function loadOrCreateDeviceKey(file: string = DEFAULT_KEY_PATH): DeviceKe
   }
 }
 
-/** `code` is the peer's mrsignald host connect code: the address a viewer puts in `session_request`. */
-export type KnownDevice = { pub: string; name: string; addedAt: number; code?: string };
+/**
+ * `code` is the peer's mrsignald host connect code: the address a viewer puts in `session_request`.
+ * `viewer` marks a device that only ever connects in (the mobile app): trusted, but not a fleet machine.
+ */
+export type KnownDevice = { pub: string; name: string; addedAt: number; code?: string; viewer?: boolean };
+
+/**
+ * True for a device that cannot be a fleet machine: it said so when pairing, or it gave no connect code,
+ * so nothing here can dial it. Such devices stay trusted and revocable but are kept out of the fleet views.
+ */
+export function isViewerOnly(d: KnownDevice): boolean {
+  return d.viewer === true || !d.code;
+}
 
 export const CONNECT_CODE_RE = /^[A-Za-z0-9-]{4,32}$/;
 
@@ -89,7 +100,7 @@ export function loadKnownDevices(file: string = DEFAULT_KNOWN_DEVICES_PATH): Kno
       throw new Error('known_devices.json contains an invalid entry');
     }
     const code = typeof x.code === 'string' && CONNECT_CODE_RE.test(x.code) ? x.code : undefined;
-    return { pub: canonicalPubHex(x.pub), name: x.name, addedAt: x.addedAt, ...(code ? { code } : {}) };
+    return { pub: canonicalPubHex(x.pub), name: x.name, addedAt: x.addedAt, ...(code ? { code } : {}), ...(x.viewer === true ? { viewer: true } : {}) };
   });
 }
 
@@ -110,12 +121,13 @@ export function isTrustedDevice(pub: Uint8Array | string, file: string = DEFAULT
   return loadKnownDevices(file).some((d) => d.pub === want);
 }
 
-export function addKnownDevice(pub: Uint8Array | string, name: string, file: string = DEFAULT_KNOWN_DEVICES_PATH, now: number = Date.now(), code?: string): void {
+/** Adds or replaces a device. An omitted `code` or `viewer` keeps what a previous pairing recorded. */
+export function addKnownDevice(pub: Uint8Array | string, name: string, file: string = DEFAULT_KNOWN_DEVICES_PATH, now: number = Date.now(), code?: string, viewer?: boolean): void {
   const canon = canonicalPubHex(pub);
   const prev = loadKnownDevices(file).find((d) => d.pub === canon);
   const list = loadKnownDevices(file).filter((d) => d.pub !== canon);
   const keep = code && CONNECT_CODE_RE.test(code) ? code : prev?.code;
-  list.push({ pub: canon, name, addedAt: now, ...(keep ? { code: keep } : {}) });
+  list.push({ pub: canon, name, addedAt: now, ...(keep ? { code: keep } : {}), ...((viewer ?? prev?.viewer) === true ? { viewer: true } : {}) });
   saveKnownDevices(list, file);
 }
 

@@ -285,8 +285,12 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
   on('shells.alive', async () => {
     const { shells } = await handlers['shells:alive-list'](s, undefined as never);
     if (!s.agentStatus) return shells.map((r) => ({ ...r }));
-    const states = new Map(s.agentStatus.list().map((e) => [`${e.projectId}:${e.shellIndex}`, e.state]));
-    return shells.map((r) => ({ ...r, agentState: states.get(`${r.projectId}:${r.shellIndex}`) ?? null }));
+    const states = new Map(s.agentStatus.list().map((e) => [`${e.projectId}:${e.shellIndex}`, e]));
+    // `agent` lets the viewer label a tab by what runs in it now (a terminal where opencode was started).
+    return shells.map((r) => {
+      const e = states.get(`${r.projectId}:${r.shellIndex}`);
+      return { ...r, agentState: e?.state ?? null, agent: e?.agent ?? null };
+    });
   });
 
   // RpcError messages below are fixed strings, safe to send to the peer.

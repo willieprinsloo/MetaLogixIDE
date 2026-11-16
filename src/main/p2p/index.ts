@@ -24,6 +24,7 @@ import {
   loadOrCreateDeviceKey,
   removeKnownDevice,
   CONNECT_CODE_RE,
+  isViewerOnly,
   type DeviceKey,
 } from './identity';
 import { loadHostIdentity, saveHostIdentity, type HostIdentity } from './host-identity';
@@ -56,7 +57,8 @@ import type { P2PApi, PairRedeemResult } from './types';
  * the host treats the next invite that arrives while a window is open as the pairing session (a trusted peer
  * connecting in that window fails its handshake and costs one attempt; acceptable for a 5 min user-initiated window).
  * Noise prologue = SHA-256(code, session id). After Noise, both sides swap `{hello: name, code: <own host code>}` so each
- * stores the other's pub key AND the code needed to dial it later.
+ * stores the other's pub key AND the code needed to dial it later. The mobile app sends `{hello, viewer: true}` and no
+ * code: it is trusted to connect in, but `fleet()` flags it `viewer` so the fleet views leave it out.
  *
  * ---- Handshake contract (pendingMessages) ----
  * `doNoiseXxHandshake` returns `pendingMessages`: encrypted frames the peer sent after message 3 but
@@ -646,14 +648,16 @@ class P2PRuntime {
         clearTimeout(timer);
         let name = '';
         let code: string | undefined;
+        let viewer = false;
         try {
-          const j = JSON.parse(new TextDecoder().decode(m)) as { hello?: unknown; code?: unknown };
+          const j = JSON.parse(new TextDecoder().decode(m)) as { hello?: unknown; code?: unknown; viewer?: unknown };
           name = String(j.hello ?? '');
           if (typeof j.code === 'string' && CONNECT_CODE_RE.test(j.code)) code = j.code;
+          viewer = j.viewer === true; // the mobile app: connects in, never serves
         } catch { /* ignore */ }
         name = name.slice(0, 80) || remote.slice(0, 8);
         try {
-          addKnownDevice(remote, name, this.knownPath, Date.now(), code ?? fallbackCode);
+          addKnownDevice(remote, name, this.knownPath, Date.now(), code ?? fallbackCode, viewer);
           this.recordDevice(remote, name);
           resolve(name);
         } catch (e) {
@@ -888,6 +892,7 @@ class P2PRuntime {
       name: d.name,
       online: this.isOnline(d.pub),
       lastSeenAt: seen.get(d.pub) ?? null,
+      ...(isViewerOnly(d) ? { viewer: true } : {}),
     }));
   }
 

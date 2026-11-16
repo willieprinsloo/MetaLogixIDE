@@ -60,6 +60,38 @@ describe('P2PSettings', () => {
     expect(screen.getByRole('dialog')).toBeTruthy();
   });
 
+  test('the pair modal shows a QR code carrying the code and this machine\'s relay, for the mobile app', async () => {
+    invoke.mockImplementation(async (ch: string) => {
+      if (ch === 'p2p:settings-get') return SETTINGS;
+      if (ch === 'p2p:fleet-list') return { fleet: FLEET };
+      if (ch === 'p2p:pair-generate-code') return { code: '921782718', expiresAt: Date.now() + 120_000 };
+      return { ok: true };
+    });
+    render(<P2PSettings />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Pair a new machine' }));
+    const qr = await screen.findByRole('img', { name: 'QR code for pairing the mobile app' });
+    await waitFor(() => expect(qr.getAttribute('data-value')).toBe('metaide://pair?code=921782718&relay=relay.example.com&port=7001'));
+    // A real symbol: square, dark modules on a white field with a quiet zone.
+    const [, , w, h] = qr.getAttribute('viewBox')!.split(' ').map(Number);
+    expect(w).toBe(h);
+    expect(w).toBeGreaterThanOrEqual(21 + 8);
+    expect(qr.querySelector('rect')!.getAttribute('fill')).toBe('#ffffff');
+    expect(qr.querySelector('path')!.getAttribute('d')!.length).toBeGreaterThan(200);
+  });
+
+  test('an expired pair code shows no QR code', async () => {
+    invoke.mockImplementation(async (ch: string) => {
+      if (ch === 'p2p:settings-get') return SETTINGS;
+      if (ch === 'p2p:fleet-list') return { fleet: FLEET };
+      if (ch === 'p2p:pair-generate-code') return { code: '921782718', expiresAt: Date.now() - 1 };
+      return { ok: true };
+    });
+    render(<P2PSettings />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Pair a new machine' }));
+    expect(await screen.findByText(/Code expired/)).toBeTruthy();
+    expect(screen.queryByTestId('p2p-pair-qr')).toBeNull();
+  });
+
   test('Revoke next to a fleet member calls p2p:revoke-device (self is not listed)', async () => {
     render(<P2PSettings />);
     const btn = await screen.findByRole('button', { name: /Revoke Tower/i });

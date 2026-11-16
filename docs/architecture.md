@@ -55,7 +55,13 @@ relay and device settings live in Settings → P2P
 in the sidebar's machine switcher (see **Machine switcher** below) and in the
 Fleet view; a remote project opens in `RemoteProjectPane`, whose terminals
 are `ShellTab` with a remote source (`src/renderer/components/RemoteMachineList.tsx`,
-`FleetView.tsx`, `RemoteProjectPane.tsx`). The fleet list
+`FleetView.tsx`, `RemoteProjectPane.tsx`). The pane shows one tab per shell
+the project has running on that machine (`src/renderer/p2p/useRemoteProjectShells.ts`,
+polled from `shells.alive` every 3 s) and attaches to the one selected; it
+opens on the shell `shells.launch` returns. Tabs are labelled as local ones
+are, through `src/shared/shell-launch-name.ts`: the launch command, or the
+agent the host reports in `agent` when one was started by hand in a terminal.
+Remote tabs can be viewed and switched, not added or closed. The fleet list
 (`p2p:fleet-list`) holds paired machines only and never sets
 `FleetEntry.self`, so the renderer adds this machine itself. A host's
 `shells.alive` reply carries each shell's `agentState` (idle, busy, blocked
@@ -63,6 +69,25 @@ or null; absent from older hosts), which tints that machine's switcher dot
 (`src/main/p2p/hub.ts`). See
 `docs/superpowers/specs/2026-10-26-metaide-p2p-design.md` for the protocol,
 identity and pairing design.
+
+The mobile app in `mobile/` is a viewer-only fleet member. `mobile/src/core`
+ports the viewer half of `src/main/p2p` (relay client, Noise initiator, secure
+channel, RPC client) and `mobile/src/core/__tests__/interop.test.ts` runs it
+against the host code here, so a wire change that breaks the phone fails
+`pnpm test`. It pairs like any machine but sends `viewer: true` and no connect code in the
+pairing hello. The host records that in `known_devices.json`, and
+`fleet()` flags the entry `viewer` (also for any device with no connect code,
+since nothing can dial it). `useFleet` returns such devices under `devices`
+only, so the machine switcher, Fleet view and shared In use never show them;
+Settings → P2P still lists them, marked "viewer only", so they can be revoked.
+Auto-dial skips them too.
+
+The pairing window also draws a QR code for the phone
+(`src/renderer/components/settings/PairQr.tsx`). It encodes
+`metaide://pair?code=…&relay=…&port=…` from `src/shared/pair-link.ts`: the
+connect code already on screen plus this machine's relay, nothing secret. The
+mobile parser is `mobile/src/core/pairLink.ts`, and the interop test feeds it
+what `buildPairLink` produces.
 
 ### Main-process responsiveness
 
