@@ -12,7 +12,8 @@
       "bundleIdentifier": "com.metalogix.metaide.mobile",
       "infoPlist": {
         "NSLocalNetworkUsageDescription": "Connects directly to your paired machines when they are on the same network.",
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSMicrophoneUsageDescription": "Dictate text into a terminal by voice."
       }
     },
     "android": {
@@ -37,11 +38,17 @@
         "expo-camera",
         {
           "cameraPermission": "Scan the pairing QR code shown on your desktop.",
-          "microphonePermission": false,
+          "microphonePermission": "Dictate text into a terminal by voice.",
           "recordAudioAndroid": false
         }
       ],
-      ["expo-speech-recognition", { "microphonePermission": "Dictate text into a terminal by voice.", "speechRecognitionPermission": "Turn your speech into text to type into a terminal." }]
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Dictate text into a terminal by voice.",
+          "speechRecognitionPermission": "Turn your speech into text to type into a terminal."
+        }
+      ]
     ]
   }
 }
