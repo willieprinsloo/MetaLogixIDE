@@ -50,8 +50,8 @@ and shell, the remote ones open a remote pane.
 
 ### Mobile companion
 A React Native app in [`mobile/`](mobile/README.md) pairs with your machines as a
-viewer. Swipe between machines, see each one's active projects, and tap a
-project to open its terminal.
+viewer by scanning a QR code. Swipe between machines, see each one's active
+projects, tap a project to open its terminal, and dictate into it by voice.
 
 ### metaproject integration
 First-class bridge to the MetaLogix metaproject board: project linking,

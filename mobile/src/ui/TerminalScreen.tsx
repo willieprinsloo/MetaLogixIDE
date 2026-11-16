@@ -5,11 +5,13 @@ import { useHeaderHeight } from '@react-navigation/elements';
 import { tabLabels, type ShellSession } from '../core/fleet';
 import { fleet } from '../platform';
 import type { ScreenProps } from './nav';
+import { ComposeBar } from './ComposeBar';
 import { TerminalView, type TerminalHandle } from './TerminalView';
 import { AGENT, C, explain } from './theme';
 import { useMachine } from './useFleet';
 
 const KEYS: Array<{ id: string; label: string }> = [
+  { id: 'dictate', label: '🎤' },
   { id: 'esc', label: 'esc' },
   { id: 'tab', label: 'tab' },
   { id: 'ctrl', label: 'ctrl' },
@@ -39,6 +41,7 @@ export function TerminalScreen({ route, navigation }: ScreenProps<'Terminal'>) {
   const [attempt, setAttempt] = useState(0);
   const [ended, setEnded] = useState<Ended>(null);
   const [ctrl, setCtrl] = useState(false);
+  const [composing, setComposing] = useState(false);
 
   const online = machine?.status === 'online';
   const shells = (machine?.shells ?? []).filter((s) => s.projectId === projectId).sort((a, b) => a.shellIndex - b.shellIndex);
@@ -75,7 +78,15 @@ export function TerminalScreen({ route, navigation }: ScreenProps<'Terminal'>) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceId, projectId, attachKey, online]);
 
+  // Dictated text goes in as a paste, so a program that asks for bracketed paste gets it as one block.
+  const insert = (text: string, enter: boolean) => {
+    if (text) term.current?.paste(text);
+    if (enter) term.current?.key('enter');
+    setComposing(false);
+  };
+
   const press = (id: string) => {
+    if (id === 'dictate') { term.current?.blur(); setComposing(true); return; }
     if (id === 'ctrl') {
       const next = !ctrl;
       setCtrl(next);
@@ -129,10 +140,11 @@ export function TerminalScreen({ route, navigation }: ScreenProps<'Terminal'>) {
         ) : null}
       </View>
 
-      <View style={[styles.keys, { paddingBottom: Math.max(insets.bottom, 6) }]}>
+      {composing ? <ComposeBar bottomInset={Math.max(insets.bottom, 6)} disabled={!online} onInsert={insert} onClose={() => setComposing(false)} /> : null}
+      <View style={[styles.keys, { paddingBottom: Math.max(insets.bottom, 6) }, composing && styles.hidden]}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="always" contentContainerStyle={styles.keysInner}>
           {KEYS.map((k) => (
-            <Pressable key={k.id} style={({ pressed }) => [styles.key, k.id === 'ctrl' && ctrl && styles.keyOn, pressed && styles.keyPressed]} onPress={() => press(k.id)} accessibilityLabel={k.id}>
+            <Pressable key={k.id} style={({ pressed }) => [styles.key, k.id === 'ctrl' && ctrl && styles.keyOn, pressed && styles.keyPressed]} onPress={() => press(k.id)} accessibilityLabel={k.id === 'dictate' ? 'Dictate' : k.id}>
               <Text style={[styles.keyText, k.id === 'ctrl' && ctrl && styles.keyTextOn]}>{k.label}</Text>
             </Pressable>
           ))}
@@ -166,4 +178,5 @@ const styles = StyleSheet.create({
   keyText: { color: C.text, fontSize: 15, fontWeight: '500' },
   keyTextOn: { color: '#06101c' },
   pressed: { opacity: 0.7 },
+  hidden: { display: 'none' },
 });

@@ -82,6 +82,13 @@ only, so the machine switcher, Fleet view and shared In use never show them;
 Settings → P2P still lists them, marked "viewer only", so they can be revoked.
 Auto-dial skips them too.
 
+The pairing window also draws a QR code for the phone
+(`src/renderer/components/settings/PairQr.tsx`). It encodes
+`metaide://pair?code=…&relay=…&port=…` from `src/shared/pair-link.ts`: the
+connect code already on screen plus this machine's relay, nothing secret. The
+mobile parser is `mobile/src/core/pairLink.ts`, and the interop test feeds it
+what `buildPairLink` produces.
+
 ### Main-process responsiveness
 
 The Electron main thread also pumps the window event loop. If it stays busy

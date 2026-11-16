@@ -16,6 +16,8 @@ import { Secret, createFrameDecoder, encodeFrame } from '../../../../src/shared/
 import { activeProjects, Fleet, shellName, tabLabels, type FleetState, type Storage } from '../fleet';
 import { connect, pairWith, type Peer, type Platform, type RelaySocket } from '../link';
 import { canonicalPubHex, deviceKeyFromSeed } from '../noise';
+import { parsePairLink } from '../pairLink';
+import { buildPairLink } from '../../../../src/shared/pair-link';
 
 const HOST_CODE = 'ABCD-1234';
 const enc = new TextEncoder();
@@ -252,6 +254,27 @@ describe('phone core against the desktop implementation', () => {
     const host = makeHost();
     const conn = await connect({ platform: host.platform, relay, code: HOST_CODE, deviceKey: phoneKey(), expectedDevice: host.id });
     await expect(conn.rpc.call('projects.list', {}, 1000)).rejects.toMatchObject({ code: 'closed' });
+  });
+});
+
+describe('pairing QR link', () => {
+  it('reads what the desktop encodes', () => {
+    expect(parsePairLink(buildPairLink({ code: '921782718', relayUrl: 'remote.metalogix.solutions', relayPort: 7100 })))
+      .toEqual({ code: '921782718', relayHost: 'remote.metalogix.solutions', relayPort: 7100 });
+    expect(parsePairLink(buildPairLink({ code: ' ABCD-1234 ' }))).toEqual({ code: 'ABCD-1234' });
+    expect(parsePairLink(buildPairLink({ code: 'ABCD-1234', relayUrl: '10.0.0.5', relayPort: 0 }))).toEqual({ code: 'ABCD-1234', relayHost: '10.0.0.5' });
+  });
+  it('accepts a bare code and rejects everything else', () => {
+    expect(parsePairLink(' 921782718\n')).toEqual({ code: '921782718' });
+    expect(parsePairLink('METAIDE://pair/?code=abcd-1')).toEqual({ code: 'abcd-1' });
+    for (const bad of ['', 'https://example.com/?code=921782718', 'metaide://pair', 'metaide://pair?code=', 'metaide://pair?code=a%20b', 'metaide://other?code=921782718', 'hello world']) {
+      expect(parsePairLink(bad)).toBeNull();
+    }
+  });
+  it('drops a relay host or port that is not one, keeping the code', () => {
+    expect(parsePairLink('metaide://pair?code=921782718&relay=evil.example%2Fpath&port=99999')).toEqual({ code: '921782718' });
+    expect(parsePairLink('metaide://pair?code=921782718&relay=a.b&port=7100x')).toEqual({ code: '921782718', relayHost: 'a.b' });
+    expect(parsePairLink('metaide://pair?code=921782718&code=other&relay=%E0%A4%A')).toEqual({ code: '921782718' });
   });
 });
 

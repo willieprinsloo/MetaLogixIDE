@@ -4,6 +4,8 @@ import { ModalFrame } from '@renderer/components/ModalFrame';
 import { Header, SettingsSection, Switch } from '@renderer/components/settings/primitives';
 import { useFleet } from '@renderer/p2p/useFleet';
 import type { P2PSettings as P2PSettingsPatch, P2PSettingsView } from '@shared/p2p-contract';
+import { buildPairLink } from '@shared/pair-link';
+import { PairQr } from './PairQr';
 
 const INPUT_CLASS =
   'bg-[--surface-field] text-[--text] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[--accent]/60';
@@ -27,6 +29,17 @@ function PairModal({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [copied, setCopied] = useState(false);
+  // The QR also carries the relay this machine uses, so the phone needs no setup. Without it the code alone is encoded.
+  const [relay, setRelay] = useState<{ relayUrl: string; relayPort: number } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    api.invoke('p2p:settings-get', undefined).then(
+      (s) => { if (alive && s && typeof s.relayUrl === 'string') setRelay({ relayUrl: s.relayUrl, relayPort: s.relayPort }); },
+      () => { /* the QR falls back to the code only */ },
+    );
+    return () => { alive = false; };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -101,6 +114,14 @@ function PairModal({ onClose }: { onClose: () => void }) {
             <div className="text-xs text-[--text-muted]" data-testid="p2p-pair-expiry">
               {remaining > 0 ? `Expires in ${formatRemaining(remaining)}` : 'Code expired. Close and generate a new one.'}
             </div>
+            {remaining > 0 && (
+              <div className="flex items-center gap-4 pt-1">
+                <PairQr value={buildPairLink({ code: pair.code, ...(relay ?? {}) })} label="QR code for pairing the mobile app" />
+                <p className="text-sm text-[--modal-text-muted]">
+                  Pairing a phone? In the MetaLogix IDE mobile app, tap ＋ then Scan QR code and point the camera here.
+                </p>
+              </div>
+            )}
           </>
         )}
         <div className="flex justify-end">

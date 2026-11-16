@@ -18,7 +18,10 @@
     "android": {
       "package": "com.metalogix.metaide.mobile",
       "softwareKeyboardLayoutMode": "resize",
-      "permissions": ["android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE"],
+      "permissions": [
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#0d1014",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -29,7 +32,16 @@
     },
     "plugins": [
       "expo-secure-store",
-      "expo-build-properties"
+      "expo-build-properties",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Scan the pairing QR code shown on your desktop.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
+      ],
+      ["expo-speech-recognition", { "microphonePermission": "Dictate text into a terminal by voice.", "speechRecognitionPermission": "Turn your speech into text to type into a terminal." }]
     ]
   }
 }

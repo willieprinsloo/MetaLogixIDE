@@ -8,6 +8,8 @@ desktops and shows what they are working on.
   agent's state (Working, Needs input, Idle).
 - **Tap a project** to open its terminal. The desktop replays the screen, then streams it live.
   Projects with several shells get a tab per shell, named as on the desktop (Claude, opencode, Terminal). A key bar adds esc, tab, ctrl, arrows and ^C.
+- **Dictate** with the 🎤 key. Your words appear in a box you can correct; nothing reaches the
+  shell until you tap Insert or Send.
 
 ## How it connects
 
@@ -52,7 +54,12 @@ team, or pass `--device` to `npx expo run:ios`.
 ## Pair a machine
 
 1. On the desktop: Settings → P2P → **Pair a new machine**. Keep the window open.
-2. On the phone: tap **＋**, enter the pair code, tap **Pair**.
+2. On the phone: tap **＋**, then **Scan QR code** and point the camera at the desktop. Or type
+   the pair code and tap **Pair**.
+
+The QR code holds `metaide://pair?code=…&relay=…&port=…`, so the phone also picks up the
+desktop's relay. Scanning in the app pairs at once. The same link opened from outside the app
+(the system camera, a message) only fills in the form: you still tap Pair.
 
 The phone then appears under Settings → P2P on the desktop, marked "viewer only". It is not a
 fleet machine: desktops never show it in the sidebar or Fleet view. To unpair, long-press the machine name

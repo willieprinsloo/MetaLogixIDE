@@ -12,6 +12,8 @@ import { TerminalScreen } from './src/ui/TerminalScreen';
 import { C } from './src/ui/theme';
 
 const Stack = createNativeStackNavigator<RootStack>();
+// A pairing QR read by the system camera opens `metaide://pair?code=…&relay=…&port=…` here.
+const linking = { prefixes: ['metaide://'], config: { screens: { Pair: 'pair' } } };
 const theme = { ...DarkTheme, colors: { ...DarkTheme.colors, background: C.bg, card: C.bg, text: C.text, border: C.border, primary: C.accent } };
 
 export default function App() {
@@ -25,7 +27,7 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <NavigationContainer theme={theme}>
+      <NavigationContainer theme={theme} linking={linking}>
         <Stack.Navigator screenOptions={{ headerStyle: { backgroundColor: C.bg }, headerTintColor: C.text, headerShadowVisible: false, contentStyle: { backgroundColor: C.bg } }}>
           <Stack.Screen name="Fleet" component={FleetScreen} options={{ headerShown: false }} />
           <Stack.Screen name="Pair" component={PairScreen} options={{ headerShown: false, presentation: 'modal' }} />
