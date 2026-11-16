@@ -13,7 +13,7 @@ import { SecureTransport } from '../../../../src/main/p2p/secure';
 import { RpcError as HostRpcError, RpcPeer } from '../../../../src/main/p2p/rpc';
 import { canonicalPubHex as hostCanonical } from '../../../../src/main/p2p/identity';
 import { Secret, createFrameDecoder, encodeFrame } from '../../../../src/shared/signaling-wire';
-import { activeProjects, Fleet, type FleetState, type Storage } from '../fleet';
+import { activeProjects, Fleet, shellName, tabLabels, type FleetState, type Storage } from '../fleet';
 import { connect, pairWith, type Peer, type Platform, type RelaySocket } from '../link';
 import { canonicalPubHex, deviceKeyFromSeed } from '../noise';
 
@@ -55,8 +55,9 @@ function makeHost(name = 'Studio') {
   const peers: RpcPeer[] = [];
   const hellos: unknown[] = [];
   let projects = [{ id: 1, name: 'alpha', path: '/p/alpha', extra: true }, { id: 2, name: 'beta', path: '/p/beta' }];
-  let shells: Array<{ projectId: number; shellIndex: number; agentState?: 'idle' | 'busy' | 'blocked' | null }> = [
-    { projectId: 2, shellIndex: 0, agentState: 'idle' }, { projectId: 2, shellIndex: 1, agentState: 'blocked' },
+  let shells: Array<{ projectId: number; shellIndex: number; agentState?: 'idle' | 'busy' | 'blocked' | null; launchArgv?: string[]; agent?: string | null }> = [
+    { projectId: 2, shellIndex: 0, agentState: 'idle', launchArgv: ['/opt/homebrew/bin/claude', '--continue'], agent: 'claude' },
+    { projectId: 2, shellIndex: 1, agentState: 'blocked', launchArgv: ['opencode'], agent: 'opencode' },
   ];
   let seq = 0;
   let denyReason: string | null = null;
@@ -285,7 +286,7 @@ describe('Fleet', () => {
     expect(m.status).toBe('online');
     expect(activeProjects(m)).toEqual([{
       project: { id: 2, name: 'beta', path: '/p/beta' },
-      shells: [{ projectId: 2, shellIndex: 0, agentState: 'idle' }, { projectId: 2, shellIndex: 1, agentState: 'blocked' }],
+      shells: [{ projectId: 2, shellIndex: 0, agentState: 'idle', name: 'Claude' }, { projectId: 2, shellIndex: 1, agentState: 'blocked', name: 'Opencode' }],
       agentState: 'blocked',
     }]);
 
@@ -307,6 +308,18 @@ describe('Fleet', () => {
     await again.init();
     await until(() => again.getSnapshot().machines[0]?.status === 'online');
     expect(again.deviceId).toBe(fleet.deviceId);
+  });
+
+  it('names tabs as the desktop does', () => {
+    const sh = (shellIndex: number, launchArgv?: string[], agent?: string | null) => ({ projectId: 1, shellIndex, launchArgv, agent });
+    expect(shellName(sh(0, ['/usr/local/bin/claude']))).toBe('Claude');
+    expect(shellName(sh(1, ['$SHELL']))).toBe('Terminal');
+    expect(shellName(sh(1, ['/bin/zsh', '-l']))).toBe('Terminal');
+    expect(shellName(sh(2, ['$SHELL'], 'opencode'))).toBe('opencode'); // started by hand in a terminal
+    expect(shellName(sh(2, ['opencode'], 'opencode'))).toBe('Opencode'); // launched as such: the launch name stands
+    expect(shellName(sh(3))).toBe('Shell 3'); // an older host that sends no command
+    const named = [0, 1, 2].map((i) => ({ projectId: 1, shellIndex: i, agentState: null, name: i === 1 ? 'Terminal' : 'Claude' }));
+    expect(tabLabels(named)).toEqual(['Claude 1', 'Terminal', 'Claude 2']);
   });
 
   it('goes offline when the link drops, reconnects, and marks a machine that revoked it', async () => {

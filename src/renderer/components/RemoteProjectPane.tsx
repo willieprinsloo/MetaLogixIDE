@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react';
 import { api } from '@renderer/api';
 import { ShellTab } from './ShellTab';
+import { StatusDot } from './StatusDot';
+import { SHELL_TAB_TEST_ID } from '@shared/agent-state';
+import { shellChipLabel } from '@renderer/shell-label';
+import { useRemoteProjectShells } from '@renderer/p2p/useRemoteProjectShells';
 
 interface Props {
   deviceId: string;
@@ -10,11 +14,17 @@ interface Props {
   onClose?: () => void;
 }
 
-/** Main-area pane for a project that lives on a paired device: `Project @ Machine` header + a remote-sourced shell. */
+/**
+ * Main-area pane for a project that lives on a paired device: `Project @ Machine` header, one tab per
+ * shell the project has running there, and the selected shell.
+ */
 export function RemoteProjectPane({ deviceId, deviceName, projectId, projectName, onClose }: Props) {
   const [launched, setLaunched] = useState<{ key: string; index: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const key = `${deviceId}:${projectId}`;
+  const shells = useRemoteProjectShells(deviceId, projectId);
+  // The tab the user picked, for this (device, project) only.
+  const [picked, setPicked] = useState<{ key: string; index: number } | null>(null);
 
   // shells.launch is idempotent per project on the host (it reuses the live shell), so StrictMode's
   // double-mount just launches twice and the `cancelled` flag drops the stale result. Deliberately no
@@ -33,7 +43,11 @@ export function RemoteProjectPane({ deviceId, deviceName, projectId, projectName
     return () => { cancelled = true; };
   }, [deviceId, projectId, key]);
   // A result for a previous (device, project) never renders against the new one.
-  const shellIndex = launched && launched.key === key ? launched.index : null;
+  const launchedIndex = launched && launched.key === key ? launched.index : null;
+  const pickedIndex = picked && picked.key === key ? picked.index : null;
+  // A picked tab whose shell has since gone falls back to the launched one, so the pane never sits on a dead tab.
+  const shellIndex = launchedIndex === null ? null
+    : pickedIndex !== null && shells.some((s) => s.shellIndex === pickedIndex) ? pickedIndex : launchedIndex;
 
   return (
     <div className="flex-1 min-h-0 flex flex-col" data-testid="remote-project-pane">
@@ -53,6 +67,28 @@ export function RemoteProjectPane({ deviceId, deviceName, projectId, projectName
           >×</button>
         )}
       </div>
+      {!error && shellIndex !== null && shells.length > 0 && (
+        <div className="flex items-center gap-1 pl-2 pr-[14px] py-1 text-xs shrink-0 overflow-x-auto" role="tablist" aria-label={`Shells of ${projectName} on ${deviceName}`} data-testid="remote-shell-tabs">
+          {shells.map((s) => {
+            const isActive = s.shellIndex === shellIndex;
+            return (
+              <button
+                key={s.shellIndex}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                data-testid={SHELL_TAB_TEST_ID}
+                data-shell-index={s.shellIndex}
+                onClick={() => setPicked({ key, index: s.shellIndex })}
+                className={`flex items-center gap-1 px-2 py-0.5 rounded-md whitespace-nowrap ${isActive ? 'bg-[--surface-active]' : 'hover:bg-[--surface-hover]'}`}
+              >
+                {s.agentState ? <StatusDot agent={s.agent} state={s.agentState} inactiveWhenIdle={!isActive} /> : null}
+                <span className={isActive ? 'text-[--text] font-medium' : 'text-[--text-muted]'}>{shellChipLabel(shells, s.shellIndex)}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
       <div className="flex-1 min-h-0 relative">
         {error && <div className="p-4 text-[12px] text-[--danger]">Could not open remote shell: {error}</div>}
         {!error && shellIndex !== null && (

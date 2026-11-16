@@ -7,6 +7,7 @@ import { connect, pairWith, type Connection, type Platform } from './link';
 import { canonicalPubHex, deviceKeyFromSeed, type DeviceKey } from './noise';
 import { RpcError, type AgentState, type Project, type ShellInfo } from './rpc';
 
+
 export type Device = { id: string; name: string; code: string; addedAt: number };
 export type MachineStatus = 'connecting' | 'online' | 'offline' | 'revoked';
 export type Machine = {
@@ -15,14 +16,39 @@ export type Machine = {
   /** Short reason code for the last failure, null while healthy. */
   error: string | null;
   projects: Project[];
-  shells: ShellInfo[];
+  shells: Shell[];
   /** True once projects/shells have been fetched at least once. */
   loaded: boolean;
 };
 export type Settings = { relayHost: string; relayPort: number; deviceName: string };
 export type FleetState = { ready: boolean; machines: Machine[]; settings: Settings };
 
-export type ActiveProject = { project: Project; shells: ShellInfo[]; agentState: AgentState | null };
+/** A live shell (a tab on the desktop) with the label the desktop shows for it. */
+export type Shell = { projectId: number; shellIndex: number; agentState: AgentState | null; name: string };
+export type ActiveProject = { project: Project; shells: Shell[]; agentState: AgentState | null };
+
+const AGENT_LABEL: Record<string, string> = { claude: 'Claude', codex: 'Codex', opencode: 'opencode' };
+const baseName = (bin: string): string => bin.split(/[\\/]/).pop() ?? '';
+
+/**
+ * Tab label, as src/shared/shell-launch-name.ts derives it on the desktop: the agent detected in the shell
+ * when it differs from the launch command, else "Terminal" for a login shell, else the capitalised binary.
+ */
+export function shellName(s: ShellInfo): string {
+  const base = baseName(s.launchArgv?.[0] ?? '');
+  const launched = base.replace(/\.(exe|cmd|bat)$/i, '').toLowerCase();
+  if (s.agent && AGENT_LABEL[s.agent] && s.agent !== launched) return AGENT_LABEL[s.agent]!;
+  if (base === '$SHELL' || /^(zsh|bash|sh|fish)$/.test(base)) return 'Terminal';
+  return base ? base[0]!.toUpperCase() + base.slice(1) : `Shell ${s.shellIndex}`;
+}
+
+/** Appends " N" to labels that repeat within one project ("Claude 1", "Claude 2"). */
+export function tabLabels(shells: readonly Shell[]): string[] {
+  return shells.map((s) => {
+    const same = shells.filter((o) => o.name === s.name);
+    return same.length > 1 ? `${s.name} ${same.indexOf(s) + 1}` : s.name;
+  });
+}
 
 export interface Storage {
   get(key: string): Promise<string | null>;
@@ -62,7 +88,7 @@ const RANK: Record<AgentState, number> = { idle: 0, busy: 1, blocked: 2 };
 
 /** Projects with at least one live shell, busiest first then by name. */
 export function activeProjects(m: Machine): ActiveProject[] {
-  const byProject = new Map<number, ShellInfo[]>();
+  const byProject = new Map<number, Shell[]>();
   for (const s of m.shells) {
     const list = byProject.get(s.projectId);
     if (list) list.push(s);
@@ -374,7 +400,7 @@ export class Fleet {
       if (r.conn !== conn) return;
       const cur = this.#state.machines.find((m) => m.device.id === id);
       if (!cur) return;
-      const next = { projects: projects.map(({ id: pid, name, path }) => ({ id: pid, name, path })), shells: shells.map(({ projectId, shellIndex, agentState }) => ({ projectId, shellIndex, agentState: agentState ?? null })) };
+      const next = { projects: projects.map(({ id: pid, name, path }) => ({ id: pid, name, path })), shells: shells.map((s) => ({ projectId: s.projectId, shellIndex: s.shellIndex, agentState: s.agentState ?? null, name: shellName(s) })) };
       // Skip the store update (and the re-render) when nothing changed.
       if (cur.loaded && cur.status === 'online' && JSON.stringify({ projects: cur.projects, shells: cur.shells }) === JSON.stringify(next)) return;
       this.#patch(id, { ...next, loaded: true, status: 'online', error: null });

@@ -7,7 +7,7 @@ desktops and shows what they are working on.
 - Each page lists that machine's **active projects**: the ones with a shell running, with the
   agent's state (Working, Needs input, Idle).
 - **Tap a project** to open its terminal. The desktop replays the screen, then streams it live.
-  Projects with several shells get a tab per shell. A key bar adds esc, tab, ctrl, arrows and ^C.
+  Projects with several shells get a tab per shell, named as on the desktop (Claude, opencode, Terminal). A key bar adds esc, tab, ctrl, arrows and ^C.
 
 ## How it connects
 

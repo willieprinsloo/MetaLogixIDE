@@ -4,7 +4,7 @@ import {
   type NativeScrollEvent, type NativeSyntheticEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { activeProjects, type ActiveProject, type Machine } from '../core/fleet';
+import { activeProjects, tabLabels, type ActiveProject, type Machine } from '../core/fleet';
 import { fleet } from '../platform';
 import type { ScreenProps } from './nav';
 import { AGENT, C, explain, shortPath } from './theme';
@@ -159,7 +159,7 @@ function MachinePage({ machine, width, bottom, onOpen, onPair, onRemove }: {
                     <Text style={[styles.badgeText, { color: agent.color }]}>{agent.label}</Text>
                   </View>
                 ) : null}
-                <Text style={styles.shells}>{p.shells.length === 1 ? '1 shell' : `${p.shells.length} shells`}</Text>
+                <Text style={styles.shells} numberOfLines={1}>{tabLabels(p.shells).join(' · ')}</Text>
               </View>
               <Text style={styles.chevron}>›</Text>
             </Pressable>
@@ -210,7 +210,7 @@ const styles = StyleSheet.create({
   cardMain: { flex: 1, marginRight: 12 },
   cardTitle: { color: C.text, fontSize: 17, fontWeight: '600' },
   cardPath: { color: C.dim, fontSize: 13, marginTop: 3 },
-  cardSide: { alignItems: 'flex-end', gap: 4 },
+  cardSide: { alignItems: 'flex-end', gap: 4, maxWidth: '45%' },
   badge: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   badgeText: { fontSize: 13, fontWeight: '600' },
   shells: { color: C.faint, fontSize: 12 },

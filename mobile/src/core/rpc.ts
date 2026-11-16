@@ -5,7 +5,15 @@ import { createFrameDecoder, encodeFrame, MAX_FRAME_BYTES } from './wire';
 /** Shapes mirror src/shared/p2p-contract.ts (the host validates everything it returns). */
 export type Project = { id: number; name: string; path: string };
 export type AgentState = 'idle' | 'busy' | 'blocked';
-export type ShellInfo = { projectId: number; shellIndex: number; agentState?: AgentState | null };
+export type ShellInfo = {
+  projectId: number;
+  shellIndex: number;
+  agentState?: AgentState | null;
+  /** The command the shell was launched with; argv[0] names the tab. */
+  launchArgv?: string[];
+  /** The agent the host detects running in the shell (`claude`, `codex`, `opencode`). Absent from older hosts. */
+  agent?: string | null;
+};
 export type DeviceInfo = { name: string; platform: string; version: string; uptime: number };
 
 export interface Methods {

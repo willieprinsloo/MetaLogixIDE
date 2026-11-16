@@ -23,6 +23,8 @@ export const ShellInfo = z
     shellIndex: z.number(),
     /** Host's agent state for this shell; absent from older hosts or hosts without the tracker, null when no recognised agent runs. */
     agentState: z.enum(['idle', 'busy', 'blocked']).nullable().optional(),
+    /** The agent the host detects running in this shell (`claude`, `codex`, `opencode`); labels the viewer's tab. Absent from older hosts. */
+    agent: z.string().nullable().optional(),
   })
   .passthrough();
 export type ShellInfoT = z.infer<typeof ShellInfo>;

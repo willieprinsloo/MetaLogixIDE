@@ -55,7 +55,13 @@ relay and device settings live in Settings → P2P
 in the sidebar's machine switcher (see **Machine switcher** below) and in the
 Fleet view; a remote project opens in `RemoteProjectPane`, whose terminals
 are `ShellTab` with a remote source (`src/renderer/components/RemoteMachineList.tsx`,
-`FleetView.tsx`, `RemoteProjectPane.tsx`). The fleet list
+`FleetView.tsx`, `RemoteProjectPane.tsx`). The pane shows one tab per shell
+the project has running on that machine (`src/renderer/p2p/useRemoteProjectShells.ts`,
+polled from `shells.alive` every 3 s) and attaches to the one selected; it
+opens on the shell `shells.launch` returns. Tabs are labelled as local ones
+are, through `src/shared/shell-launch-name.ts`: the launch command, or the
+agent the host reports in `agent` when one was started by hand in a terminal.
+Remote tabs can be viewed and switched, not added or closed. The fleet list
 (`p2p:fleet-list`) holds paired machines only and never sets
 `FleetEntry.self`, so the renderer adds this machine itself. A host's
 `shells.alive` reply carries each shell's `agentState` (idle, busy, blocked

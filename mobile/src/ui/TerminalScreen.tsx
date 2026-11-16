@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useHeaderHeight } from '@react-navigation/elements';
-import type { ShellSession } from '../core/fleet';
+import { tabLabels, type ShellSession } from '../core/fleet';
 import { fleet } from '../platform';
 import type { ScreenProps } from './nav';
 import { TerminalView, type TerminalHandle } from './TerminalView';
@@ -42,6 +42,7 @@ export function TerminalScreen({ route, navigation }: ScreenProps<'Terminal'>) {
 
   const online = machine?.status === 'online';
   const shells = (machine?.shells ?? []).filter((s) => s.projectId === projectId).sort((a, b) => a.shellIndex - b.shellIndex);
+  const labels = tabLabels(shells);
   const agentState = shells.find((s) => s.shellIndex === shellIndex)?.agentState ?? null;
   const attachKey = `${shellIndex}:${attempt}`;
 
@@ -92,13 +93,13 @@ export function TerminalScreen({ route, navigation }: ScreenProps<'Terminal'>) {
       {shells.length > 1 || agentState ? (
         <View style={styles.tabs}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabsInner}>
-            {shells.length > 1 ? shells.map((s) => {
+            {shells.length > 1 ? shells.map((s, i) => {
               const on = s.shellIndex === shellIndex;
               const color = s.agentState ? AGENT[s.agentState].color : C.faint;
               return (
                 <Pressable key={s.shellIndex} style={[styles.tab, on && styles.tabOn]} onPress={() => setShellIndex(s.shellIndex)}>
                   <View style={[styles.dot, { backgroundColor: color }]} />
-                  <Text style={[styles.tabText, on && styles.tabTextOn]}>Shell {s.shellIndex + 1}</Text>
+                  <Text style={[styles.tabText, on && styles.tabTextOn]}>{labels[i]}</Text>
                 </Pressable>
               );
             }) : null}

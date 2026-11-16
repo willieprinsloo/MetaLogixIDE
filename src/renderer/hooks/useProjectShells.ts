@@ -3,6 +3,7 @@ import { api } from '@renderer/api';
 import { harnessOf, HARNESS_LABEL, type AgentHarness } from '@shared/agent-harness';
 import { useAgentStateMap } from './useAgentStates';
 import { keyFor } from '@renderer/agent-state';
+import { shellLaunchName } from '@shared/shell-launch-name';
 
 interface AliveShell {
   projectId: number;
@@ -28,13 +29,7 @@ export function useProjectShells(projectId: number | null): AliveShell[] {
     try {
       const { shells } = await api.invoke('shells:alive-list', undefined as never);
       setAll(shells.map((r) => {
-        const bin = r.launchArgv?.[0] ?? '';
-        const base = bin.replace(/.*\//, '');
-        // `$SHELL` sentinel (plain terminal) → friendlier label. Otherwise
-        // capitalise the binary name so "claude" → "Claude".
-        const launchName = base === '$SHELL' || base.match(/^(zsh|bash|sh|fish)$/)
-          ? 'Terminal'
-          : base ? base[0]!.toUpperCase() + base.slice(1) : `Shell ${r.shellIndex}`;
+        const launchName = shellLaunchName(r.launchArgv, r.shellIndex);
         return {
           projectId: r.projectId,
           shellIndex: r.shellIndex,
