@@ -33,6 +33,7 @@ import {
   resolveTerminalWeights,
 } from '@shared/terminal-font-weight';
 import { parseViewedShells } from '@main/notifications/viewed-shells';
+import { parseRemoteViewing } from '@main/notifications/fleet-notices';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, renameSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -934,6 +935,12 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
   // Renderer-supplied view data: validated here; a forged view can at worst suppress the user's own notifications.
   'notifications:viewed-shells': async (s, req) => {
     s.viewedShells.setReported(parseViewedShells(req));
+    return { ok: true } as const;
+  },
+
+  // Renderer-supplied view data: validated here; a forged view can at worst hold back the user's own fleet notices.
+  'p2p:viewing': async (s, req) => {
+    s.remoteViewing?.set(parseRemoteViewing(req));
     return { ok: true } as const;
   },
 

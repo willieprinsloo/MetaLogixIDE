@@ -584,6 +584,15 @@ function MainApp() {
     return () => { off(); };
   }, []);
 
+  // A clicked fleet notice: open that shell on the paired machine it came from.
+  useEffect(() => {
+    const off = api.on('p2p:focus-remote-shell', ({ deviceId, deviceName, projectId, projectName, shellIndex }) => {
+      setActiveView('projects');
+      setRemotePane({ source: { kind: 'remote', deviceId }, deviceName, projectId, projectName, shellIndex });
+    });
+    return () => { off(); };
+  }, [setActiveView]);
+
   // Click-to-focus for "command done" OS notifications: the main process
   // fires `shell:focus-request` with a (projectId, shellIndex). We look up
   // the project (it may not be the one currently selected), open it, and
@@ -1158,7 +1167,7 @@ function MainApp() {
                     onOpenRemote={(req) => { setActiveView('projects'); setRemotePane(req); }}
                   />
                 : remotePane
-                ? <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId} projectName={remotePane.projectName} onClose={() => setRemotePane(null)} />
+                ? <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId} projectName={remotePane.projectName} initialShellIndex={remotePane.shellIndex} onClose={() => setRemotePane(null)} />
                 : mainTab === 'settings'
                 ? settingsTarget
                   ? <ProjectSettingsTab key={settingsTarget.id} target={settingsTarget} onSaved={applyDefaultAgentProject}>

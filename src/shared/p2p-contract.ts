@@ -29,6 +29,19 @@ export const ShellInfo = z
   .passthrough();
 export type ShellInfoT = z.infer<typeof ShellInfo>;
 
+/**
+ * An agent notice a host sends to the IDE instance in use (`notices.subscribe`). The body is already
+ * stripped of control characters and cut to 200 characters by the host; the receiver checks again.
+ */
+export const Notice = z.object({
+  kind: z.enum(['needs-input', 'finished']),
+  projectId: z.number().int().positive(),
+  shellIndex: z.number().int().min(0),
+  projectName: z.string().max(200).nullable(),
+  body: z.string().max(200),
+});
+export type Notice = z.infer<typeof Notice>;
+
 export const Dirent = z.object({
   name: z.string(),
   isDir: z.boolean(),
@@ -64,6 +77,17 @@ export const RpcMethods = {
     params: z.object({ projectId: z.number().int().positive(), shellIndex: z.number() }),
     result: z.object({ ok: z.literal(true) }),
   },
+  /**
+   * The viewer says how long ago its IDE was last used (input while its window was focused); null if never.
+   * The host uses it to send agent notices to the instance in use. Sent as an age, not a time, so the two
+   * machines' clocks need not agree.
+   */
+  'presence.set': {
+    params: z.object({ idleMs: z.number().min(0).nullable() }),
+    result: z.object({ ok: z.literal(true) }),
+  },
+  /** Stream of `Notice` events for as long as it stays open. A viewer that does not open it gets no notices. */
+  'notices.subscribe': { params: z.object({}), result: z.object({ stream: z.number() }) },
   'fs.list': {
     params: z.object({ projectId: z.number().int().positive(), path: z.string() }),
     result: z.array(Dirent),

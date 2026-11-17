@@ -16,4 +16,6 @@ export interface OpenPaneRequest {
   deviceName: string;
   projectId: number;
   projectName: string;
+  /** The tab to open on, when the request names one (a clicked fleet notice). Default: the launched shell. */
+  shellIndex?: number;
 }
