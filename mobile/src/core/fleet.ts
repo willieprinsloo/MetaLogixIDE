@@ -3,7 +3,7 @@
  * (subscribe/getSnapshot) so React binds to it with useSyncExternalStore.
  */
 import { base64Encode, fromHex, toHex, utf8Encode } from './bytes';
-import { connect, pairWith, type Connection, type Platform } from './link';
+import { connect, pairWith, REASON_GRACE_MS, type Connection, type Platform } from './link';
 import { canonicalPubHex, deviceKeyFromSeed, type DeviceKey } from './noise';
 import { RpcError, type AgentState, type Project, type ShellInfo } from './rpc';
 
@@ -345,10 +345,10 @@ export class Fleet {
         r.dialing = false;
         if (this.#runners.get(id) !== r) { conn.close(); return; } // removed or re-paired meanwhile
         r.conn = conn;
-        r.retryDelay = RETRY_MIN_MS;
         conn.rpc.onClosed(() => this.#onDrop(id, r, conn));
         if (conn.rpc.closed) { this.#onDrop(id, r, conn); return; }
-        this.#patch(id, { status: 'online', error: null });
+        // Not online yet: a host that no longer trusts this phone completes the handshake and then hangs
+        // up. The machine counts as online, and the retry back-off resets, once it has answered a request.
         void this.#poll(id, POLL_TIMEOUT_MS);
       },
       (e: unknown) => {
@@ -363,7 +363,16 @@ export class Fleet {
     if (r.conn !== conn) return;
     r.conn = null;
     if (this.#runners.get(id) !== r) return;
-    this.#fail(id, r, conn.remoteReason() ?? 'link_lost');
+    const settle = (): void => {
+      if (this.#runners.get(id) === r) this.#fail(id, r, conn.remoteReason() ?? 'link_lost');
+    };
+    if (conn.remoteReason()) { settle(); return; }
+    // The host's reason travels over the relay and tends to land just after the channel closes. Waiting for
+    // it is what tells "removed on that machine" (stop, pair again) from a dropped link (retry).
+    const started = Date.now();
+    const wait = setInterval(() => {
+      if (conn.remoteReason() || Date.now() - started >= REASON_GRACE_MS) { clearInterval(wait); settle(); }
+    }, 50);
   }
 
   #fail(id: string, r: Runner, reason: string): void {
@@ -402,6 +411,7 @@ export class Fleet {
       if (!cur) return;
       const next = { projects: projects.map(({ id: pid, name, path }) => ({ id: pid, name, path })), shells: shells.map((s) => ({ projectId: s.projectId, shellIndex: s.shellIndex, agentState: s.agentState ?? null, name: shellName(s) })) };
       // Skip the store update (and the re-render) when nothing changed.
+      r.retryDelay = RETRY_MIN_MS; // the link works: the next drop is retried promptly
       if (cur.loaded && cur.status === 'online' && JSON.stringify({ projects: cur.projects, shells: cur.shells }) === JSON.stringify(next)) return;
       this.#patch(id, { ...next, loaded: true, status: 'online', error: null });
     } catch (e) {

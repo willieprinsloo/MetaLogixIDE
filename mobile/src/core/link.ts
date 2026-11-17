@@ -62,6 +62,8 @@ export type Connection = {
 const CONNECT_CODE_RE = /^[A-Za-z0-9-]{4,32}$/;
 const NEGOTIATION_TIMEOUT_MS = 30_000;
 const PAIR_EXCHANGE_TIMEOUT_MS = 5_000;
+/** How long after the channel closes the host's reason for closing it may still arrive over the relay. */
+export const REASON_GRACE_MS = 2_000;
 
 /** Runs signalling up to an open data channel. Rejects with a short reason code (`relay_unreachable`, `denied`, ...). */
 function openChannel(o: LinkOpts): Promise<{ peer: Peer; sessionId: string; closeSignalling(reason: string): void; remoteReason(): string | null }> {
@@ -147,9 +149,16 @@ function openChannel(o: LinkOpts): Promise<{ peer: Peer; sessionId: string; clos
           if (!remoteSet) earlyCandidates.push(d.candidate);
           else p.addCandidate(d.candidate).catch(() => { /* late or duplicate candidates are harmless */ });
           break;
-        case Sig.SessionClose:
-          remoteReason = typeof d.reason === 'string' && d.reason ? d.reason : 'peer_closed';
-          fail(remoteReason);
+        case Sig.SessionClose: {
+          const reason = typeof d.reason === 'string' && d.reason ? d.reason : 'peer_closed';
+          if (!settled) { remoteReason = reason; fail(reason); break; }
+          // The channel is up. The relay keeps one session per host and closes this one ("superseded by a new
+          // connection") when another viewer asks for that host; that is its bookkeeping, not the host hanging
+          // up, and the link carries on. Any other reason is the host saying why it is about to close.
+          if (!/^superseded\b/i.test(reason)) remoteReason = reason;
+          closeSignalling('closed'); // nothing more can arrive for this session
+          break;
+        }
           break;
       }
     };
@@ -206,8 +215,10 @@ export async function connect(o: LinkOpts & { expectedDevice: string }): Promise
     const noise = await viewerHandshake({ transport: peer, localKey: o.deviceKey, expectedRemote: o.expectedDevice });
     const secure = new SecureChannel(peer, noise); // synchronous after the await: see viewerHandshake
     const rpc = new RpcClient(secure);
-    // The relay connection exists only for this link: drop it whichever side ends the channel.
-    secure.on('close', () => closeSignalling('closed'));
+    // The relay connection exists only for this link, so it goes when the channel does. It lingers a
+    // moment first: a host that hangs up says why (`untrusted_device`, `revoked`) over the relay, and
+    // that usually arrives just after the channel itself has closed.
+    secure.on('close', () => { setTimeout(() => closeSignalling('closed'), REASON_GRACE_MS); });
     secure.start();
     return { deviceId: o.expectedDevice, rpc, close: () => rpc.close(), remoteReason };
   } catch (e) {

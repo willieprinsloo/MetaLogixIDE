@@ -14,7 +14,8 @@
         "NSLocalNetworkUsageDescription": "Connects directly to your paired machines when they are on the same network.",
         "ITSAppUsesNonExemptEncryption": false,
         "NSMicrophoneUsageDescription": "Dictate text into a terminal by voice."
-      }
+      },
+      "appleTeamId": "6BJ3P4UXV7"
     },
     "android": {
       "package": "com.metalogix.metaide.mobile",

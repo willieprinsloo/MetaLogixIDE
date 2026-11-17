@@ -44,7 +44,7 @@ class FakePeer extends Chan {
   async addCandidate(): Promise<void> {}
 }
 
-type HostSession = { chan: Chan; sessionId: string };
+type HostSession = { chan: Chan; sessionId: string; relay(env: unknown, delayMs?: number): void };
 
 /** A desktop: identity, pairing window, trusted set, and RPC handlers, behind a fake relay. */
 function makeHost(name = 'Studio') {
@@ -56,6 +56,9 @@ function makeHost(name = 'Studio') {
   const sizes: Array<[number, number]> = [];
   const peers: RpcPeer[] = [];
   const hellos: unknown[] = [];
+  /** Says something over the relay to the viewer of the most recent session. */
+  let sayToViewer: (env: unknown) => void = () => {};
+  let lastSession = '';
   let projects = [{ id: 1, name: 'alpha', path: '/p/alpha', extra: true }, { id: 2, name: 'beta', path: '/p/beta' }];
   let shells: Array<{ projectId: number; shellIndex: number; agentState?: 'idle' | 'busy' | 'blocked' | null; launchArgv?: string[]; agent?: string | null }> = [
     { projectId: 2, shellIndex: 0, agentState: 'idle', launchArgv: ['/opt/homebrew/bin/claude', '--continue'], agent: 'claude' },
@@ -64,7 +67,9 @@ function makeHost(name = 'Studio') {
   let seq = 0;
   let denyReason: string | null = null;
 
-  async function serve({ chan, sessionId }: HostSession): Promise<void> {
+  async function serve({ chan, sessionId, relay: say }: HostSession): Promise<void> {
+    sayToViewer = say;
+    lastSession = sessionId;
     const isPairing = pairing.active;
     let prologue: Uint8Array | undefined;
     if (isPairing) {
@@ -92,7 +97,12 @@ function makeHost(name = 'Studio') {
       secure.send(enc.encode(JSON.stringify({ hello: name, code: HOST_CODE })));
       return;
     }
-    if (!trusted.has(remote)) { secure.close(); return; }
+    if (!trusted.has(remote)) {
+      // As the desktop does: hang up, then say why over the relay. The reason lands after the close.
+      secure.close();
+      say({ type: 'session_close', data: { session: sessionId, reason: 'untrusted_device' } }, 40);
+      return;
+    }
     const rpc = new RpcPeer(secure.asRpcTransport());
     rpc.on('error', () => {});
     peers.push(rpc);
@@ -128,7 +138,7 @@ function makeHost(name = 'Studio') {
       let frames = 0;
       let closed = false;
       const sessionId = `sess-${++seq}`;
-      const reply = (env: unknown) => setTimeout(() => { if (!closed) onData(encodeFrame(enc.encode(JSON.stringify(env)))); }, 0);
+      const reply = (env: unknown, delayMs = 0) => setTimeout(() => { if (!closed) onData(encodeFrame(enc.encode(JSON.stringify(env)))); }, delayMs);
       setTimeout(() => onOpen(), 0);
       return {
         onOpen: (cb) => { onOpen = cb; },
@@ -147,7 +157,7 @@ function makeHost(name = 'Studio') {
             } else if (j.type === 'answer') {
               expect(j.data?.sdp).toBe('answer-to:offer-sdp');
               const p = lastPeer!;
-              void serve({ chan: p.other, sessionId });
+              void serve({ chan: p.other, sessionId, relay: reply });
               setTimeout(() => p.emit('open'), 0);
             }
           }
@@ -172,6 +182,8 @@ function makeHost(name = 'Studio') {
     setProjects: (p: typeof projects) => { projects = p; },
     deny: (r: string | null) => { denyReason = r; },
     dropLinks: () => { for (const p of peers.splice(0)) p.close(); },
+    /** The relay (or the host through it) closes the latest session's signalling, giving `reason`. */
+    relayClose: (reason: string) => sayToViewer({ type: 'session_close', data: { session: lastSession, reason } }),
   };
 }
 
@@ -250,10 +262,39 @@ describe('phone core against the desktop implementation', () => {
     conn.close();
   });
 
+  it('stays connected when the relay supersedes its session for another viewer of the same host', async () => {
+    const host = makeHost();
+    const key = phoneKey();
+    host.trusted.set(canonicalPubHex(key.pub), 'Pixel');
+    const conn = await connect({ platform: host.platform, relay, code: HOST_CODE, deviceKey: key, expectedDevice: host.id });
+    await conn.rpc.call('projects.list', {});
+    host.relayClose('superseded by a new connection');
+    await wait(30);
+    expect(conn.rpc.closed).toBe(false);
+    await expect(conn.rpc.call('shells.alive', {})).resolves.toHaveLength(2);
+    expect(conn.remoteReason()).toBeNull(); // relay bookkeeping, not the host's reason for anything
+    conn.close();
+  });
+
+  it('keeps the reason a host gives over the relay before it hangs up', async () => {
+    const host = makeHost();
+    const key = phoneKey();
+    host.trusted.set(canonicalPubHex(key.pub), 'Pixel');
+    const conn = await connect({ platform: host.platform, relay, code: HOST_CODE, deviceKey: key, expectedDevice: host.id });
+    host.relayClose('revoked');
+    await until(() => conn.remoteReason() === 'revoked');
+    expect(conn.rpc.closed).toBe(false); // the channel closing is what ends the link
+    host.dropLinks();
+    await until(() => conn.rpc.closed);
+  });
+
   it('is turned away by a host that does not trust it', async () => {
     const host = makeHost();
     const conn = await connect({ platform: host.platform, relay, code: HOST_CODE, deviceKey: phoneKey(), expectedDevice: host.id });
     await expect(conn.rpc.call('projects.list', {}, 1000)).rejects.toMatchObject({ code: 'closed' });
+    // The reason arrives over the relay after the channel has gone, and is still picked up.
+    expect(conn.remoteReason()).toBeNull();
+    await until(() => conn.remoteReason() === 'untrusted_device');
   });
 });
 
@@ -362,11 +403,20 @@ describe('Fleet', () => {
     fleet.reconnect(device.id);
     await until(() => machine(fleet.getSnapshot()).status === 'online');
 
+    // Removed on the desktop: the host completes the handshake, hangs up and says why. The phone must
+    // never show that machine as online again, and must stop retrying instead of flapping.
     host.trusted.clear();
     host.dropLinks();
     await until(() => machine(fleet.getSnapshot()).status === 'offline');
+    const seen: string[] = [];
+    const off = fleet.subscribe(() => seen.push(machine(fleet.getSnapshot()).status));
     fleet.reconnect(device.id);
-    await until(() => machine(fleet.getSnapshot()).status === 'offline' && machine(fleet.getSnapshot()).error === 'link_lost');
+    await until(() => machine(fleet.getSnapshot()).status === 'revoked');
+    expect(machine(fleet.getSnapshot()).error).toBe('untrusted_device');
+    expect(seen).not.toContain('online');
+    await wait(150);
+    expect(machine(fleet.getSnapshot()).status).toBe('revoked'); // no retry
+    off();
 
     await fleet.remove(device.id);
     expect(fleet.getSnapshot().machines).toEqual([]);

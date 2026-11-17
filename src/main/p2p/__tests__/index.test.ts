@@ -40,6 +40,8 @@ class FakeRelay {
   sessions = new Map<string, { host: FakeClient; viewer: FakeClient }>();
   seq = 0;
   codeSeq = 0;
+  /** As mrsignald does: one session per host, so a new request closes that host's previous session at both ends. */
+  supersede = false;
   sent: Array<{ from: string; env: Envelope }> = [];
 
   newClient(name: string, cfg: ClientCfg): FakeClient {
@@ -60,6 +62,15 @@ class FakeRelay {
       case 'session_request': {
         const host = d.code ? this.hosts.get(d.code) : undefined;
         if (!host || host.status !== 'connected') return deliver(from, { type: 'session_denied', data: { host: d.code, reason: 'host offline' } });
+        if (this.supersede) {
+          for (const [old, s] of [...this.sessions]) {
+            if (s.host !== host) continue;
+            this.sessions.delete(old);
+            const close = { type: 'session_close', data: { session: old, reason: 'superseded by a new connection' } };
+            deliver(s.host, close);
+            deliver(s.viewer, close);
+          }
+        }
         const session = `s${++this.seq}`;
         this.sessions.set(session, { host, viewer: from });
         deliver(host, { type: 'session_invite', data: { session, operator: 'op-1', requires_key: false, ice_servers: [], token } });
@@ -284,6 +295,38 @@ describe('pairing over the full stack', () => {
     await waitFor(() => known(host).length === 1);
     expect(known(host)).toEqual([expect.objectContaining({ pub: idOf(viewer), name: 'Laptop', code: vCode })]);
     expect((await host.p2p.api.fleetList())[0]).toMatchObject({ deviceId: idOf(viewer), name: 'Laptop' });
+  });
+
+  test('two viewers of one host both stay connected when the relay supersedes the older session', async () => {
+    const relay = new FakeRelay();
+    relay.supersede = true;
+    const reg = new TransportRegistry();
+    const host = makeNode(relay, reg, 'host');
+    const laptop = makeNode(relay, reg, 'laptop');
+    const phone = makeNode(relay, reg, 'phone');
+    for (const n of [host, laptop, phone]) await n.p2p.start();
+    await laptop.p2p.api.setSettings({ serveEnabled: false });
+    await phone.p2p.api.setSettings({ serveEnabled: false });
+    expect((await pair(host, laptop)).result).toEqual({ ok: true });
+    expect((await pair(host, phone)).result).toEqual({ ok: true });
+
+    const dials = (n: Node) => n.clients.filter((c) => c.cfg.role === 'viewer').length;
+    await laptop.p2p.api.rpcCall(idOf(host), 'device.info', {});
+    const laptopDials = dials(laptop);
+    // The phone asks for the same host: the relay closes the laptop's session at both ends.
+    await phone.p2p.api.rpcCall(idOf(host), 'device.info', {});
+    const phoneDials = dials(phone);
+    await waitFor(() => relay.sent.length > 0 && [...relay.sessions.values()].length === 1);
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Neither link was torn down: both keep answering over the connection they already had.
+    for (let i = 0; i < 3; i++) {
+      await expect(laptop.p2p.api.rpcCall(idOf(host), 'device.info', {})).resolves.toBeDefined();
+      await expect(phone.p2p.api.rpcCall(idOf(host), 'device.info', {})).resolves.toBeDefined();
+    }
+    expect(dials(laptop)).toBe(laptopDials);
+    expect(dials(phone)).toBe(phoneDials);
+    expect((await host.p2p.api.fleetList()).every((d) => d.online)).toBe(true);
   });
 
   test('a viewer that does not serve still pairs; the host just has no code to dial back', async () => {

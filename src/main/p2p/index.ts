@@ -69,6 +69,11 @@ import type { P2PApi, PairRedeemResult } from './types';
  *
  * ---- Relay wire facts (verified against mrsignald, see tests/live integration) ----
  * - Session tokens are opaque hex strings; ice servers arrive as `ice_servers` (snake_case); session_denied has no session.
+ * - The relay keeps ONE signalling session per host: a new `session_request` for a host closes the previous session
+ *   with `session_close{reason: "superseded by a new connection"}`, sent to both of its ends. That is about the relay's
+ *   bookkeeping only; the WebRTC link negotiated over the old session is unaffected. So once a link's secure channel
+ *   is up, a relay `session_close` no longer ends it (see `relayClosed`): otherwise two viewers of one host would
+ *   take turns knocking each other off for ever. The data channel closing is what ends an established link.
  * - Fleet `online` heuristic (the relay's /presence endpoint is localhost-only, so not usable from clients):
  *   a device is online if a live session to/from it exists, or if the host connection is up and we completed a
  *   session with it (pairing or connect) within the last 60 s (ONLINE_GRACE_MS). Session end clears it.
@@ -182,6 +187,8 @@ interface Link {
   /** Host links: the hub, disposed with the link so its partial uploads are discarded (AC-U6). */
   hub?: HubHandle;
   secure?: SecureTransport;
+  /** Why the peer said it is closing (`revoked`, `shutdown`, ...), heard over the relay after the link was up. */
+  peerCloseReason?: string;
   handshakeStarted: boolean;
   closed: boolean;
   timer: NodeJS.Timeout | null;
@@ -407,7 +414,8 @@ class P2PRuntime {
     const d = (env.data ?? {}) as { session?: string; token?: unknown; ice_servers?: unknown; iceServers?: unknown };
     if (env.type === SignalingTypes.SessionInvite) return this.onInvite(env, d);
     const link = d.session ? this.links.get(d.session) : undefined;
-    if (link && link.role === 'host') this.run(link, link.session.onInbound(env));
+    if (!link || link.role !== 'host' || this.relayClosed(link, env)) return;
+    this.run(link, link.session.onInbound(env));
   }
 
   /** A viewer connection serves exactly one link. */
@@ -419,8 +427,20 @@ class P2PRuntime {
       case SignalingTypes.SessionDenied: return this.run(link, link.session.onInbound(env));
       default:
         // After the grant, only this session's messages are meaningful.
-        if (d.session && d.session === link.sessionId) this.run(link, link.session.onInbound(env));
+        if (d.session && d.session === link.sessionId && !this.relayClosed(link, env)) this.run(link, link.session.onInbound(env));
     }
+  }
+
+  /**
+   * True when `env` is a `session_close` for a link whose secure channel is already up, which must not end the
+   * link (see the header: the relay closes a host's previous session whenever a new viewer asks for one). A peer
+   * that really is leaving closes the data channel too; its stated reason is kept for that moment.
+   */
+  relayClosed(link: Link, env: Envelope): boolean {
+    if (env.type !== SignalingTypes.SessionClose || !link.secure || link.closed) return false;
+    const reason = (env.data as { reason?: unknown } | undefined)?.reason;
+    if (typeof reason === 'string' && reason && !/^superseded\b/i.test(reason)) link.peerCloseReason = reason.slice(0, 64);
+    return true;
   }
 
   #withToken(env: Envelope, d: { token?: unknown }): Envelope | null {
@@ -490,7 +510,7 @@ class P2PRuntime {
     t.on('close', () => {
       // Mid-handshake the Noise mailbox observes the close and rejects with the precise reason.
       if (link.handshakeStarted && !link.secure) return;
-      this.finishLink(link, 'transport_closed');
+      this.finishLink(link, link.peerCloseReason ?? 'transport_closed');
     });
     t.on('error', (e: Error) => {
       // The engine rejects unordered/unreliable channels with this error; do not wait for the 30 s negotiation timeout.
