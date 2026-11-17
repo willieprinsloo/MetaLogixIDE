@@ -439,6 +439,8 @@ export interface IpcContract {
   /** Renderer to main dispatch of an RPC method on a paired device; stream methods return `{ streamId }` and push `p2p:rpc-event`. */
   'p2p:rpc-call':           { request: { deviceId: string; method: string; params?: unknown }; response: { result: unknown } };
   'p2p:rpc-close-stream':   { request: { streamId: number }; response: { ok: true } };
+  /** The remote shell the main window shows (null for none), so a fleet notice for it is held back while it is in view. */
+  'p2p:viewing':            { request: { shell: { deviceId: string; projectId: number; shellIndex: number } | null }; response: { ok: true } };
   /** Send one file or the clipboard image to a paired device's drop folder; never rejects. */
   'p2p:upload':             { request: UploadRequest; response: UploadResult };
   /** Stop an upload between chunks; the host discards its partial file. */
@@ -483,6 +485,8 @@ export interface IpcEvents {
   'keep-awake:changed':     KeepAwakeState;
   /** Both darken actions (`pmset displaysleepnow`, ScreenSaverEngine) failed; keep-awake stays on. */
   'keep-awake:darken-failed': Record<string, never>;
+  /** A fleet notice was clicked: open that shell on the paired machine. */
+  'p2p:focus-remote-shell': { deviceId: string; deviceName: string; projectId: number; projectName: string; shellIndex: number };
   /** Pushed stream events from a remote device (`closed` when the stream or its connection ends). */
   'p2p:rpc-event':          { deviceId: string; streamId: number; data?: unknown; closed?: true; reason?: string };
   /** Bytes sent so far for a `p2p:upload`, at most 10 per second. */

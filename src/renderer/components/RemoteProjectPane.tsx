@@ -11,6 +11,8 @@ interface Props {
   deviceName: string;
   projectId: number;
   projectName: string;
+  /** The tab to open on; a fleet notice names the shell it is about. */
+  initialShellIndex?: number;
   onClose?: () => void;
 }
 
@@ -18,13 +20,19 @@ interface Props {
  * Main-area pane for a project that lives on a paired device: `Project @ Machine` header, one tab per
  * shell the project has running there, and the selected shell.
  */
-export function RemoteProjectPane({ deviceId, deviceName, projectId, projectName, onClose }: Props) {
+export function RemoteProjectPane({ deviceId, deviceName, projectId, projectName, initialShellIndex, onClose }: Props) {
   const [launched, setLaunched] = useState<{ key: string; index: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const key = `${deviceId}:${projectId}`;
   const shells = useRemoteProjectShells(deviceId, projectId);
   // The tab the user picked, for this (device, project) only.
-  const [picked, setPicked] = useState<{ key: string; index: number } | null>(null);
+  const [picked, setPicked] = useState<{ key: string; index: number } | null>(
+    initialShellIndex === undefined ? null : { key, index: initialShellIndex },
+  );
+  // A later request for another tab of the same project (a second notice) selects it too.
+  useEffect(() => {
+    if (initialShellIndex !== undefined) setPicked({ key: `${deviceId}:${projectId}`, index: initialShellIndex });
+  }, [deviceId, projectId, initialShellIndex]);
 
   // shells.launch is idempotent per project on the host (it reuses the live shell), so StrictMode's
   // double-mount just launches twice and the `cancelled` flag drops the stale result. Deliberately no
@@ -48,6 +56,13 @@ export function RemoteProjectPane({ deviceId, deviceName, projectId, projectName
   // A picked tab whose shell has since gone falls back to the launched one, so the pane never sits on a dead tab.
   const shellIndex = launchedIndex === null ? null
     : pickedIndex !== null && shells.some((s) => s.shellIndex === pickedIndex) ? pickedIndex : launchedIndex;
+
+  // Tell main which remote shell is on screen, so a fleet notice for it is held back while it is in view.
+  useEffect(() => {
+    if (shellIndex === null || error) return;
+    api.invoke('p2p:viewing', { shell: { deviceId, projectId, shellIndex } }).catch(() => { /* worst case: one extra notice */ });
+    return () => { api.invoke('p2p:viewing', { shell: null }).catch(() => {}); };
+  }, [deviceId, projectId, shellIndex, error]);
 
   return (
     <div className="flex-1 min-h-0 flex flex-col" data-testid="remote-project-pane">

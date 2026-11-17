@@ -16,6 +16,8 @@ import { ClaudeHookReceiver } from './claude-hooks/receiver';
 import { ClaudeHookRuntime } from './claude-hooks/runtime';
 import { createLaunchDecorator } from './claude-hooks/launch-decorator';
 import { ViewedShells } from './notifications/viewed-shells';
+import { RemoteViewing } from './notifications/fleet-notices';
+import { ActivityTracker, NoticeRouter } from './notifications/notice-router';
 import { ClaudeHookHistory } from './notifications/claude-hook-history';
 import type { AgentStatusTracker } from './agent-status/state-tracker';
 import { createDropStaging, defaultDropDir, type DropStaging } from './drops/staging';
@@ -45,6 +47,12 @@ export interface Services {
   /** Installed before the renderer can spawn a shell. */
   agentStatus: AgentStatusTracker | null;
   viewedShells: ViewedShells;
+  /** The remote shell the main window shows, for holding back fleet notices. */
+  remoteViewing?: RemoteViewing;
+  /** When this machine's IDE was last used. */
+  activity?: ActivityTracker;
+  /** Sends agent notices to the fleet's active IDE instance. */
+  noticeRouter?: NoticeRouter;
   /** Owner-only temp directory for dropped bytes and pasted images. */
   dropStaging: DropStaging;
   clipboardImage: ClipboardImage;
@@ -120,6 +128,7 @@ export function buildServices(opts: { dbPath?: string; migrationsDir?: string; h
     lastOutputAt: (shell) => lastOutputAt(ptyManager, shell),
     now: () => Date.now(),
   });
+  const activity = new ActivityTracker();
   const uid = process.getuid?.() ?? null;
   const dropStaging = createDropStaging({
     dir: opts.dropDir ?? defaultDropDir(process.platform, tmpdir(), uid),
@@ -129,6 +138,6 @@ export function buildServices(opts: { dbPath?: string; migrationsDir?: string; h
   return {
     db, roots, projects, shells, settings, prompts, ptyManager, watcher, metaproject,
     hookSessions, hookReceiver, hookRuntime, hookHistory, agentStatus: null,
-    viewedShells: new ViewedShells(), dropStaging, clipboardImage: createClipboardImage(), listMise: listMiseTasks, keepAwake: null, homeDir: home, migrationsDir,
+    viewedShells: new ViewedShells(), remoteViewing: new RemoteViewing(), activity, noticeRouter: new NoticeRouter({ localIdleMs: () => activity.idleMs(Date.now()), now: () => Date.now() }), dropStaging, clipboardImage: createClipboardImage(), listMise: listMiseTasks, keepAwake: null, homeDir: home, migrationsDir,
   };
 }
