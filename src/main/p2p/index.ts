@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import {
+  Notice,
   RpcMethods,
   type FleetEntry,
   type P2PSettings,
@@ -84,6 +85,8 @@ const PAIR_EXCHANGE_TIMEOUT_MS = 5_000;
 const CONNECT_TIMEOUT_MS = 10_000;
 /** See header: how long a completed session counts as proof the peer is reachable. */
 export const ONLINE_GRACE_MS = 60_000;
+/** How often a viewer tells its hosts how recently this IDE was used (also sent on connect and on focus changes). */
+export const PRESENCE_MS = 15_000;
 /** How often the app re-dials trusted devices that have no live link (restart of either side, dropped link). */
 export const AUTO_DIAL_MS = 15_000;
 /** Ceiling for the per-device back-off while a peer stays unreachable. */
@@ -137,6 +140,13 @@ export interface StartP2POpts {
    * that are already online).
    */
   autoDialMs?: number;
+  /**
+   * Milliseconds since this machine's IDE was last used, null if never. Reported to every connected host so
+   * each can send its agent notices to the IDE instance in use. Unset: nothing is reported and no notices arrive.
+   */
+  localIdleMs?: () => number | null;
+  /** A host chose this machine for an agent notice. `deviceName` is the name it was paired under. */
+  onNotice?: (notice: Notice & { deviceId: string; deviceName: string }) => void;
 }
 
 /** Lifetime granted to an opaque relay token (mrsignald's tokens carry no timestamps). */
@@ -653,7 +663,44 @@ class P2PRuntime {
     this.lastOkAt.set(remote, this.nowMs());
     this.touchDevice(remote);
     secure.start();
+    this.subscribeNotices(remote, rpc);
     link.settle?.({ ok: true });
+  }
+
+  /**
+   * Asks the host for its agent notices and tells it how recently this IDE was used. An older host knows
+   * neither method: the stream open is refused and the report fails, both silently.
+   */
+  subscribeNotices(deviceId: string, rpc: RpcPeer): void {
+    if (!this.opts.onNotice || !this.opts.localIdleMs) return;
+    try {
+      rpc.openStream('notices.subscribe', {}, (data) => {
+        const n = Notice.safeParse(data);
+        if (!n.success) return;
+        const deviceName = loadKnownDevices(this.knownPath).find((d) => d.pub === deviceId)?.name ?? deviceId.slice(0, 8);
+        this.opts.onNotice?.({ ...n.data, deviceId, deviceName });
+      });
+    } catch { /* link already closing */ }
+    this.reportPresenceTo(rpc);
+  }
+
+  reportPresenceTo(rpc: RpcPeer): void {
+    const idle = this.opts.localIdleMs?.();
+    if (idle === undefined) return;
+    rpc.call('presence.set', { idleMs: idle }).catch(() => { /* older host, or the link is going away */ });
+  }
+
+  /** Tells every connected host how recently this IDE was used. */
+  reportPresence(): void {
+    if (this.#stopped || !this.opts.localIdleMs) return;
+    for (const { rpc } of this.conns.values()) this.reportPresenceTo(rpc);
+  }
+
+  #presenceTimer: NodeJS.Timeout | null = null;
+  startPresence(): void {
+    if (!this.opts.localIdleMs || !this.opts.onNotice || this.#presenceTimer) return;
+    this.#presenceTimer = setInterval(() => this.reportPresence(), PRESENCE_MS);
+    this.#presenceTimer.unref?.();
   }
 
   /**
@@ -792,6 +839,8 @@ class P2PRuntime {
 
   async rpcCall(deviceId: string, method: string, params: unknown): Promise<unknown> {
     if (!Object.prototype.hasOwnProperty.call(RpcMethods, method)) throw new Error(`unknown_method: ${method}`);
+    // Presence and the notice stream belong to the main process; a renderer has no business faking either.
+    if (method === 'presence.set' || method === 'notices.subscribe') throw new Error(`unknown_method: ${method}`);
     const id = canonicalPubHex(deviceId);
     const rpc = await this.ensureConn(id);
     if (method === 'shells.attach') {
@@ -919,6 +968,7 @@ class P2PRuntime {
   async stop(): Promise<void> {
     this.#stopped = true;
     if (this.#dialTimer) { clearInterval(this.#dialTimer); this.#dialTimer = null; }
+    if (this.#presenceTimer) { clearInterval(this.#presenceTimer); this.#presenceTimer = null; }
     for (const l of [...this.allLinks]) this.finishLink(l, 'shutdown');
     for (const s of this.streams.values()) s.handle.close();
     this.streams.clear();
@@ -955,6 +1005,7 @@ export function createP2P(services: Services, opts: StartP2POpts = {}): P2PHandl
       const s = need().streams.get(streamId);
       if (s) { need().streams.delete(streamId); s.handle.close(); }
     },
+    presenceChanged: () => rt?.reportPresence(),
     upload: (req) => (rt ? rt.uploads.upload(req) : Promise.resolve({ kind: 'failed', reason: 'p2p_not_started' })),
     cancelUpload: (uploadId) => rt?.uploads.cancel(uploadId),
   };
@@ -970,6 +1021,7 @@ export function createP2P(services: Services, opts: StartP2POpts = {}): P2PHandl
       services.p2p = { deviceKey: r.deviceKey, pairing: r.pairing, knownDevicesPath: r.knownPath, api };
       await r.startClientIfServing();
       r.startAutoDial();
+      r.startPresence();
     },
     async stop() {
       const r = rt;

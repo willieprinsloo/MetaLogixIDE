@@ -18,7 +18,8 @@ import { runMigrations } from '../../db/migrator';
 import { RootsRepo } from '../../repos/roots-repo';
 import { ProjectsRepo } from '../../repos/projects-repo';
 import { waitFor } from './_mockRelay';
-import { ShellInfo } from '../../../shared/p2p-contract';
+import { NoticeRouter } from '../../notifications/notice-router';
+import { Notice, ShellInfo } from '../../../shared/p2p-contract';
 import { createDropStaging } from '../../drops/staging';
 import { createUploadQuota } from '../uploads';
 import { RpcError } from '../rpc';
@@ -35,7 +36,7 @@ let pty: PtyManager;
 let projectId: number;
 let dropDir: string;
 
-function setup(extra: { agentStatus?: { list(): unknown[] } | null; auditMaxBytes?: number; events?: { aliveShellsChanged(): void; projectsChanged(): void } } = {}) {
+function setup(extra: { agentStatus?: { list(): unknown[] } | null; noticeRouter?: NoticeRouter; auditMaxBytes?: number; events?: { aliveShellsChanged(): void; projectsChanged(): void } } = {}) {
   const [ta, tb] = pairedTransports();
   const client = new RpcPeer(ta.asTransport());
   const server = new RpcPeer(tb.asTransport());
@@ -43,7 +44,7 @@ function setup(extra: { agentStatus?: { list(): unknown[] } | null; auditMaxByte
   server.on('error', () => {});
   const hub = wireHub(server, {
     remoteDeviceId: 'dev-xyz',
-    services: { projects, ptyManager: pty, dropStaging: staging(), ...('agentStatus' in extra ? { agentStatus: extra.agentStatus } : {}) } as never,
+    services: { projects, ptyManager: pty, dropStaging: staging(), ...('agentStatus' in extra ? { agentStatus: extra.agentStatus } : {}), ...(extra.noticeRouter ? { noticeRouter: extra.noticeRouter } : {}) } as never,
     auditLogPath: auditPath,
     auditMaxBytes: extra.auditMaxBytes,
     events: extra.events,
@@ -298,6 +299,57 @@ describe('audit log', () => {
     expect(existsSync(auditPath + '.2')).toBe(true);
     expect(existsSync(auditPath + '.3')).toBe(false);
     expect(readFileSync(auditPath, 'utf8').length).toBeLessThanOrEqual(300);
+  });
+});
+
+describe('agent notices for the active IDE instance', () => {
+  const NOTICE = { kind: 'needs-input', projectId: 1, shellIndex: 0, projectName: 'p', body: 'Allow Bash?' } as const;
+  const until = async (cond: () => boolean) => { for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 5)); expect(cond()).toBe(true); };
+
+  test('a peer that subscribed and reported recent use receives the notice; closing the stream stops it', async () => {
+    const router = new NoticeRouter({ localIdleMs: () => null, now: () => Date.now() });
+    const { client } = setup({ noticeRouter: router });
+    const got: unknown[] = [];
+    const stream = client.openStream('notices.subscribe', {}, (d) => got.push(d));
+    await until(() => stream.stream !== undefined);
+    expect(router.route(NOTICE)).toBe(false); // subscribed, but has not said it is in use
+    await expect(client.call('presence.set', { idleMs: 0 })).resolves.toEqual({ ok: true });
+    expect(router.route(NOTICE)).toBe(true);
+    await until(() => got.length === 1);
+    expect(got[0]).toEqual(NOTICE);
+    expect(Notice.safeParse(got[0]).success).toBe(true);
+
+    stream.close();
+    await until(() => !router.route(NOTICE));
+  });
+
+  test('disposing the link ends its notice stream', async () => {
+    const router = new NoticeRouter({ localIdleMs: () => null, now: () => Date.now() });
+    const { client, hub } = setup({ noticeRouter: router });
+    let closed = false;
+    const stream = client.openStream('notices.subscribe', {}, () => {}, () => { closed = true; });
+    await until(() => stream.stream !== undefined);
+    await client.call('presence.set', { idleMs: 0 });
+    await hub.dispose();
+    expect(router.route(NOTICE)).toBe(false);
+    await until(() => closed);
+  });
+
+  test('presence.set rejects a negative or non-numeric age', async () => {
+    const { client } = setup({ noticeRouter: new NoticeRouter({ localIdleMs: () => null, now: () => Date.now() }) });
+    await expect(client.call('presence.set', { idleMs: -1 })).rejects.toMatchObject({ code: 'invalid_params' });
+    await expect(client.call('presence.set', { idleMs: 'now' } as never)).rejects.toMatchObject({ code: 'invalid_params' });
+    await expect(client.call('presence.set', { idleMs: null })).resolves.toEqual({ ok: true });
+  });
+
+  test('without a router, presence is accepted and the stream is refused', async () => {
+    const { client } = setup({});
+    await expect(client.call('presence.set', { idleMs: 0 })).resolves.toEqual({ ok: true });
+    const errors: Error[] = [];
+    client.on('error', (e: Error) => errors.push(e));
+    client.openStream('notices.subscribe', {}, () => {});
+    await until(() => errors.length === 1);
+    expect(errors[0]).toMatchObject({ code: 'unsupported' });
   });
 });
 

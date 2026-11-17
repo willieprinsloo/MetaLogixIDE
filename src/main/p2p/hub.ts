@@ -345,6 +345,18 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
     return { content: buf.toString('utf8'), encoding: 'utf8' as const };
   });
 
+  // Agent notices for the IDE instance in use (src/main/notifications/notice-router.ts). The peer is
+  // eligible only while it holds a notices.subscribe stream; its presence reports say how recently it was used.
+  const noticePeer = s.noticeRouter?.register() ?? null;
+  on('presence.set', async ({ idleMs }) => {
+    noticePeer?.setIdle(idleMs);
+    return { ok: true } as const;
+  });
+  on('notices.subscribe', () => {
+    if (!noticePeer) throw new RpcError('unsupported', 'notices are not available');
+    return noticePeer.stream();
+  });
+
   // Upload sessions are scoped to this link (B-S2); the caps are host-wide via the shared quota.
   const uploads = createUploadService({
     staging: s.dropStaging,
@@ -358,5 +370,5 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
   on('drops.uploadCommit', (p) => uploads.commit(p));
   on('drops.uploadAbort', (p) => uploads.abort(p));
 
-  return { dispose: () => uploads.disposeAll() };
+  return { dispose: async () => { noticePeer?.dispose(); await uploads.disposeAll(); } };
 }

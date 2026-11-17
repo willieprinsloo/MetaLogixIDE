@@ -18,6 +18,8 @@ export interface P2PApi {
   /** Unary call, or for `shells.attach` a stream: events are pushed on `p2p:rpc-event` and `{ streamId }` is returned. */
   rpcCall(deviceId: string, method: string, params: unknown): Promise<unknown>;
   rpcCloseStream(streamId: number): void;
+  /** This machine's IDE gained or lost focus: tell connected hosts now instead of at the next periodic report. */
+  presenceChanged(): void;
   /** Runs one viewer-side upload to a paired device's drop folder; never rejects. */
   upload(req: UploadRequest): Promise<UploadResult>;
   /** Stops an in-flight upload between chunks; no-op for an unknown id. */

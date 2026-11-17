@@ -8,8 +8,20 @@ import type { NotificationHandle, NotificationsPort } from './os-notifications';
 /** The two toggles the notifier reads. */
 export type ClaudeNotifyToggle = 'notify_claude_needs_input' | 'notify_claude_finished';
 
-/** Injected ports. */
+/** A classified notification, as a paired machine receives it. */
+export interface ClaudeNotice {
+  kind: 'needs-input' | 'finished';
+  body: string;
+}
+
+/** The setting that enables notices of this kind, here or on the machine that receives them. */
+export function toggleFor(kind: ClaudeNotice['kind']): ClaudeNotifyToggle {
+  return kind === 'needs-input' ? 'notify_claude_needs_input' : 'notify_claude_finished';
+}
+
+/** Injected ports. `forward` returns true once the fleet's active IDE instance took the notice, which skips the local one. */
 export interface ClaudeNotifierDeps {
+  forward: (shell: ShellKey, notice: ClaudeNotice) => boolean;
   notifications: NotificationsPort;
   isViewing: (shell: ShellKey) => boolean;
   navigate: (shell: ShellKey) => void;
@@ -34,10 +46,10 @@ function isFinishedTurn(event: HookEvent, from: AgentState, to: AgentState): boo
   return event.backgroundTaskCount === 0 && from === 'busy' && to === 'idle';
 }
 
-function contentFor({ hook: { event }, from, to }: AppliedHook): { toggle: ClaudeNotifyToggle; body: string } | null {
+function contentFor({ hook: { event }, from, to }: AppliedHook): ClaudeNotice | null {
   const kind = classifyHookEvent(event);
-  if (kind === 'needs-input' && to === 'blocked') return { toggle: 'notify_claude_needs_input', body: needsInputBody(event.message) };
-  if (kind === 'finished' && isFinishedTurn(event, from, to)) return { toggle: 'notify_claude_finished', body: FINISHED_BODY };
+  if (kind === 'needs-input' && to === 'blocked') return { kind, body: needsInputBody(event.message) };
+  if (kind === 'finished' && isFinishedTurn(event, from, to)) return { kind, body: FINISHED_BODY };
   return null;
 }
 
@@ -51,7 +63,12 @@ export class ClaudeNotifier {
   handle(applied: AppliedHook): void {
     const { hook } = applied;
     const content = contentFor(applied);
-    if (!content || !this.deps.settings.get(content.toggle)) return;
+    if (!content) return;
+    // The IDE instance in use gets the notice, under its own toggles and its own view. Only when that is
+    // this machine do the local toggles and the local view apply: an unattended machine often still has
+    // the shell on screen in a focused window, and that must not swallow the notice.
+    if (this.deps.forward(hook.shell, content)) return;
+    if (!this.deps.settings.get(toggleFor(content.kind))) return;
     if (!this.deps.notifications.isSupported() || this.deps.isViewing(hook.shell)) return;
     this.show(hook.shell, content.body);
   }

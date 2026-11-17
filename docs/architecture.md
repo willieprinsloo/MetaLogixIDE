@@ -1190,6 +1190,25 @@ Rules:
 - A new notification for a shell closes the previous one. A PTY exit
   releases the shell's session and closes its notification, unless a
   respawn has already replaced that PTY.
+- **Fleet: the IDE instance in use gets the notice.** Before the local
+  rules run, `NoticeRouter` (`src/main/notifications/notice-router.ts`)
+  offers the notice to the paired machine that was used more recently
+  than this one. If one takes it, nothing is shown here. "Used" means
+  input while an IDE window was focused (`ActivityTracker`, sampled from
+  `powerMonitor.getSystemIdleTime()` every 5 s and on focus changes).
+  Focus alone does not count, because an unattended machine usually still
+  has its IDE in front. A viewer opens `notices.subscribe` on connect and
+  sends `presence.set { idleMs }` on connect, on focus changes and every
+  15 s; the age is converted to the host's clock on arrival, so the two
+  clocks need not agree. A tie, a viewer that never reported, and no
+  viewer at all keep the notice local.
+- The receiving machine (`src/main/notifications/fleet-notices.ts`)
+  applies its own two toggles, titles the notice
+  "<project> on <machine> — shell <n>", and holds it back while its
+  focused main window shows that remote shell (`p2p:viewing`, reported by
+  `RemoteProjectPane`). A click raises the window and opens that shell
+  (`p2p:focus-remote-shell`). The mobile app does not subscribe. The
+  generic "Command finished" notifier is not routed and stays local.
 
 ### Claude status dots
 

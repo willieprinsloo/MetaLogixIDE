@@ -82,6 +82,27 @@ describe('RemoteProjectPane', () => {
     }
   });
 
+  test('tells main which remote shell is on screen, follows tab switches, and clears it on unmount', async () => {
+    alive = [{ projectId: 7, shellIndex: 2, launchArgv: ['claude'] }, { projectId: 7, shellIndex: 3, launchArgv: ['opencode'] }];
+    const viewing = () => invoke.mock.calls.filter((c) => c[0] === 'p2p:viewing').map((c) => (c[1] as { shell: unknown }).shell);
+    const { unmount } = render(<RemoteProjectPane deviceId="tower" deviceName="Tower" projectId={7} projectName="alpha" />);
+    await screen.findByTestId('shell-tab');
+    expect(viewing().at(-1)).toEqual({ deviceId: 'tower', projectId: 7, shellIndex: 2 });
+    fireEvent.click(await screen.findByRole('tab', { name: 'Opencode' }));
+    await waitFor(() => expect(viewing().at(-1)).toEqual({ deviceId: 'tower', projectId: 7, shellIndex: 3 }));
+    unmount();
+    expect(viewing().at(-1)).toBeNull();
+  });
+
+  test('opens on the tab a fleet notice names, and on another when a later notice names that', async () => {
+    alive = [{ projectId: 7, shellIndex: 2, launchArgv: ['claude'] }, { projectId: 7, shellIndex: 3, launchArgv: ['opencode'] }, { projectId: 7, shellIndex: 4, launchArgv: ['$SHELL'] }];
+    const { rerender } = render(<RemoteProjectPane deviceId="tower" deviceName="Tower" projectId={7} projectName="alpha" initialShellIndex={3} />);
+    await screen.findAllByRole('tab');
+    await waitFor(() => expect(screen.getByTestId('shell-tab').getAttribute('data-shell')).toBe('3'));
+    rerender(<RemoteProjectPane deviceId="tower" deviceName="Tower" projectId={7} projectName="alpha" initialShellIndex={4} />);
+    await waitFor(() => expect(screen.getByTestId('shell-tab').getAttribute('data-shell')).toBe('4'));
+  });
+
   test('the close button calls onClose', () => {
     const onClose = vi.fn();
     render(<RemoteProjectPane deviceId="tower" deviceName="Tower" projectId={7} projectName="alpha" onClose={onClose} />);

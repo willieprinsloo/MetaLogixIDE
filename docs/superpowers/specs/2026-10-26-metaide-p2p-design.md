@@ -275,6 +275,14 @@ type Frame =
   `shells:launch` IPC
 - `shells.kill(projectId, shellIndex)`
 
+**Notices (agent notifications for the IDE instance in use)** — added
+2026-11-17, see `docs/architecture.md` ("Claude notifications")
+- `presence.set(idleMs)` → `{ ok }`; milliseconds since the viewer's IDE was
+  last used, or null if never. An age, so the clocks need not agree
+- `notices.subscribe()` → stream of
+  `{ kind, projectId, shellIndex, projectName, body }`; an old host answers
+  `unknown_method`. Main-process only: the renderer bridge refuses both
+
 **Drops (remote upload)** — added 2026-11-15, see
 `src/shared/remote-upload-contract.ts` and `docs/architecture.md`
 ("Remote terminal uploads")
