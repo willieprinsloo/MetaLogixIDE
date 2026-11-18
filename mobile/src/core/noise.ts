@@ -7,7 +7,9 @@ import { ed25519, x25519 } from '@noble/curves/ed25519.js';
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { sha256 as sha256Hash } from '@noble/hashes/sha2.js';
 import { hmac as hmacHash } from '@noble/hashes/hmac.js';
+import { type Duration, Effect } from 'effect';
 import { concat, equalBytes, utf8Encode } from './bytes';
+import { LinkError } from './errors';
 
 const PROTOCOL_NAME = 'Noise_XX_25519_ChaChaPoly_SHA256';
 const DH = 32;
@@ -155,63 +157,57 @@ export function canonicalPubHex(pub: Uint8Array): string {
 }
 
 /**
- * Runs the initiator side. The caller must build its SecureChannel synchronously in the continuation
- * of this promise so `pendingMessages` and live frames stay in order.
+ * Runs the initiator side. The caller must build its SecureChannel synchronously in the continuation,
+ * so `pendingMessages` and live frames stay in order. Fails closed: on any failure, timeout or
+ * interruption the transport is closed.
  */
-export function viewerHandshake(opts: {
+export const viewerHandshake = (opts: {
   transport: RawTransport;
   localKey: DeviceKey;
   /** Canonical hex of the device we expect; checked before our identity is revealed. */
   expectedRemote?: string;
   prologue?: Uint8Array;
-  timeoutMs?: number;
-}): Promise<NoiseResult> {
-  const { transport: t, localKey } = opts;
-  return new Promise<NoiseResult>((resolve, reject) => {
+  timeout?: Duration.Input;
+}): Effect.Effect<NoiseResult, LinkError> =>
+  Effect.callback<NoiseResult, LinkError>((resume) => {
+    const { transport: t, localKey } = opts;
     const queue: Uint8Array[] = [];
     let done = false;
     let ss: SymmetricState;
     const ePriv = x25519.utils.randomSecretKey();
     const sPriv = ed25519.utils.toMontgomerySecret(localKey.seed);
 
-    const finish = (err: Error | null, res?: NoiseResult) => {
+    const finish = (reason: string | null, res?: NoiseResult) => {
       if (done) return;
       done = true;
-      clearTimeout(timer);
       t.off('close', onClose);
-      // On success the listener stays attached, buffering, until the caller takes over via release().
-      if (err) t.off('message', onMessage);
       ePriv.fill(0);
       sPriv.fill(0);
-      if (err) {
-        try { t.close(); } catch { /* already closed */ }
-        reject(err);
-      } else resolve(res!);
+      if (reason === null) {
+        // The listener stays attached, buffering, until the caller takes over via release().
+        resume(Effect.succeed(res!));
+        return;
+      }
+      t.off('message', onMessage);
+      try { t.close(); } catch { /* already closed */ }
+      resume(Effect.fail(new LinkError({ reason })));
     };
-    const onClose = () => finish(new Error('handshake_failed: transport closed'));
+    const onClose = () => finish('handshake_failed');
     const onMessage = (m: Uint8Array) => {
       if (done) { queue.push(new Uint8Array(m)); return; }
       const m2 = new Uint8Array(m);
+      if (m2.length !== MSG2_LEN) { finish('handshake_failed'); return; }
       try {
-        if (m2.length !== MSG2_LEN) throw new Error('handshake_failed: bad message 2 length');
         // <- e, ee, s, es
         const re = m2.subarray(0, DH);
         ss.mixHash(re);
         ss.mixKey(dh(ePriv, re));
-        let rs: Uint8Array;
-        let remoteEd: Uint8Array;
-        try {
-          rs = ss.decryptAndHash(m2.subarray(DH, DH + DH + TAG));
-          ss.mixKey(dh(ePriv, rs));
-          remoteEd = ss.decryptAndHash(m2.subarray(DH + DH + TAG));
-        } catch {
-          // A wrong pair code changes the prologue, which surfaces here as an AEAD failure.
-          throw new Error('handshake_failed');
-        }
-        if (remoteEd.length !== 32 || !equalBytes(ed25519.utils.toMontgomery(remoteEd), rs)) {
-          throw new Error('handshake_failed: identity binding mismatch');
-        }
-        if (opts.expectedRemote && canonicalPubHex(remoteEd) !== opts.expectedRemote) throw new Error('trust_failed');
+        // A wrong pair code changes the prologue, which surfaces here as an AEAD failure.
+        const rs = ss.decryptAndHash(m2.subarray(DH, DH + DH + TAG));
+        ss.mixKey(dh(ePriv, rs));
+        const remoteEd = ss.decryptAndHash(m2.subarray(DH + DH + TAG));
+        if (remoteEd.length !== 32 || !equalBytes(ed25519.utils.toMontgomery(remoteEd), rs)) { finish('handshake_failed'); return; }
+        if (opts.expectedRemote && canonicalPubHex(remoteEd) !== opts.expectedRemote) { finish('trust_failed'); return; }
         // -> s, se
         const encS = ss.encryptAndHash(x25519.getPublicKey(sPriv));
         ss.mixKey(dh(sPriv, re));
@@ -222,11 +218,10 @@ export function viewerHandshake(opts: {
           sendKey: k1, recvKey: k2, remotePub: new Uint8Array(remoteEd), pendingMessages: queue,
           release: () => { t.off('message', onMessage); },
         });
-      } catch (e) {
-        finish(e instanceof Error && /^(handshake_failed|trust_failed)/.test(e.message) ? e : new Error('handshake_failed'));
+      } catch {
+        finish('handshake_failed');
       }
     };
-    const timer = setTimeout(() => finish(new Error('handshake_timeout')), opts.timeoutMs ?? 10_000);
     t.on('message', onMessage);
     t.on('close', onClose);
 
@@ -238,7 +233,21 @@ export function viewerHandshake(opts: {
       ss.encryptAndHash(EMPTY);
       t.send(ePub);
     } catch {
-      finish(new Error('handshake_failed'));
+      finish('handshake_failed');
     }
-  });
-}
+    // Interrupted (timed out, or the caller gave up): never leave a half-handshaken channel open.
+    return Effect.sync(() => {
+      if (done) return;
+      done = true;
+      t.off('message', onMessage);
+      t.off('close', onClose);
+      ePriv.fill(0);
+      sPriv.fill(0);
+      try { t.close(); } catch { /* already closed */ }
+    });
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: opts.timeout ?? '10 seconds',
+      orElse: () => Effect.fail(new LinkError({ reason: 'handshake_timeout' })),
+    }),
+  );

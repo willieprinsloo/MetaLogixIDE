@@ -72,7 +72,7 @@ identity and pairing design.
 
 The mobile app in `mobile/` is a viewer-only fleet member. `mobile/src/core`
 ports the viewer half of `src/main/p2p` (relay client, Noise initiator, secure
-channel, RPC client) and `mobile/src/core/__tests__/interop.test.ts` runs it
+channel, RPC client), written with Effect v4 (see `mobile/README.md`), and `mobile/src/core/__tests__/interop.test.ts` runs it
 against the host code here, so a wire change that breaks the phone fails
 `pnpm test`. It pairs like any machine but sends `viewer: true` and no connect code in the
 pairing hello. The host records that in `known_devices.json`, and

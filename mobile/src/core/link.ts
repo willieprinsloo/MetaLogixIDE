@@ -5,225 +5,207 @@
  *   TCP relay -> Hello{viewer} -> session_request{code} -> session_granted -> offer/answer/ICE
  *   -> data channel open -> Noise XX (initiator) -> pairing name swap, or the RPC channel.
  *
- * Platform pieces (TCP socket, RTCPeerConnection) are injected so this runs under Node in tests.
+ * Every resource (relay socket, peer connection) belongs to the caller's Scope: closing the scope is
+ * how a link is ended.
  */
+import { Deferred, Effect, Schema, type Scope } from 'effect';
 import { utf8Decode, utf8Encode } from './bytes';
-import { canonicalPubHex, pairingPrologue, viewerHandshake, type DeviceKey, type RawTransport } from './noise';
+import { LinkError } from './errors';
+import { canonicalPubHex, pairingPrologue, viewerHandshake, type DeviceKey } from './noise';
 import { RpcClient } from './rpc';
+import { ConnectCode, Envelope, IceServer, PairHello } from './schemas';
 import { SecureChannel } from './secure';
-import { createFrameDecoder, encodeFrame, Sig, type Envelope } from './wire';
-
-/** A connected-or-connecting byte socket to the relay. */
-export interface RelaySocket {
-  write(bytes: Uint8Array): void;
-  close(): void;
-  onOpen(cb: () => void): void;
-  onData(cb: (bytes: Uint8Array) => void): void;
-  /** Fires once, for errors and normal closes alike. */
-  onClose(cb: () => void): void;
-}
-
-export type IceServer = { urls: string | string[]; username?: string; credential?: string };
-
-/** The answering end of a WebRTC data channel. Events as RawTransport, plus 'open' and 'candidate' (JSON string). */
-export interface Peer extends RawTransport {
-  /** Applies the host's offer and returns the local answer SDP. */
-  answer(offerSdp: string): Promise<string>;
-  addCandidate(candidateJson: string): Promise<void>;
-  on(ev: 'message', cb: (m: Uint8Array) => void): unknown;
-  on(ev: 'close' | 'open', cb: () => void): unknown;
-  on(ev: 'candidate', cb: (candidateJson: string) => void): unknown;
-}
-
-export interface Platform {
-  connect(host: string, port: number): RelaySocket;
-  createPeer(iceServers: IceServer[]): Peer;
-}
+import { Peers, Relay, type Peer } from './services';
+import { createFrameDecoder, encodeFrame, Sig } from './wire';
 
 export interface LinkOpts {
-  platform: Platform;
   relay: { host: string; port: number };
   /** The target desktop's connect code. */
   code: string;
   deviceKey: DeviceKey;
-  /** How long relay + ICE negotiation may take before giving up. */
+  /** How long relay + ICE negotiation may take before giving up, in milliseconds. */
   timeoutMs?: number;
 }
 
 export type PairResult = { deviceId: string; name: string; code: string };
-export type Connection = {
-  deviceId: string;
-  rpc: RpcClient;
-  close(): void;
-  /** Why the desktop ended the session (`untrusted_device`, `revoked`, ...), once it has said so. */
-  remoteReason(): string | null;
-};
 
-const CONNECT_CODE_RE = /^[A-Za-z0-9-]{4,32}$/;
+export interface Connection {
+  readonly deviceId: string;
+  readonly rpc: RpcClient;
+  /**
+   * Why the desktop is ending the session (`untrusted_device`, `revoked`, ...), once it has said so over the
+   * relay. That usually lands just after the channel itself closes, so callers wait on it briefly.
+   */
+  readonly remoteReason: Effect.Effect<string>;
+}
+
+interface Channel {
+  readonly peer: Peer;
+  readonly sessionId: string;
+  readonly remoteReason: Effect.Effect<string>;
+}
+
 const NEGOTIATION_TIMEOUT_MS = 30_000;
-const PAIR_EXCHANGE_TIMEOUT_MS = 5_000;
-/** How long after the channel closes the host's reason for closing it may still arrive over the relay. */
-export const REASON_GRACE_MS = 2_000;
+const PAIR_EXCHANGE_TIMEOUT = '5 seconds';
 
-/** Runs signalling up to an open data channel. Rejects with a short reason code (`relay_unreachable`, `denied`, ...). */
-function openChannel(o: LinkOpts): Promise<{ peer: Peer; sessionId: string; closeSignalling(reason: string): void; remoteReason(): string | null }> {
-  return new Promise((resolve, reject) => {
-    const sock = o.platform.connect(o.relay.host, o.relay.port);
+const decodeEnvelope = Schema.decodeUnknownOption(Envelope);
+const decodeIce = Schema.decodeUnknownOption(Schema.Array(IceServer));
+const decodeHello = Schema.decodeUnknownOption(PairHello);
+const isConnectCode = Schema.is(ConnectCode);
+
+/** The relay keeps one session per host and closes the older one for the next viewer: bookkeeping, not a hang-up. */
+const isSuperseded = (reason: string): boolean => /^superseded\b/i.test(reason);
+
+/**
+ * Runs signalling up to an open data channel. Fails with a short reason (`relay_unreachable`,
+ * `host offline`, `negotiation_timeout`, ...). The socket stays open for the scope's lifetime: trickle
+ * ICE continues over it, and it is how the host says why it hangs up.
+ */
+const openChannel = Effect.fnUntraced(function*(o: LinkOpts): Effect.fn.Return<Channel, LinkError, Relay | Peers | Scope.Scope> {
+  const relay = yield* Relay;
+  const peers = yield* Peers;
+  const reason = yield* Deferred.make<string>();
+  // Shared between the negotiation callbacks and the finalizer below.
+  const st = { sockOpen: false, sessionId: '', peer: null as Peer | null };
+
+  const sock = yield* Effect.acquireRelease(
+    Effect.sync(() => relay.connect(o.relay.host, o.relay.port)),
+    (s) => Effect.sync(() => {
+      // Tell the host this session is over, then drop the relay connection that existed only for it.
+      if (st.sockOpen && st.sessionId) s.write(encodeFrame(utf8Encode(JSON.stringify({ type: Sig.SessionClose, data: { session: st.sessionId, reason: 'closed' } }))));
+      st.sockOpen = false;
+      s.close();
+    }),
+  );
+  yield* Effect.addFinalizer(() => Effect.sync(() => { try { st.peer?.close(); } catch { /* already closed */ } }));
+
+  const send = (env: { type: string; data?: unknown }) => { if (st.sockOpen) sock.write(encodeFrame(utf8Encode(JSON.stringify(env)))); };
+
+  const peer = yield* Effect.callback<Peer, LinkError>((resume) => {
     const decoder = createFrameDecoder();
-    let peer: Peer | null = null;
-    let sessionId = '';
     let settled = false;
-    let sockOpen = false;
     let remoteSet = false;
-    let remoteReason: string | null = null;
     const earlyCandidates: string[] = [];
 
-    const send = (env: Envelope) => { if (sockOpen) sock.write(encodeFrame(utf8Encode(JSON.stringify(env)))); };
-    const closeSignalling = (reason: string) => {
-      if (sessionId) send({ type: Sig.SessionClose, data: { session: sessionId, reason } });
-      sockOpen = false;
-      sock.close();
-    };
-    const fail = (reason: string) => {
+    const fail = (r: string) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      try { peer?.close(); } catch { /* already closed */ }
-      closeSignalling(reason);
-      reject(new Error(reason));
+      resume(Effect.fail(new LinkError({ reason: r })));
     };
-    const timer = setTimeout(() => fail(sockOpen ? 'negotiation_timeout' : 'relay_unreachable'), o.timeoutMs ?? NEGOTIATION_TIMEOUT_MS);
+    const timer = setTimeout(() => fail(st.sockOpen ? 'negotiation_timeout' : 'relay_unreachable'), o.timeoutMs ?? NEGOTIATION_TIMEOUT_MS);
 
     sock.onOpen(() => {
-      sockOpen = true;
+      st.sockOpen = true;
       // Frame 1 is a bare Hello, not an envelope. Viewers are anonymous and get no reply.
       sock.write(encodeFrame(utf8Encode(JSON.stringify({ token: '', role: 'viewer' }))));
       send({ type: Sig.SessionRequest, data: { code: o.code.trim() } });
     });
     sock.onClose(() => {
-      sockOpen = false;
-      // After the data channel is up the relay is no longer needed.
-      fail('relay_unreachable');
+      st.sockOpen = false;
+      fail('relay_unreachable'); // after the data channel is up the relay is no longer needed
     });
     sock.onData((chunk) => {
       let frames: Uint8Array[];
       try { frames = decoder.push(chunk); } catch { fail('relay_protocol_error'); return; }
       for (const f of frames) {
-        let env: Envelope;
-        try { env = JSON.parse(utf8Decode(f)) as Envelope; } catch { continue; }
-        if (env && typeof env.type === 'string') onEnvelope(env);
+        let json: unknown;
+        try { json = JSON.parse(utf8Decode(f)); } catch { continue; }
+        const env = decodeEnvelope(json);
+        if (env._tag === 'Some') onEnvelope(env.value);
       }
     });
 
     const onEnvelope = (env: Envelope) => {
-      const d = (env.data ?? {}) as { session?: unknown; sdp?: unknown; candidate?: unknown; reason?: unknown; ice_servers?: unknown; iceServers?: unknown };
-      if (env.type === Sig.SessionDenied && !sessionId) { fail(typeof d.reason === 'string' && d.reason ? d.reason : 'denied'); return; }
-      if (env.type === Sig.SessionGranted && !sessionId) {
-        if (typeof d.session !== 'string' || !d.session) { fail('invalid_session'); return; }
-        sessionId = d.session;
-        const ice = Array.isArray(d.ice_servers) ? d.ice_servers : Array.isArray(d.iceServers) ? d.iceServers : [];
-        const p = (peer = o.platform.createPeer(ice as IceServer[]));
-        p.on('candidate', (c: string) => send({ type: Sig.IceCandidate, data: { session: sessionId, candidate: c } }));
+      const d = env.data ?? {};
+      if (env.type === Sig.SessionDenied && !st.sessionId) { fail(d.reason || 'denied'); return; }
+      if (env.type === Sig.SessionGranted && !st.sessionId) {
+        if (!d.session) { fail('invalid_session'); return; }
+        st.sessionId = d.session;
+        const ice = decodeIce(d.ice_servers ?? d.iceServers ?? []);
+        const p = (st.peer = peers.create(ice._tag === 'Some' ? ice.value : []));
+        p.on('candidate', (c: string) => send({ type: Sig.IceCandidate, data: { session: st.sessionId, candidate: c } }));
         p.on('open', () => {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
-          resolve({ peer: p, sessionId, closeSignalling, remoteReason: () => remoteReason });
+          resume(Effect.succeed(p));
         });
         p.on('close', () => fail('transport_closed'));
         return;
       }
-      if (!sessionId || d.session !== sessionId || !peer) return;
-      const p = peer;
+      const p = st.peer;
+      if (!st.sessionId || d.session !== st.sessionId || !p) return;
       switch (env.type) {
         case Sig.Offer:
-          if (remoteSet || typeof d.sdp !== 'string') return;
+          if (remoteSet || d.sdp === undefined) return;
           p.answer(d.sdp).then((sdp) => {
             remoteSet = true;
-            send({ type: Sig.Answer, data: { session: sessionId, sdp } });
+            send({ type: Sig.Answer, data: { session: st.sessionId, sdp } });
             for (const c of earlyCandidates.splice(0)) p.addCandidate(c).catch(() => {});
           }, () => fail('negotiation_failed'));
           break;
         case Sig.IceCandidate:
-          if (typeof d.candidate !== 'string' || !d.candidate) return;
+          if (!d.candidate) return;
           if (!remoteSet) earlyCandidates.push(d.candidate);
           else p.addCandidate(d.candidate).catch(() => { /* late or duplicate candidates are harmless */ });
           break;
         case Sig.SessionClose: {
-          const reason = typeof d.reason === 'string' && d.reason ? d.reason : 'peer_closed';
-          if (!settled) { remoteReason = reason; fail(reason); break; }
-          // The channel is up. The relay keeps one session per host and closes this one ("superseded by a new
-          // connection") when another viewer asks for that host; that is its bookkeeping, not the host hanging
-          // up, and the link carries on. Any other reason is the host saying why it is about to close.
-          if (!/^superseded\b/i.test(reason)) remoteReason = reason;
-          closeSignalling('closed'); // nothing more can arrive for this session
+          const r = d.reason || 'peer_closed';
+          if (!settled) { fail(r); break; }
+          // The channel is up. A supersede is the relay's bookkeeping and the link carries on; any other
+          // reason is the host saying why it is about to close the channel.
+          if (!isSuperseded(r)) Deferred.doneUnsafe(reason, Effect.succeed(r));
           break;
         }
-          break;
       }
     };
+    return Effect.sync(() => { settled = true; clearTimeout(timer); });
   });
-}
 
-const reasonOf = (e: unknown): string => {
-  const m = e instanceof Error ? e.message : String(e);
-  return m.startsWith('handshake_failed') ? 'handshake_failed' : (m.split(':')[0] ?? m);
-};
+  return { peer, sessionId: st.sessionId, remoteReason: Deferred.await(reason) };
+});
 
 /**
  * Pairs with the desktop that currently shows `code` under "Pair a new machine". Both sides swap
  * `{hello: name, code?}`; the phone sends no code because it never hosts, and `viewer: true` so the
  * desktop keeps it out of its fleet views.
  */
-export async function pairWith(o: LinkOpts & { deviceName: string }): Promise<PairResult> {
-  const { peer, sessionId, closeSignalling } = await openChannel(o);
-  try {
-    const noise = await viewerHandshake({ transport: peer, localKey: o.deviceKey, prologue: pairingPrologue(o.code, sessionId) });
-    const secure = new SecureChannel(peer, noise); // synchronous after the await: see viewerHandshake
+export const pairWith = Effect.fnUntraced(function*(o: LinkOpts & { deviceName: string }): Effect.fn.Return<PairResult, LinkError, Relay | Peers> {
+  return yield* Effect.gen(function*() {
+    const { peer, sessionId } = yield* openChannel(o);
+    const noise = yield* viewerHandshake({ transport: peer, localKey: o.deviceKey, prologue: pairingPrologue(o.code, sessionId) });
+    const secure = new SecureChannel(peer, noise); // synchronous after the handshake: see viewerHandshake
     const deviceId = canonicalPubHex(noise.remotePub);
-    const hello = await new Promise<{ name: string; code?: string }>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('pairing_exchange_timeout')), PAIR_EXCHANGE_TIMEOUT_MS);
-      secure.on('close', () => { clearTimeout(timer); reject(new Error('transport_closed')); });
+    const hello = yield* Effect.callback<{ name: string; code?: string }, LinkError>((resume) => {
+      secure.on('close', () => resume(Effect.fail(new LinkError({ reason: 'transport_closed' }))));
       secure.on('message', (m: Uint8Array) => {
-        clearTimeout(timer);
-        let name = '';
-        let code: string | undefined;
-        try {
-          const j = JSON.parse(utf8Decode(m)) as { hello?: unknown; code?: unknown };
-          name = String(j.hello ?? '');
-          if (typeof j.code === 'string' && CONNECT_CODE_RE.test(j.code)) code = j.code;
-        } catch { /* fall back to the id */ }
-        resolve({ name: name.slice(0, 80) || deviceId.slice(0, 8), code });
+        let json: unknown = null;
+        try { json = JSON.parse(utf8Decode(m)); } catch { /* fall back to the id */ }
+        const h = decodeHello(json);
+        const name = (h._tag === 'Some' ? h.value.hello ?? '' : '').slice(0, 80) || deviceId.slice(0, 8);
+        const code = h._tag === 'Some' && isConnectCode(h.value.code) ? h.value.code : undefined;
+        resume(Effect.succeed({ name, code }));
       });
       secure.start();
-      // `viewer` tells the desktop this device only connects in, so it stays out of its fleet views.
       secure.send(utf8Encode(JSON.stringify({ hello: o.deviceName, viewer: true })));
-    });
+    }).pipe(
+      Effect.timeoutOrElse({ duration: PAIR_EXCHANGE_TIMEOUT, orElse: () => Effect.fail(new LinkError({ reason: 'pairing_exchange_timeout' })) }),
+    );
     return { deviceId, name: hello.name, code: hello.code ?? o.code.trim() };
-  } catch (e) {
-    throw new Error(reasonOf(e));
-  } finally {
-    try { peer.close(); } catch { /* already closed */ }
-    closeSignalling('paired');
-  }
-}
+  }).pipe(Effect.scoped);
+});
 
-/** Opens the RPC channel to an already-paired desktop. `expectedDevice` is its canonical device id. */
-export async function connect(o: LinkOpts & { expectedDevice: string }): Promise<Connection> {
-  const { peer, closeSignalling, remoteReason } = await openChannel(o);
-  try {
-    const noise = await viewerHandshake({ transport: peer, localKey: o.deviceKey, expectedRemote: o.expectedDevice });
-    const secure = new SecureChannel(peer, noise); // synchronous after the await: see viewerHandshake
-    const rpc = new RpcClient(secure);
-    // The relay connection exists only for this link, so it goes when the channel does. It lingers a
-    // moment first: a host that hangs up says why (`untrusted_device`, `revoked`) over the relay, and
-    // that usually arrives just after the channel itself has closed.
-    secure.on('close', () => { setTimeout(() => closeSignalling('closed'), REASON_GRACE_MS); });
-    secure.start();
-    return { deviceId: o.expectedDevice, rpc, close: () => rpc.close(), remoteReason };
-  } catch (e) {
-    try { peer.close(); } catch { /* already closed */ }
-    closeSignalling(reasonOf(e));
-    throw new Error(reasonOf(e));
-  }
-}
+/**
+ * Opens the RPC channel to an already-paired desktop for the lifetime of the scope. `expectedDevice` is
+ * its canonical device id; a host with any other identity is refused before ours is revealed.
+ */
+export const connect = Effect.fnUntraced(function*(o: LinkOpts & { expectedDevice: string }): Effect.fn.Return<Connection, LinkError, Relay | Peers | Scope.Scope> {
+  const { peer, remoteReason } = yield* openChannel(o);
+  const noise = yield* viewerHandshake({ transport: peer, localKey: o.deviceKey, expectedRemote: o.expectedDevice });
+  const secure = new SecureChannel(peer, noise); // synchronous after the handshake: see viewerHandshake
+  const rpc = new RpcClient(secure);
+  yield* Effect.addFinalizer(() => Effect.sync(() => rpc.close()));
+  secure.start();
+  return { deviceId: o.expectedDevice, rpc, remoteReason };
+});

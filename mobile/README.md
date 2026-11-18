@@ -20,9 +20,23 @@ changes on the desktop side.
 TCP relay (mrsignald) → WebRTC data channel → Noise XX → RPC (projects.list, shells.alive, shells.attach …)
 ```
 
-`src/core` is a port of the viewer half of `src/main/p2p` with no React Native imports. The
-socket and the peer connection are injected, so the interop tests run it against the desktop's
-own Noise, RPC and pairing code:
+`src/core` is a port of the viewer half of `src/main/p2p` with no React Native imports. It is
+written with [Effect](https://effect.website) (v4):
+
+- **Services.** The platform is four services (`Relay`, `Peers`, `Storage`, `Platform`, in
+  `services.ts`). React Native provides them as one Layer in `src/platform`; the tests provide
+  in-memory ones.
+- **Typed failures.** A link fails with `LinkError { reason }`, a request with
+  `RpcError { code }`. Nothing in the core throws.
+- **Schemas.** Everything from outside (relay envelopes, RPC frames and results, storage, the
+  pairing link) is decoded with `Schema` in `schemas.ts`.
+- **Scopes.** A connection owns its relay socket and peer connection through a `Scope`. Each
+  machine has one supervisor fiber that connects, polls and reconnects; interrupting it closes
+  the link.
+- **The edge.** `Fleet` runs those effects on a `ManagedRuntime` and exposes a plain
+  `subscribe`/`getSnapshot` store, so React components need no Effect.
+
+The interop tests run the core against the desktop's own Noise, RPC and pairing code:
 
 ```bash
 npm test          # from mobile/, or `pnpm test mobile/src/core` from the repo root
@@ -30,9 +44,11 @@ npm test          # from mobile/, or `pnpm test mobile/src/core` from the repo r
 
 | Path | What it holds |
 | --- | --- |
-| `src/core` | Wire framing, Noise handshake, secure channel, RPC client, link setup, fleet state |
-| `src/platform` | React Native pieces: TCP socket, WebRTC peer, keychain and storage |
-| `src/ui` | Fleet pager, pairing screen, terminal (xterm.js in a WebView) |
+| `src/core` | Errors, schemas, services, Noise handshake, secure channel, RPC client, link setup, fleet state |
+| `src/platform` | The React Native Layer: TCP socket, WebRTC peer, keychain and storage |
+| `src/terminal` | The terminal page (xterm.js) and its typed message protocol with the app |
+| `src/ui` | Fleet pager, pairing screen, terminal screen |
+| `scripts` | `build-terminal-html.mts` bundles the terminal page; `probe.mts` replays the phone's connection from a computer |
 
 The device key lives in the keychain (Keystore on Android). Paired machines and relay settings
 live in app storage.

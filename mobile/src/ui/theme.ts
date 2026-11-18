@@ -1,4 +1,4 @@
-import type { AgentState } from '../core/rpc';
+import type { AgentState } from '../core/schemas';
 
 export const C = {
   bg: '#0d1014',
