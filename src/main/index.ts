@@ -7,6 +7,9 @@ import { homedir, hostname } from 'node:os';
 import log from 'electron-log/main';
 import { startP2P, stopP2P } from './p2p';
 import { createChatService } from './chat/service';
+import { createReplyCap } from './chat/cap';
+import { buildRoster, type RemotePeer, type RosterRow } from './chat/roster';
+import { wireChatInjector } from './chat/inject';
 import { isWorkerWindowId } from './p2p/worker/windowWorker';
 import { buildServices, type Services } from './services';
 import { DROP_MAX_AGE_MS, testModeDropDir } from './drops/staging';
@@ -297,6 +300,15 @@ export function tileAllOurWindows(): number {
 }
 
 function broadcast(channel: string, payload: unknown): void {
+  // chat:changed is also fed to the injector so one post travels one
+  // path — renderer tail + PTY stdin injection fan out together.
+  if (channel === 'chat:changed') {
+    for (const cb of chatChangedListeners) {
+      try {
+        cb(payload as { projectId: number; entry: import('@shared/chat').ChatEntry });
+      } catch (err) { console.warn('[chat] injector listener threw', err); }
+    }
+  }
   for (const w of BrowserWindow.getAllWindows()) {
     // The BrowserWindow can be alive while its underlying render frame is
     // transient — during Cmd+R, a renderer crash + auto-respawn, or window
@@ -448,12 +460,59 @@ function installNotifications(services: Services): void {
   // remote P2P append, companion CLI). `deviceId` is the P2P deviceName
   // when p2p has started, else the hostname — stable per machine, good
   // enough to disambiguate `@claude@mac-mini` in the UI.
+  const selfDevice = services.p2p?.api.getSettings().deviceName ?? hostname();
   services.chat = createChatService({
     projects: services.projects,
-    deviceId: services.p2p?.api.getSettings().deviceName ?? hostname(),
+    deviceId: selfDevice,
     broadcast,
   });
+  // Chat → PTY injector. Watches `chat:changed` via the IPC fanout, maps
+  // `to` recipients to local shells through the roster, and writes a
+  // single `[metaide-chat …] <body>\n` line into each. Remote-peer rows
+  // land in the roster once Task 7 wires the P2P cache.
+  const chatCap = createReplyCap();
+  const chatRoster = (): RosterRow[] => {
+    const local = services.ptyManager.liveShells().map((s) => ({
+      projectId: s.projectId,
+      shellIndex: s.shellIndex,
+      model: null,
+      launchArgv: [],
+      startedAt: '',
+      lastActiveAt: '',
+      pinned: false,
+      projectName: '',
+      projectPath: '',
+    }));
+    const agentLabels: Record<number, string> = {};
+    const agentStates: Record<number, 'idle' | 'busy' | 'blocked' | null> = {};
+    for (const row of services.agentStatus?.list() ?? []) {
+      if (!row.agent) continue;
+      agentLabels[row.shellIndex] = row.agent;
+      agentStates[row.shellIndex] = row.state;
+    }
+    const remote: RemotePeer[] = []; // populated by Task 7's P2P cache
+    return buildRoster({ local, remote, agentLabels, agentStates, selfDevice });
+  };
+  wireChatInjector({
+    pty: services.ptyManager,
+    roster: chatRoster,
+    cap: chatCap,
+    selfDevice,
+    onCapHeld: (projectId, entry) =>
+      broadcast('chat:changed', { projectId, entry: { ...entry, meta: { cap_held: true } } }),
+    hooks: {
+      onChatChanged: (cb) => {
+        // Reuse the broadcast fanout: whenever `chat:changed` goes out
+        // to renderers, feed it to the injector too. Simpler than a
+        // bespoke pubsub; one call point to serialise.
+        chatChangedListeners.push(cb);
+      },
+    },
+  });
 }
+
+/** Fanout list used by `wireChatInjector`; populated by `installNotifications`. */
+const chatChangedListeners: Array<(p: { projectId: number; entry: import('@shared/chat').ChatEntry }) => void> = [];
 
 /** Creates the main window and app menu, then prunes stale drop staging in the background. */
 async function openMainWindow(services: Services): Promise<void> {
