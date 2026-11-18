@@ -55,7 +55,13 @@ relay and device settings live in Settings → P2P
 in the sidebar's machine switcher (see **Machine switcher** below) and in the
 Fleet view; a remote project opens in `RemoteProjectPane`, whose terminals
 are `ShellTab` with a remote source (`src/renderer/components/RemoteMachineList.tsx`,
-`FleetView.tsx`, `RemoteProjectPane.tsx`). The fleet list
+`FleetView.tsx`, `RemoteProjectPane.tsx`). The pane shows one tab per shell
+the project has running on that machine (`src/renderer/p2p/useRemoteProjectShells.ts`,
+polled from `shells.alive` every 3 s) and attaches to the one selected; it
+opens on the shell `shells.launch` returns. Tabs are labelled as local ones
+are, through `src/shared/shell-launch-name.ts`: the launch command, or the
+agent the host reports in `agent` when one was started by hand in a terminal.
+Remote tabs can be viewed and switched, not added or closed. The fleet list
 (`p2p:fleet-list`) holds paired machines only and never sets
 `FleetEntry.self`, so the renderer adds this machine itself. A host's
 `shells.alive` reply carries each shell's `agentState` (idle, busy, blocked
@@ -63,6 +69,25 @@ or null; absent from older hosts), which tints that machine's switcher dot
 (`src/main/p2p/hub.ts`). See
 `docs/superpowers/specs/2026-10-26-metaide-p2p-design.md` for the protocol,
 identity and pairing design.
+
+The mobile app in `mobile/` is a viewer-only fleet member. `mobile/src/core`
+ports the viewer half of `src/main/p2p` (relay client, Noise initiator, secure
+channel, RPC client), written with Effect v4 (see `mobile/README.md`), and `mobile/src/core/__tests__/interop.test.ts` runs it
+against the host code here, so a wire change that breaks the phone fails
+`pnpm test`. It pairs like any machine but sends `viewer: true` and no connect code in the
+pairing hello. The host records that in `known_devices.json`, and
+`fleet()` flags the entry `viewer` (also for any device with no connect code,
+since nothing can dial it). `useFleet` returns such devices under `devices`
+only, so the machine switcher, Fleet view and shared In use never show them;
+Settings → P2P still lists them, marked "viewer only", so they can be revoked.
+Auto-dial skips them too.
+
+The pairing window also draws a QR code for the phone
+(`src/renderer/components/settings/PairQr.tsx`). It encodes
+`metaide://pair?code=…&relay=…&port=…` from `src/shared/pair-link.ts`: the
+connect code already on screen plus this machine's relay, nothing secret. The
+mobile parser is `mobile/src/core/pairLink.ts`, and the interop test feeds it
+what `buildPairLink` produces.
 
 ### Main-process responsiveness
 
@@ -353,10 +378,25 @@ or "This machine" until it loads.
   (`src/renderer/hooks/useAgentStates.ts`), which re-renders only when the
   aggregate changes. Paired machines' status comes from
   `src/renderer/p2p/useFleetShells.ts`, one `shells.alive` call per online
-  peer every 5s; the same poll feeds the remote list's In use section.
+  peer every 5s. The same poll gives each peer's live project ids and each
+  project's worst agent state; remote live rows show the same `StatusDot`
+  as local ones (no agent, or an old host, reads as idle).
+- **Shared In use.** With a machine paired, one In use section
+  (`section-in-use`) is the first item of the list on every dot: this
+  machine's live projects first (stable order), then each online peer's, in
+  dot order and by name, each with a muted machine-name tag. Remote rows
+  (`RemoteInUseRows.tsx`) open the remote pane and
+  never switch the dot. Order and filter rules live in
+  `src/renderer/fleet-in-use.ts`; peer project names come from
+  `src/renderer/p2p/useFleetInUse.ts`, which calls `projects.list` only when
+  a peer's live set holds an unknown id (one request per peer at a time,
+  retried on a later poll after a failure). The heading dot shows the worst
+  of this machine's overall state (when it has live projects) and the
+  states of the remote rows shown. Neither machine list repeats In use.
 - `RemoteMachineList.tsx` renders a remote machine: a header (name, state,
-  last seen, Reconnect) followed by In use, Recents (6 at most unless
-  filtering) and Projects by root. An offline machine shows the header only.
+  last seen, Reconnect) followed by Recents (6 at most unless
+  filtering, without the projects shown in
+  the shared In use section) and Projects by root. An offline machine shows the header only.
   Remote collapse state is not saved and resets on every switch.
 - The local list stays mounted (hidden) while a remote machine is shown, so
   its order, collapse state and selection survive a switch. The filter field
@@ -1034,6 +1074,21 @@ clears on any `pointerdown`, and on a `mousemove` with no button pressed.
 Neither event occurs during a drag, so a lost `dragend` cannot leave the
 guard disabled. A drag from the main window into a popped-out window counts
 as external there.
+
+### Remote terminal uploads
+
+A file dropped on, or an image pasted into, a remote terminal is sent to that
+machine and staged in its own drop folder; the path typed is the host's path,
+escaped for the host's platform. Limits and copy live in
+`src/shared/remote-upload-contract.ts`.
+
+| Layer | Where | What |
+|---|---|---|
+| Renderer routing | `src/renderer/remote-upload/` | `planRemoteDrop` refuses folders, refuses files over 50 MB, asks once per drop for files over 10 MB, uploads one file at a time and types the successes in order; a cancel types nothing. `remote-clipboard-deps.ts` sends the clipboard image (confirming over 10 MB). `useUploadProgress` drives `UploadProgressOverlay.tsx`, which appears after 500 ms with Cancel. Local tabs keep the local deps unchanged. |
+| Viewer main | `src/main/p2p/upload-client.ts`, IPC `p2p:upload`, `p2p:upload-cancel`, `drops:stat-app-file` | Reads the bytes (OS file from the renderer, Files-tab file and clipboard image in main), calls `drops.uploadBegin` before any bytes so an old host fails fast, sends 256 KiB chunks one at a time, emits `p2p:upload-progress`, and maps host errors to a typed `UploadResult`. It never rejects. |
+| Host | `src/main/p2p/uploads.ts`, `hub.ts` (`drops.upload*`) | Per-link sessions share one host-wide quota (`createUploadQuota`). Begin refuses over 50 MB, over 4 uploads per device across all its links, or when the drop folder plus every open upload's reserved bytes would exceed 500 MB after pruning files older than 24 h. Chunks must arrive in order and never overrun. Abort, a 60 s idle timeout and link close delete the partial file; an abort or link close while a commit is in flight removes the staged file too, and so does an abort within 60 s after the commit. A link close after the commit keeps the file, because the viewer may already have typed its path. Audit lines record names and sizes, never bytes. |
+| Staging | `src/main/drops/staging.ts` | `openUpload` writes an owner-only `.<random>.part` file and finalises it with a no-overwrite link under the cleaned file name; `usageBytes` counts the folder. |
+
 ### Full-screen terminal apps
 
 - While a shell shows the alternate screen (opencode, vim, …) the terminal
@@ -1044,6 +1099,33 @@ as external there.
   changed cells. 250 ms after the last resize, `PtyManager` briefly shrinks an
   alternate-screen PTY by one row and restores it, which those apps treat as a
   forced full repaint, so cells drawn at a stale size are cleaned up.
+
+### Terminal copy and remote input
+
+- **OSC 52.** Every shell tab, local or remote, registers an OSC 52 handler
+  (`registerClipboardOsc` in `src/renderer/osc52.ts`). A program that writes
+  the clipboard with `ESC ] 52 ; c ; <base64>` puts the decoded text on this
+  machine's clipboard through `navigator.clipboard.writeText`. This is how
+  Claude Code copies on a Linux host without xclip or wl-copy, and in its
+  fullscreen mode. Read queries (`?`) are never answered. The base64 length
+  is checked before decoding, and payloads over 1 MiB of text, invalid base64
+  and invalid UTF-8 are ignored. A clipboard rejection shows the Copy failed
+  toast, shown at most once per 5 s. Any program in a terminal can therefore replace the clipboard, as in
+  iTerm and kitty.
+- **Forced selection.** The terminal sets `macOptionClickForcesSelection`, so
+  Option+drag on macOS selects text while a program tracks the mouse.
+- **Remote input.** `src/renderer/p2p/input-queue.ts` sends a remote shell's
+  input one `shells.input` call at a time and merges input that arrives
+  meanwhile. Large pastes are split into frames of at most 256 KiB of UTF-8,
+  on code-point boundaries, because the host decodes each frame on its own.
+  A push that would take the not-yet-sent buffer over 4 MiB is refused.
+  Send and resize failures reach `RemoteShellHandle.onInputError`
+  (`src/renderer/p2p/remoteShellBridge.ts`), including input typed after the
+  remote stream has ended (host shutdown, revoked link, failed attach). Only
+  a close the user requested stays silent, and resizes after the stream ends
+  are dropped silently (a window resize is not user input). The shell tab shows one toast per
+  kind per 5 s, naming the host (`src/renderer/remote-toasts.ts`,
+  `src/renderer/toast-throttle.ts`, `REMOTE_INPUT_COPY`).
 
 ### Shell tab overlays
 
@@ -1108,6 +1190,25 @@ Rules:
 - A new notification for a shell closes the previous one. A PTY exit
   releases the shell's session and closes its notification, unless a
   respawn has already replaced that PTY.
+- **Fleet: the IDE instance in use gets the notice.** Before the local
+  rules run, `NoticeRouter` (`src/main/notifications/notice-router.ts`)
+  offers the notice to the paired machine that was used more recently
+  than this one. If one takes it, nothing is shown here. "Used" means
+  input while an IDE window was focused (`ActivityTracker`, sampled from
+  `powerMonitor.getSystemIdleTime()` every 5 s and on focus changes).
+  Focus alone does not count, because an unattended machine usually still
+  has its IDE in front. A viewer opens `notices.subscribe` on connect and
+  sends `presence.set { idleMs }` on connect, on focus changes and every
+  15 s; the age is converted to the host's clock on arrival, so the two
+  clocks need not agree. A tie, a viewer that never reported, and no
+  viewer at all keep the notice local.
+- The receiving machine (`src/main/notifications/fleet-notices.ts`)
+  applies its own two toggles, titles the notice
+  "<project> on <machine> — shell <n>", and holds it back while its
+  focused main window shows that remote shell (`p2p:viewing`, reported by
+  `RemoteProjectPane`). A click raises the window and opens that shell
+  (`p2p:focus-remote-shell`). The mobile app does not subscribe. The
+  generic "Command finished" notifier is not routed and stays local.
 
 ### Claude status dots
 

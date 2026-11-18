@@ -40,6 +40,8 @@ class FakeRelay {
   sessions = new Map<string, { host: FakeClient; viewer: FakeClient }>();
   seq = 0;
   codeSeq = 0;
+  /** As mrsignald does: one session per host, so a new request closes that host's previous session at both ends. */
+  supersede = false;
   sent: Array<{ from: string; env: Envelope }> = [];
 
   newClient(name: string, cfg: ClientCfg): FakeClient {
@@ -60,6 +62,15 @@ class FakeRelay {
       case 'session_request': {
         const host = d.code ? this.hosts.get(d.code) : undefined;
         if (!host || host.status !== 'connected') return deliver(from, { type: 'session_denied', data: { host: d.code, reason: 'host offline' } });
+        if (this.supersede) {
+          for (const [old, s] of [...this.sessions]) {
+            if (s.host !== host) continue;
+            this.sessions.delete(old);
+            const close = { type: 'session_close', data: { session: old, reason: 'superseded by a new connection' } };
+            deliver(s.host, close);
+            deliver(s.viewer, close);
+          }
+        }
         const session = `s${++this.seq}`;
         this.sessions.set(session, { host, viewer: from });
         deliver(host, { type: 'session_invite', data: { session, operator: 'op-1', requires_key: false, ice_servers: [], token } });
@@ -286,6 +297,93 @@ describe('pairing over the full stack', () => {
     expect((await host.p2p.api.fleetList())[0]).toMatchObject({ deviceId: idOf(viewer), name: 'Laptop' });
   });
 
+  test('two viewers of one host both stay connected when the relay supersedes the older session', async () => {
+    const relay = new FakeRelay();
+    relay.supersede = true;
+    const reg = new TransportRegistry();
+    const host = makeNode(relay, reg, 'host');
+    const laptop = makeNode(relay, reg, 'laptop');
+    const phone = makeNode(relay, reg, 'phone');
+    for (const n of [host, laptop, phone]) await n.p2p.start();
+    await laptop.p2p.api.setSettings({ serveEnabled: false });
+    await phone.p2p.api.setSettings({ serveEnabled: false });
+    expect((await pair(host, laptop)).result).toEqual({ ok: true });
+    expect((await pair(host, phone)).result).toEqual({ ok: true });
+
+    const dials = (n: Node) => n.clients.filter((c) => c.cfg.role === 'viewer').length;
+    await laptop.p2p.api.rpcCall(idOf(host), 'device.info', {});
+    const laptopDials = dials(laptop);
+    // The phone asks for the same host: the relay closes the laptop's session at both ends.
+    await phone.p2p.api.rpcCall(idOf(host), 'device.info', {});
+    const phoneDials = dials(phone);
+    await waitFor(() => relay.sent.length > 0 && [...relay.sessions.values()].length === 1);
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Neither link was torn down: both keep answering over the connection they already had.
+    for (let i = 0; i < 3; i++) {
+      await expect(laptop.p2p.api.rpcCall(idOf(host), 'device.info', {})).resolves.toBeDefined();
+      await expect(phone.p2p.api.rpcCall(idOf(host), 'device.info', {})).resolves.toBeDefined();
+    }
+    expect(dials(laptop)).toBe(laptopDials);
+    expect(dials(phone)).toBe(phoneDials);
+    expect((await host.p2p.api.fleetList()).every((d) => d.online)).toBe(true);
+  });
+
+  test('an agent notice goes to the paired machine in use, and stays on the host once the host is used again', async () => {
+    const relay = new FakeRelay();
+    const reg = new TransportRegistry();
+    const host = makeNode(relay, reg, 'host');
+    const notices: unknown[] = [];
+    let viewerIdle: number | null = 0;
+    const viewer = makeNode(relay, reg, 'viewer', { localIdleMs: () => viewerIdle, onNotice: (n) => notices.push(n) });
+    await host.p2p.start();
+    await viewer.p2p.start();
+    await host.p2p.api.setSettings({ deviceName: 'Tower' });
+    expect((await pair(host, viewer)).result).toEqual({ ok: true });
+    await viewer.p2p.api.rpcCall(idOf(host), 'device.info', {});
+
+    const notice = { kind: 'finished', projectId: 3, shellIndex: 1, projectName: 'api', body: 'Claude finished and is waiting for you' } as const;
+    const router = host.services.noticeRouter!;
+    // The host IDE has not been used in this run; the viewer subscribed on connect and reported it is in use.
+    await waitFor(() => router.route(notice));
+    await waitFor(() => notices.length >= 1);
+    expect(notices[0]).toEqual({ ...notice, deviceId: idOf(host), deviceName: 'Tower' });
+
+    // Someone sits down at the host: it was used after the viewer last reported.
+    await new Promise((r) => setTimeout(r, 5));
+    host.services.activity!.sample(true, 0, Date.now());
+    const before = notices.length;
+    expect(router.route(notice)).toBe(false);
+
+    // Back at the viewer: a focus change is reported at once, and the next notice follows.
+    await new Promise((r) => setTimeout(r, 5));
+    viewer.p2p.api.presenceChanged();
+    await waitFor(() => router.route(notice));
+    await waitFor(() => notices.length > before);
+
+    // A viewer that says it was never used is passed over.
+    viewerIdle = null;
+    viewer.p2p.api.presenceChanged();
+    await waitFor(() => !router.route(notice));
+
+    // A renderer cannot reach either method through the generic RPC bridge.
+    await expect(viewer.p2p.api.rpcCall(idOf(host), 'presence.set', { idleMs: 0 })).rejects.toThrow('unknown_method');
+    await expect(viewer.p2p.api.rpcCall(idOf(host), 'notices.subscribe', {})).rejects.toThrow('unknown_method');
+  });
+
+  test('a viewer given no activity source asks for no notices', async () => {
+    const relay = new FakeRelay();
+    const reg = new TransportRegistry();
+    const host = makeNode(relay, reg, 'host');
+    const viewer = makeNode(relay, reg, 'viewer');
+    await host.p2p.start();
+    await viewer.p2p.start();
+    expect((await pair(host, viewer)).result).toEqual({ ok: true });
+    await viewer.p2p.api.rpcCall(idOf(host), 'device.info', {});
+    await new Promise((r) => setTimeout(r, 30));
+    expect(host.services.noticeRouter!.route({ kind: 'finished', projectId: 1, shellIndex: 0, projectName: null, body: 'x' })).toBe(false);
+  });
+
   test('a viewer that does not serve still pairs; the host just has no code to dial back', async () => {
     const relay = new FakeRelay();
     const reg = new TransportRegistry();
@@ -297,6 +395,10 @@ describe('pairing over the full stack', () => {
     expect((await pair(host, viewer)).result).toEqual({ ok: true });
     await waitFor(() => known(host).length === 1);
     expect(known(host)[0]!.code).toBeUndefined();
+    // Nothing can dial it, so it is listed as a viewer (revocable) rather than a fleet machine.
+    expect(await host.p2p.api.fleetList()).toEqual([expect.objectContaining({ deviceId: idOf(viewer), name: 'Laptop', viewer: true })]);
+    // The machine it joined is dialable, so on its side that one is an ordinary fleet machine.
+    expect((await viewer.p2p.api.fleetList())[0]!.viewer).toBeUndefined();
   });
 
   test('the pair modal code is the host code: joining your own code is refused, unknown codes are denied by the relay', async () => {

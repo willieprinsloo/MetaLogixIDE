@@ -10,7 +10,7 @@ const WEB2: ShellKey = { projectId: 2, shellIndex: 2 };
 
 interface Shown { title: string; body: string; onClick: () => void; closed: boolean }
 
-function setup(opts: { supported?: boolean; viewing?: (s: ShellKey) => boolean } = {}) {
+function setup(opts: { supported?: boolean; viewing?: (s: ShellKey) => boolean; forward?: (s: ShellKey, n: { kind: string; body: string }) => boolean } = {}) {
   const shown: Shown[] = [];
   const toggles = { notify_claude_needs_input: true, notify_claude_finished: true };
   const deps = {
@@ -23,6 +23,7 @@ function setup(opts: { supported?: boolean; viewing?: (s: ShellKey) => boolean }
       }),
     },
     isViewing: vi.fn(opts.viewing ?? (() => false)),
+    forward: vi.fn(opts.forward ?? (() => false)),
     navigate: vi.fn(),
     settings: { get: vi.fn((k: keyof typeof toggles) => toggles[k]) },
     projectName: (id: number) => ({ 1: 'api', 2: 'web' } as Record<number, string>)[id] ?? null,
@@ -278,6 +279,34 @@ describe('ClaudeNotifier — shell exit (AC26)', () => {
     shown[0]!.closed = false;
     notifier.shellExited(API0);
     expect(shown[0]!.closed).toBe(false);
+  });
+});
+
+describe('the fleet\'s active IDE instance', () => {
+  it('a notice the fleet took is not shown here, whatever the local toggles and view say', () => {
+    const { notifier, shown, deps, toggles } = setup({ forward: () => true });
+    toggles.notify_claude_needs_input = false;
+    notifier.handle(notification(API0, 'permission_prompt', 'Allow Bash?'));
+    expect(shown).toEqual([]);
+    expect(deps.forward).toHaveBeenCalledWith(API0, { kind: 'needs-input', body: 'Allow Bash?' });
+    // The local view was not even consulted: the other machine decides with its own.
+    expect(deps.isViewing).not.toHaveBeenCalled();
+  });
+
+  it('a notice the fleet declined falls back to the local rules', () => {
+    const { notifier, shown, deps } = setup({ forward: () => false });
+    notifier.handle(notification(API0, 'permission_prompt'));
+    expect(deps.forward).toHaveBeenCalledTimes(1);
+    expect(shown).toHaveLength(1);
+  });
+
+  it('is offered the finished notice with its fixed body, and nothing for events that do not notify', () => {
+    const { notifier, deps } = setup({ forward: () => true });
+    notifier.handle(applied(API0, { hookEventName: 'Stop' }, 'busy', 'idle'));
+    expect(deps.forward).toHaveBeenLastCalledWith(API0, { kind: 'finished', body: 'Claude finished and is waiting for you' });
+    notifier.handle(applied(API0, { hookEventName: 'UserPromptSubmit' }, 'idle', 'busy'));
+    notifier.handle(notification(API0, 'idle_prompt'));
+    expect(deps.forward).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -1,13 +1,18 @@
 /**
- * Thin React wiring for dropping onto a terminal (AC1, AC16, AC19, AC20). It builds one
+ * Thin React wiring for dropping onto a terminal (AC1, AC16, AC19, AC20, AC-D1..D10). It builds one
  * `createTerminalDropController` with the real IPC, path, toast and overlay effects, attaches its
  * window dragend/drop reset for the component's lifetime, and exposes its handlers for the
  * terminal container. `paste` must be `term.paste`; behaviour lives in `terminal-drop-controller.ts`.
+ * With a `remote` target drops are planned by `planRemoteDropOn` (files sent to that host); the
+ * local deps are untouched (AC-L1).
  */
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { api } from '@renderer/api';
 import type { DropKind } from '@renderer/drag-hover';
 import { toast } from '@renderer/hooks/useToasts';
+import { planRemoteDropOn, type RemoteDropEffects } from '@renderer/remote-upload/remote-drop';
+import { uploadClient } from '@renderer/remote-upload/upload-client';
+import type { RemoteTarget } from '@renderer/remote-upload/useUploadProgress';
 import { planDrop, type DropDeps } from '@renderer/terminal-drop';
 import { createTerminalDropController } from '@renderer/terminal-drop-controller';
 import { pathStyleFor } from '@shared/shell-escape';
@@ -17,6 +22,8 @@ export interface TerminalDropOptions {
   paste(text: string): void;
   /** True while the shell has exited, so drops insert nothing (AC16). */
   isExited(): boolean;
+  /** Set on a remote terminal: files are sent to this host and its paths typed (AC-D1). */
+  remote?: RemoteTarget;
 }
 
 export interface TerminalDropHandlers {
@@ -36,6 +43,12 @@ const dropDeps: DropDeps<File> = {
   },
 };
 
+const remoteEffects: RemoteDropEffects = {
+  statAppFile: (payload) => uploadClient().statAppFile(payload),
+  confirm: (message) => window.confirm(message),
+  notify: dropDeps.notify,
+};
+
 /** Returns the overlay kind to render (null hides it) and the drag handlers for the terminal container. */
 export function useTerminalDrop(options: TerminalDropOptions): {
   overlay: DropKind | null;
@@ -47,7 +60,10 @@ export function useTerminalDrop(options: TerminalDropOptions): {
   const controller = useMemo(
     () =>
       createTerminalDropController<File>({
-        plan: (snapshot) => planDrop(snapshot, dropDeps),
+        plan: (snapshot) => {
+          const remote = optionsRef.current.remote;
+          return remote ? planRemoteDropOn(snapshot, remote, remoteEffects) : planDrop(snapshot, dropDeps);
+        },
         paste: (text) => optionsRef.current.paste(text),
         isExited: () => optionsRef.current.isExited(),
         setOverlay,

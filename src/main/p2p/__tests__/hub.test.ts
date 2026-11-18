@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, existsSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -18,7 +18,12 @@ import { runMigrations } from '../../db/migrator';
 import { RootsRepo } from '../../repos/roots-repo';
 import { ProjectsRepo } from '../../repos/projects-repo';
 import { waitFor } from './_mockRelay';
-import { ShellInfo } from '../../../shared/p2p-contract';
+import { NoticeRouter } from '../../notifications/notice-router';
+import { Notice, ShellInfo } from '../../../shared/p2p-contract';
+import { createDropStaging } from '../../drops/staging';
+import { createUploadQuota } from '../uploads';
+import { RpcError } from '../rpc';
+import { UPLOAD_CHUNK_MAX_B64_CHARS } from '../../../shared/remote-upload-contract';
 
 const MOCK = resolve(__dirname, '../../../../scripts/mock-claude.mjs');
 const migrationsDir = resolve(__dirname, '../../../../migrations');
@@ -29,21 +34,27 @@ let auditPath: string;
 let projects: ProjectsRepo;
 let pty: PtyManager;
 let projectId: number;
+let dropDir: string;
 
-function setup(extra: { agentStatus?: { list(): unknown[] } | null; auditMaxBytes?: number; events?: { aliveShellsChanged(): void; projectsChanged(): void } } = {}) {
+function setup(extra: { agentStatus?: { list(): unknown[] } | null; noticeRouter?: NoticeRouter; auditMaxBytes?: number; events?: { aliveShellsChanged(): void; projectsChanged(): void } } = {}) {
   const [ta, tb] = pairedTransports();
   const client = new RpcPeer(ta.asTransport());
   const server = new RpcPeer(tb.asTransport());
   client.on('error', () => {});
   server.on('error', () => {});
-  wireHub(server, {
+  const hub = wireHub(server, {
     remoteDeviceId: 'dev-xyz',
-    services: { projects, ptyManager: pty, ...('agentStatus' in extra ? { agentStatus: extra.agentStatus } : {}) } as never,
+    services: { projects, ptyManager: pty, dropStaging: staging(), ...('agentStatus' in extra ? { agentStatus: extra.agentStatus } : {}), ...(extra.noticeRouter ? { noticeRouter: extra.noticeRouter } : {}) } as never,
     auditLogPath: auditPath,
     auditMaxBytes: extra.auditMaxBytes,
     events: extra.events,
+    uploadQuota: createUploadQuota(),
   });
-  return { client, server };
+  return { client, server, hub };
+}
+
+function staging() {
+  return createDropStaging({ dir: dropDir, now: () => new Date(), uid: process.platform === 'win32' ? null : process.getuid!() });
 }
 
 const auditLines = () =>
@@ -56,6 +67,7 @@ beforeEach(() => {
   writeFileSync(join(projectRoot, 'a.txt'), 'hello file');
   mkdirSync(join(projectRoot, 'sub'));
   auditPath = join(dir, 'logs', 'p2p-audit.log');
+  dropDir = join(dir, 'drops');
   const db = openDb(join(dir, 'db'));
   runMigrations(db, migrationsDir);
   const root = new RootsRepo(db).add(dir);
@@ -290,6 +302,57 @@ describe('audit log', () => {
   });
 });
 
+describe('agent notices for the active IDE instance', () => {
+  const NOTICE = { kind: 'needs-input', projectId: 1, shellIndex: 0, projectName: 'p', body: 'Allow Bash?' } as const;
+  const until = async (cond: () => boolean) => { for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 5)); expect(cond()).toBe(true); };
+
+  test('a peer that subscribed and reported recent use receives the notice; closing the stream stops it', async () => {
+    const router = new NoticeRouter({ localIdleMs: () => null, now: () => Date.now() });
+    const { client } = setup({ noticeRouter: router });
+    const got: unknown[] = [];
+    const stream = client.openStream('notices.subscribe', {}, (d) => got.push(d));
+    await until(() => stream.stream !== undefined);
+    expect(router.route(NOTICE)).toBe(false); // subscribed, but has not said it is in use
+    await expect(client.call('presence.set', { idleMs: 0 })).resolves.toEqual({ ok: true });
+    expect(router.route(NOTICE)).toBe(true);
+    await until(() => got.length === 1);
+    expect(got[0]).toEqual(NOTICE);
+    expect(Notice.safeParse(got[0]).success).toBe(true);
+
+    stream.close();
+    await until(() => !router.route(NOTICE));
+  });
+
+  test('disposing the link ends its notice stream', async () => {
+    const router = new NoticeRouter({ localIdleMs: () => null, now: () => Date.now() });
+    const { client, hub } = setup({ noticeRouter: router });
+    let closed = false;
+    const stream = client.openStream('notices.subscribe', {}, () => {}, () => { closed = true; });
+    await until(() => stream.stream !== undefined);
+    await client.call('presence.set', { idleMs: 0 });
+    await hub.dispose();
+    expect(router.route(NOTICE)).toBe(false);
+    await until(() => closed);
+  });
+
+  test('presence.set rejects a negative or non-numeric age', async () => {
+    const { client } = setup({ noticeRouter: new NoticeRouter({ localIdleMs: () => null, now: () => Date.now() }) });
+    await expect(client.call('presence.set', { idleMs: -1 })).rejects.toMatchObject({ code: 'invalid_params' });
+    await expect(client.call('presence.set', { idleMs: 'now' } as never)).rejects.toMatchObject({ code: 'invalid_params' });
+    await expect(client.call('presence.set', { idleMs: null })).resolves.toEqual({ ok: true });
+  });
+
+  test('without a router, presence is accepted and the stream is refused', async () => {
+    const { client } = setup({});
+    await expect(client.call('presence.set', { idleMs: 0 })).resolves.toEqual({ ok: true });
+    const errors: Error[] = [];
+    client.on('error', (e: Error) => errors.push(e));
+    client.openStream('notices.subscribe', {}, () => {});
+    await until(() => errors.length === 1);
+    expect(errors[0]).toMatchObject({ code: 'unsupported' });
+  });
+});
+
 describe('shells.alive agent state', () => {
   const aliveRows = [
     { projectId: 1, shellIndex: 0, projectName: 'p', projectPath: '/p' },
@@ -314,10 +377,15 @@ describe('shells.alive agent state', () => {
     expect(rows.map((r) => r.agentState)).toEqual([null, 'busy', 'blocked']);
   });
 
+  test('carries the detected agent with the state, and null for a shell with none', async () => {
+    const rows = await alive({ agentStatus: { list: () => [{ projectId: 1, shellIndex: 1, agent: 'opencode', state: 'busy' }] } });
+    expect(rows.map((r) => r.agent)).toEqual([null, 'opencode', null]);
+  });
+
   test('leaves the field off when no tracker is installed', async () => {
     const rows = await alive({ agentStatus: null });
     expect(rows).toHaveLength(3);
-    for (const r of rows) expect(r).not.toHaveProperty('agentState');
+    for (const r of rows) { expect(r).not.toHaveProperty('agentState'); expect(r).not.toHaveProperty('agent'); }
   });
 
   test('leaves the field off when the services carry no tracker at all', async () => {
@@ -353,5 +421,127 @@ describe('ShellInfo contract', () => {
     expect(ShellInfo.safeParse({ projectId: 1, shellIndex: 0, agentState: null }).success).toBe(true);
     for (const v of ['idle', 'busy', 'blocked']) expect(ShellInfo.safeParse({ projectId: 1, shellIndex: 0, agentState: v }).success).toBe(true);
     expect(ShellInfo.safeParse({ projectId: 1, shellIndex: 0, agentState: 'weird' }).success).toBe(false);
+  });
+});
+
+describe('drops.upload* (AC-U1, AC-U10, B-S1, B-S6)', () => {
+  const b64 = (text: string) => Buffer.from(text).toString('base64');
+  const codeOf = async (p: Promise<unknown>) => p.then(() => 'resolved', (e: unknown) => (e instanceof RpcError ? e.code : String(e)));
+
+  test('begin, chunk and commit stage the bytes in the host drop folder and report the host platform', async () => {
+    const { client } = setup();
+    const { uploadId, chunkBytes } = await client.call('drops.uploadBegin', { name: 'notes.txt', mime: 'text/plain', size: 11, kind: 'file' });
+    expect(chunkBytes).toBeGreaterThan(0);
+    await expect(client.call('drops.uploadChunk', { uploadId, offset: 0, data: b64('hello ') })).resolves.toEqual({ received: 6 });
+    await client.call('drops.uploadChunk', { uploadId, offset: 6, data: b64('world') });
+    const { path, platform } = await client.call('drops.uploadCommit', { uploadId });
+    expect(platform).toBe(process.platform);
+    expect(path).toBe(join(staging().dir, 'notes.txt'));
+    expect(readFileSync(path, 'utf8')).toBe('hello world');
+  });
+
+  test('abort discards the partial file', async () => {
+    const { client } = setup();
+    const { uploadId } = await client.call('drops.uploadBegin', { name: 'a.bin', mime: '', size: 6, kind: 'file' });
+    await client.call('drops.uploadChunk', { uploadId, offset: 0, data: b64('abc') });
+    await expect(client.call('drops.uploadAbort', { uploadId })).resolves.toEqual({ ok: true });
+    expect(readdirSync(dropDir)).toEqual([]);
+  });
+
+  test.each([
+    ['an oversized chunk', 'drops.uploadChunk', { uploadId: 'x', offset: 0, data: 'A'.repeat(UPLOAD_CHUNK_MAX_B64_CHARS + 4) }],
+    ['an oversized name', 'drops.uploadBegin', { name: 'n'.repeat(1025), mime: '', size: 1, kind: 'file' }],
+    ['an oversized mime', 'drops.uploadBegin', { name: 'n', mime: 'm'.repeat(256), size: 1, kind: 'file' }],
+    ['a negative size', 'drops.uploadBegin', { name: 'n', mime: '', size: -1, kind: 'file' }],
+    ['a fractional size', 'drops.uploadBegin', { name: 'n', mime: '', size: 1.5, kind: 'file' }],
+    ['a size over 50 MB', 'drops.uploadBegin', { name: 'n', mime: '', size: 50 * 1024 * 1024 + 1, kind: 'file' }],
+    ['an unknown kind', 'drops.uploadBegin', { name: 'n', mime: '', size: 1, kind: 'dir' }],
+    ['a negative offset', 'drops.uploadChunk', { uploadId: 'x', offset: -1, data: '' }],
+    ['an oversized upload id', 'drops.uploadCommit', { uploadId: 'u'.repeat(65) }],
+  ])('rejects %s with invalid_params before any sink opens', async (_label, method, params) => {
+    const { client } = setup();
+    expect(await codeOf(client.call(method as never, params as never))).toBe('invalid_params');
+    expect(existsSync(dropDir)).toBe(false);
+  });
+
+  test('unknown begin fields are stripped, not stored or logged', async () => {
+    const { client } = setup();
+    await client.call('drops.uploadBegin', { name: 'a.txt', mime: 'text/plain', size: 0, kind: 'file', path: '/etc/evil' } as never);
+    expect(readFileSync(auditPath, 'utf8')).not.toContain('/etc/evil');
+  });
+
+  test('audit lines carry no base64 payload, a sanitised name, and one summary per upload', async () => {
+    const { client } = setup();
+    const payload = b64('top secret file body');
+    const { uploadId } = await client.call('drops.uploadBegin', { name: '../../etc/pass wd', mime: 'text/plain', size: 20, kind: 'file' });
+    await client.call('drops.uploadChunk', { uploadId, offset: 0, data: payload });
+    await client.call('drops.uploadCommit', { uploadId });
+    const raw = readFileSync(auditPath, 'utf8');
+    expect(raw).not.toContain(payload);
+    expect(raw).not.toContain('../');
+    const lines = auditLines();
+    const beginLine = lines.find((l) => l.method === 'drops.uploadBegin');
+    expect(beginLine.params).toMatchObject({ name: 'pass wd', size: 20, kind: 'file' });
+    const chunkLine = lines.find((l) => l.method === 'drops.uploadChunk');
+    expect(chunkLine.params).toEqual({ uploadId, offset: 0, data: `<${payload.length} b64 chars>` });
+    const summaries = lines.filter((l) => l.method === 'drops.upload');
+    expect(summaries).toEqual([
+      { ts: expect.any(Number), remoteDeviceId: 'dev-xyz', method: 'drops.upload', name: 'pass wd', size: 20, outcome: 'staged' },
+    ]);
+  });
+
+  test('an aborted upload is summarised with its reason', async () => {
+    const { client } = setup();
+    const { uploadId } = await client.call('drops.uploadBegin', { name: 'a.txt', mime: '', size: 2, kind: 'file' });
+    await client.call('drops.uploadChunk', { uploadId, offset: 0, data: b64('abc') }).catch(() => {});
+    expect(auditLines().filter((l) => l.method === 'drops.upload')).toMatchObject([{ name: 'a.txt', size: 2, outcome: 'aborted:overrun' }]);
+  });
+
+  test('scrubParams sanitises a begin name and hides chunk data even for odd shapes', () => {
+    expect(scrubParams('drops.uploadBegin', { name: 'x/../.hidden', mime: 'text/plain', size: 1, kind: 'file' })).toMatchObject({ name: 'hidden' });
+    expect(scrubParams('drops.uploadChunk', { uploadId: 'u', offset: 0, data: 'QUJD' })).toEqual({ uploadId: 'u', offset: 0, data: '<4 b64 chars>' });
+    expect(scrubParams('drops.uploadChunk', { uploadId: 'u', offset: 0, data: 7 })).toBeUndefined();
+  });
+
+  test('dispose aborts uploads in progress and leaves the drop folder empty (AC-U6)', async () => {
+    const { client, hub } = setup();
+    const { uploadId } = await client.call('drops.uploadBegin', { name: 'a.txt', mime: '', size: 6, kind: 'file' });
+    await client.call('drops.uploadChunk', { uploadId, offset: 0, data: b64('abc') });
+    await hub.dispose();
+    expect(readdirSync(dropDir)).toEqual([]);
+    expect(auditLines().filter((l) => l.method === 'drops.upload')).toMatchObject([{ outcome: 'aborted:link-closed' }]);
+  });
+
+  test('an upload id from another link is unknown here (B-S2)', async () => {
+    const a = setup();
+    const b = setup();
+    const { uploadId } = await a.client.call('drops.uploadBegin', { name: 'a.txt', mime: '', size: 3, kind: 'file' });
+    expect(await codeOf(b.client.call('drops.uploadChunk', { uploadId, offset: 0, data: b64('abc') }))).toBe('upload_unknown');
+    await expect(a.client.call('drops.uploadChunk', { uploadId, offset: 0, data: b64('abc') })).resolves.toEqual({ received: 3 });
+  });
+});
+
+describe('upload caps are host-wide across links (AC-U8)', () => {
+  test('two links from the same device share its four upload slots by default', async () => {
+    const link = (remoteDeviceId = 'dev-xyz') => {
+      const [ta, tb] = pairedTransports();
+      const client = new RpcPeer(ta.asTransport());
+      const server = new RpcPeer(tb.asTransport());
+      client.on('error', () => {});
+      server.on('error', () => {});
+      const hub = wireHub(server, { remoteDeviceId, services: { dropStaging: staging() } as never, auditLogPath: auditPath });
+      return { client, hub };
+    };
+    const a = link();
+    const b = link();
+    const begin = (c: RpcPeer) => c.call('drops.uploadBegin', { name: 'a.txt', mime: '', size: 1, kind: 'file' });
+    await Promise.all([begin(a.client), begin(a.client), begin(b.client), begin(b.client)]);
+    await expect(begin(b.client)).rejects.toMatchObject({ code: 'too_many_uploads' });
+    await expect(begin(a.client)).rejects.toMatchObject({ code: 'too_many_uploads' });
+    await a.hub.dispose();
+    await expect(begin(b.client)).resolves.toBeDefined();
+    const other = link('dev-other');
+    await expect(Promise.all([1, 2, 3, 4].map(() => begin(other.client)))).resolves.toHaveLength(4);
+    await Promise.all([b.hub.dispose(), other.hub.dispose()]);
   });
 });

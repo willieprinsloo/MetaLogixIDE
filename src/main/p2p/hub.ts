@@ -6,6 +6,8 @@ import { RpcMethods, type Params, type Result, type RpcMethodName } from '../../
 import type { Services } from '../services';
 import { emitAliveShellsChanged, emitProjectsChanged, handlers } from '../ipc/register';
 import { RpcError, type HandlerContext, type RpcPeer } from './rpc';
+import { safeFileName } from '../drops/file-name';
+import { createUploadQuota, createUploadService, type UploadOutcome, type UploadQuota } from './uploads';
 
 /*
  * Server-side RPC hub: one per peer/session. Methods call the same implementations the renderer
@@ -22,6 +24,17 @@ export interface HubOptions {
   auditMaxBytes?: number;
   /** Local-UI refresh hooks; default to the register.ts broadcasters. Injectable for tests. */
   events?: { aliveShellsChanged(): void; projectsChanged(): void };
+  /** Test knob; defaults to the one host-wide quota every link shares (AC-U8). */
+  uploadQuota?: UploadQuota;
+}
+
+/** The host's single upload quota: caps count across all links, not per link. */
+const hostUploadQuota = createUploadQuota();
+
+/** Returned by `wireHub`; the link owner calls `dispose` when the link closes. */
+export interface HubHandle {
+  /** Aborts this link's in-progress uploads so no partial file outlives it (AC-U6). */
+  dispose(): Promise<void>;
 }
 
 let defaultServices: Services | null = null;
@@ -54,6 +67,19 @@ function redact(v: unknown): unknown {
   return v;
 }
 
+type ParamScrubber = (p: Record<string, unknown>) => Record<string, unknown>;
+
+/** Per-method rewrites of payloads that would put user content in the audit log. */
+const PARAM_SCRUBBERS: ReadonlyMap<string, ParamScrubber> = new Map(Object.entries({
+  // Keystrokes may include passwords: log only the size.
+  'shells.input': ({ bytes, ...rest }) => ({ ...rest, bytes: typeof bytes === 'string' ? `<${bytes.length} b64 chars>` : undefined }),
+  'drops.uploadChunk': ({ data, ...rest }) => ({ ...rest, data: `<${String(data).length} b64 chars>` }),
+  'drops.uploadBegin': (p) => {
+    const { name, mime } = p as { name: string; mime: string };
+    return { ...p, name: safeFileName(name, mime, new Date()) };
+  },
+} satisfies Record<string, ParamScrubber>));
+
 /**
  * Audit-safe params: unknown fields are dropped by the method's schema (`.strip()`) and any
  * token/secret/password key is replaced. `keepUnknown` skips the strip (redaction only) and
@@ -68,11 +94,8 @@ export function scrubParams(method: string, params: unknown, opts: { keepUnknown
       .safeParse(params);
     p = parsed.success ? parsed.data : undefined;
   }
-  if (method === 'shells.input' && p && typeof p === 'object') {
-    // Keystrokes may include passwords: log only the size.
-    const { bytes, ...rest } = p as Record<string, unknown>;
-    p = { ...rest, bytes: typeof bytes === 'string' ? `<${bytes.length} b64 chars>` : undefined };
-  }
+  const scrub = PARAM_SCRUBBERS.get(method);
+  if (scrub && p && typeof p === 'object') p = scrub(p as Record<string, unknown>);
   return redact(p);
 }
 
@@ -206,7 +229,11 @@ function attachStream(
 
 // ---- wiring ----
 
-export function wireHub(peer: RpcPeer, opts: HubOptions): void {
+/**
+ * Registers every RPC method on `peer` for one link and returns the handle whose
+ * `dispose` must be called when that link closes.
+ */
+export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
   const s = opts.services ?? defaultServices;
   if (!s) throw new Error('wireHub: no services (pass opts.services or call setHubServices)');
   const audit = new AuditLog(opts.auditLogPath ?? defaultAuditLogPath(), opts.auditMaxBytes ?? AUDIT_MAX_BYTES);
@@ -258,8 +285,12 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): void {
   on('shells.alive', async () => {
     const { shells } = await handlers['shells:alive-list'](s, undefined as never);
     if (!s.agentStatus) return shells.map((r) => ({ ...r }));
-    const states = new Map(s.agentStatus.list().map((e) => [`${e.projectId}:${e.shellIndex}`, e.state]));
-    return shells.map((r) => ({ ...r, agentState: states.get(`${r.projectId}:${r.shellIndex}`) ?? null }));
+    const states = new Map(s.agentStatus.list().map((e) => [`${e.projectId}:${e.shellIndex}`, e]));
+    // `agent` lets the viewer label a tab by what runs in it now (a terminal where opencode was started).
+    return shells.map((r) => {
+      const e = states.get(`${r.projectId}:${r.shellIndex}`);
+      return { ...r, agentState: e?.state ?? null, agent: e?.agent ?? null };
+    });
   });
 
   // RpcError messages below are fixed strings, safe to send to the peer.
@@ -313,4 +344,31 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): void {
     if (buf.subarray(0, 8192).includes(0)) throw new RpcError('binary_file', 'binary files are not supported');
     return { content: buf.toString('utf8'), encoding: 'utf8' as const };
   });
+
+  // Agent notices for the IDE instance in use (src/main/notifications/notice-router.ts). The peer is
+  // eligible only while it holds a notices.subscribe stream; its presence reports say how recently it was used.
+  const noticePeer = s.noticeRouter?.register() ?? null;
+  on('presence.set', async ({ idleMs }) => {
+    noticePeer?.setIdle(idleMs);
+    return { ok: true } as const;
+  });
+  on('notices.subscribe', () => {
+    if (!noticePeer) throw new RpcError('unsupported', 'notices are not available');
+    return noticePeer.stream();
+  });
+
+  // Upload sessions are scoped to this link (B-S2); the caps are host-wide via the shared quota.
+  const uploads = createUploadService({
+    staging: s.dropStaging,
+    platform: process.platform,
+    quota: opts.uploadQuota ?? hostUploadQuota,
+    remoteDeviceId: opts.remoteDeviceId,
+    onOutcome: (o: UploadOutcome) => audit.write({ ts: Date.now(), remoteDeviceId: opts.remoteDeviceId, method: 'drops.upload', ...o }),
+  });
+  on('drops.uploadBegin', (p) => uploads.begin(p));
+  on('drops.uploadChunk', (p) => uploads.chunk(p));
+  on('drops.uploadCommit', (p) => uploads.commit(p));
+  on('drops.uploadAbort', (p) => uploads.abort(p));
+
+  return { dispose: async () => { noticePeer?.dispose(); await uploads.disposeAll(); } };
 }

@@ -311,3 +311,127 @@ describe('useExternalDragGuard wiring', () => {
     expect(later.defaultPrevented).toBe(false);
   });
 });
+
+const { createUploadTracker } = await import('@renderer/remote-upload/useUploadProgress');
+const { createUploadClient } = await import('@renderer/remote-upload/upload-client');
+const { REMOTE_UPLOAD_COPY } = await import('@shared/remote-upload-contract');
+
+describe('remote routing (AC-I1, AC-I5, AC-D1, AC-L1)', () => {
+  function remoteTarget() {
+    const client = createUploadClient({ invoke, on: () => () => undefined } as never);
+    return { deviceId: 'dev-1', hostName: 'tower', uploads: createUploadTracker({ client, newId: () => 'u1' }) };
+  }
+  const channels = () => invoke.mock.calls.map((c) => c[0]);
+
+  beforeEach(() => {
+    Object.assign(win, { confirm: vi.fn(() => true) });
+  });
+
+  it('a remote image paste uploads over p2p:upload, never stages locally, and types the host path', async () => {
+    invoke.mockResolvedValue({ kind: 'staged', path: 'C:\\d\\p 1.png', style: 'windows' });
+    const paste = vi.fn();
+    const ref = { current: new EventTarget() } as RefObject<HTMLElement>;
+    const pasteFromText = rt.render(() => useTerminalPaste(ref, paste, remoteTarget()));
+    await pasteFromText('');
+    expect(invoke).toHaveBeenCalledWith('p2p:upload', {
+      uploadId: 'u1',
+      deviceId: 'dev-1',
+      source: { kind: 'clipboard-image' },
+      confirmed: false,
+    });
+    expect(channels()).not.toContain('drops:stage-clipboard-image');
+    expect(paste).toHaveBeenCalledWith('"C:\\d\\p 1.png"');
+  });
+
+  it('a remote image paste failure toasts and types nothing', async () => {
+    invoke.mockResolvedValue({ kind: 'unsupported-host' });
+    const paste = vi.fn();
+    const ref = { current: new EventTarget() } as RefObject<HTMLElement>;
+    await rt.render(() => useTerminalPaste(ref, paste, remoteTarget()))('');
+    expect(toast).toHaveBeenCalledWith(REMOTE_UPLOAD_COPY.sendFailedTitle('tower'), {
+      kind: 'error',
+      detail: REMOTE_UPLOAD_COPY.oldHostDetail('tower'),
+    });
+    expect(paste).not.toHaveBeenCalled();
+  });
+
+  it('switching to remote keeps the same pasteFromText and routes by the latest target', async () => {
+    invoke.mockResolvedValue({ kind: 'staged', path: '/h/p.png', style: 'posix' });
+    const paste = vi.fn();
+    const ref = { current: new EventTarget() } as RefObject<HTMLElement>;
+    const first = rt.render(() => useTerminalPaste(ref, paste));
+    const second = rt.render(() => useTerminalPaste(ref, paste, remoteTarget()));
+    expect(second).toBe(first);
+    await first('');
+    expect(channels()).toEqual(['p2p:upload']);
+  });
+
+  it('switching back to local routes an image paste to local staging again', async () => {
+    invoke.mockResolvedValue({ kind: 'staged', path: '/v/p.png' });
+    const paste = vi.fn();
+    const ref = { current: new EventTarget() } as RefObject<HTMLElement>;
+    const first = rt.render(() => useTerminalPaste(ref, paste, remoteTarget()));
+    rt.render(() => useTerminalPaste(ref, paste));
+    await first('');
+    expect(channels()).toEqual(['drops:stage-clipboard-image']);
+  });
+
+  it('a remote file drop uploads the bytes and types only the host path, even with a viewer path', async () => {
+    invoke.mockResolvedValue({ kind: 'staged', path: '/h/a b', style: 'posix' });
+    const paste = vi.fn();
+    const first = rt.render(() => useTerminalDrop({ paste, isExited: () => false, remote: remoteTarget() }));
+    const f = { name: 'a b', type: 'text/plain', size: 1, path: '/Users/me/a b', arrayBuffer: async () => new ArrayBuffer(1) };
+    first.handlers.onDrop(drag(['Files'], {}, [f]));
+    await vi.waitFor(() => expect(paste).toHaveBeenCalledWith('/h/a\\ b'));
+    expect(channels()).toEqual(['p2p:upload']);
+    expect(invoke.mock.calls[0]?.[1]).toMatchObject({ deviceId: 'dev-1', confirmed: true, source: { kind: 'bytes', name: 'a b' } });
+  });
+
+  it('a remote Files-tree drop stats over drops:stat-app-file then uploads by reference', async () => {
+    invoke.mockImplementation(async (channel: string) =>
+      channel === 'drops:stat-app-file'
+        ? { kind: 'ok', name: 'a.ts', size: 4, isDirectory: false }
+        : { kind: 'staged', path: '/h/a.ts', style: 'posix' },
+    );
+    const paste = vi.fn();
+    const first = rt.render(() => useTerminalDrop({ paste, isExited: () => false, remote: remoteTarget() }));
+    const raw = JSON.stringify({ projectId: 2, relPath: 'src/a.ts' });
+    first.handlers.onDrop(drag(['application/x-metaide-file'], { 'application/x-metaide-file': raw }));
+    await vi.waitFor(() => expect(paste).toHaveBeenCalledWith('/h/a.ts'));
+    expect(channels()).toEqual(['drops:stat-app-file', 'p2p:upload']);
+  });
+
+  it('a large remote drop asks window.confirm and a decline sends nothing', async () => {
+    Object.assign(win, { confirm: vi.fn(() => false) });
+    const paste = vi.fn();
+    const first = rt.render(() => useTerminalDrop({ paste, isExited: () => false, remote: remoteTarget() }));
+    const big = { name: 'big', type: '', size: 11 * 1024 * 1024, arrayBuffer: async () => new ArrayBuffer(1) };
+    first.handlers.onDrop(drag(['Files'], {}, [big]));
+    await flush();
+    expect((win as unknown as { confirm: ReturnType<typeof vi.fn> }).confirm).toHaveBeenCalledTimes(1);
+    expect(invoke).not.toHaveBeenCalled();
+    expect(paste).not.toHaveBeenCalled();
+  });
+
+  it('a remote drop failure toasts naming the file', async () => {
+    invoke.mockResolvedValue({ kind: 'link-lost' });
+    const first = rt.render(() => useTerminalDrop({ paste: vi.fn(), isExited: () => false, remote: remoteTarget() }));
+    const f = { name: 'a', type: '', size: 1, arrayBuffer: async () => new ArrayBuffer(1) };
+    first.handlers.onDrop(drag(['Files'], {}, [f]));
+    await vi.waitFor(() =>
+      expect(toast).toHaveBeenCalledWith(REMOTE_UPLOAD_COPY.sendFileFailedTitle('a', 'tower'), {
+        kind: 'error',
+        detail: REMOTE_UPLOAD_COPY.linkLostDetail,
+      }),
+    );
+  });
+
+  it('without a remote target a file drop takes the local route and never uploads (AC-L1)', async () => {
+    const paste = vi.fn();
+    const first = rt.render(() => useTerminalDrop({ paste, isExited: () => false }));
+    first.handlers.onDrop(drag(['Files'], {}, [{ name: 'a', type: '', size: 1, path: '/a' }]));
+    await flush();
+    expect(paste).toHaveBeenCalledWith('/a');
+    expect(channels()).not.toContain('p2p:upload');
+  });
+});

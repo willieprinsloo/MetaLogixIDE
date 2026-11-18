@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import {
+  Notice,
   RpcMethods,
   type FleetEntry,
   type P2PSettings,
@@ -14,7 +15,8 @@ import { Secret, SignalingTypes, type Envelope } from '../../shared/signaling-wi
 import { runMigrations } from '../db/migrator';
 import { emitAliveShellsChanged, emitProjectsChanged } from '../ipc/register';
 import type { Services } from '../services';
-import { wireHub, setHubServices } from './hub';
+import { wireHub, setHubServices, type HubHandle } from './hub';
+import { createUploadClient, uploadClientDeps, type UploadClient } from './upload-client';
 import {
   addKnownDevice,
   canonicalPubHex,
@@ -23,6 +25,7 @@ import {
   loadOrCreateDeviceKey,
   removeKnownDevice,
   CONNECT_CODE_RE,
+  isViewerOnly,
   type DeviceKey,
 } from './identity';
 import { loadHostIdentity, saveHostIdentity, type HostIdentity } from './host-identity';
@@ -55,7 +58,8 @@ import type { P2PApi, PairRedeemResult } from './types';
  * the host treats the next invite that arrives while a window is open as the pairing session (a trusted peer
  * connecting in that window fails its handshake and costs one attempt; acceptable for a 5 min user-initiated window).
  * Noise prologue = SHA-256(code, session id). After Noise, both sides swap `{hello: name, code: <own host code>}` so each
- * stores the other's pub key AND the code needed to dial it later.
+ * stores the other's pub key AND the code needed to dial it later. The mobile app sends `{hello, viewer: true}` and no
+ * code: it is trusted to connect in, but `fleet()` flags it `viewer` so the fleet views leave it out.
  *
  * ---- Handshake contract (pendingMessages) ----
  * `doNoiseXxHandshake` returns `pendingMessages`: encrypted frames the peer sent after message 3 but
@@ -66,6 +70,11 @@ import type { P2PApi, PairRedeemResult } from './types';
  *
  * ---- Relay wire facts (verified against mrsignald, see tests/live integration) ----
  * - Session tokens are opaque hex strings; ice servers arrive as `ice_servers` (snake_case); session_denied has no session.
+ * - The relay keeps ONE signalling session per host: a new `session_request` for a host closes the previous session
+ *   with `session_close{reason: "superseded by a new connection"}`, sent to both of its ends. That is about the relay's
+ *   bookkeeping only; the WebRTC link negotiated over the old session is unaffected. So once a link's secure channel
+ *   is up, a relay `session_close` no longer ends it (see `relayClosed`): otherwise two viewers of one host would
+ *   take turns knocking each other off for ever. The data channel closing is what ends an established link.
  * - Fleet `online` heuristic (the relay's /presence endpoint is localhost-only, so not usable from clients):
  *   a device is online if a live session to/from it exists, or if the host connection is up and we completed a
  *   session with it (pairing or connect) within the last 60 s (ONLINE_GRACE_MS). Session end clears it.
@@ -76,6 +85,8 @@ const PAIR_EXCHANGE_TIMEOUT_MS = 5_000;
 const CONNECT_TIMEOUT_MS = 10_000;
 /** See header: how long a completed session counts as proof the peer is reachable. */
 export const ONLINE_GRACE_MS = 60_000;
+/** How often a viewer tells its hosts how recently this IDE was used (also sent on connect and on focus changes). */
+export const PRESENCE_MS = 15_000;
 /** How often the app re-dials trusted devices that have no live link (restart of either side, dropped link). */
 export const AUTO_DIAL_MS = 15_000;
 /** Ceiling for the per-device back-off while a peer stays unreachable. */
@@ -84,7 +95,7 @@ const DC_LABEL = 'metaide';
 /** Must match the message peerEngine emits when it rejects a data channel. */
 const CHANNEL_NOT_RELIABLE_MSG = 'data channel must be ordered and reliable';
 
-type EmitFn = <E extends 'p2p:rpc-event'>(channel: E, payload: IpcEvents[E]) => void;
+type EmitFn = <E extends 'p2p:rpc-event' | 'p2p:upload-progress'>(channel: E, payload: IpcEvents[E]) => void;
 
 /** The slice of McClient the lifecycle uses; tests supply a double. */
 export interface SignalingClient extends EventEmitter {
@@ -129,6 +140,13 @@ export interface StartP2POpts {
    * that are already online).
    */
   autoDialMs?: number;
+  /**
+   * Milliseconds since this machine's IDE was last used, null if never. Reported to every connected host so
+   * each can send its agent notices to the IDE instance in use. Unset: nothing is reported and no notices arrive.
+   */
+  localIdleMs?: () => number | null;
+  /** A host chose this machine for an agent notice. `deviceName` is the name it was paired under. */
+  onNotice?: (notice: Notice & { deviceId: string; deviceName: string }) => void;
 }
 
 /** Lifetime granted to an opaque relay token (mrsignald's tokens carry no timestamps). */
@@ -176,7 +194,11 @@ interface Link {
   expectedDevice?: string;
   remoteDevice?: string;
   rpc?: RpcPeer;
+  /** Host links: the hub, disposed with the link so its partial uploads are discarded (AC-U6). */
+  hub?: HubHandle;
   secure?: SecureTransport;
+  /** Why the peer said it is closing (`revoked`, `shutdown`, ...), heard over the relay after the link was up. */
+  peerCloseReason?: string;
   handshakeStarted: boolean;
   closed: boolean;
   timer: NodeJS.Timeout | null;
@@ -217,6 +239,8 @@ class P2PRuntime {
   #dialTimer: NodeJS.Timeout | null = null;
   /** Auto-dial back-off per device id: earliest next attempt and the delay that produced it. */
   readonly #dialBackoff = new Map<string, { next: number; delay: number }>();
+  /** Viewer-side uploads to paired hosts (`p2p:upload`). */
+  readonly uploads: UploadClient;
 
   constructor(readonly services: Services, readonly opts: StartP2POpts) {
     this.home = opts.homeDir ?? services.homeDir;
@@ -225,6 +249,14 @@ class P2PRuntime {
     this.hostIdentity = loadHostIdentity(this.identityPath);
     this.deviceKey = loadOrCreateDeviceKey(join(this.home, '.metaide', 'device.key'));
     this.pairing = new PairingSession({ maxAttempts: opts.pairingMaxAttempts, now: opts.now });
+    this.uploads = createUploadClient(uploadClientDeps(
+      services,
+      async (deviceId, method, params) => {
+        const id = canonicalPubHex(deviceId);
+        return this.#callWithReconnect(id, await this.ensureConn(id), method, params as never) as never;
+      },
+      (e) => this.opts.emit?.('p2p:upload-progress', e),
+    ));
   }
 
   nowMs(): number {
@@ -392,7 +424,8 @@ class P2PRuntime {
     const d = (env.data ?? {}) as { session?: string; token?: unknown; ice_servers?: unknown; iceServers?: unknown };
     if (env.type === SignalingTypes.SessionInvite) return this.onInvite(env, d);
     const link = d.session ? this.links.get(d.session) : undefined;
-    if (link && link.role === 'host') this.run(link, link.session.onInbound(env));
+    if (!link || link.role !== 'host' || this.relayClosed(link, env)) return;
+    this.run(link, link.session.onInbound(env));
   }
 
   /** A viewer connection serves exactly one link. */
@@ -404,8 +437,20 @@ class P2PRuntime {
       case SignalingTypes.SessionDenied: return this.run(link, link.session.onInbound(env));
       default:
         // After the grant, only this session's messages are meaningful.
-        if (d.session && d.session === link.sessionId) this.run(link, link.session.onInbound(env));
+        if (d.session && d.session === link.sessionId && !this.relayClosed(link, env)) this.run(link, link.session.onInbound(env));
     }
+  }
+
+  /**
+   * True when `env` is a `session_close` for a link whose secure channel is already up, which must not end the
+   * link (see the header: the relay closes a host's previous session whenever a new viewer asks for one). A peer
+   * that really is leaving closes the data channel too; its stated reason is kept for that moment.
+   */
+  relayClosed(link: Link, env: Envelope): boolean {
+    if (env.type !== SignalingTypes.SessionClose || !link.secure || link.closed) return false;
+    const reason = (env.data as { reason?: unknown } | undefined)?.reason;
+    if (typeof reason === 'string' && reason && !/^superseded\b/i.test(reason)) link.peerCloseReason = reason.slice(0, 64);
+    return true;
   }
 
   #withToken(env: Envelope, d: { token?: unknown }): Envelope | null {
@@ -475,7 +520,7 @@ class P2PRuntime {
     t.on('close', () => {
       // Mid-handshake the Noise mailbox observes the close and rejects with the precise reason.
       if (link.handshakeStarted && !link.secure) return;
-      this.finishLink(link, 'transport_closed');
+      this.finishLink(link, link.peerCloseReason ?? 'transport_closed');
     });
     t.on('error', (e: Error) => {
       // The engine rejects unordered/unreliable channels with this error; do not wait for the 30 s negotiation timeout.
@@ -578,7 +623,7 @@ class P2PRuntime {
     }
     const rpc = new RpcPeer(secure.asRpcTransport());
     rpc.on('error', () => { /* audited in the hub; channel stays up */ });
-    wireHub(rpc, {
+    link.hub = wireHub(rpc, {
       remoteDeviceId: remote,
       services: this.services,
       auditLogPath: this.opts.auditLogPath ?? join(this.home, '.metaide', 'logs', 'p2p-audit.log'),
@@ -618,7 +663,44 @@ class P2PRuntime {
     this.lastOkAt.set(remote, this.nowMs());
     this.touchDevice(remote);
     secure.start();
+    this.subscribeNotices(remote, rpc);
     link.settle?.({ ok: true });
+  }
+
+  /**
+   * Asks the host for its agent notices and tells it how recently this IDE was used. An older host knows
+   * neither method: the stream open is refused and the report fails, both silently.
+   */
+  subscribeNotices(deviceId: string, rpc: RpcPeer): void {
+    if (!this.opts.onNotice || !this.opts.localIdleMs) return;
+    try {
+      rpc.openStream('notices.subscribe', {}, (data) => {
+        const n = Notice.safeParse(data);
+        if (!n.success) return;
+        const deviceName = loadKnownDevices(this.knownPath).find((d) => d.pub === deviceId)?.name ?? deviceId.slice(0, 8);
+        this.opts.onNotice?.({ ...n.data, deviceId, deviceName });
+      });
+    } catch { /* link already closing */ }
+    this.reportPresenceTo(rpc);
+  }
+
+  reportPresenceTo(rpc: RpcPeer): void {
+    const idle = this.opts.localIdleMs?.();
+    if (idle === undefined) return;
+    rpc.call('presence.set', { idleMs: idle }).catch(() => { /* older host, or the link is going away */ });
+  }
+
+  /** Tells every connected host how recently this IDE was used. */
+  reportPresence(): void {
+    if (this.#stopped || !this.opts.localIdleMs) return;
+    for (const { rpc } of this.conns.values()) this.reportPresenceTo(rpc);
+  }
+
+  #presenceTimer: NodeJS.Timeout | null = null;
+  startPresence(): void {
+    if (!this.opts.localIdleMs || !this.opts.onNotice || this.#presenceTimer) return;
+    this.#presenceTimer = setInterval(() => this.reportPresence(), PRESENCE_MS);
+    this.#presenceTimer.unref?.();
   }
 
   /**
@@ -633,14 +715,16 @@ class P2PRuntime {
         clearTimeout(timer);
         let name = '';
         let code: string | undefined;
+        let viewer = false;
         try {
-          const j = JSON.parse(new TextDecoder().decode(m)) as { hello?: unknown; code?: unknown };
+          const j = JSON.parse(new TextDecoder().decode(m)) as { hello?: unknown; code?: unknown; viewer?: unknown };
           name = String(j.hello ?? '');
           if (typeof j.code === 'string' && CONNECT_CODE_RE.test(j.code)) code = j.code;
+          viewer = j.viewer === true; // the mobile app: connects in, never serves
         } catch { /* ignore */ }
         name = name.slice(0, 80) || remote.slice(0, 8);
         try {
-          addKnownDevice(remote, name, this.knownPath, Date.now(), code ?? fallbackCode);
+          addKnownDevice(remote, name, this.knownPath, Date.now(), code ?? fallbackCode, viewer);
           this.recordDevice(remote, name);
           resolve(name);
         } catch (e) {
@@ -682,6 +766,7 @@ class P2PRuntime {
       }
     }
     link.settle?.({ ok: false, error: reason });
+    link.hub?.dispose().catch(() => { /* best effort: the idle timeout backstops it */ });
     try { link.rpc?.close(); } catch { /* already closed */ }
     try { link.secure?.close(); } catch { /* already closed */ }
     try { link.transport?.close(); } catch { /* already closed */ }
@@ -754,6 +839,8 @@ class P2PRuntime {
 
   async rpcCall(deviceId: string, method: string, params: unknown): Promise<unknown> {
     if (!Object.prototype.hasOwnProperty.call(RpcMethods, method)) throw new Error(`unknown_method: ${method}`);
+    // Presence and the notice stream belong to the main process; a renderer has no business faking either.
+    if (method === 'presence.set' || method === 'notices.subscribe') throw new Error(`unknown_method: ${method}`);
     const id = canonicalPubHex(deviceId);
     const rpc = await this.ensureConn(id);
     if (method === 'shells.attach') {
@@ -874,12 +961,14 @@ class P2PRuntime {
       name: d.name,
       online: this.isOnline(d.pub),
       lastSeenAt: seen.get(d.pub) ?? null,
+      ...(isViewerOnly(d) ? { viewer: true } : {}),
     }));
   }
 
   async stop(): Promise<void> {
     this.#stopped = true;
     if (this.#dialTimer) { clearInterval(this.#dialTimer); this.#dialTimer = null; }
+    if (this.#presenceTimer) { clearInterval(this.#presenceTimer); this.#presenceTimer = null; }
     for (const l of [...this.allLinks]) this.finishLink(l, 'shutdown');
     for (const s of this.streams.values()) s.handle.close();
     this.streams.clear();
@@ -916,6 +1005,9 @@ export function createP2P(services: Services, opts: StartP2POpts = {}): P2PHandl
       const s = need().streams.get(streamId);
       if (s) { need().streams.delete(streamId); s.handle.close(); }
     },
+    presenceChanged: () => rt?.reportPresence(),
+    upload: (req) => (rt ? rt.uploads.upload(req) : Promise.resolve({ kind: 'failed', reason: 'p2p_not_started' })),
+    cancelUpload: (uploadId) => rt?.uploads.cancel(uploadId),
   };
   return {
     api,
@@ -929,6 +1021,7 @@ export function createP2P(services: Services, opts: StartP2POpts = {}): P2PHandl
       services.p2p = { deviceKey: r.deviceKey, pairing: r.pairing, knownDevicesPath: r.knownPath, api };
       await r.startClientIfServing();
       r.startAutoDial();
+      r.startPresence();
     },
     async stop() {
       const r = rt;

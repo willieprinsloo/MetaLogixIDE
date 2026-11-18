@@ -1,4 +1,4 @@
-import { app, BrowserWindow, crashReporter, ipcMain, Menu, Notification, powerSaveBlocker, screen, shell } from 'electron';
+import { app, BrowserWindow, crashReporter, ipcMain, Menu, Notification, powerMonitor, powerSaveBlocker, screen, shell } from 'electron';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
@@ -13,6 +13,7 @@ import { installKeepAwake } from './keep-awake/install';
 import { registerIpc, rememberResumableHarness } from './ipc/register';
 import { buildAppMenu } from './menu';
 import { installClaudeNotifications } from './notifications/install';
+import { installFleetNotices } from './notifications/fleet-notices';
 import { installAgentStatus } from './agent-status/install';
 import { createHookFanout } from './claude-hooks/hook-fanout';
 import { wireActivityLog } from './activity/wire';
@@ -416,6 +417,24 @@ function registerMainIpc(services: Services): void {
   });
 }
 
+/** How often this machine's use is sampled between focus changes. */
+const ACTIVITY_SAMPLE_MS = 5_000;
+
+/**
+ * Feeds the activity tracker: input counts as use of the IDE only while one of its windows is focused.
+ * Focus changes are sampled at once and passed to connected hosts, so notices follow the user between machines.
+ */
+function trackActivity(services: Services): void {
+  const sample = (focused: boolean): void => {
+    services.activity?.sample(focused, powerMonitor.getSystemIdleTime() * 1000, Date.now());
+  };
+  const timer = setInterval(() => sample(BrowserWindow.getFocusedWindow() !== null), ACTIVITY_SAMPLE_MS);
+  timer.unref();
+  app.on('browser-window-focus', () => { sample(true); services.p2p?.api.presenceChanged(); });
+  // The window that just lost focus was in use until now.
+  app.on('browser-window-blur', () => { sample(true); services.p2p?.api.presenceChanged(); });
+}
+
 /** Wires Claude hook events to OS notifications and the project activity log, resolving target windows from this module's state. */
 function installNotifications(services: Services): void {
   // One fanout feeds BOTH the notifier and the activity log. Receiver.onHook
@@ -437,6 +456,14 @@ function installNotifications(services: Services): void {
       focused: () => BrowserWindow.getFocusedWindow(),
     },
     broadcast,
+    // The fleet's most recently used IDE instance gets the notice; false keeps it on this machine.
+    forwardToFleet: (shell, notice) => services.noticeRouter?.route({
+      kind: notice.kind,
+      body: notice.body,
+      projectId: shell.projectId,
+      shellIndex: shell.shellIndex,
+      projectName: services.projects.get(shell.projectId)?.name.slice(0, 200) ?? null,
+    }) ?? false,
   });
   wireActivityLog({
     hooks,
@@ -509,7 +536,19 @@ async function startApp(): Promise<void> {
   // projects stop serving immediately.
   handleMetafileProtocol((id) => services.projects.get(id)?.path ?? null);
   // P2P needs the IPC broadcaster (rpc stream events) and must never block or fail app startup.
-  void startP2P(services, { emit: broadcast }).catch((err: unknown) => log.warn('[p2p] start failed', err));
+  const fleetNotices = installFleetNotices({
+    viewing: services.remoteViewing!,
+    settings: services.settings,
+    notificationClass: Notification,
+    windows: { main: () => mainWindow, focused: () => BrowserWindow.getFocusedWindow() },
+    broadcast,
+  });
+  trackActivity(services);
+  void startP2P(services, {
+    emit: broadcast,
+    localIdleMs: () => services.activity!.idleMs(Date.now()),
+    onNotice: (notice) => fleetNotices.handle(notice),
+  }).catch((err: unknown) => log.warn('[p2p] start failed', err));
   installNotifications(services);
   await openMainWindow(services);
   const donePoll = startCommandDoneNotifier(services);

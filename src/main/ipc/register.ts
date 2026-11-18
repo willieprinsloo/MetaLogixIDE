@@ -33,6 +33,7 @@ import {
   resolveTerminalWeights,
 } from '@shared/terminal-font-weight';
 import { parseViewedShells } from '@main/notifications/viewed-shells';
+import { parseRemoteViewing } from '@main/notifications/fleet-notices';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, renameSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -937,6 +938,12 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     return { ok: true } as const;
   },
 
+  // Renderer-supplied view data: validated here; a forged view can at worst hold back the user's own fleet notices.
+  'p2p:viewing': async (s, req) => {
+    s.remoteViewing?.set(parseRemoteViewing(req));
+    return { ok: true } as const;
+  },
+
   'windows:popout-shell': async () => {
     throw new Error('windows:popout-shell requires WindowHooks — see registerIpc');
   },
@@ -1437,6 +1444,8 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'p2p:reconnect-device':   async (s, { deviceId }) => { await p2pApi(s).reconnectDevice(deviceId); return { ok: true } as const; },
   'p2p:rpc-call':           async (s, { deviceId, method, params }) => ({ result: await p2pApi(s).rpcCall(deviceId, method, params ?? {}) }),
   'p2p:rpc-close-stream':   async (s, { streamId }) => { p2pApi(s).rpcCloseStream(streamId); return { ok: true } as const; },
+  'p2p:upload':             async (s, req) => (s.p2p ? s.p2p.api.upload(req) : { kind: 'failed', reason: 'p2p_not_started' }),
+  'p2p:upload-cancel':      async (s, req) => { if (typeof req?.uploadId === 'string') s.p2p?.api.cancelUpload(req.uploadId); return { ok: true } as const; },
 
   /* ─── Prompt library ─── */
   'prompts:list':   async (s, { projectId }) => ({ prompts: s.prompts.list(projectId) }),

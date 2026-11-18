@@ -222,3 +222,50 @@ describe('overlay (behaviour 6, AC19, AC20)', () => {
     expect(current()).toBe('path');
   });
 });
+
+describe('directory flag (AC-D9, AC-D10)', () => {
+  const entryItem = (isDirectory: boolean | null, kind = 'file') => ({
+    kind,
+    webkitGetAsEntry: vi.fn(() => (isDirectory === null ? null : { isDirectory })),
+  });
+
+  it('snapshots isDirectory per file from webkitGetAsEntry, in file order', async () => {
+    const { controller, deps } = setup();
+    const e = dragEvent(['Files'], {}, [blob, blob, blob]);
+    const items = [entryItem(false), entryItem(true, 'file'), entryItem(null)];
+    Object.assign(e.dataTransfer, { items });
+    await controller.drop(e);
+    expect(deps.plan).toHaveBeenCalledWith(
+      expect.objectContaining({ isDirectory: [false, true, false] }),
+    );
+  });
+
+  it('skips non-file items so flags line up with files', async () => {
+    const { controller, deps } = setup();
+    const e = dragEvent(['Files', 'text/plain'], { 'text/plain': 't' }, [blob]);
+    Object.assign(e.dataTransfer, { items: [entryItem(true, 'string'), entryItem(true)] });
+    await controller.drop(e);
+    expect(deps.plan).toHaveBeenCalledWith(expect.objectContaining({ isDirectory: [true] }));
+  });
+
+  it('reads the entries synchronously, before the planner is awaited', async () => {
+    let resolvePlan: (v: string | null) => void = () => undefined;
+    const plan = vi.fn(() => new Promise<string | null>((r) => { resolvePlan = r; }));
+    const { controller } = setup({ plan });
+    const item = entryItem(true);
+    const e = dragEvent(['Files'], {}, [blob]);
+    Object.assign(e.dataTransfer, { items: [item] });
+    const done = controller.drop(e);
+    expect(item.webkitGetAsEntry).toHaveBeenCalledTimes(1);
+    resolvePlan(null);
+    await done;
+  });
+
+  it('a transfer without items or entry support yields all false', async () => {
+    const { controller, deps } = setup();
+    const e = dragEvent(['Files'], {}, [blob]);
+    Object.assign(e.dataTransfer, { items: [{ kind: 'file' }] });
+    await controller.drop(e);
+    expect(deps.plan).toHaveBeenCalledWith(expect.objectContaining({ isDirectory: [false] }));
+  });
+});

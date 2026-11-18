@@ -216,6 +216,19 @@ describe('useMachineSwitcher', () => {
     expect(result.current.shellsFor('nope')).toBe(result.current.shellsFor(LOCAL_MACHINE_ID));
   });
 
+  test('statesFor gives a peer\'s per-project agent states and shells exposes the poll map, both stable for unknown machines (AC42)', async () => {
+    fleetReplies = [{ fleet: [TOWER] }];
+    shells.tower = async () => ({ result: [{ projectId: 4, shellIndex: 0, agentState: 'busy' }, { projectId: 7, shellIndex: 1 }] });
+    const { result } = renderHook(() => useMachineSwitcher());
+    await flush();
+    await flush();
+    expect(result.current.statesFor('tower')).toEqual(new Map([[4, 'busy'], [7, 'idle']]));
+    expect(result.current.statesFor('nope').size).toBe(0);
+    expect(result.current.statesFor('nope')).toBe(result.current.statesFor(LOCAL_MACHINE_ID));
+    expect([...result.current.shells.keys()]).toEqual(['tower']);
+    expect(result.current.shells.get('tower')!.projectStates).toBe(result.current.statesFor('tower'));
+  });
+
   test('machines keeps its reference across fleet and shells polls that change nothing', async () => {
     fleetReplies = [{ fleet: [TOWER] }, { fleet: [{ ...TOWER }] }, { fleet: [{ ...TOWER }] }];
     shells.tower = async () => ({ result: [{ projectId: 4, shellIndex: 0, agentState: 'idle' }] });

@@ -14,7 +14,6 @@ export interface RemoteFolder { root: Root; projects: Project[] }
 
 /** A remote machine's list; `projects` is null when the machine has no projects at all. */
 export interface RemoteSections {
-  inUse: Project[];
   recents: Project[];
   projects: { folders: RemoteFolder[]; orphans: Project[] } | null;
 }
@@ -103,20 +102,20 @@ function sanitise(p: Project): Project {
   return name === p.name && lastOpenedAt === p.lastOpenedAt ? p : { ...p, name, lastOpenedAt };
 }
 
-function recentsOf(projects: Project[], aliveIds: ReadonlySet<number>, filter: string): Project[] {
+function recentsOf(projects: Project[], inUseIds: ReadonlySet<number>, filter: string): Project[] {
   const opened = projects
-    .filter((p) => !aliveIds.has(p.id) && p.lastOpenedAt)
+    .filter((p) => !inUseIds.has(p.id) && p.lastOpenedAt)
     .sort((a, b) => (b.lastOpenedAt ?? '').localeCompare(a.lastOpenedAt ?? ''));
   return filter ? filterByName(opened, filter) : opened.slice(0, RECENTS_CAP);
 }
 
 /**
- * A remote machine's sections (AC16, AC19): In use (live shells), Recents (newest first, minus In
- * use, capped at 6 only without a filter), folders per root with empty ones dropped, and projects
- * with no matching root as orphans. Untrusted rows with a non-string name render as an empty name.
+ * A remote machine's sections (AC16, AC19, AC36): Recents (newest first, minus `inUseIds`, the
+ * projects the shared In use section shows; capped at 6 only without a filter), folders per root with empty ones
+ * dropped, and projects with no matching root as orphans. Untrusted rows with a non-string name render as an empty name.
  */
 export function remoteSections(
-  rows: readonly Project[], roots: readonly Root[], aliveIds: ReadonlySet<number>, filter: string,
+  rows: readonly Project[], roots: readonly Root[], inUseIds: ReadonlySet<number>, filter: string,
 ): RemoteSections {
   const all = rows.map(sanitise);
   const shown = filterByName(all, filter);
@@ -125,8 +124,7 @@ export function remoteSections(
     .map((root) => ({ root, projects: shown.filter((p) => p.rootId === root.id) }))
     .filter((f) => f.projects.length > 0);
   return {
-    inUse: shown.filter((p) => aliveIds.has(p.id)),
-    recents: recentsOf(all, aliveIds, filter),
+    recents: recentsOf(all, inUseIds, filter),
     projects: all.length > 0 ? { folders, orphans: shown.filter((p) => !rootIds.has(p.rootId)) } : null,
   };
 }
@@ -174,8 +172,12 @@ export function switcherLayout(s: { machines: readonly MachineDot[]; active: Mac
   };
 }
 
-/** One peer's latest `shells.alive` result: its live project ids and its overall agent state. */
-export interface PeerShells { aliveProjectIds: ReadonlySet<number>; agentState: AgentState | null }
+/** One peer's latest `shells.alive` result: its live project ids, its overall agent state, and each live project's worst state (AC42; a shell with no agent counts as idle). */
+export interface PeerShells {
+  aliveProjectIds: ReadonlySet<number>;
+  agentState: AgentState | null;
+  projectStates: ReadonlyMap<number, AgentState>;
+}
 
 /** The dots with their agent state (AC34): this machine takes `localState`, an online peer its polled state, anything else null. */
 export function withAgentStates(

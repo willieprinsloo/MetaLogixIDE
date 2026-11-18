@@ -24,6 +24,25 @@ describe('useFleet', () => {
     expect(invoke).toHaveBeenCalledWith('p2p:fleet-list', undefined);
   });
 
+  test('a viewer-only device is a paired device but not a fleet machine', async () => {
+    const phone = { deviceId: 'phone', name: 'iPhone', online: true, lastSeenAt: 2, viewer: true };
+    invoke.mockResolvedValue({ fleet: [...FLEET, phone] });
+    const { result } = renderHook(() => useFleet());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.machines.map((m) => m.deviceId)).toEqual(['laptop', 'tower']);
+    expect(result.current.devices.map((m) => m.deviceId)).toEqual(['laptop', 'tower', 'phone']);
+  });
+
+  test('a device that turns out to be viewer-only leaves the fleet on the next poll', async () => {
+    invoke.mockResolvedValueOnce({ fleet: FLEET });
+    const { result } = renderHook(() => useFleet());
+    await waitFor(() => expect(result.current.machines).toHaveLength(2));
+    invoke.mockResolvedValue({ fleet: [FLEET[0], { ...FLEET[1], viewer: true }] });
+    act(() => result.current.refresh());
+    await waitFor(() => expect(result.current.machines.map((m) => m.deviceId)).toEqual(['laptop']));
+    expect(result.current.devices).toHaveLength(2);
+  });
+
   test('useFleet.refresh re-invokes p2p:fleet-list', async () => {
     invoke.mockResolvedValue({ fleet: FLEET });
     const { result } = renderHook(() => useFleet());
