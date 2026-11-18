@@ -3,9 +3,10 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import log from 'electron-log/main';
 import { startP2P, stopP2P } from './p2p';
+import { createChatService } from './chat/service';
 import { isWorkerWindowId } from './p2p/worker/windowWorker';
 import { buildServices, type Services } from './services';
 import { DROP_MAX_AGE_MS, testModeDropDir } from './drops/staging';
@@ -442,6 +443,15 @@ function installNotifications(services: Services): void {
     hooks,
     projects: services.projects,
     broadcast: (projectId, entry) => broadcast('activity:changed', { projectId, entry }),
+  });
+  // Chat service — one serialisation point for every post (local IPC,
+  // remote P2P append, companion CLI). `deviceId` is the P2P deviceName
+  // when p2p has started, else the hostname — stable per machine, good
+  // enough to disambiguate `@claude@mac-mini` in the UI.
+  services.chat = createChatService({
+    projects: services.projects,
+    deviceId: services.p2p?.api.getSettings().deviceName ?? hostname(),
+    broadcast,
   });
 }
 

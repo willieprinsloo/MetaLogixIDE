@@ -1592,6 +1592,15 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     return { entries };
   },
 
+  'chat:append': async (s, req) => {
+    if (!s.chat) throw new Error('chat service not ready');
+    return s.chat.append(req);
+  },
+  'chat:list': async (s, req) => {
+    if (!s.chat) throw new Error('chat service not ready');
+    return s.chat.list(req);
+  },
+
   ...dropHandlers,
   ...keepAwakeHandlers,
   'usage:get': async (s, req) => {

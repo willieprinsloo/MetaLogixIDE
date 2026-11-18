@@ -24,6 +24,7 @@ import { listMiseTasks, type MiseLister } from './domain/mise-cli';
 import type { KeepAwakeController } from './keep-awake/port';
 import type { UsageService } from './usage/service';
 import type { P2PServices } from './p2p/types';
+import type { ChatService } from './chat/service';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -58,6 +59,8 @@ export interface Services {
   usage?: UsageService;
   /** Attached by `startP2P`; absent until the P2P lifecycle has started. */
   p2p?: P2PServices;
+  /** Agent chat bus; attached once broadcast is available (post-window setup). */
+  chat?: ChatService;
 }
 
 /**

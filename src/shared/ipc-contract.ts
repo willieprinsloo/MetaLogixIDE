@@ -187,6 +187,27 @@ export interface IpcContract {
    * Activity tab; pairs with `activity:changed` for live tailing.
    */
   'activity:list': { request: { projectId: number; limit?: number }; response: { entries: import('./activity').ActivityEntry[] } };
+
+  /**
+   * Agent chat bus — one entry per human/agent message.
+   * `chat:append` serialises writes through the main service so each entry
+   * gets a unique id + ts + a fan-out event. `chat:list` paginates from
+   * the file end for cold opens; the renderer tails via `chat:changed`.
+   */
+  'chat:append': {
+    request: {
+      projectId: number;
+      from: Omit<import('./chat').ChatEntry['from'], 'device'>;
+      to?: import('./chat').ChatMention[];
+      body: string;
+      reply_in?: string;
+    };
+    response: { entry: import('./chat').ChatEntry };
+  };
+  'chat:list': {
+    request: { projectId: number; limit?: number };
+    response: { entries: import('./chat').ChatEntry[] };
+  };
   'files:list-all':  { request: { projectId: number; limit?: number; filter?: string };     response: { files: Array<{ relPath: string; name: string }>; total: number; truncated: boolean } };
   'files:write':     { request: { projectId: number; relPath: string; content: string };    response: { ok: true; sizeBytes: number } };
   'files:mkdir':     { request: { projectId: number; relPath: string };                     response: { ok: true } };
@@ -487,5 +508,7 @@ export interface IpcEvents {
   'window:fullscreen-changed': { windowId: number; fullscreen: boolean };
   /** A new activity entry was appended to this project's log; renderers that are tailing refresh. */
   'activity:changed': { projectId: number; entry: import('./activity').ActivityEntry };
+  /** A new chat entry was appended (or an existing one updated with cap-held delivery metadata). */
+  'chat:changed': { projectId: number; entry: import('./chat').ChatEntry };
 }
 export type IpcEventName = keyof IpcEvents;

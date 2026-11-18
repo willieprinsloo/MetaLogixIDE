@@ -33,8 +33,9 @@ describe('chat log', () => {
       body: big,
     });
     const [got] = readRecentChat(dir, 10);
-    expect(got.body.length).toBe(CHAT_BODY_MAX + 1); // +1 for the ellipsis
-    expect(got.body.endsWith('…')).toBe(true);
+    expect(got).toBeDefined();
+    expect(got!.body.length).toBe(CHAT_BODY_MAX + 1); // +1 for the ellipsis
+    expect(got!.body.endsWith('…')).toBe(true);
   });
 
   it('readRecentChat returns at most `limit` entries, newest wins', () => {
