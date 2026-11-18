@@ -12,6 +12,8 @@ import { FilesTab } from './components/FilesTab';
 import { ActivityTab } from './components/ActivityTab';
 import { FleetView } from './components/FleetView';
 import { ChatTab } from './components/ChatTab';
+import { AgentChatTab } from './components/AgentChatTab';
+import { useSelfDeviceName } from './p2p/useSelfDeviceName';
 import { GitPanel } from './components/GitPanel';
 import { Settings } from './components/Settings';
 import { ProjectSettingsTab } from './components/ProjectSettingsTab';
@@ -216,8 +218,9 @@ function MainApp() {
   const [activeView, setActiveView] = usePersistedState<ActivityView>(
     'metaide.activeView',
     'projects',
-    (v): v is ActivityView => v === 'projects' || v === 'chat' || v === 'git' || v === 'tasks' || v === 'fleet',
+    (v): v is ActivityView => v === 'projects' || v === 'chat' || v === 'agents' || v === 'git' || v === 'tasks' || v === 'fleet',
   );
+  const selfDeviceName = useSelfDeviceName();
   // Live-ref of the active view so the metaproject subscriber can decide
   // whether to bump the badge without re-subscribing on every switch.
   const activeViewRef = useRef<ActivityView>('projects');
@@ -992,6 +995,9 @@ function MainApp() {
                           projectId={selected?.id ?? null}
                           onLaunched={(shellIndex) => { setMainTab('shell'); setActiveShellIndex(shellIndex); }}
                         />
+                      )}
+                      {activeView === 'agents' && (
+                        <AgentChatTab projectId={selected?.id ?? 0} selfDevice={selfDeviceName} />
                       )}
                     </div>
                 ) : (
