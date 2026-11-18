@@ -306,21 +306,9 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): void {
 
   on('chat.append', async ({ projectId, entry }) => {
     if (!s.chat) throw new RpcError('unavailable', 'chat service not ready');
-    // `from.device` stays whatever the remote peer stamped; the service
-    // uses deps.deviceId for id/ts stamping on NEW posts but doesn't
-    // rewrite an already-authored entry. Pass the shape through.
-    await s.chat.append({
-      projectId,
-      from: {
-        shell: entry.from.shell,
-        agent: entry.from.agent,
-        ...(entry.from.label ? { label: entry.from.label } : {}),
-      },
-      to: entry.to,
-      body: entry.body,
-      ...(entry.reply_in !== undefined ? { reply_in: entry.reply_in } : {}),
-      ...(entry.meta !== undefined ? { meta: entry.meta } : {}),
-    });
+    // Ingest path: a relayed entry keeps its origin device, id, and ts.
+    // The author path (service.append) is only for NEW local posts.
+    await s.chat.ingest(projectId, entry as unknown as import('@shared/chat').ChatEntry);
     return { ok: true } as const;
   });
 

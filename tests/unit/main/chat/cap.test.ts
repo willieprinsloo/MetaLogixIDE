@@ -58,6 +58,19 @@ describe('createReplyCap', () => {
     expect(cap.admit(mk({ id: 'r5', agent: 'claude', reply_in: 'x' }))).toBe('pass');
   });
 
+  it('a human post also returns any queued ids so the injector can drain them', () => {
+    // Regression: release() exists but nothing called it; after the
+    // human_reset the queue stayed behind, so cap-held messages were
+    // stranded. Now admit() returns a `drained` id list on the human
+    // path so the injector can replay them in order.
+    const cap = createReplyCap();
+    for (let i = 0; i < 5; i++) cap.admit(mk({ id: `a${i}`, agent: 'claude', shell: i, reply_in: 'root' }));
+    cap.admit(mk({ id: 'q1', agent: 'claude', shell: 10, reply_in: 'root' }));
+    cap.admit(mk({ id: 'q2', agent: 'claude', shell: 11, reply_in: 'root' }));
+    const drained = cap.admitWithRelease(mk({ id: 'h', agent: 'human', reply_in: 'root' }));
+    expect(drained).toEqual({ verdict: 'pass', released: ['q1', 'q2'] });
+  });
+
   it('release returns queued ids and clears them', () => {
     const cap = createReplyCap();
     for (let i = 0; i < 5; i++) {

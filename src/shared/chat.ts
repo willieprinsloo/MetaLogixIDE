@@ -39,6 +39,10 @@ export interface ChatEntry {
   meta?: {
     /** True when the reply cap held delivery — the UI shows a red badge. */
     cap_held?: boolean;
+    /** True when every mention resolved to an offline agent — the UI
+     *  shows "not delivered" so the human knows the message wasn't
+     *  injected into any CLI. */
+    undelivered?: boolean;
   };
 }
 

@@ -63,7 +63,7 @@ export function AgentChatTab({ projectId, selfDevice }: { projectId: number; sel
           {entries.map((e) => (
             <div
               key={e.id}
-              className={`text-sm ${e.meta?.cap_held ? 'opacity-60 border-l-2 border-[--hue-red] pl-2' : ''}`}
+              className={`text-sm ${e.meta?.cap_held || e.meta?.undelivered ? 'opacity-60 border-l-2 border-[--hue-red] pl-2' : ''}`}
             >
               <span className="text-[--text-muted] text-xs">
                 {new Date(e.ts).toLocaleTimeString()}{' '}
@@ -74,6 +74,9 @@ export function AgentChatTab({ projectId, selfDevice }: { projectId: number; sel
               <span>{e.body}</span>
               {e.meta?.cap_held && (
                 <span className="text-[--hue-red] text-xs ml-2">· cap held</span>
+              )}
+              {e.meta?.undelivered && !e.meta?.cap_held && (
+                <span className="text-[--hue-red] text-xs ml-2">· not delivered (no matching agent online)</span>
               )}
             </div>
           ))}

@@ -19,6 +19,9 @@ export type CapVerdict = 'pass' | 'cap' | 'rate';
 
 export interface ReplyCap {
   admit(entry: ChatEntry): CapVerdict;
+  /** `admit` + simultaneous drain for a human post. The injector uses
+   *  this so cap-held messages don't strand after a human weighs in. */
+  admitWithRelease(entry: ChatEntry): { verdict: CapVerdict; released: string[] };
   /** Empties a thread's queued ids and returns them in insertion order. */
   release(threadRoot: string): string[];
 }
@@ -66,6 +69,19 @@ export function createReplyCap(now: () => number = Date.now): ReplyCap {
       queue.delete(threadRoot);
       consecutive.set(threadRoot, 0);
       return ids;
+    },
+
+    admitWithRelease(entry) {
+      const threadRoot = entry.reply_in ?? entry.id;
+      // A human post resets the counter AND drains anything queued; any
+      // other verdict passes through with no release.
+      const verdict = this.admit(entry);
+      if (entry.from.agent === 'human') {
+        const released = queue.get(threadRoot) ?? [];
+        queue.delete(threadRoot);
+        return { verdict, released };
+      }
+      return { verdict, released: [] };
     },
   };
 }

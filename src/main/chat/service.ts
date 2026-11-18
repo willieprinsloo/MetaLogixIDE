@@ -35,7 +35,12 @@ export interface ListReq {
 }
 
 export interface ChatService {
+  /** Author a NEW local post: id / ts / from.device are stamped here. */
   append(req: AppendReq): Promise<{ entry: ChatEntry }>;
+  /** Ingest an entry already authored elsewhere (relayed over P2P, replayed
+   *  from sync). Trusts the entry's id, ts, and from.device as given;
+   *  dedupes by id so a replay or a later auto-fanout can't duplicate. */
+  ingest(projectId: number, entry: ChatEntry): Promise<{ entry: ChatEntry; appended: boolean }>;
   list(req: ListReq): Promise<{ entries: ChatEntry[] }>;
   listSince(projectId: number, sinceTs: string): Promise<{ entries: ChatEntry[] }>;
 }
@@ -57,6 +62,21 @@ export function createChatService(deps: ChatServiceDeps): ChatService {
       appendChat(project.path, entry);
       deps.broadcast('chat:changed', { projectId: req.projectId, entry });
       return { entry };
+    },
+
+    async ingest(projectId, entry) {
+      const project = deps.projects.get(projectId);
+      if (!project) throw new Error(`unknown project ${projectId}`);
+      // Simple dedup: if the id is already in the tail, skip. Cheap for
+      // the common case (a few relayed messages at a time); bounded by
+      // readRecentChat's page size.
+      const tail = readRecentChat(project.path, 500);
+      if (tail.some((e) => e.id === entry.id)) {
+        return { entry, appended: false };
+      }
+      appendChat(project.path, entry);
+      deps.broadcast('chat:changed', { projectId, entry });
+      return { entry, appended: true };
     },
 
     async list(req) {

@@ -10,6 +10,7 @@ import { createChatService } from './chat/service';
 import { createReplyCap } from './chat/cap';
 import { buildRoster, type RemotePeer, type RosterRow } from './chat/roster';
 import { wireChatInjector } from './chat/inject';
+import { readRecentChat } from './chat/log';
 import { isWorkerWindowId } from './p2p/worker/windowWorker';
 import { buildServices, type Services } from './services';
 import { DROP_MAX_AGE_MS, testModeDropDir } from './drops/staging';
@@ -499,7 +500,22 @@ function installNotifications(services: Services): void {
     cap: chatCap,
     selfDevice,
     onCapHeld: (projectId, entry) =>
-      broadcast('chat:changed', { projectId, entry: { ...entry, meta: { cap_held: true } } }),
+      broadcast('chat:changed', { projectId, entry: { ...entry, meta: { ...(entry.meta ?? {}), cap_held: true } } }),
+    onDelivered: (projectId, entry, delivered) => {
+      // Every mention was offline → flag it so the pane shows "not
+      // delivered". Both branches of this bus are already carrying the
+      // row; this is a metadata update, not a new entry.
+      if (delivered === 0) {
+        broadcast('chat:changed', { projectId, entry: { ...entry, meta: { ...(entry.meta ?? {}), undelivered: true } } });
+      }
+    },
+    // Read a released id back from the project's log so a human post can
+    // replay queued-behind-the-cap messages without a renderer round-trip.
+    lookupEntry: (projectId, id) => {
+      const project = services.projects.get(projectId);
+      if (!project) return null;
+      return readRecentChat(project.path, 500).find((e) => e.id === id) ?? null;
+    },
     hooks: {
       onChatChanged: (cb) => {
         // Reuse the broadcast fanout: whenever `chat:changed` goes out
