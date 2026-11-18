@@ -10,17 +10,20 @@
 import net from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { Effect, Layer } from 'effect';
 import { Emitter } from '../src/core/bytes';
-import { connect, type IceServer, type Peer, type Platform } from '../src/core/link';
+import { connect } from '../src/core/link';
 import { deviceKeyFromSeed } from '../src/core/noise';
+import type { IceServer } from '../src/core/schemas';
+import { Peers, Relay, type Peer } from '../src/core/services';
 
-const wrtc = createRequire(import.meta.url)('@roamhq/wrtc') as { RTCPeerConnection: new (c: { iceServers: IceServer[] }) => RTCPeerConnection };
+const wrtc = createRequire(import.meta.url)('@roamhq/wrtc') as { RTCPeerConnection: new (c: { iceServers: ReadonlyArray<IceServer> }) => RTCPeerConnection };
 const log = (...a: unknown[]) => console.log(`[${new Date().toISOString().slice(11, 23)}]`, ...a);
 
 class NodePeer extends Emitter {
   pc: RTCPeerConnection;
   dc: RTCDataChannel | null = null;
-  constructor(ice: IceServer[]) {
+  constructor(ice: ReadonlyArray<IceServer>) {
     super();
     log('ice servers:', JSON.stringify(ice).replace(/"credential":"[^"]*"/g, '"credential":"…"'));
     this.pc = new wrtc.RTCPeerConnection({ iceServers: ice });
@@ -56,31 +59,38 @@ class NodePeer extends Emitter {
 const [code, host = 'remote.metalogix.solutions', port = '7100'] = process.argv.slice(2);
 if (!code) { console.error('usage: probe <connect-code> [relay-host] [relay-port]'); process.exit(2); }
 
-const platform: Platform = {
-  connect(h, p) {
-    const sock = net.connect({ host: h, port: p });
-    return {
-      onOpen: (cb) => sock.once('connect', () => { log(`relay connected ${h}:${p}`); cb(); }),
-      onData: (cb) => sock.on('data', (d: Buffer) => cb(new Uint8Array(d))),
-      onClose: (cb) => { sock.once('close', () => { log('relay socket closed'); cb(); }); sock.on('error', (e) => log('relay error:', e.message)); },
-      write: (b) => { sock.write(b); },
-      close: () => sock.destroy(),
-    };
-  },
-  createPeer: (ice) => new NodePeer(ice) as unknown as Peer,
-};
+const NodeLayer = Layer.mergeAll(
+  Layer.succeed(Relay, Relay.of({
+    connect(h, p) {
+      const sock = net.connect({ host: h, port: p });
+      return {
+        onOpen: (cb) => sock.once('connect', () => { log(`relay connected ${h}:${p}`); cb(); }),
+        onData: (cb) => sock.on('data', (d: Buffer) => cb(new Uint8Array(d))),
+        onClose: (cb) => { sock.once('close', () => { log('relay socket closed'); cb(); }); sock.on('error', (e) => log('relay error:', e.message)); },
+        write: (b) => { sock.write(b); },
+        close: () => sock.destroy(),
+      };
+    },
+  })),
+  Layer.succeed(Peers, Peers.of({ create: (ice) => new NodePeer(ice) as unknown as Peer })),
+);
 
 const key = deviceKeyFromSeed(new Uint8Array(randomBytes(32)));
-connect({ platform, relay: { host, port: Number(port) }, code, deviceKey: key, expectedDevice: process.env.EXPECT ?? '', timeoutMs: 20_000 }).then(
-  async (conn) => {
-    log('noise handshake complete');
-    try {
-      await conn.rpc.call('device.info', {}, 5000);
-      log('RESULT: unexpected, host served an unknown device');
-    } catch (e) {
-      log(`RESULT: path works end to end (host then refused the unknown device: ${(e as Error).message}, reason=${conn.remoteReason()})`);
-    }
-    process.exit(0);
-  },
-  (e: Error) => { log('RESULT: failed at', e.message); process.exit(1); },
+
+const probe = Effect.gen(function*() {
+  const conn = yield* connect({ relay: { host, port: Number(port) }, code, deviceKey: key, expectedDevice: process.env.EXPECT ?? '', timeoutMs: 20_000 });
+  log('noise handshake complete');
+  const info = yield* conn.rpc.call('device.info', {}, '5 seconds').pipe(Effect.result);
+  if (info._tag === 'Success') return 'unexpected, host served an unknown device';
+  const reason = yield* conn.remoteReason.pipe(Effect.timeoutOrElse({ duration: '2 seconds', orElse: () => Effect.succeed('none given') }));
+  return `path works end to end (host then refused the unknown device: ${info.failure.code}, reason=${reason})`;
+}).pipe(
+  Effect.scoped,
+  Effect.catch((e) => Effect.succeed(`failed at ${e.reason}`)),
+  Effect.provide(NodeLayer),
 );
+
+Effect.runPromise(probe).then((result) => {
+  log('RESULT:', result);
+  process.exit(result.startsWith('path works') ? 0 : 1);
+});

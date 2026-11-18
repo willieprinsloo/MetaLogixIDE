@@ -1,12 +1,14 @@
-/** React Native implementations of the pieces the protocol core takes by injection. */
+/** React Native implementations of the services the protocol core depends on, as one Layer. */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { Platform as RN } from 'react-native';
 import TcpSocket from 'react-native-tcp-socket';
 import { RTCIceCandidate, RTCPeerConnection, RTCSessionDescription } from 'react-native-webrtc';
+import { Effect, Layer } from 'effect';
 import { Emitter, utf8Encode } from '../core/bytes';
-import { Fleet, type Storage } from '../core/fleet';
-import type { IceServer, Peer, Platform, RelaySocket } from '../core/link';
+import { Fleet } from '../core/fleet';
+import type { IceServer } from '../core/schemas';
+import { Peers, Platform, Relay, Storage, type Peer, type RelaySocket } from '../core/services';
 
 function connectTcp(host: string, port: number): RelaySocket {
   let onOpen = () => {};
@@ -52,9 +54,9 @@ class RnPeer extends Emitter {
   #dc: DataChannel | null = null;
   #closed = false;
 
-  constructor(iceServers: IceServer[]) {
+  constructor(iceServers: ReadonlyArray<IceServer>) {
     super();
-    const pc = (this.#pc = new RTCPeerConnection({ iceServers }));
+    const pc = (this.#pc = new RTCPeerConnection({ iceServers: iceServers.map((i) => ({ ...i, urls: typeof i.urls === 'string' ? i.urls : [...i.urls] })) }));
     const on = pc as unknown as Listenable;
     on.addEventListener('icecandidate', (ev: { candidate: { toJSON(): unknown } | null }) => {
       if (ev.candidate) this.emit('candidate', JSON.stringify(ev.candidate.toJSON()));
@@ -116,21 +118,27 @@ class RnPeer extends Emitter {
   }
 }
 
-const platform: Platform = {
-  connect: connectTcp,
-  createPeer: (iceServers) => new RnPeer(iceServers) as unknown as Peer,
-};
+/** Keychain and storage calls never fail the app: a read that errors is a missing value, a failed write is dropped. */
+const read = (f: () => Promise<string | null>): Effect.Effect<string | null> =>
+  Effect.tryPromise(f).pipe(Effect.orElseSucceed(() => null));
+const write = (f: () => Promise<void>): Effect.Effect<void> => Effect.tryPromise(f).pipe(Effect.ignore);
 
-const storage: Storage = {
-  get: (k) => AsyncStorage.getItem(`metaide:${k}`),
-  set: (k, v) => AsyncStorage.setItem(`metaide:${k}`, v),
-  getSecret: (k) => SecureStore.getItemAsync(`metaide_${k}`),
-  setSecret: (k, v) => SecureStore.setItemAsync(`metaide_${k}`, v, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY }),
-};
+const RelayLive = Layer.succeed(Relay, Relay.of({ connect: connectTcp }));
 
-export const fleet = new Fleet({
-  platform,
-  storage,
+const PeersLive = Layer.succeed(Peers, Peers.of({ create: (iceServers) => new RnPeer(iceServers) as unknown as Peer }));
+
+const StorageLive = Layer.succeed(Storage, Storage.of({
+  get: (k) => read(() => AsyncStorage.getItem(`metaide:${k}`)),
+  set: (k, v) => write(() => AsyncStorage.setItem(`metaide:${k}`, v)),
+  getSecret: (k) => read(() => SecureStore.getItemAsync(`metaide_${k}`)),
+  setSecret: (k, v) => write(() => SecureStore.setItemAsync(`metaide_${k}`, v, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY })),
+}));
+
+const PlatformLive = Layer.succeed(Platform, Platform.of({
   randomBytes: (n) => crypto.getRandomValues(new Uint8Array(n)),
-  defaultDeviceName: RN.OS === 'ios' ? 'iPhone' : 'Android phone',
-});
+  defaultName: RN.OS === 'ios' ? 'iPhone' : 'Android phone',
+}));
+
+export const AppLayer = Layer.mergeAll(RelayLive, PeersLive, StorageLive, PlatformLive);
+
+export const fleet = new Fleet(AppLayer);

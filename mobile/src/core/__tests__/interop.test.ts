@@ -13,8 +13,10 @@ import { SecureTransport } from '../../../../src/main/p2p/secure';
 import { RpcError as HostRpcError, RpcPeer } from '../../../../src/main/p2p/rpc';
 import { canonicalPubHex as hostCanonical } from '../../../../src/main/p2p/identity';
 import { Secret, createFrameDecoder, encodeFrame } from '../../../../src/shared/signaling-wire';
-import { activeProjects, Fleet, shellName, tabLabels, type FleetState, type Storage } from '../fleet';
-import { connect, pairWith, type Peer, type Platform, type RelaySocket } from '../link';
+import { Effect, Exit, Layer, Scope, Stream } from 'effect';
+import { activeProjects, Fleet, shellName, tabLabels, type FleetState } from '../fleet';
+import { connect, pairWith, type Connection } from '../link';
+import { Peers, Platform, Relay, Storage, type Peer, type RelaySocket } from '../services';
 import { canonicalPubHex, deviceKeyFromSeed } from '../noise';
 import { parsePairLink } from '../pairLink';
 import { buildPairLink } from '../../../../src/shared/pair-link';
@@ -129,7 +131,7 @@ function makeHost(name = 'Studio') {
     secure.start();
   }
 
-  const platform: Platform = {
+  const platform = {
     connect(): RelaySocket {
       const decoder = createFrameDecoder();
       let onData: (b: Uint8Array) => void = () => {};
@@ -164,7 +166,7 @@ function makeHost(name = 'Studio') {
         },
       };
     },
-    createPeer(ice): Peer {
+    createPeer(ice: unknown): Peer {
       expect(ice).toEqual([{ urls: 'stun:example.org' }]);
       const a = new FakePeer();
       const b = new Chan();
@@ -175,9 +177,14 @@ function makeHost(name = 'Studio') {
     },
   };
   let lastPeer: FakePeer | null = null;
+  /** The relay and the peer connections, as the services the core asks for. */
+  const layer = Layer.mergeAll(
+    Layer.succeed(Relay, Relay.of({ connect: () => platform.connect() })),
+    Layer.succeed(Peers, Peers.of({ create: (ice) => platform.createPeer(ice) })),
+  );
 
   return {
-    id: hostCanonical(key.pub), platform, pairing, trusted, input, sizes, peers, hellos,
+    id: hostCanonical(key.pub), layer, pairing, trusted, input, sizes, peers, hellos,
     setShells: (s: typeof shells) => { shells = s; },
     setProjects: (p: typeof projects) => { projects = p; },
     deny: (r: string | null) => { denyReason = r; },
@@ -198,12 +205,27 @@ async function until(cond: () => boolean, ms = 3000): Promise<void> {
   }
 }
 
+type Host = ReturnType<typeof makeHost>;
+
+/** Runs a core effect against a host's relay and peers. A failure rejects with the tagged error itself. */
+const run = <A, E>(host: Host, effect: Effect.Effect<A, E, Relay | Peers>): Promise<A> =>
+  Effect.runPromise(effect.pipe(Effect.provide(host.layer)));
+
+/** Opens a connection in a Scope of its own, so a test can hold it across steps and close it when done. */
+async function open(host: Host, opts: Parameters<typeof connect>[0]): Promise<Connection & { close(): Promise<void>; reason(): string | null }> {
+  const scope = Effect.runSync(Scope.make());
+  const conn = await run(host, connect(opts).pipe(Scope.provide(scope)));
+  let reason: string | null = null;
+  Effect.runFork(conn.remoteReason.pipe(Effect.map((r) => { reason = r; })));
+  return { ...conn, close: () => Effect.runPromise(Scope.close(scope, Exit.void)), reason: () => reason };
+}
+
 describe('phone core against the desktop implementation', () => {
   it('pairs: both sides learn each other, and the phone gets the code to dial back', async () => {
     const host = makeHost();
     const key = phoneKey();
     host.pairing.generate(HOST_CODE);
-    const r = await pairWith({ platform: host.platform, relay, code: ` ${HOST_CODE} `, deviceKey: key, deviceName: 'Pixel' });
+    const r = await run(host, pairWith({ relay, code: ` ${HOST_CODE} `, deviceKey: key, deviceName: 'Pixel' }));
     expect(r).toEqual({ deviceId: host.id, name: 'Studio', code: HOST_CODE });
     await until(() => host.trusted.size === 1);
     expect(host.trusted.get(canonicalPubHex(key.pub))).toBe('Pixel');
@@ -212,20 +234,20 @@ describe('phone core against the desktop implementation', () => {
 
   it('refuses to pair when the host has no pairing window open (prologue mismatch)', async () => {
     const host = makeHost();
-    await expect(pairWith({ platform: host.platform, relay, code: HOST_CODE, deviceKey: phoneKey(), deviceName: 'Pixel' })).rejects.toThrow('handshake_failed');
+    await expect(run(host, pairWith({ relay, code: HOST_CODE, deviceKey: phoneKey(), deviceName: 'Pixel' }))).rejects.toMatchObject({ _tag: 'LinkError', reason: 'handshake_failed' });
     expect(host.trusted.size).toBe(0);
   });
 
   it('reports the relay denial reason', async () => {
     const host = makeHost();
     host.deny('host_offline');
-    await expect(connect({ platform: host.platform, relay, code: HOST_CODE, deviceKey: phoneKey(), expectedDevice: host.id })).rejects.toThrow('host_offline');
+    await expect(open(host, { relay, code: HOST_CODE, deviceKey: phoneKey(), expectedDevice: host.id })).rejects.toMatchObject({ reason: 'host_offline' });
   });
 
   it('refuses a host whose identity is not the paired one, before revealing its own', async () => {
     const host = makeHost();
     const other = makeHost();
-    await expect(connect({ platform: host.platform, relay, code: HOST_CODE, deviceKey: phoneKey(), expectedDevice: other.id })).rejects.toThrow('trust_failed');
+    await expect(open(host, { relay, code: HOST_CODE, deviceKey: phoneKey(), expectedDevice: other.id })).rejects.toMatchObject({ reason: 'trust_failed' });
   });
 
   it('calls RPC methods and streams a shell, including frames larger than one secure chunk', async () => {
@@ -233,68 +255,69 @@ describe('phone core against the desktop implementation', () => {
     const key = phoneKey();
     host.trusted.set(canonicalPubHex(key.pub), 'Pixel');
     host.setProjects(Array.from({ length: 400 }, (_, i) => ({ id: i + 1, name: `project-${i}`, path: `/very/long/path/${'d'.repeat(200)}/${i}` })));
-    const conn = await connect({ platform: host.platform, relay, code: HOST_CODE, deviceKey: key, expectedDevice: host.id });
-    const projects = await conn.rpc.call('projects.list', {});
+    const conn = await open(host, { relay, code: HOST_CODE, deviceKey: key, expectedDevice: host.id });
+    const projects = await Effect.runPromise(conn.rpc.call('projects.list', {}));
     expect(projects).toHaveLength(400);
     expect(projects[399]!.name).toBe('project-399');
 
     let out = '';
     let exit: number | null | undefined;
-    let closed = '';
-    const h = conn.rpc.attach({ projectId: 2, shellIndex: 1 }, (d) => {
-      const e = d as { kind: string; bytes?: string; code?: number };
-      if (e.kind === 'out') out += e.bytes;
-      else exit = e.code;
-    }, (reason) => { closed = reason; });
-    const stream = await h.ready;
-    await conn.rpc.call('shells.input', { stream, bytes: Buffer.from('ls → ✓\r').toString('base64') });
-    await until(() => closed !== '');
+    // The stream lives for the scope: it ends by itself when the host closes it (the shell exited).
+    await Effect.runPromise(Effect.gen(function*() {
+      const shell = yield* conn.rpc.attach({ projectId: 2, shellIndex: 1 });
+      yield* conn.rpc.call('shells.input', { stream: shell.stream, bytes: Buffer.from('ls → ✓\r').toString('base64') });
+      yield* Stream.runForEach(shell.events, (e) => Effect.sync(() => {
+        if (e.kind === 'out') out += e.bytes;
+        else exit = e.code;
+      }));
+    }).pipe(Effect.scoped));
     expect(out).toBe(`snapshot ${'x'.repeat(40_000)} héllo → 🙂`);
     expect(exit).toBe(0);
-    expect(closed).toBe('remote_ended');
     expect(host.input).toEqual(['ls → ✓\r']);
 
-    let failed = '';
-    conn.rpc.attach({ projectId: 9, shellIndex: 0 }, () => {}, (reason) => { failed = reason; }).ready.catch(() => {});
-    await until(() => failed !== '');
-    expect(failed).toBe('attach_failed: unknown_shell');
-    await expect(conn.rpc.call('shells.input', { stream: 999, bytes: '' })).rejects.toMatchObject({ code: 'unknown_stream' });
-    conn.close();
+    await expect(Effect.runPromise(conn.rpc.attach({ projectId: 9, shellIndex: 0 }).pipe(Effect.scoped))).rejects.toMatchObject({ _tag: 'RpcError', code: 'unknown_shell' });
+    await expect(Effect.runPromise(conn.rpc.call('shells.input', { stream: 999, bytes: '' }))).rejects.toMatchObject({ code: 'unknown_stream' });
+    // A result that is not what the method promises is refused rather than passed on.
+    host.setProjects([{ id: 'one', name: 1 }] as never);
+    await expect(Effect.runPromise(conn.rpc.call('projects.list', {}))).rejects.toMatchObject({ code: 'invalid_result' });
+    await conn.close();
+    expect(conn.rpc.isClosed).toBe(true);
   });
 
   it('stays connected when the relay supersedes its session for another viewer of the same host', async () => {
     const host = makeHost();
     const key = phoneKey();
     host.trusted.set(canonicalPubHex(key.pub), 'Pixel');
-    const conn = await connect({ platform: host.platform, relay, code: HOST_CODE, deviceKey: key, expectedDevice: host.id });
-    await conn.rpc.call('projects.list', {});
+    const conn = await open(host, { relay, code: HOST_CODE, deviceKey: key, expectedDevice: host.id });
+    await Effect.runPromise(conn.rpc.call('projects.list', {}));
     host.relayClose('superseded by a new connection');
     await wait(30);
-    expect(conn.rpc.closed).toBe(false);
-    await expect(conn.rpc.call('shells.alive', {})).resolves.toHaveLength(2);
-    expect(conn.remoteReason()).toBeNull(); // relay bookkeeping, not the host's reason for anything
-    conn.close();
+    expect(conn.rpc.isClosed).toBe(false);
+    await expect(Effect.runPromise(conn.rpc.call('shells.alive', {}))).resolves.toHaveLength(2);
+    expect(conn.reason()).toBeNull(); // relay bookkeeping, not the host's reason for anything
+    await conn.close();
   });
 
   it('keeps the reason a host gives over the relay before it hangs up', async () => {
     const host = makeHost();
     const key = phoneKey();
     host.trusted.set(canonicalPubHex(key.pub), 'Pixel');
-    const conn = await connect({ platform: host.platform, relay, code: HOST_CODE, deviceKey: key, expectedDevice: host.id });
+    const conn = await open(host, { relay, code: HOST_CODE, deviceKey: key, expectedDevice: host.id });
     host.relayClose('revoked');
-    await until(() => conn.remoteReason() === 'revoked');
-    expect(conn.rpc.closed).toBe(false); // the channel closing is what ends the link
+    await until(() => conn.reason() === 'revoked');
+    expect(conn.rpc.isClosed).toBe(false); // the channel closing is what ends the link
     host.dropLinks();
-    await until(() => conn.rpc.closed);
+    await Effect.runPromise(conn.rpc.closed);
+    expect(conn.rpc.isClosed).toBe(true);
   });
 
   it('is turned away by a host that does not trust it', async () => {
     const host = makeHost();
-    const conn = await connect({ platform: host.platform, relay, code: HOST_CODE, deviceKey: phoneKey(), expectedDevice: host.id });
-    await expect(conn.rpc.call('projects.list', {}, 1000)).rejects.toMatchObject({ code: 'closed' });
+    const conn = await open(host, { relay, code: HOST_CODE, deviceKey: phoneKey(), expectedDevice: host.id });
+    await expect(Effect.runPromise(conn.rpc.call('projects.list', {}, 1000))).rejects.toMatchObject({ code: 'closed' });
     // The reason arrives over the relay after the channel has gone, and is still picked up.
-    expect(conn.remoteReason()).toBeNull();
-    await until(() => conn.remoteReason() === 'untrusted_device');
+    expect(conn.reason()).toBeNull();
+    await until(() => conn.reason() === 'untrusted_device');
   });
 });
 
@@ -320,23 +343,23 @@ describe('pairing QR link', () => {
 });
 
 describe('Fleet', () => {
-  function memoryStorage(): Storage & { data: Map<string, string> } {
-    const data = new Map<string, string>();
-    return {
-      data,
-      get: async (k) => data.get(k) ?? null,
-      set: async (k, v) => { data.set(k, v); },
-      getSecret: async (k) => data.get(`secret:${k}`) ?? null,
-      setSecret: async (k, v) => { data.set(`secret:${k}`, v); },
-    };
-  }
-  const newFleet = (host: ReturnType<typeof makeHost>, storage = memoryStorage()) =>
-    new Fleet({ platform: host.platform, storage, randomBytes: (n) => new Uint8Array(randomBytes(n)), defaultDeviceName: 'Phone' });
+  /** In-memory storage and platform, so a second Fleet over the same map behaves like a relaunch. */
+  const appLayer = (host: Host, data: Map<string, string>) => Layer.mergeAll(
+    host.layer,
+    Layer.succeed(Storage, Storage.of({
+      get: (k) => Effect.sync(() => data.get(k) ?? null),
+      set: (k, v) => Effect.sync(() => { data.set(k, v); }),
+      getSecret: (k) => Effect.sync(() => data.get(`secret:${k}`) ?? null),
+      setSecret: (k, v) => Effect.sync(() => { data.set(`secret:${k}`, v); }),
+    })),
+    Layer.succeed(Platform, Platform.of({ randomBytes: (n) => new Uint8Array(randomBytes(n)), defaultName: 'Phone' })),
+  );
+  const newFleet = (host: Host, data = new Map<string, string>()) => new Fleet(appLayer(host, data));
   const machine = (s: FleetState) => s.machines[0]!;
 
   it('pairs, comes online, lists active projects, and drives a shell', async () => {
     const host = makeHost();
-    const storage = memoryStorage();
+    const storage = new Map<string, string>();
     const fleet = newFleet(host, storage);
     await fleet.init();
     expect(fleet.getSnapshot().machines).toEqual([]);
@@ -366,6 +389,20 @@ describe('Fleet', () => {
     expect(out.startsWith('snapshot ')).toBe(true);
     expect(host.input.join('')).toBe('abc\r');
     expect(host.sizes.at(-1)).toEqual([42, 21]);
+
+    // A shell that is not there: the reason says the attach failed and why.
+    let failed = '';
+    fleet.openShell(device.id, 9, 0, { onData: () => {}, onExit: () => {}, onClose: (r) => { failed = r; } });
+    await until(() => failed !== '');
+    expect(failed).toBe('attach_failed: unknown_shell');
+
+    // Closing a session locally reports nothing, and tells the host to stop streaming.
+    let reported = false;
+    const quiet = fleet.openShell(device.id, 2, 1, { onData: () => {}, onExit: () => {}, onClose: () => { reported = true; } });
+    await wait(10);
+    quiet.close();
+    await wait(60);
+    expect(reported).toBe(false);
 
     // A second launch restores the device from storage and reconnects with the stored key.
     const again = newFleet(host, storage);

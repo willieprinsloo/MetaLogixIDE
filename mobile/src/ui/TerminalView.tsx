@@ -1,6 +1,7 @@
 import { forwardRef, useImperativeHandle, useRef } from 'react';
 import { StyleSheet } from 'react-native';
 import { WebView as RNWebView, type WebViewMessageEvent } from 'react-native-webview';
+import type { KeyName, PageMessage, TerminalApi } from '../terminal/protocol';
 import { C } from './theme';
 import { TERMINAL_HTML } from './terminalHtml.generated';
 
@@ -9,7 +10,7 @@ export interface TerminalHandle {
   reset(): void;
   focus(): void;
   blur(): void;
-  key(name: string): void;
+  key(name: KeyName): void;
   setCtrl(on: boolean): void;
   paste(text: string): void;
 }
@@ -47,23 +48,30 @@ export const TerminalView = forwardRef<TerminalHandle, Props>(function TerminalV
     if (ready.current && !timer.current) timer.current = setTimeout(flush, 16);
   };
 
+  /** Queues one call on the page's `window.__term`, checked against the page's API. */
+  const call = <K extends keyof TerminalApi>(method: K, ...args: Parameters<TerminalApi[K]>) =>
+    enqueue(`__term.${method}(${args.map((a) => JSON.stringify(a)).join(',')})`);
+
   useImperativeHandle(ref, () => ({
-    write: (text) => enqueue(`__term.write(${JSON.stringify(text)})`),
-    reset: () => enqueue('__term.reset()'),
-    focus: () => enqueue('__term.focus()'),
-    blur: () => enqueue('__term.blur()'),
-    key: (name) => enqueue(`__term.key(${JSON.stringify(name)})`),
-    setCtrl: (on) => enqueue(`__term.setCtrl(${on ? 'true' : 'false'})`),
-    paste: (text) => enqueue(`__term.paste(${JSON.stringify(text)})`),
+    write: (text) => call('write', text),
+    reset: () => call('reset'),
+    focus: () => call('focus'),
+    blur: () => call('blur'),
+    key: (name) => call('key', name),
+    setCtrl: (on) => call('setCtrl', on),
+    paste: (text) => call('paste', text),
   }));
 
   const onMessage = (e: WebViewMessageEvent) => {
-    let m: { t?: string; d?: string; cols?: number; rows?: number; on?: boolean };
-    try { m = JSON.parse(e.nativeEvent.data) as typeof m; } catch { return; }
-    if (m.t === 'in' && typeof m.d === 'string') onInput(m.d);
-    else if (m.t === 'size' && m.cols && m.rows) onSize(m.cols, m.rows);
-    else if (m.t === 'ctrl') onCtrl(!!m.on);
-    else if (m.t === 'ready') { ready.current = true; flush(); }
+    // The page is our own bundle (see src/terminal/bridge.ts), so its messages follow the protocol.
+    let m: PageMessage;
+    try { m = JSON.parse(e.nativeEvent.data) as PageMessage; } catch { return; }
+    switch (m.t) {
+      case 'in': onInput(m.d); break;
+      case 'size': onSize(m.cols, m.rows); break;
+      case 'ctrl': onCtrl(m.on); break;
+      case 'ready': ready.current = true; flush(); break;
+    }
   };
 
   return (

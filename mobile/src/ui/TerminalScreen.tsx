@@ -6,11 +6,13 @@ import { tabLabels, type ShellSession } from '../core/fleet';
 import { fleet } from '../platform';
 import type { ScreenProps } from './nav';
 import { ComposeBar } from './ComposeBar';
+import type { KeyName } from '../terminal/protocol';
 import { TerminalView, type TerminalHandle } from './TerminalView';
 import { AGENT, C, explain } from './theme';
 import { useMachine } from './useFleet';
 
-const KEYS: Array<{ id: string; label: string }> = [
+/** The key bar: terminal keys, plus two that act on the app itself. */
+const KEYS: Array<{ id: KeyName | 'ctrl' | 'dictate'; label: string }> = [
   { id: 'dictate', label: '🎤' },
   { id: 'esc', label: 'esc' },
   { id: 'tab', label: 'tab' },
@@ -85,7 +87,7 @@ export function TerminalScreen({ route, navigation }: ScreenProps<'Terminal'>) {
     setComposing(false);
   };
 
-  const press = (id: string) => {
+  const press = (id: KeyName | 'ctrl' | 'dictate') => {
     if (id === 'dictate') { term.current?.blur(); setComposing(true); return; }
     if (id === 'ctrl') {
       const next = !ctrl;

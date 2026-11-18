@@ -1,14 +1,19 @@
 /**
- * App state: paired desktops, one live link each, and their active projects. Framework-free
- * (subscribe/getSnapshot) so React binds to it with useSyncExternalStore.
+ * App state: paired desktops, one live link each, and their active projects.
+ *
+ * The work is Effect: one supervisor fiber per machine connects, polls and reconnects inside a Scope, so
+ * interrupting the fiber is all it takes to drop a link cleanly. The edge React sees is deliberately
+ * plain (subscribe/getSnapshot plus a few methods), so components bind with useSyncExternalStore.
  */
+import { Effect, Fiber, type Layer, ManagedRuntime, Queue, Schema, type Scope, Stream } from 'effect';
 import { base64Encode, fromHex, toHex, utf8Encode } from './bytes';
-import { connect, pairWith, REASON_GRACE_MS, type Connection, type Platform } from './link';
+import { RpcError } from './errors';
+import { connect, pairWith, type Connection } from './link';
 import { canonicalPubHex, deviceKeyFromSeed, type DeviceKey } from './noise';
-import { RpcError, type AgentState, type Project, type ShellInfo } from './rpc';
+import { ConnectCode, Device, StoredSettings, type AgentState, type Project, type ShellInfo } from './schemas';
+import { Platform, Storage, type Peers, type Relay } from './services';
 
-
-export type Device = { id: string; name: string; code: string; addedAt: number };
+export type { Device };
 export type MachineStatus = 'connecting' | 'online' | 'offline' | 'revoked';
 export type Machine = {
   device: Device;
@@ -50,21 +55,6 @@ export function tabLabels(shells: readonly Shell[]): string[] {
   });
 }
 
-export interface Storage {
-  get(key: string): Promise<string | null>;
-  set(key: string, value: string): Promise<void>;
-  /** The device key seed (hex) lives in the platform keychain, apart from ordinary settings. */
-  getSecret(key: string): Promise<string | null>;
-  setSecret(key: string, value: string): Promise<void>;
-}
-
-export interface FleetDeps {
-  platform: Platform;
-  storage: Storage;
-  randomBytes(n: number): Uint8Array;
-  defaultDeviceName: string;
-}
-
 export interface ShellSession {
   send(text: string): void;
   resize(cols: number, rows: number): void;
@@ -80,9 +70,13 @@ export interface ShellEvents {
 export const DEFAULT_RELAY = { host: 'remote.metalogix.solutions', port: 7100 };
 const POLL_MS = 5000;
 const POLL_TIMEOUT_MS = 10_000;
+const PROBE_TIMEOUT_MS = 4000;
 const RETRY_MIN_MS = 2000;
 const RETRY_MAX_MS = 30_000;
-const CONNECT_CODE_RE = /^[A-Za-z0-9-]{4,32}$/;
+/** How long after the channel closes the host's reason for closing it may still arrive over the relay. */
+const REASON_GRACE = '2 seconds';
+/** The desktop no longer trusts this phone (removed there): retrying cannot help, it needs a new pairing. */
+const REVOKED = new Set(['untrusted_device', 'revoked', 'trust_failed']);
 
 const RANK: Record<AgentState, number> = { idle: 0, busy: 1, blocked: 2 };
 
@@ -106,28 +100,46 @@ export function activeProjects(m: Machine): ActiveProject[] {
   return out.sort((a, b) => a.project.name.localeCompare(b.project.name));
 }
 
-interface Runner {
+type Env = Relay | Peers | Storage | Platform;
+
+/** One machine's supervisor: its fiber, its live connection if any, and the two ways to nudge it. */
+interface Supervisor {
+  fiber: Fiber.Fiber<void>;
   conn: Connection | null;
-  dialing: boolean;
-  retryDelay: number;
-  retryTimer: ReturnType<typeof setTimeout> | null;
-  polling: boolean;
+  /** True once the current connection has answered a request. */
+  answered: boolean;
+  /** Skips the wait before the next dial. */
+  wake: Queue.Queue<true>;
+  /** Polls now, with the given timeout in milliseconds, instead of at the next tick. */
+  pollNow: Queue.Queue<number>;
 }
+
+const decodeDevices = Schema.decodeUnknownOption(Schema.Array(Device));
+const decodeSettings = Schema.decodeUnknownOption(StoredSettings);
+const isConnectCode = Schema.is(ConnectCode);
+const save = (key: string, value: string): Effect.Effect<void, never, Storage> =>
+  Effect.gen(function*() {
+    const storage = yield* Storage;
+    yield* storage.set(key, value);
+  });
+const parseJson = (raw: string | null): unknown => { try { return raw === null ? null : JSON.parse(raw); } catch { return null; } };
 
 export class Fleet {
   #state: FleetState;
   #key: DeviceKey | null = null;
-  #listeners = new Set<() => void>();
-  #runners = new Map<string, Runner>();
-  #pollTimer: ReturnType<typeof setInterval> | null = null;
+  readonly #listeners = new Set<() => void>();
+  readonly #supervisors = new Map<string, Supervisor>();
+  readonly #runtime: ManagedRuntime.ManagedRuntime<Env, never>;
   #active = true;
   #init: Promise<void> | null = null;
+  #defaultName = '';
 
-  constructor(private readonly deps: FleetDeps) {
+  constructor(layer: Layer.Layer<Env>) {
+    this.#runtime = ManagedRuntime.make(layer);
     this.#state = {
       ready: false,
       machines: [],
-      settings: { relayHost: DEFAULT_RELAY.host, relayPort: DEFAULT_RELAY.port, deviceName: deps.defaultDeviceName },
+      settings: { relayHost: DEFAULT_RELAY.host, relayPort: DEFAULT_RELAY.port, deviceName: '' },
     };
   }
 
@@ -141,54 +153,57 @@ export class Fleet {
   get deviceId(): string { return this.#key ? canonicalPubHex(this.#key.pub) : ''; }
 
   init(): Promise<void> {
-    return (this.#init ??= (async () => {
-      const { storage } = this.deps;
-      let seedHex = await storage.getSecret('device_key');
+    return (this.#init ??= this.#runtime.runPromise(Effect.gen({ self: this }, function*() {
+      const storage = yield* Storage;
+      const platform = yield* Platform;
+      this.#defaultName = platform.defaultName;
+      let seedHex = yield* storage.getSecret('device_key');
       if (!seedHex || !/^[0-9a-f]{64}$/.test(seedHex)) {
-        seedHex = toHex(this.deps.randomBytes(32));
-        await storage.setSecret('device_key', seedHex);
+        seedHex = toHex(platform.randomBytes(32));
+        yield* storage.setSecret('device_key', seedHex);
       }
       this.#key = deviceKeyFromSeed(fromHex(seedHex));
-      let settings = this.#state.settings;
-      let devices: Device[] = [];
-      try { settings = { ...settings, ...(JSON.parse((await storage.get('settings')) ?? '{}') as Partial<Settings>) }; } catch { /* keep defaults */ }
-      try {
-        const raw = JSON.parse((await storage.get('devices')) ?? '[]') as Device[];
-        if (Array.isArray(raw)) devices = raw.filter((d) => d && typeof d.id === 'string' && typeof d.code === 'string' && typeof d.name === 'string');
-      } catch { /* start empty */ }
-      this.#set({ ready: true, settings, machines: sortMachines(devices.map(newMachine)) });
-      for (const d of devices) this.#dial(d.id);
-      this.#pollTimer = setInterval(() => this.#pollAll(), POLL_MS);
-    })());
+      const stored = decodeSettings(parseJson(yield* storage.get('settings')));
+      const s = stored._tag === 'Some' ? stored.value : {};
+      const settings: Settings = {
+        relayHost: s.relayHost || DEFAULT_RELAY.host,
+        relayPort: s.relayPort ?? DEFAULT_RELAY.port,
+        deviceName: s.deviceName || platform.defaultName,
+      };
+      const devices = decodeDevices(parseJson(yield* storage.get('devices')));
+      const list = devices._tag === 'Some' ? [...devices.value] : [];
+      this.#set({ ready: true, settings, machines: sortMachines(list.map(newMachine)) });
+      for (const d of list) this.#start(d.id);
+    })));
   }
 
   // ---- pairing and settings ----
 
-  /** Pairs with the desktop whose "Pair a new machine" window shows `code`. Rejects with a reason code. */
+  /** Pairs with the desktop whose "Pair a new machine" window shows `code`. Rejects with an Error whose message is a reason code. */
   async pair(code: string): Promise<Device> {
     await this.init();
     const trimmed = code.trim();
-    if (!CONNECT_CODE_RE.test(trimmed)) throw new Error('invalid_code');
+    if (!isConnectCode(trimmed)) throw new Error('invalid_code');
     const s = this.#state.settings;
-    const r = await pairWith({
-      platform: this.deps.platform,
-      relay: { host: s.relayHost, port: s.relayPort },
-      code: trimmed,
-      deviceKey: this.#key!,
-      deviceName: s.deviceName,
-    });
-    const device: Device = { id: r.deviceId, name: r.name, code: r.code, addedAt: Date.now() };
-    this.#teardown(device.id);
+    const r = await this.#runtime.runPromise(
+      pairWith({ relay: { host: s.relayHost, port: s.relayPort }, code: trimmed, deviceKey: this.#key!, deviceName: s.deviceName }).pipe(
+        Effect.map((result) => ({ ok: true as const, result })),
+        Effect.catch((e) => Effect.succeed({ ok: false as const, reason: e.reason })),
+      ),
+    );
+    if (!r.ok) throw new Error(r.reason);
+    const device: Device = { id: r.result.deviceId, name: r.result.name, code: r.result.code, addedAt: Date.now() };
+    this.#stop(device.id);
     const machines = this.#state.machines.filter((m) => m.device.id !== device.id);
     machines.push(newMachine(device));
     this.#set({ machines: sortMachines(machines) });
     await this.#persistDevices();
-    this.#dial(device.id);
+    this.#start(device.id);
     return device;
   }
 
   async remove(id: string): Promise<void> {
-    this.#teardown(id);
+    this.#stop(id);
     this.#set({ machines: this.#state.machines.filter((m) => m.device.id !== id) });
     await this.#persistDevices();
   }
@@ -198,12 +213,12 @@ export class Fleet {
     const next: Settings = {
       relayHost: (patch.relayHost ?? cur.relayHost).trim() || DEFAULT_RELAY.host,
       relayPort: Number.isInteger(patch.relayPort) && patch.relayPort! > 0 && patch.relayPort! < 65536 ? patch.relayPort! : cur.relayPort,
-      deviceName: (patch.deviceName ?? cur.deviceName).trim().slice(0, 80) || this.deps.defaultDeviceName,
+      deviceName: (patch.deviceName ?? cur.deviceName).trim().slice(0, 80) || this.#defaultName,
     };
     this.#set({ settings: next });
-    await this.deps.storage.set('settings', JSON.stringify(next));
+    await this.#runtime.runPromise(save('settings', JSON.stringify(next)));
     if (next.relayHost !== cur.relayHost || next.relayPort !== cur.relayPort) {
-      for (const m of this.#state.machines) { this.#teardown(m.device.id); this.#dial(m.device.id); }
+      for (const m of this.#state.machines) { this.#stop(m.device.id); this.#start(m.device.id); }
     }
   }
 
@@ -214,86 +229,74 @@ export class Fleet {
     if (this.#active === active) return;
     this.#active = active;
     if (!active) return;
-    for (const m of this.#state.machines) {
-      const r = this.#runner(m.device.id);
-      if (r.conn) void this.#poll(m.device.id, 4000);
-      else if (m.status !== 'revoked') this.reconnect(m.device.id);
-    }
+    for (const m of this.#state.machines) if (m.status !== 'revoked') this.reconnect(m.device.id);
   }
 
-  /** Drops any pending back-off and dials now. */
+  /** Probes a live link now, or drops any pending back-off and dials now. */
   reconnect(id: string): void {
-    const r = this.#runner(id);
-    if (r.retryTimer) { clearTimeout(r.retryTimer); r.retryTimer = null; }
-    r.retryDelay = RETRY_MIN_MS;
-    if (r.conn) void this.#poll(id, 4000);
-    else this.#dial(id);
+    const sup = this.#supervisors.get(id);
+    if (!sup) { this.#start(id); return; }
+    if (sup.conn) Queue.offerUnsafe(sup.pollNow, PROBE_TIMEOUT_MS);
+    else Queue.offerUnsafe(sup.wake, true);
   }
 
   refresh(id: string): Promise<void> {
-    const r = this.#runner(id);
-    if (!r.conn) { this.reconnect(id); return Promise.resolve(); }
-    return this.#poll(id, POLL_TIMEOUT_MS);
+    const sup = this.#supervisors.get(id);
+    const conn = sup?.conn;
+    if (!sup || !conn) { this.reconnect(id); return Promise.resolve(); }
+    return this.#runtime.runPromise(this.#poll(id, sup, conn, POLL_TIMEOUT_MS).pipe(Effect.ignore));
   }
 
   // ---- shells ----
 
   /** Attaches to a live shell: the host replays the screen, then streams output. */
   openShell(id: string, projectId: number, shellIndex: number, ev: ShellEvents): ShellSession {
-    const conn = this.#runner(id).conn;
+    const conn = this.#supervisors.get(id)?.conn;
     if (!conn) {
       let cancelled = false;
       setTimeout(() => { if (!cancelled) ev.onClose('offline'); }, 0);
       return { send() {}, resize() {}, close() { cancelled = true; } };
     }
     let closedLocally = false;
-    let ended = false;
-    const handle = conn.rpc.attach(
-      { projectId, shellIndex },
-      (data) => {
-        const d = data as { kind?: string; bytes?: unknown; code?: number | null } | null;
-        if (!d) return;
-        if (d.kind === 'out' && typeof d.bytes === 'string') ev.onData(d.bytes);
-        else if (d.kind === 'exit') ev.onExit(d.code ?? null);
-      },
-      (reason) => { ended = true; if (!closedLocally) ev.onClose(reason); },
-    );
-    handle.ready.catch(() => { /* reported through onClose */ });
+    const input = Effect.runSync(Queue.unbounded<string>());
+    const sizes = Effect.runSync(Queue.sliding<{ cols: number; rows: number }>(1)); // only the latest size matters
 
-    // Keystrokes go out one request at a time, in order; anything typed meanwhile is coalesced.
-    let buffer = '';
-    let sending = false;
-    const pump = () => {
-      if (sending || !buffer || ended) return;
-      sending = true;
-      const text = buffer;
-      buffer = '';
-      handle.ready
-        .then((stream) => conn.rpc.call('shells.input', { stream, bytes: base64Encode(utf8Encode(text)) }))
-        .catch(() => { /* a dead link ends the stream, which the UI shows */ })
-        .finally(() => { sending = false; pump(); });
-    };
-    let size: { cols: number; rows: number } | null = null;
-    let resizing = false;
-    const pumpResize = () => {
-      if (resizing || !size || ended) return;
-      resizing = true;
-      const s = size;
-      size = null;
-      handle.ready
-        .then((stream) => conn.rpc.call('shells.resize', { stream, cols: s.cols, rows: s.rows }))
-        .catch(() => {})
-        .finally(() => { resizing = false; pumpResize(); });
-    };
+    const session = Effect.gen({ self: this }, function*() {
+      const shell = yield* conn.rpc.attach({ projectId, shellIndex }).pipe(
+        Effect.mapError((e) => new RpcError({ code: `attach_failed: ${e.code}`, message: e.message })),
+      );
+      // Keystrokes go out one request at a time, in order; anything typed meanwhile is coalesced.
+      yield* Effect.forkScoped(Effect.forever(
+        Queue.takeAll(input).pipe(
+          Effect.flatMap((chunks) => conn.rpc.call('shells.input', { stream: shell.stream, bytes: base64Encode(utf8Encode(chunks.join(''))) })),
+          Effect.ignore, // a dead link ends the stream, which the UI shows
+        ),
+      ));
+      yield* Effect.forkScoped(Effect.forever(
+        Queue.take(sizes).pipe(
+          Effect.flatMap((s) => conn.rpc.call('shells.resize', { stream: shell.stream, cols: s.cols, rows: s.rows })),
+          Effect.ignore,
+        ),
+      ));
+      yield* Stream.runForEach(shell.events, (e) => Effect.sync(() => {
+        if (e.kind === 'out') ev.onData(e.bytes);
+        else ev.onExit(e.code ?? null);
+      }));
+      return 'remote_ended';
+    }).pipe(
+      Effect.scoped,
+      Effect.catch((e) => Effect.succeed(e.code)),
+      Effect.flatMap((reason) => Effect.sync(() => { if (!closedLocally) ev.onClose(reason); })),
+    );
+    const fiber = this.#runtime.runFork(session);
 
     return {
-      send: (text) => { if (!ended && text) { buffer += text; pump(); } },
-      resize: (cols, rows) => {
-        if (ended || !(cols > 0) || !(rows > 0)) return;
-        size = { cols: Math.floor(cols), rows: Math.floor(rows) };
-        pumpResize();
+      send: (text) => { if (text) Queue.offerUnsafe(input, text); },
+      resize: (cols, rows) => { if (cols > 0 && rows > 0) Queue.offerUnsafe(sizes, { cols: Math.floor(cols), rows: Math.floor(rows) }); },
+      close: () => {
+        closedLocally = true;
+        this.#runtime.runFork(Fiber.interrupt(fiber));
       },
-      close: () => { closedLocally = true; handle.close(); },
     };
   }
 
@@ -309,117 +312,118 @@ export class Fleet {
     this.#set({ machines: this.#state.machines.map((m) => (m.device.id === id ? { ...m, ...patch } : m)) });
   }
 
-  #runner(id: string): Runner {
-    let r = this.#runners.get(id);
-    if (!r) this.#runners.set(id, (r = { conn: null, dialing: false, retryDelay: RETRY_MIN_MS, retryTimer: null, polling: false }));
-    return r;
-  }
-
   #persistDevices(): Promise<void> {
-    return this.deps.storage.set('devices', JSON.stringify(this.#state.machines.map((m) => m.device)));
+    const json = JSON.stringify(this.#state.machines.map((m) => m.device));
+    return this.#runtime.runPromise(save('devices', json));
   }
 
-  #teardown(id: string): void {
-    const r = this.#runners.get(id);
-    if (!r) return;
-    this.#runners.delete(id); // first, so the close callback below sees a stale runner and does nothing
-    if (r.retryTimer) clearTimeout(r.retryTimer);
-    r.conn?.close();
-  }
-
-  #dial(id: string): void {
-    const m = this.#state.machines.find((x) => x.device.id === id);
-    const r = this.#runner(id);
-    if (!m || !this.#key || r.conn || r.dialing) return;
-    r.dialing = true;
-    if (m.status !== 'online') this.#patch(id, { status: 'connecting' });
-    const s = this.#state.settings;
-    connect({
-      platform: this.deps.platform,
-      relay: { host: s.relayHost, port: s.relayPort },
-      code: m.device.code,
-      deviceKey: this.#key,
-      expectedDevice: id,
-    }).then(
-      (conn) => {
-        r.dialing = false;
-        if (this.#runners.get(id) !== r) { conn.close(); return; } // removed or re-paired meanwhile
-        r.conn = conn;
-        conn.rpc.onClosed(() => this.#onDrop(id, r, conn));
-        if (conn.rpc.closed) { this.#onDrop(id, r, conn); return; }
-        // Not online yet: a host that no longer trusts this phone completes the handshake and then hangs
-        // up. The machine counts as online, and the retry back-off resets, once it has answered a request.
-        void this.#poll(id, POLL_TIMEOUT_MS);
-      },
-      (e: unknown) => {
-        r.dialing = false;
-        if (this.#runners.get(id) !== r) return;
-        this.#fail(id, r, e instanceof Error ? e.message : String(e));
-      },
-    );
-  }
-
-  #onDrop(id: string, r: Runner, conn: Connection): void {
-    if (r.conn !== conn) return;
-    r.conn = null;
-    if (this.#runners.get(id) !== r) return;
-    const settle = (): void => {
-      if (this.#runners.get(id) === r) this.#fail(id, r, conn.remoteReason() ?? 'link_lost');
+  /** Starts (or restarts) the supervisor for a machine. */
+  #start(id: string): void {
+    this.#stop(id);
+    if (!this.#key || !this.#state.machines.some((m) => m.device.id === id)) return;
+    const sup: Supervisor = {
+      fiber: undefined as never,
+      conn: null,
+      answered: false,
+      wake: Effect.runSync(Queue.unbounded<true>()),
+      pollNow: Effect.runSync(Queue.unbounded<number>()),
     };
-    if (conn.remoteReason()) { settle(); return; }
-    // The host's reason travels over the relay and tends to land just after the channel closes. Waiting for
-    // it is what tells "removed on that machine" (stop, pair again) from a dropped link (retry).
-    const started = Date.now();
-    const wait = setInterval(() => {
-      if (conn.remoteReason() || Date.now() - started >= REASON_GRACE_MS) { clearInterval(wait); settle(); }
-    }, 50);
+    this.#supervisors.set(id, sup);
+    sup.fiber = this.#runtime.runFork(this.#supervise(id, sup));
   }
 
-  #fail(id: string, r: Runner, reason: string): void {
-    // The desktop no longer trusts this phone (removed there): retrying cannot help, it needs a new pairing.
-    if (reason === 'untrusted_device' || reason === 'revoked' || reason === 'trust_failed') {
-      this.#patch(id, { status: 'revoked', error: reason, shells: [] });
-      return;
-    }
-    this.#patch(id, { status: 'offline', error: reason, shells: [] });
-    if (r.retryTimer) clearTimeout(r.retryTimer);
-    const delay = r.retryDelay;
-    r.retryDelay = Math.min(RETRY_MAX_MS, delay * 2);
-    r.retryTimer = setTimeout(() => {
-      r.retryTimer = null;
-      if (this.#active && this.#runners.get(id) === r) this.#dial(id);
-    }, delay);
+  /** Interrupting the fiber closes its Scope, which closes the link. */
+  #stop(id: string): void {
+    const sup = this.#supervisors.get(id);
+    if (!sup) return;
+    this.#supervisors.delete(id);
+    this.#runtime.runFork(Fiber.interrupt(sup.fiber));
   }
 
-  #pollAll(): void {
-    if (!this.#active) return;
-    for (const m of this.#state.machines) if (this.#runners.get(m.device.id)?.conn) void this.#poll(m.device.id, POLL_TIMEOUT_MS);
+  /** Connect, serve until the link goes, say why, back off, repeat. Ends only when the desktop has revoked this phone. */
+  #supervise(id: string, sup: Supervisor): Effect.Effect<void, never, Relay | Peers> {
+    return Effect.gen({ self: this }, function*() {
+      let delay = RETRY_MIN_MS;
+      for (;;) {
+        sup.answered = false;
+        const reason = yield* this.#session(id, sup).pipe(Effect.scoped);
+        if (REVOKED.has(reason)) {
+          this.#patch(id, { status: 'revoked', error: reason, shells: [] });
+          return;
+        }
+        this.#patch(id, { status: 'offline', error: reason, shells: [] });
+        // A link that worked is retried promptly; one that never answered backs off.
+        if (sup.answered) delay = RETRY_MIN_MS;
+        const woken = yield* Effect.raceFirst(
+          Effect.sleep(delay).pipe(Effect.as(false)),
+          Queue.take(sup.wake).pipe(Effect.as(true)),
+        );
+        delay = woken ? RETRY_MIN_MS : Math.min(RETRY_MAX_MS, delay * 2);
+        // In the background nothing dials; coming back to the foreground wakes every supervisor.
+        while (!this.#active) yield* Queue.take(sup.wake);
+        yield* Queue.clear(sup.wake);
+      }
+    });
   }
 
-  async #poll(id: string, timeoutMs: number): Promise<void> {
-    const r = this.#runner(id);
-    const conn = r.conn;
-    if (!conn || r.polling) return;
-    r.polling = true;
-    try {
-      const [projects, shells] = await Promise.all([
-        conn.rpc.call('projects.list', {}, timeoutMs),
-        conn.rpc.call('shells.alive', {}, timeoutMs),
-      ]);
-      if (r.conn !== conn) return;
+  /**
+   * One connection, from dial to loss; the result is the reason the link ended. The machine counts as
+   * online only once it has answered a request: a desktop that no longer trusts this phone completes the
+   * handshake and then hangs up.
+   */
+  #session(id: string, sup: Supervisor): Effect.Effect<string, never, Relay | Peers | Scope.Scope> {
+    return Effect.gen({ self: this }, function*() {
+      const m = this.#state.machines.find((x) => x.device.id === id);
+      if (!m || !this.#key) return yield* Effect.never;
+      if (m.status !== 'online') this.#patch(id, { status: 'connecting' });
+      const s = this.#state.settings;
+      const conn = yield* connect({ relay: { host: s.relayHost, port: s.relayPort }, code: m.device.code, deviceKey: this.#key, expectedDevice: id });
+      sup.conn = conn;
+      yield* Effect.addFinalizer(() => Effect.sync(() => { if (sup.conn === conn) sup.conn = null; }));
+      yield* Queue.clear(sup.pollNow);
+
+      const polling = Effect.gen({ self: this }, function*() {
+        let timeout = POLL_TIMEOUT_MS;
+        for (;;) {
+          yield* this.#poll(id, sup, conn, timeout);
+          timeout = yield* Effect.raceFirst(
+            Effect.sleep(POLL_MS).pipe(Effect.as(POLL_TIMEOUT_MS)),
+            Queue.take(sup.pollNow),
+          );
+          while (!this.#active) timeout = yield* Queue.take(sup.pollNow);
+        }
+      });
+      // A request that times out means a wedged channel: give it up so the next attempt builds a fresh session.
+      const stalled = yield* Effect.raceFirst(
+        polling.pipe(Effect.flip, Effect.map((e) => e.code === 'request_timeout')),
+        conn.rpc.closed.pipe(Effect.as(false)),
+      );
+      sup.conn = null;
+      if (stalled) return 'request_timeout';
+      // The desktop says why it hung up over the relay, and that tends to land just after the channel closes.
+      // Waiting for it is what tells "removed on that machine" (stop, pair again) from a dropped link (retry).
+      return yield* conn.remoteReason.pipe(Effect.timeoutOrElse({ duration: REASON_GRACE, orElse: () => Effect.succeed('link_lost') }));
+    }).pipe(Effect.catch((e) => Effect.succeed(e.reason)));
+  }
+
+  /** Fetches projects and live shells. Updates the store only when something changed. */
+  #poll(id: string, sup: Supervisor, conn: Connection, timeoutMs: number): Effect.Effect<void, RpcError> {
+    return Effect.gen({ self: this }, function*() {
+      const [projects, shells] = yield* Effect.all(
+        [conn.rpc.call('projects.list', {}, timeoutMs), conn.rpc.call('shells.alive', {}, timeoutMs)],
+        { concurrency: 'unbounded' },
+      );
+      if (sup.conn !== conn) return;
+      sup.answered = true;
       const cur = this.#state.machines.find((m) => m.device.id === id);
       if (!cur) return;
-      const next = { projects: projects.map(({ id: pid, name, path }) => ({ id: pid, name, path })), shells: shells.map((s) => ({ projectId: s.projectId, shellIndex: s.shellIndex, agentState: s.agentState ?? null, name: shellName(s) })) };
-      // Skip the store update (and the re-render) when nothing changed.
-      r.retryDelay = RETRY_MIN_MS; // the link works: the next drop is retried promptly
+      const next = {
+        projects: projects.map(({ id: pid, name, path }) => ({ id: pid, name, path })),
+        shells: shells.map((sh) => ({ projectId: sh.projectId, shellIndex: sh.shellIndex, agentState: sh.agentState ?? null, name: shellName(sh) })),
+      };
       if (cur.loaded && cur.status === 'online' && JSON.stringify({ projects: cur.projects, shells: cur.shells }) === JSON.stringify(next)) return;
       this.#patch(id, { ...next, loaded: true, status: 'online', error: null });
-    } catch (e) {
-      // A wedged data channel answers nothing: drop it so the retry builds a fresh session.
-      if (e instanceof RpcError && e.code === 'request_timeout' && r.conn === conn) conn.close();
-    } finally {
-      r.polling = false;
-    }
+    });
   }
 }
 
