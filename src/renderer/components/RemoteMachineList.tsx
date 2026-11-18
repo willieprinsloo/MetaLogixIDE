@@ -28,7 +28,7 @@ interface Props {
 
 /**
  * The sidebar list for one paired machine (docs/specs/machine-switcher-dots.md AC16–AC24, AC31):
- * a header that scrolls with the list (name, online/offline state, last seen, Reconnect), then —
+ * a header in a frosted well that scrolls with the list (name, online/offline state, last seen, Reconnect), then —
  * only while the machine is online — Recents and Projects fetched for that device. Its live projects
  * also show in the sidebar's shared In use section, so it has none of its own (AC16, AC36); live rows
  * carry the peer's agent status dot (AC42). Mount it under `key={deviceId}` so each switch starts
@@ -78,7 +78,7 @@ async function reconnect(machine: MachineDot): Promise<void> {
 function RemoteHeader({ machine }: { machine: MachineDot }) {
   const busy = useSyncExternalStore(subscribeInFlight, () => inFlight.has(machine.deviceId));
   return (
-    <div data-testid={MACHINE_TESTIDS.remoteHeader} className="flex items-center gap-2 pl-2">
+    <div data-testid={MACHINE_TESTIDS.remoteHeader} className="machine-well flex items-center gap-2 rounded-lg border border-[--border] px-3 py-2">
       <div className="flex-1 min-w-0">
         <div className="truncate min-w-0 text-[13px] font-medium text-[--text]" title={machine.name}>{machine.name}</div>
         <div className="flex items-center gap-1.5 text-[11px] text-[--text-muted]">
