@@ -84,7 +84,20 @@ export function FilesTab({
     if (openFiles.some((f) => f.relPath === relPath)) { setActivePath(relPath); return; }
     try {
       const { content, kind } = await api.invoke('files:read', { projectId, relPath });
-      setOpenFiles((prev) => [...prev, { relPath, content, buffer: content, kind, editing: false }]);
+      // Dedupe INSIDE the updater: two opens can race while the first read
+      // is in flight (the consume effect re-fires when App re-renders with a
+      // fresh onOpenRelPathConsumed arrow), and the closure's `openFiles`
+      // snapshot is stale for the second call. The updater sees committed
+      // state, so the second append collapses into a no-op.
+      // Dedupe INSIDE the updater: opens can race while an earlier read is
+      // still in flight (the consume effect re-fires when App re-renders with
+      // a fresh onOpenRelPathConsumed arrow, or when openPath identity
+      // churns), and the closure's `openFiles` snapshot is stale for every
+      // call but the first. The updater sees committed state, so the later
+      // appends collapse into no-ops.
+      setOpenFiles((prev) => prev.some((f) => f.relPath === relPath)
+        ? prev
+        : [...prev, { relPath, content, buffer: content, kind, editing: false }]);
       setActivePath(relPath);
     } catch (err) { setError(String(err)); }
   }, [projectId, openFiles]);
