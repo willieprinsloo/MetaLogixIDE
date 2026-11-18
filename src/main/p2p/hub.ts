@@ -304,6 +304,42 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): void {
     });
   });
 
+  on('chat.append', async ({ projectId, entry }) => {
+    if (!s.chat) throw new RpcError('unavailable', 'chat service not ready');
+    // `from.device` stays whatever the remote peer stamped; the service
+    // uses deps.deviceId for id/ts stamping on NEW posts but doesn't
+    // rewrite an already-authored entry. Pass the shape through.
+    await s.chat.append({
+      projectId,
+      from: {
+        shell: entry.from.shell,
+        agent: entry.from.agent,
+        ...(entry.from.label ? { label: entry.from.label } : {}),
+      },
+      to: entry.to,
+      body: entry.body,
+      ...(entry.reply_in !== undefined ? { reply_in: entry.reply_in } : {}),
+      ...(entry.meta !== undefined ? { meta: entry.meta } : {}),
+    });
+    return { ok: true } as const;
+  });
+
+  on('chat.sync_since', async ({ projectId, since_ts }) => {
+    if (!s.chat) throw new RpcError('unavailable', 'chat service not ready');
+    const { entries } = await s.chat.listSince(projectId, since_ts);
+    // zod's `.passthrough()` shape has a string index signature, which
+    // the plain ChatEntry interface doesn't. Cast through unknown — the
+    // zod parser already validated the shape on both sides of the wire.
+    return { entries: entries as unknown as Result<'chat.sync_since'>['entries'] };
+  });
+
+  on('chat.roster', async (_params) => {
+    // Hub doesn't yet track peer-visible roster; return an empty shape
+    // so the verb is live and callers can degrade gracefully. The
+    // renderer composes its own roster from the P2P fleet already.
+    return { rows: [] };
+  });
+
   on('fs.read', async ({ projectId, path }) => {
     const abs = resolveInProject(projectRoot(projectId), path);
     const st = statSync(abs);
