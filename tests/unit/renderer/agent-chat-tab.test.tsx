@@ -33,6 +33,21 @@ describe('AgentChatTab', () => {
     expect(el.textContent).toBe('hello');
   });
 
+  it('thread scroll region carries min-h-0 so overflow-y-auto actually engages', async () => {
+    // jsdom does no layout, so we can't assert scrollability. We CAN assert
+    // the classes that make it work in a real browser — without min-h-0 on
+    // every flex ancestor, the inner overflow-y-auto gets clipped and
+    // scrolling silently fails.
+    const { container } = render(<AgentChatTab projectId={1} selfDevice="laptop" />);
+    const root = container.querySelector('[data-testid="agent-chat-tab"]')!;
+    expect(root.className).toMatch(/\bmin-h-0\b/);
+    const section = root.querySelector('section')!;
+    expect(section.className).toMatch(/\bmin-h-0\b/);
+    const scroller = section.querySelector('div')!;
+    expect(scroller.className).toMatch(/\bmin-h-0\b/);
+    expect(scroller.className).toMatch(/\boverflow-y-auto\b/);
+  });
+
   it('composer sends via chat:append', async () => {
     const { api } = await import('@renderer/api');
     render(<AgentChatTab projectId={1} selfDevice="laptop" />);

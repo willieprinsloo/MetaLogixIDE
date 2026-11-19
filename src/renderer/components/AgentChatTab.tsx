@@ -40,8 +40,8 @@ export function AgentChatTab({ projectId, selfDevice }: { projectId: number; sel
   };
 
   return (
-    <div className="h-full flex" data-testid="agent-chat-tab">
-      <aside className="w-48 shrink-0 border-r border-[--border] p-3 flex flex-col gap-1 text-sm">
+    <div className="h-full min-h-0 flex" data-testid="agent-chat-tab">
+      <aside className="w-48 shrink-0 border-r border-[--border] p-3 flex flex-col gap-1 text-sm min-h-0 overflow-y-auto">
         <div className="text-[--text-muted] text-xs uppercase tracking-wide mb-1">Roster</div>
         {roster.length === 0 ? (
           <div className="text-[--text-muted] text-xs">No one yet.</div>
@@ -58,8 +58,8 @@ export function AgentChatTab({ projectId, selfDevice }: { projectId: number; sel
           ))
         )}
       </aside>
-      <section className="flex-1 flex flex-col">
-        <div ref={listRef} className="flex-1 overflow-auto p-3 space-y-2">
+      <section className="flex-1 flex flex-col min-h-0">
+        <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2">
           {entries.map((e) => (
             <div
               key={e.id}
