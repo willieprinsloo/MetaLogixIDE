@@ -1,11 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { classifyHookEvent, NEEDS_INPUT_TYPES, parseHookEvent } from '@main/claude-hooks/hook-event';
+import { join } from 'node:path';
+import { classifyHookEvent, isClaudeTranscriptPath, NEEDS_INPUT_TYPES, parseHookEvent } from '@main/claude-hooks/hook-event';
 
 const common = {
   session_id: 'abc123',
   transcript_path: '/Users/x/.claude/projects/p/abc123.jsonl',
   cwd: '/Users/x/p',
 };
+/** The two fields group chats keep from every payload built on `common`. */
+const ids = { claudeSessionId: 'abc123', transcriptPath: '/Users/x/.claude/projects/p/abc123.jsonl' };
+const noIds = { claudeSessionId: null, transcriptPath: null };
 
 describe('parseHookEvent', () => {
   it('parses the documented Notification example and keeps only the fields the app uses', () => {
@@ -21,20 +25,37 @@ describe('parseHookEvent', () => {
       notificationType: 'permission_prompt',
       message: 'Claude needs your permission',
       backgroundTaskCount: 0,
+      ...ids,
     });
   });
 
   it('parses a real Stop payload, stripping unknown fields such as last_assistant_message', () => {
     const raw = { ...common, hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'secret reply', background_tasks: [] };
     const parsed = parseHookEvent(raw);
-    expect(parsed).toEqual({ hookEventName: 'Stop', notificationType: null, message: null, backgroundTaskCount: 0 });
+    expect(parsed).toEqual({ hookEventName: 'Stop', notificationType: null, message: null, backgroundTaskCount: 0, ...ids });
     expect(JSON.stringify(parsed)).not.toContain('secret reply');
   });
 
   it('parses a UserPromptSubmit payload without carrying the prompt', () => {
     const parsed = parseHookEvent({ ...common, hook_event_name: 'UserPromptSubmit', prompt: 'do the thing' });
-    expect(parsed).toEqual({ hookEventName: 'UserPromptSubmit', notificationType: null, message: null, backgroundTaskCount: 0 });
+    expect(parsed).toEqual({ hookEventName: 'UserPromptSubmit', notificationType: null, message: null, backgroundTaskCount: 0, ...ids });
   });
+
+  it('keeps session_id and transcript_path for group chats', () => {
+    const parsed = parseHookEvent({ hook_event_name: 'Stop', session_id: 'abc', transcript_path: '/h/.claude/projects/x/abc.jsonl' });
+    expect(parsed?.claudeSessionId).toBe('abc');
+    expect(parsed?.transcriptPath).toBe('/h/.claude/projects/x/abc.jsonl');
+  });
+
+  it.each([['a number', 5], ['an object', { p: 1 }], ['an empty string', '']])(
+    'a %s session_id or transcript_path is kept as null and the event still parses',
+    (_label, value) => {
+      const parsed = parseHookEvent({ hook_event_name: 'Stop', session_id: value, transcript_path: value });
+      expect(parsed).not.toBeNull();
+      expect(parsed?.claudeSessionId).toBeNull();
+      expect(parsed?.transcriptPath).toBeNull();
+    },
+  );
 
   it.each([
     ['null', null],
@@ -52,7 +73,26 @@ describe('parseHookEvent', () => {
 
   it('treats an explicit null message or notification_type as absent', () => {
     expect(parseHookEvent({ hook_event_name: 'Notification', message: null, notification_type: null }))
-      .toEqual({ hookEventName: 'Notification', notificationType: null, message: null, backgroundTaskCount: 0 });
+      .toEqual({ hookEventName: 'Notification', notificationType: null, message: null, backgroundTaskCount: 0, ...noIds });
+  });
+});
+
+describe('isClaudeTranscriptPath', () => {
+  const home = join('/', 'h');
+  const projects = join(home, '.claude', 'projects');
+
+  it('accepts a .jsonl file under ~/.claude/projects', () => {
+    expect(isClaudeTranscriptPath(join(projects, 'x', 'a.jsonl'), home)).toBe(true);
+  });
+
+  it.each([
+    ['a path that climbs out with ..', `${projects}/../secrets.jsonl`],
+    ['a non-jsonl file', join(projects, 'x', 'a.txt')],
+    ['a relative path', 'x/a.jsonl'],
+    ['a file elsewhere', join(home, 'other', 'a.jsonl')],
+    ['the projects folder itself', projects],
+  ])('rejects %s', (_label, p) => {
+    expect(isClaudeTranscriptPath(p, home)).toBe(false);
   });
 });
 
@@ -61,8 +101,8 @@ describe('parseHookEvent — background_tasks (AC24, AC27, AC28)', () => {
 
   it('keeps only a count of background tasks, never their content (AC28)', () => {
     const parsed = parseHookEvent({ ...common, hook_event_name: 'Stop', background_tasks: [task] });
-    expect(parsed).toEqual({ hookEventName: 'Stop', notificationType: null, message: null, backgroundTaskCount: 1 });
-    expect(Object.keys(parsed!)).toEqual(['hookEventName', 'notificationType', 'message', 'backgroundTaskCount']);
+    expect(parsed).toEqual({ hookEventName: 'Stop', notificationType: null, message: null, backgroundTaskCount: 1, ...ids });
+    expect(Object.keys(parsed!)).toEqual(['hookEventName', 'notificationType', 'message', 'backgroundTaskCount', 'claudeSessionId', 'transcriptPath']);
     expect(JSON.stringify(parsed)).not.toMatch(/SECRET|bash_1|shell/);
   });
 
