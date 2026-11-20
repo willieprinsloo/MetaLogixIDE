@@ -166,7 +166,7 @@ describe('claudeTabTurn', () => {
 
 describe('headlessTurn', () => {
   it('resolves the reply and exposes engineSession via result()', async () => {
-    const run = vi.fn(async (): Promise<TurnResult> => ({ ok: true, reply: 'hi from gpt', engineSession: 'th-1' }));
+    const run = vi.fn(async (_item: unknown, _signal: AbortSignal): Promise<TurnResult> => ({ ok: true, reply: 'hi from gpt', engineSession: 'th-1' }));
     const turn = headlessTurn({ run }, { model: 'gpt-5', engineSession: null });
     turn.start('round text');
     expect(turn.phase()).toBe('running');

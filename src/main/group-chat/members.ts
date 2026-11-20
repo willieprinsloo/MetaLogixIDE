@@ -11,12 +11,13 @@
  * Every turn settles exactly once with `{ text }` or `{ failed }`, so a round can never hang.
  */
 import type { AgentState } from '@shared/agent-state';
+import type { TurnPhase } from '@shared/group-chat';
 import { claudeInputHasDraft } from '@main/agent-status/claude-screen';
 import type { TranscriptAnswer } from './transcript';
 import type { TurnItem, TurnResult } from './engines/types';
 
+export type { TurnPhase } from '@shared/group-chat';
 export type TurnOutcome = { text: string } | { failed: string };
-export type TurnPhase = 'queued' | 'waiting-idle' | 'waiting-draft' | 'running';
 export interface MemberTurn {
   start(text: string): void;
   stop(reason: string): void;

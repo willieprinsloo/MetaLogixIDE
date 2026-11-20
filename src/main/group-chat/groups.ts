@@ -13,32 +13,9 @@
  * Ported from BotOffice `shared/dashboard/groups.js`; behaviour unchanged.
  */
 import { randomUUID } from 'node:crypto';
+import type { Answer, Group, LogEntry, MemberId } from '@shared/group-chat';
 
-export type MemberId = string;
-export type LogKind = 'start' | 'you' | 'reply' | 'fail' | 'round' | 'member' | 'end';
-export interface LogEntry { at: string; kind: LogKind; from?: MemberId; text: string; round?: number }
-export interface Answer { text?: string; pass?: boolean; failed?: string }
-export interface Group {
-  id: string;
-  projectId: number;
-  projectName: string;
-  name: string;
-  members: MemberId[];
-  maxRounds: number;
-  status: 'idle' | 'running' | 'stopped';
-  round: { n: number; waiting: MemberId[]; answers: Record<MemberId, Answer> } | null;
-  /** Round number within the current conversation (1..maxRounds). */
-  k: number;
-  /** Group-unique round id, so late answers to an old round are ignored. */
-  seq: number;
-  /** The user's messages waiting for the next round. */
-  held: string[];
-  /** Members who joined mid-conversation; their first message carries the story so far. */
-  joined: MemberId[];
-  log: LogEntry[];
-  createdAt: string;
-  updatedAt: string;
-}
+export type { Answer, Group, LogEntry, LogKind, MemberId } from '@shared/group-chat';
 export interface Delivery { member: MemberId; round: number; text: string }
 export interface GroupsOptions {
   now?: () => number;
