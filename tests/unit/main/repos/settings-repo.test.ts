@@ -310,6 +310,27 @@ describe('SettingsRepo', () => {
     expect(repo.get('notify_claude_needs_input')).toBe(true);
   });
 
+  it('AC1 — activity_log_enabled defaults to on for a fresh install (pinned to a literal)', () => {
+    expect(seed().get('activity_log_enabled')).toBe(true);
+  });
+
+  it('AC1 — an upgraded DB without the row seeds it on and leaves other rows alone', () => {
+    const db = openDb(join(mkdtempSync(join(tmpdir(), 'st-')), 'db'));
+    runMigrations(db, migrationsDir);
+    db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('keep_alive_cap', JSON.stringify(7));
+    const repo = new SettingsRepo(db);
+    repo.seedDefaults();
+    expect(repo.get('activity_log_enabled')).toBe(true);
+    expect(repo.get('keep_alive_cap')).toBe(7);
+  });
+
+  it('AC1 — a user\'s off survives re-seeding (restart)', () => {
+    const repo = seed();
+    repo.set('activity_log_enabled', false);
+    repo.seedDefaults();
+    expect(repo.get('activity_log_enabled')).toBe(false);
+  });
+
   describe('app_env (AC3)', () => {
     it('defaults to an empty map on a fresh DB', () => {
       const repo = seed();

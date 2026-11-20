@@ -468,6 +468,7 @@ function installNotifications(services: Services): void {
   wireActivityLog({
     hooks,
     projects: services.projects,
+    settings: services.settings,
     broadcast: (projectId, entry) => broadcast('activity:changed', { projectId, entry }),
   });
 }

@@ -19,7 +19,9 @@ Built on Electron 32 + React 18 + TypeScript.
 - Shared agent memory: every CLI tool call, user prompt, and turn-end is
   appended to `<project>/.metaide/activity.jsonl` so multiple shells on
   one project see each other's work in a single live timeline. Tail it
-  from any terminal with `tail -f .metaide/activity.jsonl`.
+  from any terminal with `tail -f .metaide/activity.jsonl`. On by default;
+  turn it off with Settings > General > Workspace > "Record agent activity",
+  which stops new log lines and hides the Activity tab (existing logs are kept).
 
 ### Rich file viewers
 - Markdown editor + preview with `⌘+` / `⌘-` / `⌘0` zoom and
@@ -68,7 +70,7 @@ Check into git to make the project "just work" on every teammate's machine:
 <project-root>/.metaide/
 ├── env                    # dotenv overlay merged into every shell spawn
 ├── cli-profiles.json      # per-project CLI catalog (JSON array of {name, argv, env?, icon?})
-└── activity.jsonl         # written by the IDE — append-only, agent-shared timeline
+└── activity.jsonl         # written by the IDE — append-only, agent-shared timeline (unless turned off in Settings)
 ```
 
 Precedence: `inherited env < app settings < .metaide/env < template env <

@@ -1,7 +1,8 @@
 /**
  * Glue: subscribe to the hook fanout, translate each hook into one
  * `ActivityEntry`, write it to the owning project's activity log and
- * broadcast `activity:changed` so open renderers can refresh live.
+ * broadcast `activity:changed` so open renderers can refresh live. All of it
+ * is skipped while the `activity_log_enabled` setting is `false`.
  */
 import type { HookSource } from '../claude-hooks/hook-fanout';
 import type { ReceivedHook } from '../claude-hooks/receiver';
@@ -13,10 +14,31 @@ export interface ActivityWireDeps {
   hooks: HookSource;
   projects: ProjectsRepo;
   broadcast: (projectId: number, entry: ActivityEntry) => void;
+  settings: { get(key: 'activity_log_enabled'): boolean };
 }
 
+/**
+ * Reads the activity-log switch. Only a stored `false` means off; a throwing
+ * read or any non-boolean value logs one warning and counts as on, so a broken
+ * settings store never silently stops recording.
+ */
+export function isActivityLogEnabled(settings: ActivityWireDeps['settings']): boolean {
+  let value: unknown;
+  try {
+    value = settings.get('activity_log_enabled');
+  } catch (cause) {
+    console.warn('[activity] setting read failed; treating as on', { cause });
+    return true;
+  }
+  if (typeof value === 'boolean') return value;
+  console.warn('[activity] setting read failed; treating as on', { value });
+  return true;
+}
+
+/** Subscribes to `deps.hooks`; for each hook, checks the setting (per hook, so changes apply live), then appends and broadcasts one entry. */
 export function wireActivityLog(deps: ActivityWireDeps): void {
   deps.hooks.onHook((hook) => {
+    if (!isActivityLogEnabled(deps.settings)) return;
     const entry = hookToEntry(hook);
     if (!entry) return;
     const project = deps.projects.get(hook.shell.projectId);

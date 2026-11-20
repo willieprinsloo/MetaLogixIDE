@@ -135,6 +135,8 @@ export type SettingsMap = {
   /** Show listening-port chips in the status bar. Default on. */
   'show_status_bar':               boolean;
   'show_status_bar_ports':         boolean;
+  /** Record agent hook events to `<project>/.metaide/activity.jsonl` and the Activity tab. Default on. Unrelated to the user-idle tracker. */
+  'activity_log_enabled':          boolean;
   /** macOS and Linux: frosted chrome on/off. Write via settings:set-frost-chrome only. */
   'frost_chrome':                  boolean;
   /** macOS and Linux: chrome frost strength. Write via settings:set-chrome-frost-level only. */

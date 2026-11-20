@@ -51,6 +51,13 @@ const SWITCHES = [
   { testId: 'notify-needs-input-toggle', label: 'When Claude needs input', key: 'notify_claude_needs_input' },
   { testId: 'notify-finished-toggle', label: 'When Claude finishes', key: 'notify_claude_finished' },
 ] as const;
+/** Workspace switch for the activity log (docs/specs/activity-log-toggle.md AC2). Literals, not read from the contract under test. */
+const ACTIVITY_SWITCH = {
+  testId: 'activity-log-toggle',
+  label: 'Record agent activity',
+  hint: 'Off stops writing .metaide/activity.jsonl in your projects and hides the Activity tab. Existing logs are kept.',
+  key: 'activity_log_enabled',
+} as const;
 const NUMBERS = [
   { label: 'Keep-alive cap', key: 'keep_alive_cap', min: 1, max: 20, step: 1, over: 99, under: 0 },
   { label: 'Root scan depth', key: 'scan_depth', min: 1, max: 4, step: 1, over: 9, under: 0 },
@@ -963,9 +970,30 @@ test('AC28, AC29: notification switches in every palette x theme', async () => {
   expect(await style(track(win.getByTestId(SWITCHES[1].testId)), 'box-shadow')).toBe('none');
 });
 
+test('AC2 (activity-log-toggle): Workspace holds the Record agent activity switch, on by default, with its hint; label toggles it and the setting follows', async () => {
+  await openGeneral();
+  const sw = region('Workspace').getByTestId(ACTIVITY_SWITCH.testId);
+  await expect(region('Workspace').getByRole('switch', { name: ACTIVITY_SWITCH.label, exact: true })).toHaveCount(1);
+  await expect(sw).toHaveRole('switch');
+  await expect(sw).toHaveAccessibleName(ACTIVITY_SWITCH.label);
+  await expect(region('Notifications').getByTestId(ACTIVITY_SWITCH.testId), 'not in the Notifications section').toHaveCount(0);
+  await expect(region('Workspace').getByText(ACTIVITY_SWITCH.hint, { exact: true })).toHaveCount(1);
+  await expect(sw).toBeChecked();
+  expect(await setting(ACTIVITY_SWITCH.key)).toBe(true);
+  try {
+    await region('Workspace').getByText(ACTIVITY_SWITCH.label, { exact: true }).click();
+    await expect(sw).not.toBeChecked();
+    await expect.poll(() => setting(ACTIVITY_SWITCH.key)).toBe(false);
+  } finally {
+    if (!(await sw.isChecked())) await sw.click();
+  }
+  await expect(sw).toBeChecked();
+  await expect.poll(() => setting(ACTIVITY_SWITCH.key)).toBe(true);
+});
+
 test('AC32: text contrast on the effective background in every palette x theme', async () => {
   const primary = (): [string, Locator][] => [
-    ...['Theme', 'Mode', 'Window opacity', 'Interface', 'Terminal', ...NUMBERS.map((n) => n.label), ...SWITCHES.map((s) => s.label)].map(
+    ...['Theme', 'Mode', 'Window opacity', 'Interface', 'Terminal', ...NUMBERS.map((n) => n.label), ...SWITCHES.map((s) => s.label), ACTIVITY_SWITCH.label].map(
       (t): [string, Locator] => [`label ${t}`, scroller().getByText(t, { exact: true })],
     ),
     ['opacity value', dialog().getByRole('slider', { name: 'Window opacity' }).locator('xpath=../span')],
@@ -973,7 +1001,7 @@ test('AC32: text contrast on the effective background in every palette x theme',
   ];
   const secondary = (): [string, Locator][] => [
     ...SECTIONS.map((s): [string, Locator] => [`heading ${s}`, region(s).getByRole('heading', { level: 2 })]),
-    ...[...Object.values(ROW_HINTS), FONTS_HINT].map((h): [string, Locator] => [`hint ${h}`, scroller().getByText(h, { exact: true })]),
+    ...[...Object.values(ROW_HINTS), FONTS_HINT, ACTIVITY_SWITCH.hint].map((h): [string, Locator] => [`hint ${h}`, scroller().getByText(h, { exact: true })]),
     ['selected card label', cards().and(win.locator('[aria-pressed="true"]')).locator(':scope > span').nth(1)],
     // Scoped to the Mode radiogroup specifically: on mac, the Frosted glass group's Chrome
     // frost and Terminal frost radiogroups (docs/specs/macos-frosted-glass-settings.md

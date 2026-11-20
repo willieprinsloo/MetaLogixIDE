@@ -26,6 +26,7 @@ export const DEFAULT_SETTINGS: SettingsMap = {
   'notify_claude_finished':        true,
   'show_status_bar':               true,
   'show_status_bar_ports':         true,
+  'activity_log_enabled':          true,
   'frost_chrome':                  true,
   'chrome_frost_level':            'subtle',
   'terminal_frost_level':          'off',

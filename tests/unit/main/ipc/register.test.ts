@@ -325,6 +325,38 @@ describe('registerIpc', () => {
     expect(settings.get(key)).toBeNull();
   });
 
+  it('settings:set activity_log_enabled stores the value and emits one keyed settings:changed', async () => {
+    const ipc = fakeIpcMain();
+    const settings = realSettings();
+    const events: Array<{ channel: string; payload: unknown; stored: unknown }> = [];
+    const sendEvent = (channel: string, payload: unknown) => {
+      events.push({ channel, payload, stored: settings.get('activity_log_enabled') });
+    };
+    const services = { settings } as unknown as Parameters<typeof registerIpc>[1];
+    registerIpc(ipc as unknown as IpcMain, services, sendEvent as never);
+
+    await ipc.handlers.get('settings:set')!({}, { key: 'activity_log_enabled', value: false });
+    expect(settings.get('activity_log_enabled')).toBe(false);
+    expect(events).toEqual([{ channel: 'settings:changed', payload: { key: 'activity_log_enabled' }, stored: false }]);
+  });
+
+  it('activity:list still returns the stored entries while activity_log_enabled is off (AC17)', async () => {
+    const ipc = fakeIpcMain();
+    const settings = realSettings();
+    settings.set('activity_log_enabled', false);
+    const dir = mkdtempSync(join(tmpdir(), 'reg-act-'));
+    mkdirSync(join(dir, '.metaide'));
+    const entries = [
+      { id: 'a1', ts: '2026-01-01T00:00:00.000Z', agent: 'claude', shellIndex: 1, kind: 'prompt', text: 'one' },
+      { id: 'a2', ts: '2026-01-01T00:00:01.000Z', agent: 'claude', shellIndex: 1, kind: 'turn-end' },
+    ];
+    writeFileSync(join(dir, '.metaide', 'activity.jsonl'), entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
+    const services = { settings, projects: { get: () => ({ id: 4, path: dir }) } } as unknown as Parameters<typeof registerIpc>[1];
+    registerIpc(ipc as unknown as IpcMain, services, () => {});
+    await expect(ipc.handlers.get('activity:list')!({}, { projectId: 4 })).resolves.toEqual({ entries });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it('settings:set rejects key app_env without writing (bypass of settings:set-app-env, AC4)', async () => {
     const ipc = fakeIpcMain();
     const settings = realSettings();
