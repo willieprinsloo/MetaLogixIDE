@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyClaudeScreen } from '@main/agent-status/claude-screen';
+import { classifyClaudeScreen, claudeInputHasDraft } from '@main/agent-status/claude-screen';
 
 describe('Claude live-screen authority', () => {
   it('recognizes only a current known approval or question at the bottom', () => {
@@ -32,5 +32,31 @@ describe('Claude live-screen authority', () => {
       ['────────', 'Select permission mode', '❯ 1. Default', 'Enter to select · ↑↓ to navigate · Esc to cancel'],
       '◐ Claude Code',
     )).toBe('blocked');
+  });
+});
+
+describe('claudeInputHasDraft', () => {
+  it('an empty input box is not a draft', () => {
+    expect(claudeInputHasDraft(['some reply', '────────', '❯ ', '────────', '  ? for shortcuts'])).toBe(false);
+    expect(claudeInputHasDraft(['╭──────────╮', '│ >        │', '╰──────────╯'])).toBe(false);
+  });
+
+  it('text after the prompt marker is a draft', () => {
+    expect(claudeInputHasDraft(['────────', '❯ fix the tests', '────────'])).toBe(true);
+    expect(claudeInputHasDraft(['╭──────────╮', '│ > fix the tests │', '╰──────────╯'])).toBe(true);
+  });
+
+  it('the placeholder hint is not a draft', () => {
+    expect(claudeInputHasDraft(['────────', '❯ Try "refactor foo.ts"', '────────'])).toBe(false);
+    expect(claudeInputHasDraft(['│ > Try "refactor foo.ts" │'])).toBe(false);
+  });
+
+  it('uses the last prompt row, not an earlier prompt echoed in the history', () => {
+    expect(claudeInputHasDraft(['> my earlier question', 'Claude answered', '────────', '❯ ', '────────'])).toBe(false);
+  });
+
+  it('an unknown screen is not a draft', () => {
+    expect(claudeInputHasDraft([])).toBe(false);
+    expect(claudeInputHasDraft(['just output', 'more output'])).toBe(false);
   });
 });
