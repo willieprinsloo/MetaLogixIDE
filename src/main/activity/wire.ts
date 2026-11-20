@@ -13,10 +13,30 @@ export interface ActivityWireDeps {
   hooks: HookSource;
   projects: ProjectsRepo;
   broadcast: (projectId: number, entry: ActivityEntry) => void;
+  settings: { get(key: 'activity_log_enabled'): boolean };
+}
+
+/**
+ * Reads the activity-log switch. Only a stored `false` means off; a throwing
+ * read or any non-boolean value logs one warning and counts as on, so a broken
+ * settings store never silently stops recording.
+ */
+export function isActivityLogEnabled(settings: ActivityWireDeps['settings']): boolean {
+  let value: unknown;
+  try {
+    value = settings.get('activity_log_enabled');
+  } catch (cause) {
+    console.warn('[activity] setting read failed; treating as on', { cause });
+    return true;
+  }
+  if (typeof value === 'boolean') return value;
+  console.warn('[activity] setting read failed; treating as on', { value });
+  return true;
 }
 
 export function wireActivityLog(deps: ActivityWireDeps): void {
   deps.hooks.onHook((hook) => {
+    if (!isActivityLogEnabled(deps.settings)) return;
     const entry = hookToEntry(hook);
     if (!entry) return;
     const project = deps.projects.get(hook.shell.projectId);
