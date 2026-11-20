@@ -143,7 +143,7 @@ export async function loadBoard(): Promise<BoardValues> {
     notifyFinished: (nf.value as boolean) ?? true,
     showPorts: (sp.value as boolean) ?? true,
     showStatusBar: (sb.value as boolean) ?? true,
-    activityLog: (al.value as boolean) ?? true,
+    activityLog: al.value !== false,
   };
 }
 

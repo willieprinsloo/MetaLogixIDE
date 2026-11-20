@@ -249,4 +249,18 @@ describe('useBoardSettings — activity_log_enabled (AC2)', () => {
     vi.mocked(api.invoke).mockResolvedValue({ value: null });
     expect(await loadBoard()).toMatchObject({ activityLog: true });
   });
+
+  it.each([0, '', 'no'])('loadBoard reads a non-boolean stored value %j as on, matching main (AC13)', async (stored) => {
+    const { api } = await import('@renderer/api');
+    vi.mocked(api.invoke).mockImplementation((async (_ch: string, req: { key?: string }) =>
+      ({ value: req?.key === 'activity_log_enabled' ? stored : null })) as never);
+    expect(await loadBoard()).toMatchObject({ activityLog: true });
+  });
+
+  it('loadBoard reads a stored false as off', async () => {
+    const { api } = await import('@renderer/api');
+    vi.mocked(api.invoke).mockImplementation((async (_ch: string, req: { key?: string }) =>
+      ({ value: req?.key === 'activity_log_enabled' ? false : null })) as never);
+    expect(await loadBoard()).toMatchObject({ activityLog: false });
+  });
 });

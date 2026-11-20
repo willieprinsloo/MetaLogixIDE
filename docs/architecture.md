@@ -1324,7 +1324,9 @@ Settings → Environment, after "Launch commands".
 | Presentation | `src/renderer/components/env/InheritedEnvList.tsx` | The read-only "From app settings" list in the project Env tab. |
 | Presentation | `src/renderer/components/ProjectEnvTab.tsx` | The Env tab body. Reads the project fresh through `projects:list` when it mounts, edits the draft, and saves only `{ env }`. Save stays disabled until the stored values have loaded. Shows the inherited list below Save and Discard. |
 | Presentation | `src/renderer/components/settings/EnvironmentPanel.tsx` | Settings → Environment: `useAppEnv`, `saveAppEnv` and the shared editor. |
-| Contract | `src/renderer/main-tab.ts` | `MainTab` (`shell`, `files`, `diff`, `env`, `settings`) and `isMainTab`, the validator for the persisted tab. |
+| Contract | `src/renderer/main-tab.ts` | `MainTab` (`shell`, `files`, `diff`, `settings`, `activity`), `isMainTab`, the validator for the persisted tab, and `visibleMainTab`, which shows Shell in place of Activity while the activity log is off. |
+| Contract | `src/renderer/activity-log-contract.ts` | The activity-log setting key, test ids and switch copy, shared by the implementation and the E2E suite. |
+| Presentation | `src/renderer/hooks/useActivityLogEnabled.ts` | Whether the activity log is on; follows `settings:changed`. |
 | Contract | `src/renderer/project-env-copy.ts` | Every string and test id of both editors (`ENV_COPY`, `ENV_TESTIDS`, `APP_ENV_COPY`, `APP_ENV_TESTIDS`). |
 
 Rules:

@@ -1,7 +1,8 @@
 /**
  * Glue: subscribe to the hook fanout, translate each hook into one
  * `ActivityEntry`, write it to the owning project's activity log and
- * broadcast `activity:changed` so open renderers can refresh live.
+ * broadcast `activity:changed` so open renderers can refresh live. All of it
+ * is skipped while the `activity_log_enabled` setting is `false`.
  */
 import type { HookSource } from '../claude-hooks/hook-fanout';
 import type { ReceivedHook } from '../claude-hooks/receiver';
@@ -34,6 +35,7 @@ export function isActivityLogEnabled(settings: ActivityWireDeps['settings']): bo
   return true;
 }
 
+/** Subscribes to `deps.hooks`; for each hook, checks the setting (per hook, so changes apply live), then appends and broadcasts one entry. */
 export function wireActivityLog(deps: ActivityWireDeps): void {
   deps.hooks.onHook((hook) => {
     if (!isActivityLogEnabled(deps.settings)) return;
