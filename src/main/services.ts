@@ -20,6 +20,7 @@ import { OmpReceiver } from './agent-status/omp-receiver';
 import { createOmpLaunchDecorator } from './agent-status/omp-launch';
 import { ClaudeHookHistory } from './notifications/claude-hook-history';
 import type { AgentStatusTracker } from './agent-status/state-tracker';
+import type { GroupChatService } from './group-chat/service';
 import { createDropStaging, defaultDropDir, type DropStaging } from './drops/staging';
 import { createClipboardImage, type ClipboardImage } from './drops/clipboard-image';
 import { listMiseTasks, type MiseLister } from './domain/mise-cli';
@@ -46,6 +47,8 @@ export interface Services {
   ompReceiver: OmpReceiver;
   /** Installed before the renderer can spawn a shell. */
   agentStatus: AgentStatusTracker | null;
+  /** Group chats between agents; attached by `installGroupChat` at startup. */
+  groupChat: GroupChatService | null;
   viewedShells: ViewedShells;
   /** Owner-only temp directory for dropped bytes and pasted images. */
   dropStaging: DropStaging;
@@ -132,7 +135,7 @@ export function buildServices(opts: { dbPath?: string; migrationsDir?: string; h
   });
   return {
     db, roots, projects, shells, settings, prompts, ptyManager, watcher, metaproject,
-    hookSessions, hookReceiver, hookRuntime, hookHistory, ompReceiver, agentStatus: null,
+    hookSessions, hookReceiver, hookRuntime, hookHistory, ompReceiver, agentStatus: null, groupChat: null,
     viewedShells: new ViewedShells(), dropStaging, clipboardImage: createClipboardImage(), listMise: listMiseTasks, homeDir: home, migrationsDir,
   };
 }

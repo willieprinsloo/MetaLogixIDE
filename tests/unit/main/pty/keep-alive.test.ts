@@ -40,4 +40,26 @@ describe('chooseEvictee', () => {
     expect(r.reason).toBe('all-pinned');
     expect(r.evictee).toBeNull();
   });
+
+  describe('group-chat protection', () => {
+    const shells = [s(1, '2026-07-18 11:00:00'), s(2, '2026-07-18 11:30:00'), s(3, '2026-07-18 11:55:00')];
+    const protect = (ids: number[]) => (sh: { projectId: number }) => ids.includes(sh.projectId);
+
+    it('skips a protected shell and evicts the next oldest', () => {
+      const r = chooseEvictee(shells, 3, 4, now, protect([1]));
+      expect(r.evictee?.projectId).toBe(2);
+      expect(r.reason).toBe('lru');
+    });
+
+    it('returns all-protected (not all-pinned) when only protected shells are candidates', () => {
+      const r = chooseEvictee(shells, 3, 4, now, protect([1, 2, 3]));
+      expect(r.reason).toBe('all-protected');
+      expect(r.evictee).toBeNull();
+    });
+
+    it('still returns all-pinned when nothing could be evicted anyway', () => {
+      const pinned = [s(1, '2026-07-18 11:00:00', true), s(2, '2026-07-18 11:30:00', true)];
+      expect(chooseEvictee(pinned, 2, 3, now, protect([1])).reason).toBe('all-pinned');
+    });
+  });
 });

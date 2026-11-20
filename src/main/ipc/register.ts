@@ -86,6 +86,12 @@ function validatedConfigPatch(config: unknown): Partial<ProjectConfig> {
 export type Handler<C extends IpcChannelName> = (services: Services, req: IpcRequest<C>, event?: Electron.IpcMainInvokeEvent) => Promise<IpcResponse<C>>;
 type SendEvent = <E extends IpcEventName>(channel: E, payload: IpcEvents[E]) => void;
 
+/** Keep-alive eviction skips Claude tabs that are members of a running group chat. */
+function inRunningGroupChat(s: Services): (sh: { projectId: number; shellIndex: number }) => boolean {
+  const kept = s.groupChat?.protectedShells() ?? [];
+  return (sh) => kept.some((p) => p.projectId === sh.projectId && p.shellIndex === sh.shellIndex);
+}
+
 // Keychain service name for the metaproject credential. One row per (service,
 // account) pair, keyed by username so a user could theoretically sign into
 // multiple accounts by switching the last-used username in settings.
@@ -435,7 +441,7 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     const cap = s.settings.get('keep_alive_cap');
     const alive = s.shells.list();
     if (alive.length >= cap) {
-      const decision = chooseEvictee(alive, cap, projectId, new Date());
+      const decision = chooseEvictee(alive, cap, projectId, new Date(), inRunningGroupChat(s));
       if (decision.evictee) {
         await s.ptyManager.kill(decision.evictee.projectId, decision.evictee.shellIndex);
         s.shells.remove(decision.evictee.projectId, decision.evictee.shellIndex);
@@ -511,7 +517,7 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     const cap = s.settings.get('keep_alive_cap');
     const alive = s.shells.list();
     if (alive.length >= cap) {
-      const decision = chooseEvictee(alive, cap, projectId, new Date());
+      const decision = chooseEvictee(alive, cap, projectId, new Date(), inRunningGroupChat(s));
       if (decision.evictee) {
         await s.ptyManager.kill(decision.evictee.projectId, decision.evictee.shellIndex);
         s.shells.remove(decision.evictee.projectId, decision.evictee.shellIndex);
@@ -567,7 +573,7 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     const cap = s.settings.get('keep_alive_cap');
     const alive = s.shells.list();
     if (alive.length >= cap) {
-      const decision = chooseEvictee(alive, cap, projectId, new Date());
+      const decision = chooseEvictee(alive, cap, projectId, new Date(), inRunningGroupChat(s));
       if (decision.evictee) {
         await s.ptyManager.kill(decision.evictee.projectId, decision.evictee.shellIndex);
         s.shells.remove(decision.evictee.projectId, decision.evictee.shellIndex);
@@ -1372,7 +1378,7 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     const cap = s.settings.get('keep_alive_cap');
     const alive = s.shells.list();
     if (alive.length >= cap) {
-      const decision = chooseEvictee(alive, cap, projectId, new Date());
+      const decision = chooseEvictee(alive, cap, projectId, new Date(), inRunningGroupChat(s));
       if (decision.evictee) {
         await s.ptyManager.kill(decision.evictee.projectId, decision.evictee.shellIndex);
         s.shells.remove(decision.evictee.projectId, decision.evictee.shellIndex);
