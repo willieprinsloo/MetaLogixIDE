@@ -262,7 +262,7 @@ version footer and the Done bar. Each section is its own module in
 
 | File | Responsibility |
 |---|---|
-| `GeneralPanel.tsx` | Appearance, Fonts, Workspace and Notifications sections. Loads and saves the General settings. |
+| `GeneralPanel.tsx` | Appearance, Fonts, Workspace and Notifications sections. Loads and saves the General settings, including the "Record agent activity" switch (`activity_log_enabled`) in Workspace. |
 | `RootsPanel.tsx`, `LaunchPanel.tsx`, `MetaprojectPanel.tsx` | The other sections. |
 | `primitives.tsx` | `SettingsSection`, `SettingRow`, `SettingStack`, `WorkspaceNumber`, `Switch`, and the older `Header` and `Field`. |
 | `PaletteCards.tsx`, `palette-swatches.ts` | Palette cards (`aria-pressed` buttons) and their preview colours. |
@@ -1149,7 +1149,8 @@ set status dots. The notification path does not read terminal output.
 | IO | `src/main/claude-hooks/receiver.ts` | Loopback HTTP server. Checks the request, authenticates it, answers `204`, then passes a typed event on. |
 | IO | `src/main/claude-hooks/settings-file.ts` | Builds, writes and removes the app-owned Claude Code settings file. |
 | Logic | `src/main/claude-hooks/hook-event.ts` | Parses and classifies the event name, notification type, message and background-task count for notifications. |
-| Logic | `src/main/claude-hooks/hook-fanout.ts` | Delivers authenticated hooks to the notification history. |
+| Logic | `src/main/claude-hooks/hook-fanout.ts` | Delivers authenticated hooks to each listener in isolation: the notification history and the activity log. |
+| Logic | `src/main/activity/wire.ts` | Turns hooks into activity entries, appends them to `<project>/.metaide/activity.jsonl` and broadcasts `activity:changed`. Skips both while `activity_log_enabled` is `false`; the setting is read on every hook, and a failed or non-boolean read counts as on. |
 | Logic | `src/main/claude-hooks/session-registry.ts` | Issues, verifies and releases the per-spawn id and secret. Records which shells are hook-confirmed. |
 | Logic | `src/main/claude-hooks/launch-decorator.ts` | Adds `--settings <file>` and the id and secret to the environment of a Claude launch, just before spawn. |
 | Logic | `src/main/claude-hooks/runtime.ts` | Starts the receiver, then writes the settings file. Stops both on quit. |
