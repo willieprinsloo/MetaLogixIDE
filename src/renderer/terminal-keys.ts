@@ -24,7 +24,7 @@ const OTHER_ROUTES: ReadonlyMap<string, TerminalKeyRoute> = new Map<string, Term
   ['k', 'app'],
   ['shift+c', 'copy'],
   ['shift+v', 'paste'],
-  ...['shift+p', 'shift+k', 'shift+o', 'shift+n', 'shift+t', 'shift+f'].map(
+  ...['shift+p', 'shift+k', 'shift+o', 'shift+n', 'shift+t', 'shift+f', 'shift+a'].map(
     (c) => [c, 'app'] as const,
   ),
   ...[',', '/', '=', '+', 'shift++', '-', '0'].map((c) => [c, 'app'] as const),

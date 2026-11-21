@@ -37,7 +37,8 @@ export type AppShortcutAction =
   | 'toggle-help'
   | 'new-terminal'
   | 'new-terminal-window'
-  | 'toggle-agents-dock';
+  | 'toggle-agents-dock'
+  | 'focus-agents-composer';
 export type AppShortcutActionFn = (e: ShortcutKeyLike, platform: ShortcutPlatform) => AppShortcutAction | null;
 export type ShortcutPredicateFn = (e: ShortcutKeyLike, platform: ShortcutPlatform) => boolean;
 
@@ -91,4 +92,5 @@ export const SHORTCUTS = {
   terminalCopy: { ctrl: true, shift: true, key: 'C' },
   terminalPaste: { ctrl: true, shift: true, key: 'V' },
   agentsDock: { mod: true, key: 'J' },
+  agentsComposer: { mod: true, shift: true, key: 'A' },
 } as const satisfies Record<string, ShortcutDef>;

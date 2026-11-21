@@ -48,6 +48,20 @@ describe('AgentChatTab', () => {
     expect(scroller.className).toMatch(/\boverflow-y-auto\b/);
   });
 
+  it('bumping focusTick focuses the composer textarea', async () => {
+    // The ⇧⌘A shortcut needs to land focus in the composer without the
+    // user clicking the pane. The parent owns a monotonic counter and
+    // bumps it on each shortcut press; a change fires the effect that
+    // .focus()es the textarea. First render (tick > 0) should also focus.
+    const { rerender } = render(<AgentChatTab projectId={1} selfDevice="laptop" focusTick={1} />);
+    const box = await screen.findByRole('textbox');
+    expect(document.activeElement).toBe(box);
+    (box as HTMLTextAreaElement).blur();
+    expect(document.activeElement).not.toBe(box);
+    rerender(<AgentChatTab projectId={1} selfDevice="laptop" focusTick={2} />);
+    expect(document.activeElement).toBe(box);
+  });
+
   it('composer sends via chat:append', async () => {
     const { api } = await import('@renderer/api');
     render(<AgentChatTab projectId={1} selfDevice="laptop" />);

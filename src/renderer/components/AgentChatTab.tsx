@@ -1,4 +1,4 @@
-import { useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useAgentChat } from '@renderer/hooks/useAgentChat';
 import { formatMention } from '@shared/chat-mention';
 
@@ -6,11 +6,19 @@ import { formatMention } from '@shared/chat-mention';
  * Agents pane. Left column shows every poster the thread has mentioned —
  * a cheap roster that shows up as soon as a message arrives. Right column
  * is the thread; the composer at the bottom sends via useAgentChat.
+ *
+ * `focusTick` is a monotonic counter the parent bumps when the ⇧⌘A
+ * shortcut fires — any change (including the first non-zero value) lands
+ * focus in the composer without the user clicking the pane.
  */
-export function AgentChatTab({ projectId, selfDevice }: { projectId: number; selfDevice: string }) {
+export function AgentChatTab({ projectId, selfDevice, focusTick }: { projectId: number; selfDevice: string; focusTick?: number }) {
   const { entries, send } = useAgentChat(projectId);
   const [draft, setDraft] = useState('');
   const listRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (focusTick !== undefined && focusTick > 0) composerRef.current?.focus();
+  }, [focusTick]);
 
   // Simple derived roster: distinct `from` mentions seen in the thread.
   const roster = Array.from(
@@ -83,6 +91,7 @@ export function AgentChatTab({ projectId, selfDevice }: { projectId: number; sel
         </div>
         <div className="p-3 border-t border-[--border]">
           <textarea
+            ref={composerRef}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onKeyDown}

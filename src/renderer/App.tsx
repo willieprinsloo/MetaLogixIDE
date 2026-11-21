@@ -229,6 +229,9 @@ function MainApp() {
     false,
     (v): v is boolean => typeof v === 'boolean',
   );
+  // Bumped by ⇧⌘A to focus the dock's composer without a mouse click; the
+  // dock also auto-opens if it was closed when the shortcut fired.
+  const [agentsComposerFocusTick, setAgentsComposerFocusTick] = useState(0);
   // Migrate stale state: older sessions could persist activeView='agents'
   // (when Agents was a left-sheet view). On mount, flip that to 'projects'
   // and auto-open the dock so the user sees what they last chose.
@@ -649,6 +652,10 @@ function MainApp() {
       'new-terminal': () => openNewTerminalRef.current(false),
       'new-terminal-window': () => openNewTerminalRef.current(true),
       'toggle-agents-dock': () => setAgentsDockOpen((x) => !x),
+      'focus-agents-composer': () => {
+        setAgentsDockOpen(true);
+        setAgentsComposerFocusTick((t) => t + 1);
+      },
     };
     function onKey(e: KeyboardEvent) {
       if (shortcutsBlockedRef.current) return;
@@ -1258,7 +1265,7 @@ function MainApp() {
               data-testid="agents-dock"
               aria-label="Agents"
             >
-              <AgentChatTab projectId={selected.id} selfDevice={selfDeviceName} />
+              <AgentChatTab projectId={selected.id} selfDevice={selfDeviceName} focusTick={agentsComposerFocusTick} />
             </aside>
           </>
         )}
