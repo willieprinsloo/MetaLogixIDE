@@ -22,6 +22,7 @@ const SHORTCUT_GROUPS: ReadonlyArray<{ readonly title: string; readonly rows: re
   ] },
   { title: 'Views', rows: [
     { keys: [SHORTCUTS.sidebar], label: 'Toggle sidebar' },
+    { keys: [SHORTCUTS.agentsDock], label: 'Toggle agents dock' },
     { keys: [SHORTCUTS.settings], label: 'Settings' },
     { keys: [SHORTCUTS.help], label: 'This cheat sheet' },
   ] },

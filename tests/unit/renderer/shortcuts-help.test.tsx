@@ -113,7 +113,7 @@ describe('ShortcutsHelp on Linux (AC6, AC13)', () => {
     const all = linuxRows(linux());
     expect(all.find((r) => r.label === 'Command palette')?.keys.map((k) => k.key)).toEqual(['Ctrl+K', 'Ctrl+Shift+P']);
     expect(all.flatMap((r) => r.keys.map((k) => k.key))).toEqual([
-      'Ctrl+K', 'Ctrl+Shift+P', 'Ctrl+P', 'Ctrl+Shift+F', 'Ctrl+B', 'Ctrl+,', 'Ctrl+/',
+      'Ctrl+K', 'Ctrl+Shift+P', 'Ctrl+P', 'Ctrl+Shift+F', 'Ctrl+B', 'Ctrl+J', 'Ctrl+,', 'Ctrl+/',
       'Ctrl+Shift+N', 'Ctrl+T', 'Ctrl+Shift+T', 'Ctrl+F', 'Ctrl+Shift+O', 'Ctrl+Shift+K', 'Ctrl+=', 'Ctrl+-', 'Ctrl+0',
     ]);
   });

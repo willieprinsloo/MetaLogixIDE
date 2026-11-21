@@ -36,7 +36,8 @@ export type AppShortcutAction =
   | 'scrollback-search'
   | 'toggle-help'
   | 'new-terminal'
-  | 'new-terminal-window';
+  | 'new-terminal-window'
+  | 'toggle-agents-dock';
 export type AppShortcutActionFn = (e: ShortcutKeyLike, platform: ShortcutPlatform) => AppShortcutAction | null;
 export type ShortcutPredicateFn = (e: ShortcutKeyLike, platform: ShortcutPlatform) => boolean;
 
@@ -89,4 +90,5 @@ export const SHORTCUTS = {
   findPrev: { shift: true, key: 'Enter' },
   terminalCopy: { ctrl: true, shift: true, key: 'C' },
   terminalPaste: { ctrl: true, shift: true, key: 'V' },
+  agentsDock: { mod: true, key: 'J' },
 } as const satisfies Record<string, ShortcutDef>;

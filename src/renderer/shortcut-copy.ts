@@ -47,6 +47,8 @@ export const SHORTCUT_COPY = {
   newProjectHint: key(SHORTCUTS.newProject),
   toggleSidebarLabel: (platform: ShortcutPlatform): string =>
     `Toggle sidebar (${formatShortcut(SHORTCUTS.sidebar, platform)})`,
+  agentsDockLabel: (platform: ShortcutPlatform): string =>
+    `Agents dock (${formatShortcut(SHORTCUTS.agentsDock, platform)})`,
   newTerminalHint: key(SHORTCUTS.newTerminal),
   promptsShortcut: key(SHORTCUTS.prompts),
   scrollbackShortcut: key(SHORTCUTS.scrollbackSearch),

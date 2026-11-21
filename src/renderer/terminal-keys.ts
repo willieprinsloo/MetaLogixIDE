@@ -20,6 +20,7 @@ import { chordKey, isPrimaryMod } from './shortcut-match';
 
 const OTHER_ROUTES: ReadonlyMap<string, TerminalKeyRoute> = new Map<string, TerminalKeyRoute>([
   ['f', 'app'],
+  ['j', 'app'],
   ['k', 'app'],
   ['shift+c', 'copy'],
   ['shift+v', 'paste'],

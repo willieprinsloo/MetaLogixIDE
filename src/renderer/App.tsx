@@ -648,6 +648,7 @@ function MainApp() {
       'toggle-help': () => setHelpOpen((v) => !v),
       'new-terminal': () => openNewTerminalRef.current(false),
       'new-terminal-window': () => openNewTerminalRef.current(true),
+      'toggle-agents-dock': () => setAgentsDockOpen((x) => !x),
     };
     function onKey(e: KeyboardEvent) {
       if (shortcutsBlockedRef.current) return;

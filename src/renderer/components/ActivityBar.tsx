@@ -86,7 +86,7 @@ export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, ch
         <TasksIcon />
       </ABButton>
       <ABButton
-        label={agentsUnread ? `Agents — ${agentsUnread} unread` : 'Agents'}
+        label={agentsUnread ? `${SHORTCUT_COPY.agentsDockLabel(platform)} — ${agentsUnread} unread` : SHORTCUT_COPY.agentsDockLabel(platform)}
         active={agentsPressed}
         onClick={() => onSelect('agents')}
         data-testid="ab-agents"

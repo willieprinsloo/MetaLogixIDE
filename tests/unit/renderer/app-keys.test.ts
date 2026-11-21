@@ -33,6 +33,7 @@ const ACTIONS: ReadonlyArray<[string, boolean, AppShortcutAction]> = [
   ['/', false, 'toggle-help'],
   ['t', false, 'new-terminal'],
   ['T', true, 'new-terminal-window'],
+  ['j', false, 'toggle-agents-dock'],
 ];
 
 describe.each(PLATFORMS)('appShortcutAction on $platform', ({ platform, mod, wrong }) => {
