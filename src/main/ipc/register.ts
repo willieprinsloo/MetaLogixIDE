@@ -23,6 +23,7 @@ import { applyClaudePermissionMode } from '@main/domain/claude-permission-mode';
 import { isClaudePermissionMode } from '@shared/claude-permission-mode';
 import type { P2PApi } from '../p2p/types';
 import { isFontSettingKey, parseFontFamilyPreference } from '@shared/font-settings';
+import { TERMINAL_ENGINE_KEY, isTerminalEngine } from '@shared/terminal-engine';
 import { TERMINAL_FONT_SIZE_KEY, parseTerminalFontSize } from '@shared/terminal-font-size';
 import {
   TERMINAL_FONT_WEIGHT_KEY,
@@ -281,8 +282,34 @@ function p2pApi(s: Services): P2PApi {
   return s.p2p.api;
 }
 
+/** Returns whether to publish settings:changed after this synchronous write. */
+function setSetting(s: Services, { key, value }: IpcRequest<'settings:set'>): boolean {
+  if (typeof key !== 'string') throw new Error('Invalid settings key');
+  if (key === TERMINAL_ENGINE_KEY) {
+    if (!isTerminalEngine(value)) throw new Error('Invalid terminal engine');
+    if (s.settings.get(key) === value) return false;
+    s.settings.set(key, value);
+    return true;
+  }
+  // Permission mode and font preferences have dedicated validated setters.
+  if (key === 'claude_permission_mode') throw new Error('claude_permission_mode can only be changed via settings:set-claude-permission-mode');
+  if (isFontSettingKey(key)) throw new Error(`${key} can only be changed via settings:set-font`);
+  if (key === TERMINAL_FONT_SIZE_KEY) throw new Error(`${key} can only be changed via settings:set-terminal-font-size`);
+  if (key === TERMINAL_FONT_WEIGHT_KEY) throw new Error(`${key} can only be changed via settings:set-terminal-font-weight`);
+  if (key === TERMINAL_BOLD_WEIGHT_KEY) throw new Error(`${key} can only be changed via settings:set-terminal-bold-weight`);
+  if (key === 'app_env') throw new Error('app_env can only be changed via settings:set-app-env');
+  // Legacy key: read only by the terminal_frost_level migration, never written again (D19).
+  if ((key as string) === 'frost_terminal') throw new Error('frost_terminal is a legacy key; use settings:set-terminal-frost-level');
+  if (key === 'frost_chrome') throw new Error('frost_chrome can only be changed via settings:set-frost-chrome');
+  if (key === 'chrome_frost_level') throw new Error('chrome_frost_level can only be changed via settings:set-chrome-frost-level');
+  if (key === 'terminal_frost_level') throw new Error('terminal_frost_level can only be changed via settings:set-terminal-frost-level');
+  if (key === 'vibrancy_material') throw new Error('vibrancy_material can only be changed via settings:set-vibrancy-material');
+  s.settings.set(key, value as never);
+  return true;
+}
+
 /** Exported so the P2P hub can call the same implementations directly (no ipcMain round-trip). */
-export const handlers: { [C in Exclude<IpcChannelName, 'shells:snapshot'>]: Handler<C> } = {
+export const handlers: { [C in Exclude<IpcChannelName, 'shells:snapshot' | 'settings:set'>]: Handler<C> } = {
   'dialogs:pick-directory': async (_s, _req, event) => {
     if (process.env.METAIDE_TEST_MODE === '1') {
       return { path: null };
@@ -847,23 +874,6 @@ export const handlers: { [C in Exclude<IpcChannelName, 'shells:snapshot'>]: Hand
   'shells:pin':   async (s, { projectId, shellIndex, pinned }) => { s.shells.setPinned(projectId, shellIndex, pinned); return { ok: true } as const; },
 
   'settings:get': async (s, { key }) => ({ value: s.settings.get(key) }),
-  'settings:set': async (s, { key, value }) => {
-    // Permission mode and font preferences have dedicated validated setters.
-    if (key === 'claude_permission_mode') throw new Error('claude_permission_mode can only be changed via settings:set-claude-permission-mode');
-    if (isFontSettingKey(key)) throw new Error(`${key} can only be changed via settings:set-font`);
-    if (key === TERMINAL_FONT_SIZE_KEY) throw new Error(`${key} can only be changed via settings:set-terminal-font-size`);
-    if (key === TERMINAL_FONT_WEIGHT_KEY) throw new Error(`${key} can only be changed via settings:set-terminal-font-weight`);
-    if (key === TERMINAL_BOLD_WEIGHT_KEY) throw new Error(`${key} can only be changed via settings:set-terminal-bold-weight`);
-    if (key === 'app_env') throw new Error('app_env can only be changed via settings:set-app-env');
-    // Legacy key: read only by the terminal_frost_level migration, never written again (D19).
-    if ((key as string) === 'frost_terminal') throw new Error('frost_terminal is a legacy key; use settings:set-terminal-frost-level');
-    if (key === 'frost_chrome') throw new Error('frost_chrome can only be changed via settings:set-frost-chrome');
-    if (key === 'chrome_frost_level') throw new Error('chrome_frost_level can only be changed via settings:set-chrome-frost-level');
-    if (key === 'terminal_frost_level') throw new Error('terminal_frost_level can only be changed via settings:set-terminal-frost-level');
-    if (key === 'vibrancy_material') throw new Error('vibrancy_material can only be changed via settings:set-vibrancy-material');
-    s.settings.set(key, value as never);
-    return { ok: true } as const;
-  },
   'settings:set-font': async (s, request) => {
     if (!isFontSettingKey(request.key)) throw new Error('invalid font setting key');
     const parsed = parseFontFamilyPreference(request.value);
@@ -1687,7 +1697,6 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
   // Wired separately below: these channels emit keyed `settings:changed`
   // events that the fixed per-channel payload cannot express.
   const CUSTOM_EMIT_CHANNELS: Partial<Record<IpcChannelName, true>> = {
-    'settings:set': true,
     'settings:set-font': true,
     'settings:set-terminal-font-size': true,
     'settings:set-terminal-font-weight': true,
@@ -1710,10 +1719,9 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
     });
   }
 
-  ipcMain.handle('settings:set', async (_e, req: IpcRequest<'settings:set'>) => {
-    const result = await handlers['settings:set'](services, req);
-    sendEvent('settings:changed', { key: req.key });
-    return result;
+  ipcMain.handle('settings:set', async (_e, req: IpcRequest<'settings:set'>): Promise<IpcResponse<'settings:set'>> => {
+    if (setSetting(services, req)) sendEvent('settings:changed', { key: req.key });
+    return { ok: true };
   });
 
   ipcMain.handle('settings:set-font', async (_e, req: IpcRequest<'settings:set-font'>) => {

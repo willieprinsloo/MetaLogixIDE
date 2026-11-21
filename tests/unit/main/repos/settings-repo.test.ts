@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { openDb } from '@main/db/connection';
 import { runMigrations } from '@main/db/migrator';
 import { SettingsRepo, DEFAULT_SETTINGS } from '@main/repos/settings-repo';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -17,6 +17,75 @@ function seed() {
 }
 
 describe('SettingsRepo', () => {
+  describe('desktop terminal engine', () => {
+    it('defaults to xterm on a fresh profile and seeds it on upgrade without touching other settings', () => {
+      const db = openDb(':memory:');
+      try {
+        runMigrations(db, migrationsDir);
+        const repo = new SettingsRepo(db);
+        repo.set('theme', 'light');
+        expect(repo.get('terminal_engine')).toBe('xterm');
+        expect(repo.getAll().terminal_engine).toBe('xterm');
+        repo.seedDefaults();
+        expect(db.prepare('SELECT value FROM settings WHERE key = ?').get('terminal_engine')).toEqual({ value: '"xterm"' });
+        expect(repo.get('theme')).toBe('light');
+        expect(seed().get('terminal_engine')).toBe('xterm');
+      } finally { db.close(); }
+    });
+
+    it.each(['not JSON', 'null', '42', '[]', '{"engine":"ghostty"}', '"Ghostty"', '"ghostty "', '"next-engine"'])(
+      'reads invalid stored value %s as xterm without rewriting it', (raw) => {
+        const db = openDb(':memory:');
+        try {
+          runMigrations(db, migrationsDir);
+          db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('terminal_engine', raw);
+          const repo = new SettingsRepo(db);
+          repo.seedDefaults();
+          expect(repo.get('terminal_engine')).toBe('xterm');
+          expect(repo.getAll().terminal_engine).toBe('xterm');
+          expect(db.prepare('SELECT value FROM settings WHERE key = ?').get('terminal_engine')).toEqual({ value: raw });
+        } finally { db.close(); }
+      },
+    );
+
+    it('preserves either saved engine when the database is reopened and defaults are seeded', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'st-engine-'));
+      const path = join(dir, 'db');
+      function withRepo(run: (repo: SettingsRepo) => void): void {
+        const db = openDb(path);
+        try {
+          runMigrations(db, migrationsDir);
+          const repo = new SettingsRepo(db);
+          repo.seedDefaults();
+          run(repo);
+        } finally { db.close(); }
+      }
+      try {
+        withRepo(repo => repo.set('terminal_engine', 'ghostty'));
+        withRepo(repo => {
+          expect(repo.get('terminal_engine')).toBe('ghostty');
+          expect(repo.getAll().terminal_engine).toBe('ghostty');
+          repo.set('terminal_engine', 'xterm');
+        });
+        withRepo(repo => expect(repo.get('terminal_engine')).toBe('xterm'));
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('does not hide unrelated malformed JSON or database failures', () => {
+      const db = openDb(':memory:');
+      try {
+        runMigrations(db, migrationsDir);
+        db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('theme', 'not JSON');
+        const repo = new SettingsRepo(db);
+        expect(() => repo.get('theme')).toThrow(SyntaxError);
+        expect(() => repo.getAll()).toThrow(SyntaxError);
+        db.exec('DROP TABLE settings');
+        expect(() => repo.get('terminal_engine')).toThrow('no such table');
+        expect(() => repo.getAll()).toThrow('no such table');
+      } finally { db.close(); }
+    });
+  });
+
   it('seeds all defaults', () => {
     const repo = seed();
     expect(repo.get('keep_alive_cap')).toBe(DEFAULT_SETTINGS.keep_alive_cap);

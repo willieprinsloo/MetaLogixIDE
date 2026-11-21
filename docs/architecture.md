@@ -284,6 +284,12 @@ Components below `GeneralPanel` take values and callbacks as props, so unit
 tests render them without a DOM. Real focus, layout and colour are covered by
 `tests/e2e/settings-board.spec.ts`.
 
+The desktop settings repository stores `terminal_engine` as a viewer-local
+preference. Missing or invalid values read as `xterm` without changing the
+stored row. The existing settings IPC validates writes and sends a change
+event only after a different value is saved. The preference is not yet used
+by terminal views or exposed in General.
+
 ### App chrome
 
 The chrome around the content (title bar, activity bar, sidebar columns and

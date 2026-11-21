@@ -407,6 +407,69 @@ describe('registerIpc', () => {
     expect(events).toEqual([{ channel: 'settings:changed', payload: { key: 'activity_log_enabled' }, stored: false }]);
   });
 
+  describe('desktop terminal engine setting via existing settings IPC', () => {
+    function rig() {
+      const ipc = fakeIpcMain();
+      const settings = realSettings();
+      const events: Array<{ channel: string; payload: unknown; committed: unknown }> = [];
+      registerIpc(ipc, { settings } as Parameters<typeof registerIpc>[1], (channel, payload) => {
+        events.push({ channel, payload, committed: settings.get('terminal_engine') });
+      });
+      return {
+        settings, events,
+        read: () => ipc.handlers.get('settings:get')!({}, { key: 'terminal_engine' }),
+        write: (value: unknown, key: unknown = 'terminal_engine') => ipc.handlers.get('settings:set')!({}, { key, value }),
+      };
+    }
+
+    it('changes in both directions, notifying only real, persisted changes', async () => {
+      const { read, write, events, settings } = rig();
+      const set = vi.spyOn(settings, 'set');
+      await expect(read()).resolves.toEqual({ value: 'xterm' });
+      await expect(write('xterm')).resolves.toEqual({ ok: true });
+      expect(set).not.toHaveBeenCalled();
+      expect(events).toEqual([]);
+      for (const value of ['ghostty', 'xterm']) {
+        await expect(write(value)).resolves.toEqual({ ok: true });
+        await expect(write(value)).resolves.toEqual({ ok: true });
+        await expect(read()).resolves.toEqual({ value });
+      }
+      expect(set.mock.calls).toEqual([['terminal_engine', 'ghostty'], ['terminal_engine', 'xterm']]);
+      expect(events).toEqual(['ghostty', 'xterm'].map(committed => ({
+        channel: 'settings:changed', payload: { key: 'terminal_engine' }, committed,
+      })));
+    });
+
+    it.each([undefined, null, 0, true, {}, ['xterm'], '', 'GHOSTTY', 'ghostty ', 'other'].map(value => [value]))(
+      'rejects invalid input %j without writing or notifying', async (value) => {
+        const { read, write, events, settings } = rig();
+        const set = vi.spyOn(settings, 'set');
+        await expect(write(value)).rejects.toThrow('Invalid terminal engine');
+        expect(set).not.toHaveBeenCalled();
+        expect(events).toEqual([]);
+        await expect(read()).resolves.toEqual({ value: 'xterm' });
+      },
+    );
+
+    it('rejects a non-string setting key without writing or notifying', async () => {
+      const { write, settings, events } = rig();
+      const set = vi.spyOn(settings, 'set');
+      await expect(write('ghostty', 123)).rejects.toThrow('Invalid settings key');
+      expect(set).not.toHaveBeenCalled();
+      expect(events).toEqual([]);
+    });
+
+    it('does not notify or change the next read when the database rejects a save', async () => {
+      const { read, write, events, settings } = rig();
+      vi.spyOn(settings, 'set').mockImplementationOnce(() => { throw new Error('database write failed'); });
+      await expect(write('ghostty')).rejects.toThrow('database write failed');
+      expect(events).toEqual([]);
+      await expect(read()).resolves.toEqual({ value: 'xterm' });
+      await expect(write('ghostty')).resolves.toEqual({ ok: true });
+      await expect(read()).resolves.toEqual({ value: 'ghostty' });
+    });
+  });
+
   it('activity:list still returns the stored entries while activity_log_enabled is off (AC17)', async () => {
     const ipc = fakeIpcMain();
     const settings = realSettings();

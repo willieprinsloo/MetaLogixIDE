@@ -1,6 +1,7 @@
 import type { AgentHarness } from './agent-harness';
 import type { ClaudePermissionMode } from './claude-permission-mode';
 import type { ChromeFrostLevel, TerminalFrostLevel, VibrancyMaterial } from './frosted-glass';
+import type { TerminalEngine } from './terminal-engine';
 
 export interface Root {
   id: number;
@@ -105,6 +106,8 @@ export type SettingsMap = {
   'scrollback_lines':              number;
   'max_watched_paths':             number;
   'theme':                         'dark' | 'light' | 'system';
+  /** Desktop-only preference for new terminal views. It does not belong to the shell or its host. */
+  'terminal_engine':               TerminalEngine;
   /** Host-installed family used by ordinary application UI; null keeps the built-in stack. */
   'ui_font_family':                string | null;
   /** Host-installed family used by integrated terminals; null keeps the built-in stack. */

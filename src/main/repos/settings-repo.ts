@@ -1,5 +1,6 @@
 import type { Database } from 'better-sqlite3';
 import type { SettingsMap } from '@shared/types';
+import { DEFAULT_TERMINAL_ENGINE, TERMINAL_ENGINE_KEY, isTerminalEngine } from '@shared/terminal-engine';
 import { withPermissionMode } from '@main/domain/claude-permission-mode';
 
 export const DEFAULT_SETTINGS: SettingsMap = {
@@ -13,6 +14,7 @@ export const DEFAULT_SETTINGS: SettingsMap = {
   'scrollback_lines':              10000,
   'max_watched_paths':             500,
   'theme':                         'dark',
+  [TERMINAL_ENGINE_KEY]:           DEFAULT_TERMINAL_ENGINE,
   'ui_font_family':                null,
   'terminal_font_family':          null,
   'terminal_font_size':            null,
@@ -64,6 +66,17 @@ const RETIRED_CLI_PROFILES: readonly { name: string; argv: readonly string[] }[]
 
 function isRetiredProfile(p: { name: string; argv: readonly string[] }): boolean {
   return RETIRED_CLI_PROFILES.some((r) => r.name === p.name && r.argv.length === p.argv.length && r.argv.every((a, i) => a === p.argv[i]));
+}
+
+function parseStoredSetting(key: string, raw: string): unknown {
+  if (key !== TERMINAL_ENGINE_KEY) return JSON.parse(raw);
+  try {
+    const value: unknown = JSON.parse(raw);
+    return isTerminalEngine(value) ? value : DEFAULT_TERMINAL_ENGINE;
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    return DEFAULT_TERMINAL_ENGINE;
+  }
 }
 
 export class SettingsRepo {
@@ -127,7 +140,7 @@ export class SettingsRepo {
   get<K extends keyof SettingsMap>(key: K): SettingsMap[K] {
     const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
     if (!row) return DEFAULT_SETTINGS[key];
-    return JSON.parse(row.value) as SettingsMap[K];
+    return parseStoredSetting(key, row.value) as SettingsMap[K];
   }
 
   set<K extends keyof SettingsMap>(key: K, value: SettingsMap[K]): void {
@@ -153,7 +166,7 @@ export class SettingsRepo {
     const rows = this.db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
     const result = { ...DEFAULT_SETTINGS };
     for (const row of rows) {
-      (result as Record<string, unknown>)[row.key] = JSON.parse(row.value);
+      (result as Record<string, unknown>)[row.key] = parseStoredSetting(row.key, row.value);
     }
     return result;
   }
