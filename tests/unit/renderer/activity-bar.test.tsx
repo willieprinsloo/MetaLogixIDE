@@ -32,7 +32,7 @@ describe('ActivityBar geometry (AC10)', () => {
   });
   it('every button is 36x36 with 10px radius', () => {
     const bs = buttons(render());
-    expect(bs).toHaveLength(5);
+    expect(bs).toHaveLength(6);
     for (const b of bs) {
       expect(classesOf(b)).toEqual(expect.arrayContaining(['w-9', 'h-9', 'rounded-[10px]']));
       expect(classesOf(b)).not.toContain('w-8');
@@ -40,7 +40,7 @@ describe('ActivityBar geometry (AC10)', () => {
   });
   it('every icon is 16x16', () => {
     const icons = svgs(render());
-    expect(icons).toHaveLength(5);
+    expect(icons).toHaveLength(6);
     for (const s of icons) {
       expect(s).toContain('width="16"');
       expect(s).toContain('height="16"');
@@ -85,5 +85,14 @@ describe('ActivityBar badges (AC11-AC14)', () => {
   });
   it('hides the badge on the active view', () => {
     expect(badgeOf(render({ ...all, active: 'git' }), 'ab-git')).toBeNull();
+  });
+});
+
+describe('ActivityBar group chat button', () => {
+  it('has a Group button that is active when the group view is open', () => {
+    const html = renderToStaticMarkup(<ActivityBar active="group" onSelect={noop} onToggleSidebar={noop} sidebarOpen />);
+    const btn = /<button\b[^>]*data-testid="ab-group"[^>]*>/.exec(html)?.[0] ?? '';
+    expect(btn).toContain('aria-label="Group chat');
+    expect(classesOf(btn)).toContain('bg-[--accent-soft]');
   });
 });

@@ -11,6 +11,7 @@ import { SIDEBAR_WIDTH, useSidebarWidth } from './sidebar-width';
 import { ShellTab } from './components/ShellTab';
 import { FilesTab } from './components/FilesTab';
 import { ChatTab } from './components/ChatTab';
+import { GroupChatPanel } from './components/GroupChatPanel';
 import { GitPanel } from './components/GitPanel';
 import { Settings } from './components/Settings';
 import type { SettingsSection } from './components/settings/nav-icons';
@@ -177,7 +178,7 @@ function MainApp() {
   const [activeView, setActiveView] = usePersistedState<ActivityView>(
     'metaide.activeView',
     'projects',
-    (v): v is ActivityView => v === 'projects' || v === 'chat' || v === 'git' || v === 'tasks',
+    (v): v is ActivityView => v === 'projects' || v === 'chat' || v === 'group' || v === 'git' || v === 'tasks',
   );
   // Live-ref of the active view so the metaproject subscriber can decide
   // whether to bump the badge without re-subscribing on every switch.
@@ -813,6 +814,29 @@ function MainApp() {
                       projectId={selected?.id ?? 0}
                       metaprojectProjectId={selected ? (selected.config.linkedMetaprojectProjectId ?? selected.metaprojectProjectId ?? null) : null}
                       compact
+                      onDismiss={() => setActiveView('projects')}
+                    />
+                  </div>
+                  <ResizeHandle
+                    value={chatPanelWidth}
+                    onChange={setChatPanelWidth}
+                    onReset={() => setChatPanelWidth(400)}
+                    min={300}
+                    max={640}
+                    side="left"
+                  />
+                </>
+              )}
+              {activeView === 'group' && !remotePane && (
+                <>
+                  <div
+                    data-view="group"
+                    className="section-panel h-full flex flex-col shrink-0"
+                    style={{ width: chatPanelWidth }}
+                  >
+                    <GroupChatPanel
+                      projectId={selected?.id ?? 0}
+                      focusedShell={selected ? { projectId: selected.id, shellIndex: activeShellIndex } : null}
                       onDismiss={() => setActiveView('projects')}
                     />
                   </div>

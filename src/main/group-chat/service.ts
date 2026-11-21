@@ -149,7 +149,7 @@ export class GroupChatService {
     this.enqueue(id, this.groups.removeMember(id, member));
     this.dropQueued((it) => it.groupId === id && it.member === member);
     this.stopRunning((it) => it.groupId === id && it.member === member, 'removed from the group');
-    delete this.records.get(id)![member];
+    this.records.set(id, Object.fromEntries(Object.entries(this.records.get(id)!).filter(([m]) => m !== member)));
     return this.changed(g);
   }
 

@@ -52,6 +52,23 @@ function describe(name: string, p: Params = {}): string {
   }
 }
 
+/** One `--output-format stream-json` event; every field is untrusted until checked. */
+interface GeminiEvent {
+  type?: unknown;
+  session_id?: unknown;
+  model?: unknown;
+  role?: unknown;
+  content?: unknown;
+  delta?: unknown;
+  tool_name?: unknown;
+  tool_id?: unknown;
+  parameters?: Params;
+  status?: unknown;
+  message?: unknown;
+  error?: { message?: unknown };
+  stats?: Record<string, unknown>;
+}
+
 export interface GeminiProgress extends Progress {
   text: string;
   steps: string[];
@@ -68,8 +85,8 @@ export function geminiProgress(): GeminiProgress {
   const p: GeminiProgress = {
     text: '', steps: [], changed: [], tokens: null, sessionId: null, model: null, error: null, status: null,
     feed(line: string): boolean {
-      let e: Record<string, any>;
-      try { e = JSON.parse(line); } catch { return false; }
+      let e: GeminiEvent;
+      try { e = JSON.parse(line) as GeminiEvent; } catch { return false; }
       if (!e || typeof e !== 'object') return false;
       switch (e.type) {
         case 'init':
@@ -97,12 +114,11 @@ export function geminiProgress(): GeminiProgress {
           p.error = String(e.message || 'Gemini reported an error');
           return false;
         case 'result': {
-          p.status = e.status;
+          p.status = typeof e.status === 'string' ? e.status : null;
           if (e.status !== 'success') p.error = String(e.error?.message || p.error || 'Gemini reported an error');
           const s = e.stats ?? {};
-          if (Number.isFinite(s.input_tokens) || Number.isFinite(s.output_tokens)) {
-            p.tokens = { in: Number.isFinite(s.input_tokens) ? s.input_tokens : null, out: Number.isFinite(s.output_tokens) ? s.output_tokens : null };
-          }
+          const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+          if (num(s.input_tokens) !== null || num(s.output_tokens) !== null) p.tokens = { in: num(s.input_tokens), out: num(s.output_tokens) };
           return false;
         }
         default: return false;

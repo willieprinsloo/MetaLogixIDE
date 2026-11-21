@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { ICON_SIZE } from './icon-size';
 
-export type ActivityView = 'projects' | 'chat' | 'git' | 'tasks';
+export type ActivityView = 'projects' | 'chat' | 'group' | 'git' | 'tasks';
 
 interface Props {
   active: ActivityView;
@@ -47,6 +47,14 @@ export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, ch
         badge={active === 'chat' ? 0 : chatUnread}
       >
         <ChatIcon />
+      </ABButton>
+      <ABButton
+        label="Group chat — your agents talking together"
+        active={active === 'group'}
+        onClick={() => onSelect('group')}
+        data-testid="ab-group"
+      >
+        <GroupIcon />
       </ABButton>
       <ABButton
         label={gitDirty ? `Git — ${gitDirty} changed` : 'Git'}
@@ -125,6 +133,16 @@ function GitBranchIcon() {
       <circle cx="6" cy="6" r="2.5" />
       <circle cx="18" cy="18" r="2.5" />
       <path d="M6 8.5v4a4 4 0 0 0 4 4h5.5" />
+    </svg>
+  );
+}
+
+/** Two overlapping speech bubbles: agents talking together. */
+function GroupIcon() {
+  return (
+    <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M15 10a2 2 0 0 1-2 2H6l-3 3V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z" />
+      <path d="M18 8h1a2 2 0 0 1 2 2v11l-3-3h-6a2 2 0 0 1-2-2v-1" />
     </svg>
   );
 }

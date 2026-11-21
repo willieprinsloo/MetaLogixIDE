@@ -172,7 +172,7 @@ export function createGroups({
     log(g, { kind: 'member', from: m, text: `${nameOf(m)} left` });
     if (g.status !== 'running' || !g.round) return [];
     g.round.waiting = g.round.waiting.filter((x) => x !== m);
-    delete g.round.answers[m];
+    g.round.answers = Object.fromEntries(Object.entries(g.round.answers).filter(([who]) => who !== m));
     if (!g.members.length) { end(g, 'Ended: no members left'); return []; }
     return g.round.waiting.length ? [] : finishRound(g);
   }
