@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { fileURLToPath } from 'node:url';
 import { build, type Plugin } from 'vite';
 import { desktopGhosttyAssets, readVerifiedGhosttyAsset, scopeGhosttyStyles } from '../../../scripts/desktop-ghostty-assets';
 import { ghosttyCorePolicy } from '../../../scripts/desktop-ghostty-core-policy';
@@ -44,21 +45,17 @@ describe('Ghostty build inputs', () => {
   });
 
   it('puts both verified modules in a lazy chunk and emits no vendor worker or extra WASM', async () => {
+    const engine = fileURLToPath(new URL('../../../src/renderer/terminal/ghostty-view-engine.ts', import.meta.url));
+    const shared = fileURLToPath(new URL('../../../src/shared', import.meta.url));
     const fixture: Plugin = {
       name: 'ghostty-artifact-fixture',
-      resolveId(id) { if (id === 'fixture-entry' || id === 'fixture-ghostty') return `\0${id}`; },
+      resolveId(id) { if (id === 'fixture-entry') return '\0fixture-entry'; },
       load(id) {
-        if (id === '\0fixture-entry') return `export const open = () => import('fixture-ghostty');`;
-        if (id === '\0fixture-ghostty') return `
-          import { preloadXtermRuntime } from '@gespenst/xterm';
-          import '@gespenst/xterm/css/xterm.css';
-          import wasm from 'virtual:metaide-ghostty-vt';
-          import callbacksWasm from 'virtual:metaide-ghostty-callbacks';
-          export const load = () => preloadXtermRuntime({ wasm, callbacksWasm });
-        `;
+        if (id === '\0fixture-entry') return `export const open = () => import(${JSON.stringify(engine)});`;
       },
     };
     const result = await build({ configFile: false, base: './', logLevel: 'silent', plugins: [fixture, desktopGhosttyAssets(), ghosttyCorePolicy()],
+      resolve: { alias: { '@shared': shared } },
       build: { write: false, minify: false, rollupOptions: { input: 'fixture-entry', preserveEntrySignatures: 'strict' } } });
     if (Array.isArray(result) || !('output' in result)) throw new Error('Expected one renderer bundle');
     const output = result.output;
@@ -72,7 +69,7 @@ describe('Ghostty build inputs', () => {
       const chunk = output.find(file => file.fileName === fileName);
       if (!chunk || chunk.type !== 'chunk') throw new Error(`Missing startup JS: ${fileName}`);
       expect(chunk.code).not.toContain('AGFzbQ');
-      expect(Object.keys(chunk.modules).some(id => id.includes('/@gespenst/') || id.includes('metaide-ghostty-vt'))).toBe(false);
+      expect(Object.keys(chunk.modules).some(id => id.includes('/@gespenst/') || id.includes('metaide-ghostty-') || id === engine)).toBe(false);
       chunk.dynamicImports.forEach(name => lazyChunks.add(name));
       chunk.imports.forEach(checkCold);
     }
