@@ -298,6 +298,8 @@ do not replace a renderer in an open view. Settings → General → Terminal
 offers xterm.js (the default) and Ghostty (WASM).
 
 A Ghostty view feeds the same shell output to an inert xterm.js standby.
+Ghostty fits the terminal with its own cell measurements. The shell and the
+standby use that grid until xterm.js takes over and fits the pane itself.
 On renderer failure, the standby drains its passive writes before it takes
 over input and clipboard effects. The shell connection does not change.
 Ghostty compiles verified bundled WASM in a lazy renderer chunk. The desktop

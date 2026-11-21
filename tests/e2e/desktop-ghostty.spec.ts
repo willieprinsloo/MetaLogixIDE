@@ -1,6 +1,68 @@
 import { expect, test } from '@playwright/test';
-import { launchDropFixture, PROJECT, RIGHT } from './helpers/drop';
+import { dropOn, launchDropFixture, PNG_1X1, PROJECT, RIGHT, shellWrites } from './helpers/drop';
 import { shellOutput } from './helpers/focus';
+
+async function openGhosttySplit(fixture: Awaited<ReturnType<typeof launchDropFixture>>) {
+  const { win } = fixture;
+  await win.evaluate(() => Reflect.get(window, 'api').invoke('settings:set', { key: 'terminal_engine', value: 'ghostty' }));
+  await win.getByRole('button', { name: 'Files', exact: true }).click();
+  await win.getByRole('button', { name: 'Shell', exact: true }).click();
+  const host = win.locator(RIGHT).locator('[data-terminal-engine-host="ghostty"]');
+  await expect(host).toBeVisible();
+  await expect(host.locator('textarea')).toBeEnabled();
+  return host;
+}
+
+test('Ghostty inserts a dropped PNG path exactly once as bracketed paste', async () => {
+  const fixture = await launchDropFixture();
+  const { win, app, right } = fixture;
+  try {
+    const host = await openGhosttySplit(fixture);
+    const screen = host.locator('.xterm-screen');
+    await screen.click();
+    await win.keyboard.type(`printf '\\033[?2004hDROP-%s\\n' 'READY'; cat`);
+    await win.keyboard.press('Enter');
+    await expect.poll(() => shellOutput(win, PROJECT, right)).toContain('DROP-READY');
+    await dropOn(screen, { files: [{ name: 'ghostty-drop-oracle.png', type: 'image/png', bytes: [...PNG_1X1] }] });
+    const writes = () => shellWrites(app, right).then(data => data.filter(text => text.includes('ghostty-drop-oracle.png')));
+    await expect.poll(async () => (await writes()).map(text => ({ start: text.startsWith('\x1b[200~'), end: text.endsWith('ghostty-drop-oracle.png\x1b[201~') }))).toEqual([{ start: true, end: true }]);
+  } finally {
+    await app.close();
+    fixture.cleanup();
+  }
+});
+
+test('Ghostty fits its full pane on entry to alternate screen and after resize', async () => {
+  const fixture = await launchDropFixture();
+  const { win, app } = fixture;
+  try {
+    const host = await openGhosttySplit(fixture);
+    const screen = host.locator('.xterm-screen');
+    const viewport = host.locator('.xterm-viewport');
+    await expect(viewport).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    const fit = () => host.evaluate(el => {
+      const screen = el.querySelector('.xterm-screen')?.getBoundingClientRect();
+      const canvas = el.querySelector('canvas.gespenst__text')?.getBoundingClientRect();
+      if (!screen || !canvas) throw new Error('Ghostty screen or canvas missing');
+      return { fillsWidth: el.clientWidth - screen.width <= 1, containsColumns: canvas.width <= screen.width + 1,
+        heightFits: screen.height - canvas.height >= -1 && screen.height - canvas.height < 26, screenHeight: screen.height };
+    });
+    await expect.poll(fit).toMatchObject({ containsColumns: true, heightFits: true });
+    await screen.click();
+    await win.keyboard.type(`printf '\\033[?1049h'; cat`);
+    await win.keyboard.press('Enter');
+    await expect(win.locator(RIGHT).getByTestId('shell-tab')).toHaveAttribute('data-alt-screen', 'true');
+    await expect(viewport).toBeHidden();
+    await expect.poll(fit).toMatchObject({ fillsWidth: true, containsColumns: true, heightFits: true });
+    const before = (await fit()).screenHeight;
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1260, 730));
+    await expect.poll(async () => (await fit()).screenHeight).not.toBe(before);
+    await expect.poll(fit).toMatchObject({ fillsWidth: true, containsColumns: true, heightFits: true });
+  } finally {
+    await app.close();
+    fixture.cleanup();
+  }
+});
 
 test('a saved Ghostty choice applies to the next view and context loss keeps the shell', async () => {
   const fixture = await launchDropFixture();

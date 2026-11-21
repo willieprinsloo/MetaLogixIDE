@@ -10,12 +10,15 @@ interface CompositionOptions {
   readonly standby: Pick<GhosttyView, 'write'>;
   readonly appearance: () => Appearance;
   readonly send: (data: string) => void;
+  readonly alignGrid: (cols: number, rows: number) => void;
+  readonly canRefit: () => boolean;
   readonly enableXterm: (restoreFocus: boolean) => void;
   readonly onState: (state: RecoveryState, candidate?: GhosttyView) => void;
 }
 
 interface Composition {
   write(data: string): void;
+  fit(): void;
   dispose(): void;
 }
 
@@ -23,10 +26,36 @@ interface Composition {
 export function openGhosttyWithStandby(options: CompositionOptions): Composition {
   const standby = createXtermStandbyOutput(options.standby);
   let candidate: GhosttyView | undefined;
+  let fitting: GhosttyView | undefined;
   let phase: RecoveryState['kind'] = 'loading';
   let pending = '';
   let overflow = false;
   let fault: (() => void) | undefined;
+  let standbyPrimed = false;
+  let lastGrid: ReturnType<GhosttyView['fit']>;
+  let fitQueued = false;
+
+  function primeStandby() {
+    if (standbyPrimed) return;
+    standbyPrimed = true;
+    if (pending) standby.write(pending);
+  }
+
+  function syncGrid() {
+    const grid = fitting?.fit();
+    if (!grid || (grid.cols === lastGrid?.cols && grid.rows === lastGrid.rows)) return;
+    lastGrid = grid;
+    options.alignGrid(grid.cols, grid.rows);
+  }
+
+  function scheduleFit() {
+    if (fitQueued) return;
+    fitQueued = true;
+    queueMicrotask(() => {
+      fitQueued = false;
+      if (options.canRefit()) syncGrid();
+    });
+  }
 
   const recovery = openRecoverableTerminal({
     async openGhostty(signal, onFault) {
@@ -36,10 +65,13 @@ export function openGhosttyWithStandby(options: CompositionOptions): Composition
       signal.throwIfAborted();
       const view = await openGhosttyView(options.host, options.appearance(), signal, {
         fault: onFault,
+        layoutChanged: scheduleFit,
         input: data => { if (phase === 'ghostty') options.send(data); },
       });
-      const { cols, rows } = options.appearance();
-      if (cols && rows) view.resize(cols, rows);
+      signal.throwIfAborted();
+      fitting = view;
+      syncGrid();
+      primeStandby();
       while (pending) {
         const data = pending;
         pending = '';
@@ -56,6 +88,8 @@ export function openGhosttyWithStandby(options: CompositionOptions): Composition
     hasFocus: () => options.host.contains(document.activeElement),
     onState(state) {
       phase = state.kind;
+      if (phase === 'recovering') primeStandby();
+      if (phase === 'recovering' || phase === 'failed') fitting = undefined;
       if (phase !== 'loading') pending = '';
       if (phase !== 'ghostty') candidate = undefined;
       options.onState(state, candidate);
@@ -65,13 +99,19 @@ export function openGhosttyWithStandby(options: CompositionOptions): Composition
   return {
     write(data) {
       if (phase === 'failed') return;
-      standby.write(data);
+      if (standbyPrimed) standby.write(data);
       if (candidate) candidate.write(data);
       else if (phase === 'loading' && !overflow) {
         if (pending.length + data.length <= MAX_PENDING_CODE_UNITS) pending += data;
-        else { overflow = true; pending = ''; fault?.(); }
+        else {
+          if (!standbyPrimed) { primeStandby(); standby.write(data); }
+          overflow = true;
+          pending = '';
+          fault?.();
+        }
       }
     },
-    dispose() { phase = 'failed'; pending = ''; candidate = undefined; recovery.dispose(); },
+    fit: syncGrid,
+    dispose() { phase = 'failed'; pending = ''; candidate = undefined; fitting = undefined; recovery.dispose(); },
   };
 }

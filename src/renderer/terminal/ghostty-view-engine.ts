@@ -19,7 +19,7 @@ export interface GhosttyView extends TerminalRenderer {
   readonly surface: TerminalViewSurface;
   readonly find: TerminalFind;
   write(data: string, parsed?: () => void): void;
-  resize(cols: number, rows: number): void;
+  fit(): { readonly cols: number; readonly rows: number } | undefined;
   applyAppearance(appearance: Appearance): void;
   reveal(handlers: GhosttyInteraction): void;
   focus(): void;
@@ -35,6 +35,7 @@ interface GhosttyInteraction {
 
 interface GhosttyHandlers {
   readonly fault: () => void;
+  readonly layoutChanged: () => void;
   // Parser replies are tagged independently of genuine input, even during writes.
   readonly input: (data: string, source: 'key' | 'text' | 'paste' | 'mouse' | 'focus' | 'reply') => void;
 }
@@ -117,6 +118,7 @@ export async function openGhosttyView(
     for (const listener of disposables) listener.dispose();
     terminal.dispose();
     host.removeAttribute(GHOSTTY_HOST_ATTRIBUTE);
+    delete host.dataset.terminalAlternate;
   }
   signal.addEventListener('abort', dispose, { once: true });
   host.addEventListener('webglcontextlost', fault, true);
@@ -125,7 +127,8 @@ export async function openGhosttyView(
   try {
     terminal.open(host);
     native = await untilAbort(Promise.all([terminal.ready, terminal.native]).then(([, native]) => native), signal);
-    disposables.push(native.on('error', fault), native.on('renderer', info => { if (info.backend !== 'webgl2') fault(); }));
+    disposables.push(native.on('error', fault), native.on('renderer', info => { if (info.backend !== 'webgl2') fault(); }),
+      native.on('font', handlers.layoutChanged), terminal.buffer.onBufferChange(handlers.layoutChanged));
     await checkFirstPaint(terminal, host, signal);
     signal.throwIfAborted();
     if (faulted) throw new Error('Ghostty renderer faulted during setup');
@@ -143,15 +146,31 @@ export async function openGhosttyView(
   const find = createTerminalFind({ buffer: () => terminal.buffer.active, show: findPaint.show, clear: findPaint.clear });
   disposables.push(native.on('viewportChange', findPaint.refresh), { dispose: findPaint.clear });
   return {
-    surface: terminal,
+    surface: {
+      get buffer() { return terminal.buffer; },
+      focus: () => terminal.focus(),
+      hasSelection: () => terminal.hasSelection(),
+      getSelection: () => terminal.getSelection(),
+      clearSelection: () => terminal.clearSelection(),
+      paste(text) {
+        if (disposed || faulted) return;
+        terminal.clearSelection();
+        if (terminal.options.scrollOnUserInput) terminal.scrollToBottom();
+        native.paste(text.replace(/\r?\n/gu, '\r'));
+      },
+    },
     find,
     write(data, parsed) {
       if (disposed || faulted) return;
       try { terminal.write(data, parsed); } catch { fault(); }
     },
-    resize(cols, rows) {
-      if (disposed || faulted || (terminal.cols === cols && terminal.rows === rows)) return;
-      try { terminal.resize(cols, rows); } catch { fault(); }
+    fit() {
+      if (disposed || faulted || host.clientWidth < 20 || host.clientHeight < 20) return;
+      host.toggleAttribute('data-terminal-alternate', terminal.buffer.active.type === 'alternate');
+      try {
+        native.fit();
+        return native.geometry;
+      } catch { fault(); }
     },
     applyAppearance(appearance) {
       if (!disposed && !faulted) terminal.options = appearance;

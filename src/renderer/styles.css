@@ -624,6 +624,18 @@ input::placeholder, textarea::placeholder {
   filter: none !important;
 }
 
+[data-terminal-engine-host="ghostty"] .xterm .xterm-viewport {
+  background-color: transparent;
+}
+
+[data-terminal-engine-host="ghostty"][data-terminal-alternate] .xterm .xterm-viewport {
+  display: none;
+}
+
+[data-terminal-engine-host="ghostty"][data-terminal-alternate] .xterm .xterm-screen {
+  right: 0 !important; /* Gespenst reserves the scrollbar width inline. */
+}
+
 #root {
   height: 100%;
   background: transparent;

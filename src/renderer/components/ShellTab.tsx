@@ -372,7 +372,7 @@ export function ShellTab({
       focus: () => activeSurfaceRef.current?.focus(),
     });
 
-    const synchronizeGeometry = createTerminalGeometrySynchronizer({
+    const syncXtermGeometry = createTerminalGeometrySynchronizer({
       terminal: term,
       fit,
       dimensions: () => {
@@ -380,19 +380,20 @@ export function ShellTab({
         if (!opened || !host) return null;
         return { width: host.clientWidth, height: host.clientHeight };
       },
-      resize: (cols, rows) => {
-        ghosttyRef.current?.resize(cols, rows);
-        viewSource.resize(cols, rows);
-      },
+      resize: (cols, rows) => { if (!optionalEngine) viewSource.resize(cols, rows); },
       fullWidthCols: () => {
         if (term.buffer.active.type !== 'alternate') return null;
         const host = termHostRef.current;
-        const screen = host?.querySelector<HTMLElement>('.xterm-screen');
+        const screen = term.element?.querySelector<HTMLElement>('.xterm-screen');
         // The screen is exactly cols × cell width, so it yields the cell width.
         const cellWidth = screen && term.cols > 0 ? screen.getBoundingClientRect().width / term.cols : 0;
         return host && cellWidth > 0 ? Math.floor(host.clientWidth / cellWidth) : null;
       },
     });
+    const synchronizeGeometry: TerminalGeometrySynchronizer = (options) => {
+      if (optionalEngine) optionalView?.fit();
+      else syncXtermGeometry(options);
+    };
     geometrySyncRef.current = synchronizeGeometry;
     const fontUpdater = createTerminalFontUpdater({
       terminal: term,
@@ -489,8 +490,13 @@ export function ShellTab({
         host: candidateHost,
         standby: term,
         send: viewSource.send,
+        canRefit: () => !isTerminalGeometryHeld(),
+        alignGrid(cols, rows) {
+          if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
+          viewSource.resize(cols, rows);
+        },
         appearance: () => ({
-          cols: term.cols, rows: term.rows, theme: buildTheme(), fontFamily: term.options.fontFamily,
+          theme: buildTheme(), fontFamily: term.options.fontFamily,
           fontSize: term.options.fontSize, fontWeight: term.options.fontWeight, fontWeightBold: term.options.fontWeightBold,
           cursorBlink: true, cursorStyle: 'bar', lineHeight: 1.25, letterSpacing: 0,
         }),
@@ -498,6 +504,8 @@ export function ShellTab({
           enableXtermEffects();
           candidateHost.remove();
           if (standbyElement) { standbyElement.style.visibility = ''; standbyElement.inert = false; }
+          optionalEngine = false;
+          syncXtermGeometry({ forceResize: true });
           term.scrollToBottom();
           show(term);
           if (restoreFocus) term.focus();
@@ -510,7 +518,6 @@ export function ShellTab({
             candidate.reveal({ keys, clipboard, pathLinks: remoteDeviceId ? undefined : pathLinks, openWebLink: openTerminalWebLink, focused: focusReg.used });
             if (standbyElement) standbyElement.style.visibility = 'hidden';
             candidateHost.inert = false;
-            candidate.resize(term.cols, term.rows);
             show(candidate.surface);
             focusReg.opened();
           } else if (state.kind === 'recovering' || state.kind === 'failed') {
@@ -572,7 +579,7 @@ export function ShellTab({
       opened = true;
       term.textarea?.addEventListener('focus', () => focusReg.used());
       // First fit AFTER open so xterm has an element to measure.
-      synchronizeGeometry();
+      syncXtermGeometry();
       // Snapshot may already be back — write it into the correctly-sized
       // terminal. If not yet, the .then() below picks up.
       if (cachedSnapshot != null) writeSnapshotAndFlush();
