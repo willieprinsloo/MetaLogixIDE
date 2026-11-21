@@ -15,6 +15,10 @@ interface Props {
   chatUnread?: number;
   /** Unread agent-bus messages waiting for the human; pip on the Agents icon. */
   agentsUnread?: number;
+  /** True when the right-side Agents dock is open — the Agents button reads
+   *  as pressed independently of `active`, because the dock is a sibling
+   *  column, not a left-sheet replacement. */
+  agentsOpen?: boolean;
   /** Dirty-file count from the git panel; shows a subtle pip on the icon. */
   gitDirty?: number;
   /** Discovered task count for the tiny "N" pip on the Tasks icon. */
@@ -26,7 +30,8 @@ interface Props {
 }
 
 /** The far-left icon rail: sidebar toggle, project tools, and fleet access. */
-export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, chatUnread, agentsUnread, gitDirty, taskCount, fleetOnline, footer }: Props) {
+export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, chatUnread, agentsUnread, agentsOpen, gitDirty, taskCount, fleetOnline, footer }: Props) {
+  const agentsPressed = agentsOpen ?? active === 'agents';
   const platform = useShortcutPlatform();
   return (
     <nav
@@ -82,10 +87,10 @@ export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, ch
       </ABButton>
       <ABButton
         label={agentsUnread ? `Agents — ${agentsUnread} unread` : 'Agents'}
-        active={active === 'agents'}
+        active={agentsPressed}
         onClick={() => onSelect('agents')}
         data-testid="ab-agents"
-        badge={active === 'agents' ? 0 : agentsUnread}
+        badge={agentsPressed ? 0 : agentsUnread}
       >
         <AgentsIcon />
       </ABButton>

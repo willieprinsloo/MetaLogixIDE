@@ -134,7 +134,9 @@ function readPopout(): PopoutInfo | null {
 /** Selects the renderer shell and applies synchronized application typography. */
 /** Views shown in the sidebar column in place of the project list; Fleet takes over the main area instead. */
 function hasSheet(view: ActivityView): boolean {
-  return view !== 'projects' && view !== 'fleet';
+  // Agents lives in its own right-side dock, not the left sheet — opening
+  // it must NOT replace the project tree. Fleet takes over the main area.
+  return view !== 'projects' && view !== 'fleet' && view !== 'agents';
 }
 
 export function App() {
@@ -220,6 +222,24 @@ function MainApp() {
     'projects',
     (v): v is ActivityView => v === 'projects' || v === 'chat' || v === 'agents' || v === 'git' || v === 'tasks' || v === 'fleet',
   );
+  // The Agents chat lives in its own right-side dock — toggled independently
+  // of activeView so opening it never hides the project tree.
+  const [agentsDockOpen, setAgentsDockOpen] = usePersistedState<boolean>(
+    'metaide.agentsDockOpen',
+    false,
+    (v): v is boolean => typeof v === 'boolean',
+  );
+  // Migrate stale state: older sessions could persist activeView='agents'
+  // (when Agents was a left-sheet view). On mount, flip that to 'projects'
+  // and auto-open the dock so the user sees what they last chose.
+  useEffect(() => {
+    if (activeView === 'agents') {
+      setActiveView('projects');
+      setAgentsDockOpen(true);
+    }
+    // Run once on mount only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const selfDeviceName = useSelfDeviceName();
   // Live-ref of the active view so the metaproject subscriber can decide
   // whether to bump the badge without re-subscribing on every switch.
@@ -342,6 +362,10 @@ function MainApp() {
   // Chat panel gets its own persisted width so the wider chat view doesn't
   // resize the projects list back to a tiny column when the user flips modes.
   const [chatPanelWidth, setChatPanelWidth] = usePersistedNumber('metaide.chatPanelWidth', 400, 300, 640);
+  // Right-side Agents dock gets its own persisted width, independent of
+  // the left sheet so the two can be sized for their different content
+  // (list of files vs an ambient chat stream).
+  const [agentsDockWidth, setAgentsDockWidth] = usePersistedNumber('metaide.agentsDockWidth', 340, 260, 640);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [projectSettingsTarget, setProjectSettingsTarget] = useState<ProjectSettingsTarget | null>(null);
   const settingsTarget = projectSettingsTarget ?? selected;
@@ -933,7 +957,12 @@ function MainApp() {
       <div className="flex-1 flex min-h-0">
         <ActivityBar
           active={activeView}
+          agentsOpen={agentsDockOpen}
           onSelect={(v) => {
+            if (v === 'agents') {
+              setAgentsDockOpen((x) => !x);
+              return;
+            }
             const next = sidebarOpen && activeView === v && v !== 'projects' ? 'projects' : v;
             setActiveView(next);
             if (!sidebarOpen) toggleSidebar(true, true);
@@ -995,9 +1024,6 @@ function MainApp() {
                           projectId={selected?.id ?? null}
                           onLaunched={(shellIndex) => { setMainTab('shell'); setActiveShellIndex(shellIndex); }}
                         />
-                      )}
-                      {activeView === 'agents' && (
-                        <AgentChatTab projectId={selected?.id ?? 0} selfDevice={selfDeviceName} />
                       )}
                     </div>
                 ) : (
@@ -1214,6 +1240,27 @@ function MainApp() {
             )}
           </AnimatePresence>
         </div>
+        {agentsDockOpen && selected && !remotePane && (
+          <>
+            <ResizeHandle
+              value={agentsDockWidth}
+              onChange={setAgentsDockWidth}
+              onReset={() => setAgentsDockWidth(340)}
+              min={260}
+              max={640}
+              side="right"
+              onDraggingChange={setColumnDragging}
+            />
+            <aside
+              className="shrink-0 border-l border-[--border] bg-[--surface] h-full overflow-hidden flex flex-col min-h-0"
+              style={{ width: agentsDockWidth }}
+              data-testid="agents-dock"
+              aria-label="Agents"
+            >
+              <AgentChatTab projectId={selected.id} selfDevice={selfDeviceName} />
+            </aside>
+          </>
+        )}
       </div>
 
       {unloadTarget && <UnloadSessionDialog key={unloadTarget.id} project={unloadTarget}
