@@ -644,6 +644,45 @@ Rules:
 - The Git panel uses the same `git:panel-status` and `git:file-diff`
   handlers. It keeps its own unified diff, without highlighting.
 
+### Group chats between agents
+
+A project's Claude tabs and headless GPT (Codex CLI), Gemini (Gemini CLI)
+and Ollama agents talk in one conversation, in parallel rounds. Ported from
+BotOffice. Spec: `docs/superpowers/specs/2026-11-19-group-chats-design.md`.
+
+| Layer | File | Role |
+|-------|------|------|
+| Logic | `src/main/group-chat/groups.ts` | Pure round state machine. `say` (the user) is the only call that starts a conversation. Every call returns deliveries `{ member, round, text }`. Ends after `maxRounds` (default 4, 1–10), when everyone answers `PASS`, or with fewer than two members. |
+| Logic | `src/main/group-chat/members.ts` | One turn per member. A Claude tab waits for idle, a quiet input period and an empty input box, pastes the round message (bracketed paste + Enter via `PtyManager.writeFromApp`), then answers on the tab's next Stop hook. A headless turn runs one engine call. |
+| Logic | `src/main/group-chat/transcript.ts` | Finds the Claude answer to a round message in `~/.claude/projects/**/<session>.jsonl`: text after the last user message starting with the round header, up to the next user prompt. |
+| Logic | `src/main/group-chat/engines/` | Codex / Gemini CLI adapters (`run-cli.ts` spawns without a shell, message on stdin), Ollama HTTP, and engine readiness checks. |
+| Service | `src/main/group-chat/service.ts` | One FIFO queue per member (a Claude tab is keyed by its Claude session, so two groups share one queue), the 30-minute fail-safe, persistence, and `protectedShells()` for keep-alive. |
+| Wiring | `src/main/group-chat/install.ts` | Tracks each shell's Claude `session_id` from hooks, routes Stop hooks (only with a transcript path under `~/.claude/projects`), builds turns, broadcasts `groups:changed`. |
+| Storage | `src/main/repos/groups-repo.ts`, `migrations/0005_group_chats.sql` | One JSON row per group (state + member records, incl. Codex/Gemini session ids and Ollama history). |
+| UI | `src/renderer/components/GroupChatPanel.tsx`, `GroupChatView.tsx`, `src/renderer/group-chat/` | The **Group** activity view. Replies render through `renderMarkdown` (raw HTML off). |
+
+Rules the code keeps:
+
+- **Every way a turn ends answers its round**: a reply, an engine failure,
+  Stop, removal, the tab closing (`shellGone` on PTY exit), or the fail-safe.
+  A round can't hang.
+- A Claude member is its **Claude conversation** (`session_id`), not a tab
+  slot. After `/clear` or a restart that resumes another conversation, the
+  member is "unavailable" and fails its rounds until a tab holds that
+  session again.
+- The app never edits the user's input. A half-typed draft holds the turn
+  ("waiting for you to send or clear your draft").
+- Stop sends Escape to a Claude tab only while it is answering the group's
+  message.
+- While a group runs, its Claude tabs are never evicted by the keep-alive cap
+  (`chooseEvictee` reason `all-protected` lets the new shell spawn above the
+  cap).
+- A restart never resumes a conversation: running groups load as "Stopped:
+  the app restarted". App quit kills headless engine processes.
+- Headless permissions: Codex `sandbox_mode="workspace-write"` (plus
+  `windows.sandbox="unelevated"` on Windows); Gemini `--approval-mode
+  auto_edit`, so shell commands are refused.
+
 ## Data Flow
 
 1. `MarkdownPreview` calls `renderMarkdown(source)`. This is synchronous.
