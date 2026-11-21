@@ -4,9 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-overrides:
-  '@electron/rebuild>node-abi': 4.43.0
-
 patchedDependencies:
   '@xterm/addon-webgl@0.18.0': 7aa158ed67a7ac75c08b772e7a173821e6bd16426db35ab2e97b1e961f1c4302
 
@@ -151,8 +148,8 @@ importers:
         specifier: ^4.1.4
         version: 4.1.4
       electron:
-        specifier: 45.4.1
-        version: 45.4.1(supports-color@7.2.0)
+        specifier: 43.8.12
+        version: 43.8.12(supports-color@7.2.0)
       electron-builder:
         specifier: ^24.0.0
         version: 24.13.3(electron-builder-squirrel-windows@24.13.3)(supports-color@7.2.0)
@@ -1929,8 +1926,8 @@ packages:
       '@swc/core':
         optional: true
 
-  electron@45.4.1:
-    resolution: {integrity: sha512-DjsJ/eQhovkjf1vYFFyh5GB8NMx+L5bdYaonvGOlWselg3DQ0fwIF0N/+2hrPsoS4whmmNswh21ym/8dgt1y5Q==}
+  electron@43.8.12:
+    resolution: {integrity: sha512-j/yQT+d31UqY0MwEy1AZDBCd7DNyPyAK1P4z2y5L4yDJUktvauL0KskC786Vsil/20zTmqVhpWm7taPK6pL0Ww==}
     engines: {node: '>= 22.12.0'}
     hasBin: true
 
@@ -5686,7 +5683,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  electron@45.4.1(supports-color@7.2.0):
+  electron@43.8.12(supports-color@7.2.0):
     dependencies:
       '@electron-internal/extract-zip': 1.0.8
       '@electron/get': 5.1.0(supports-color@7.2.0)

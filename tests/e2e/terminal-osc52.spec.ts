@@ -36,7 +36,7 @@ const readClipboard = (app: ElectronApplication): Promise<string> =>
   app.evaluate(({ clipboard }) => clipboard.readText());
 
 async function setClipboardText(app: ElectronApplication, text: string): Promise<void> {
-  await app.evaluate(({ clipboard }, t) => clipboard.writeText(t), text);
+  await app.evaluate(({ clipboard }, t) => { clipboard.clear(); clipboard.writeText(t); }, text);
 }
 
 /** Types a printf of one OSC 52 sequence (BEL or ST terminated) into the right pane. */

@@ -36,7 +36,7 @@ function viewer(peer: RpcPeer, onProgress: (e: UploadProgressEvent) => void = ()
     call,
     locateAppFile: async () => ({ kind: 'failed', reason: 'unused' }),
     readFile: async () => new Uint8Array(),
-    readClipboardPng: async () => null,
+    readClipboardPng: () => null,
     emitProgress: onProgress,
     now: () => Date.now(),
   });

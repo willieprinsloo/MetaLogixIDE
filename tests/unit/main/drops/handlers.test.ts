@@ -37,7 +37,7 @@ function project(id: number, path: string): Project {
 
 function services(): Services {
   const projects = new Map<number, Project>([[7, project(7, projectRoot)]]);
-  const clipboardImage: ClipboardImage = { readPng: async () => clipboardPng };
+  const clipboardImage: ClipboardImage = { readPng: () => clipboardPng };
   return {
     projects: { get: (id: number) => projects.get(id) ?? null },
     dropStaging: createDropStaging({
@@ -228,7 +228,7 @@ describe('drops:stage-clipboard-image (AC12, AC13, AC14)', () => {
   it('turns a clipboard read error into a failed value', async () => {
     const s = services();
     s.clipboardImage = {
-      readPng: async () => {
+      readPng: () => {
         throw new Error('clipboard unavailable');
       },
     };

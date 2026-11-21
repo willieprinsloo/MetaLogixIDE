@@ -29,7 +29,7 @@ export interface UploadClientDeps {
   locateAppFile(payload: { projectId: number; relPath: string }): Promise<LocatedAppFile>;
   readFile(path: string): Promise<Uint8Array>;
   /** PNG bytes of the viewer clipboard image, or null when there is none. */
-  readClipboardPng(): Promise<Uint8Array | null>;
+  readClipboardPng(): Uint8Array | null;
   emitProgress(event: UploadProgressEvent): void;
   /** Monotonic-enough milliseconds, for the progress throttle. */
   now(): number;
@@ -112,7 +112,7 @@ async function prepare(src: UploadRequest['source'], deps: UploadClientDeps): Pr
     return { name: src.name, mime: src.mime, kind: 'file', size: src.bytes.byteLength, load: async () => src.bytes };
   }
   if (src.kind === 'clipboard-image') {
-    const png = await deps.readClipboardPng();
+    const png = deps.readClipboardPng();
     if (png === null) return { kind: 'no-image' };
     return { name: 'pasted.png', mime: 'image/png', kind: 'clipboard-image', size: png.byteLength, load: async () => png };
   }

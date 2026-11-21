@@ -6,7 +6,7 @@ with the IDE layer they've been missing: a shared project view, live file
 editor, structured activity log across shells, P2P discovery of your other
 dev machines, and a built-in bridge to [metaproject].
 
-Built on Electron 45, React 18, and TypeScript.
+Built on Electron 43, React 18, and TypeScript. The desktop app requires macOS 12 or later on Mac.
 
 ## What it does
 
@@ -86,7 +86,7 @@ pnpm install            # one-time
 pnpm dev                # dev + HMR
 pnpm typecheck          # TypeScript check across node + web
 pnpm test               # vitest
-pnpm dist:mac           # package a signed DMG + zip (arm64 + x64)
+pnpm dist:mac           # package an unsigned DMG and ZIP (arm64 and x64)
 ```
 
 SQLite uses the platform binary included in `better-sqlite3`. Run `pnpm rebuild:electron`

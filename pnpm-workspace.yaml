@@ -16,7 +16,3 @@ allowBuilds:
 
 patchedDependencies:
   '@xterm/addon-webgl@0.18.0': patches/@xterm__addon-webgl@0.18.0.patch
-
-overrides:
-  # The previous registry does not know the Electron 45 module ABI.
-  '@electron/rebuild>node-abi': 4.43.0

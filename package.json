@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.12.0",
-    "pnpm": ">=9.0.0"
+    "node": "24.x",
+    "pnpm": "11.x"
   },
   "main": "out/main/index.js",
   "scripts": {
@@ -190,7 +190,7 @@
     "@vitest/ui": "^2.0.0",
     "autoprefixer": "^10.4.0",
     "effect": "^4.1.4",
-    "electron": "45.4.1",
+    "electron": "43.8.12",
     "electron-builder": "^24.0.0",
     "electron-vite": "^2.3.0",
     "eslint": "^9.0.0",

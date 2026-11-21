@@ -608,7 +608,7 @@ blurs what is behind the window. The app never blurs anything itself.
   translucent window through its own policy. Hyprland exposes this policy
   through its `decoration:blur` settings.
 - **Wayland and XWayland.** The app sets no Ozone switch. [Electron uses native
-  Wayland by default in Wayland sessions](https://github.com/electron/electron/blob/v45.4.1/docs/breaking-changes.md#removed-electron_ozone_platform_hint-environment-variable).
+  Wayland by default in Wayland sessions](https://github.com/electron/electron/blob/v43.8.12/docs/breaking-changes.md#removed-electron_ozone_platform_hint-environment-variable).
   Use `--ozone-platform=x11` to force XWayland. Electron no longer reads
   `ELECTRON_OZONE_PLATFORM_HINT`.
 - **No blur available.** On a compositor that does not blur, the translucent
@@ -1027,9 +1027,10 @@ Paste routes: macOS ⌘V and the Edit menu fire a DOM `paste` event, which the
 paste hook takes. Ctrl+Shift+V and the context-menu Paste item read the
 clipboard and call the same function (`ShellTab.tsx:183`,
 `ShellTab.tsx:599`). All routes sanitise the text. When the clipboard has no
-text, all routes try the clipboard image. The main process reads the PNG
-representation through Electron's asynchronous clipboard API. The renderer
-does not get raw clipboard image bytes through IPC.
+text, all routes try the clipboard image. The main process reads the image.
+Electron 43 retains `clipboard.readImage()`, which reads native Windows PNG-only
+clipboard entries. Before upgrading to a newer major, verify that terminal
+paste and paired-device upload still handle those entries.
 
 Temporary directory:
 
@@ -1793,7 +1794,7 @@ the whole side falls back to escaped plain text.
 | `katex` | 0.16.47, exact pin | Math. Also the version `mermaid` depends on, so the bundle has one copy. |
 | `mermaid` | 11.17.2, exact pin | Diagrams. |
 | mise CLI | external, user-installed; developed against 2026.10.4 | Tasks panel listing and running. Only the `name`, `description`, `hide` and `global` fields of `mise tasks ls --json` are read. The JSON format is not documented by mise. |
-| Electron `powerSaveBlocker` | electron 45.4.1 | Keep-awake assertion, type `prevent-app-suspension`. On macOS it is a system idle-sleep assertion, not a display one; the E2E suite checks this against `pmset -g assertions`. |
+| Electron `powerSaveBlocker` | electron 43.8.12 | Keep-awake assertion, type `prevent-app-suspension`. On macOS it is a system idle-sleep assertion, not a display one; the E2E suite checks this against `pmset -g assertions`. |
 | `/usr/bin/pmset` | macOS, system | `pmset displaysleepnow` turns the display off for keep-awake. No root needed in practice; this is not documented. `pmset -g assertions` is read in E2E only. |
 | ScreenSaverEngine | macOS, system | Keep-awake darken fallback, launched with `/usr/bin/open`. |
 

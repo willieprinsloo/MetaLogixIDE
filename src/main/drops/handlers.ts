@@ -119,7 +119,7 @@ export const dropHandlers: { [C in DropChannel]: Handler<C> } = {
   'drops:stage-clipboard-image': async (s) => {
     let png: Buffer | null;
     try {
-      png = await s.clipboardImage.readPng();
+      png = s.clipboardImage.readPng();
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       log.error('[drops] clipboard image read failed', err);
