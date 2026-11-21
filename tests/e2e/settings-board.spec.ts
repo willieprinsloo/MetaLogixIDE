@@ -46,7 +46,7 @@ const ROW_HINTS = {
 } as const;
 const FONTS_HINT = 'Pick an installed font or type an exact family name.';
 const NAV = ['General', 'Root directories', 'Launch commands', 'Environment', 'Metaproject', 'P2P'] as const;
-const SECTIONS = ['Appearance', 'Fonts', 'Workspace', 'Notifications'] as const;
+const SECTIONS = ['Appearance', 'Fonts', 'Terminal', 'Workspace', 'Notifications'] as const;
 const SWITCHES = [
   { testId: 'notify-needs-input-toggle', label: 'When Claude needs input', key: 'notify_claude_needs_input' },
   { testId: 'notify-finished-toggle', label: 'When Claude finishes', key: 'notify_claude_finished' },
@@ -476,7 +476,7 @@ test('AC7: footer shows the real version; no "Phase 1" in any section', async ()
   await openGeneral();
 });
 
-test('AC9-AC12: four section headings, control order, spacing, row layout and hints', async () => {
+test('AC9-AC12: section headings, control order, spacing, row layout and hints', async () => {
   await forEachAppearance(async (palette, theme) => {
     const at = `${palette}/${theme}`;
     const headings = scroller().getByRole('heading', { level: 2 });
@@ -521,6 +521,7 @@ test('AC9-AC12: four section headings, control order, spacing, row layout and hi
       region('Fonts').getByRole('combobox', { name: 'Terminal', exact: true }),
       region('Fonts').getByRole('spinbutton', { name: 'Terminal font size', exact: true }),
     ]],
+    ['Terminal', [region('Terminal').getByRole('radiogroup', { name: 'Terminal engine' })]],
     ['Workspace', NUMBERS.map((n) => region('Workspace').getByRole('spinbutton', { name: n.label, exact: true }))],
     ['Notifications', SWITCHES.map((s) => region('Notifications').getByRole('switch', { name: new RegExp(s.label, 'i') }))],
   ];
@@ -993,9 +994,10 @@ test('AC2 (activity-log-toggle): Workspace holds the Record agent activity switc
 
 test('AC32: text contrast on the effective background in every palette x theme', async () => {
   const primary = (): [string, Locator][] => [
-    ...['Theme', 'Mode', 'Window opacity', 'Interface', 'Terminal', ...NUMBERS.map((n) => n.label), ...SWITCHES.map((s) => s.label), ACTIVITY_SWITCH.label].map(
+    ...['Theme', 'Mode', 'Window opacity', 'Interface', 'Terminal engine', ...NUMBERS.map((n) => n.label), ...SWITCHES.map((s) => s.label), ACTIVITY_SWITCH.label].map(
       (t): [string, Locator] => [`label ${t}`, scroller().getByText(t, { exact: true })],
     ),
+    ['Terminal font label', region('Fonts').getByText('Terminal', { exact: true })],
     ['opacity value', dialog().getByRole('slider', { name: 'Window opacity' }).locator('xpath=../span')],
     ...NUMBERS.map((n): [string, Locator] => [`value ${n.label}`, dialog().getByRole('spinbutton', { name: n.label, exact: true })]),
   ];
@@ -1008,6 +1010,8 @@ test('AC32: text contrast on the effective background in every palette x theme',
     // AC26) also live in this dialog and each have their own checked radio, so an
     // unscoped `dialog().getByRole('radio', { checked: true })` now matches 3, not 1.
     ['checked Mode segment', region('Appearance').getByRole('radiogroup', { name: 'Mode' }).getByRole('radio', { checked: true })],
+    ['checked Terminal engine', region('Terminal').getByRole('radio', { checked: true })],
+    ['terminal engine hint', region('Terminal').getByText('Applies when you open or reopen a terminal view. Open views stay as they are.', { exact: true })],
   ];
   const check = async (at: string, theme: Theme, items: [string, Locator][], floor: number) => {
     for (const [what, el] of items) {

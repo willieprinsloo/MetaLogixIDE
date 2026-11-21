@@ -110,7 +110,7 @@ describe('GeneralPanel — FrostedGlassGroup rendered inside Appearance, mac and
   it('renders the group under the mac platform, inside the same section as Window opacity', () => {
     const html = panel('mac');
     expect(html).toContain(`data-testid="${FROSTED_GLASS_TESTIDS.group}"`);
-    expect(html.match(/<section/g)).toHaveLength(4);
+    expect(html.match(/<section/g)).toHaveLength(5);
   });
 
   it('places the group inside the Appearance <section>, directly after the Window opacity row (AC26)', () => {

@@ -14,6 +14,10 @@ Built on Electron 43, React 18, and TypeScript. The desktop app requires macOS 1
 - Multi-tab shells per project, each running Claude, OpenAI Codex or
   opencode, or a custom command you save per-project. Agent shells resume
   their last session in the project when reopened.
+- On desktop, Settings → General → Terminal lets you choose xterm.js
+  (the default) or Ghostty (WASM). The choice applies when you open or
+  reopen a terminal view. If Ghostty fails, the view falls back to
+  xterm.js without restarting the shell.
 - Project switcher, file finder, prompt library, cross-shell scrollback
   search, port detection, hot/hanging shell watchdog.
 - Shared agent memory: every CLI tool call, user prompt, and turn-end is

@@ -5,8 +5,11 @@ import vt from 'virtual:metaide-ghostty-vt';
 import callbacks from 'virtual:metaide-ghostty-callbacks';
 import type { TerminalRenderer } from './terminal-engine-recovery';
 import { untilAbort } from './terminal-abort';
-import type { IBuffer, ILinkProvider, Terminal as StockTerminal } from '@xterm/xterm';
+import type { IBuffer, ILink, Terminal as StockTerminal } from '@xterm/xterm';
 import { registerClipboardOsc, type ClipboardOscDeps } from '../osc52';
+import { createTerminalFind, type TerminalFind } from './terminal-view-find';
+import { createGhosttyFindPaint } from './ghostty-find-paint';
+import { terminalWebLinks, type TerminalFileLink, fileLinksInRow } from './terminal-view-links';
 
 export type TerminalViewSurface = Pick<StockTerminal, 'focus' | 'paste' | 'hasSelection' | 'getSelection' | 'clearSelection'> & {
   readonly buffer: { readonly active: Pick<IBuffer, 'length' | 'getLine'> };
@@ -14,6 +17,7 @@ export type TerminalViewSurface = Pick<StockTerminal, 'focus' | 'paste' | 'hasSe
 
 export interface GhosttyView extends TerminalRenderer {
   readonly surface: TerminalViewSurface;
+  readonly find: TerminalFind;
   write(data: string, parsed?: () => void): void;
   resize(cols: number, rows: number): void;
   applyAppearance(appearance: Appearance): void;
@@ -23,7 +27,8 @@ export interface GhosttyView extends TerminalRenderer {
 
 interface GhosttyInteraction {
   readonly keys: (event: KeyboardEvent) => boolean;
-  readonly links?: ILinkProvider;
+  readonly pathLinks?: (text: string) => readonly TerminalFileLink[];
+  readonly openWebLink: (url: string) => void;
   readonly clipboard: ClipboardOscDeps;
   readonly focused: () => void;
 }
@@ -116,9 +121,10 @@ export async function openGhosttyView(
   signal.addEventListener('abort', dispose, { once: true });
   host.addEventListener('webglcontextlost', fault, true);
   host.setAttribute(GHOSTTY_HOST_ATTRIBUTE, 'ghostty');
+  let native: Awaited<Terminal['native']>;
   try {
     terminal.open(host);
-    const native = await untilAbort(Promise.all([terminal.ready, terminal.native]).then(([, native]) => native), signal);
+    native = await untilAbort(Promise.all([terminal.ready, terminal.native]).then(([, native]) => native), signal);
     disposables.push(native.on('error', fault), native.on('renderer', info => { if (info.backend !== 'webgl2') fault(); }));
     await checkFirstPaint(terminal, host, signal);
     signal.throwIfAborted();
@@ -131,8 +137,14 @@ export async function openGhosttyView(
     dispose();
     throw error;
   }
+  const findPaint = createGhosttyFindPaint(host, () => ({
+    ...native.geometry, viewportY: terminal.buffer.active.viewportY, devicePixelRatio: window.devicePixelRatio || 1,
+  }), row => terminal.scrollToLine(row));
+  const find = createTerminalFind({ buffer: () => terminal.buffer.active, show: findPaint.show, clear: findPaint.clear });
+  disposables.push(native.on('viewportChange', findPaint.refresh), { dispose: findPaint.clear });
   return {
     surface: terminal,
+    find,
     write(data, parsed) {
       if (disposed || faulted) return;
       try { terminal.write(data, parsed); } catch { fault(); }
@@ -147,7 +159,15 @@ export async function openGhosttyView(
     reveal(interaction) {
       if (disposed || faulted) return;
       terminal.attachCustomKeyEventHandler(interaction.keys);
-      if (interaction.links) disposables.push(terminal.registerLinkProvider(interaction.links));
+      disposables.push(terminal.registerLinkProvider({
+        provideLinks(line, callback) {
+          const buffer = terminal.buffer.active;
+          const web = terminalWebLinks(buffer, line, interaction.openWebLink);
+          const files: ILink[] = interaction.pathLinks ? fileLinksInRow(buffer, line, interaction.pathLinks) : [];
+          const links = [...web, ...files];
+          callback(links.length ? links : undefined);
+        },
+      }));
       disposables.push(registerClipboardOsc(terminal, interaction.clipboard));
       terminal.textarea?.addEventListener('focus', interaction.focused);
       disposables.push({ dispose: () => terminal.textarea?.removeEventListener('focus', interaction.focused) });

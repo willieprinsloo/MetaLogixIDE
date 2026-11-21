@@ -275,7 +275,8 @@ version footer and the Done bar. Each section is its own module in
 
 | File | Responsibility |
 |---|---|
-| `GeneralPanel.tsx` | Appearance, Fonts, Workspace and Notifications sections. Loads and saves the General settings, including the "Record agent activity" switch (`activity_log_enabled`) in Workspace. |
+| `GeneralPanel.tsx` | Appearance, Fonts, Terminal, Workspace and Notifications sections. Loads and saves the General settings, including the "Record agent activity" switch (`activity_log_enabled`) in Workspace. |
+| `TerminalEngineControl.tsx` | Terminal engine radios. Displays the saved value while a save is pending. On failure, retains the previous value and reports the error. |
 | `RootsPanel.tsx`, `LaunchPanel.tsx`, `MetaprojectPanel.tsx` | The other sections. |
 | `primitives.tsx` | `SettingsSection`, `SettingRow`, `SettingStack`, `WorkspaceNumber`, `Switch`, and the older `Header` and `Field`. |
 | `PaletteCards.tsx`, `palette-swatches.ts` | Palette cards (`aria-pressed` buttons) and their preview colours. |
@@ -293,8 +294,8 @@ preference. Missing or invalid values read as `xterm` without changing the
 stored row. The existing settings IPC validates writes and sends a change
 event only after a different value is saved. A terminal view reads this value
 once at opening. A read failure or timeout selects xterm.js. Setting changes
-do not replace a renderer in an open view. General does not expose the choice
-while Ghostty integration is under test.
+do not replace a renderer in an open view. Settings → General → Terminal
+offers xterm.js (the default) and Ghostty (WASM).
 
 A Ghostty view feeds the same shell output to an inert xterm.js standby.
 On renderer failure, the standby drains its passive writes before it takes

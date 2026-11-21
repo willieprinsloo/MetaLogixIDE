@@ -30,6 +30,8 @@ import { appShortcutAction } from './app-keys';
 import type { AppShortcutAction } from './shortcut-contract';
 import { SHORTCUT_COPY } from './shortcut-copy';
 import { useShortcutPlatform } from './shortcut-platform';
+import { routeTerminalKey, terminalTabAction } from './terminal-keys';
+import { GHOSTTY_HOST_SELECTOR } from '@shared/terminal-engine';
 import { ProjectSearch } from './components/ProjectSearch';
 import { PromptLibrary } from './components/PromptLibrary';
 import { ScrollbackSearch } from './components/ScrollbackSearch';
@@ -672,8 +674,18 @@ function MainApp() {
       if (action) { e.preventDefault(); runAppShortcut[action](); }
       if (e.key === 'Escape')                            { setSettingsOpen(false); setPaletteRequest(null); setNewProjectOpen(false); setHelpOpen(false); setSearchOpen(false); setPromptsOpen(false); setScrollbackOpen(false); }
     }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    function ghosttyAppKey(e: KeyboardEvent): boolean {
+      return e.target instanceof Element && !!e.target.closest(GHOSTTY_HOST_SELECTOR) &&
+        routeTerminalKey(e, platform) === 'app' && terminalTabAction(e, platform) === null;
+    }
+    function capture(e: KeyboardEvent) { if (ghosttyAppKey(e)) onKey(e); }
+    function bubble(e: KeyboardEvent) { if (!ghosttyAppKey(e)) onKey(e); }
+    window.addEventListener('keydown', capture, true);
+    window.addEventListener('keydown', bubble);
+    return () => {
+      window.removeEventListener('keydown', capture, true);
+      window.removeEventListener('keydown', bubble);
+    };
   }, [openPalette, toggleSidebar, platform]);
 
   // Keep the OS window title in sync with the current project so it reads

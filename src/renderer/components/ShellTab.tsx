@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
-import { Terminal, type IDisposable, type ITheme, type ILinkProvider, type IBufferCellPosition } from '@xterm/xterm';
+import { Terminal, type IDisposable, type ITheme, type ILinkProvider } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -13,6 +13,7 @@ import { openTerminalViewSource } from '@renderer/terminal/terminal-view-source'
 import { readTerminalEngine } from '@renderer/terminal/terminal-engine-setting';
 import { openGhosttyWithStandby } from '@renderer/terminal/engine-composition';
 import type { GhosttyView, TerminalViewSurface } from '@renderer/terminal/ghostty-view-engine';
+import type { TerminalFileLink } from '@renderer/terminal/terminal-view-links';
 import { useTerminalDrop } from '@renderer/hooks/useTerminalDrop';
 import { useTerminalPaste } from '@renderer/hooks/useTerminalPaste';
 import { dropOverlayLabel } from '@renderer/remote-upload/remote-drop';
@@ -82,6 +83,10 @@ function buildTheme(): ITheme {
     brightCyan: readVar('--term-bright-cyan', '#00ffff'),
     brightWhite: readVar('--term-bright-white', '#ffffff'),
   };
+}
+
+function openTerminalWebLink(url: string): void {
+  void api.invoke('app:open-external', { url }).catch(() => toast('Could not open terminal link', { kind: 'error' }));
 }
 
 type StreamHandlers = { data: (d: string) => void; exit: (code: number | null) => void };
@@ -273,9 +278,7 @@ export function ShellTab({
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
     term.unicode.activeVersion = '11';
-    term.loadAddon(new WebLinksAddon((_ev: MouseEvent, url: string) => {
-      void api.invoke('app:open-external', { url }).catch((e) => console.error(e));
-    }));
+    term.loadAddon(new WebLinksAddon((_ev: MouseEvent, url: string) => openTerminalWebLink(url)));
     const clipboard = {
       writeText: (text) => navigator.clipboard.writeText(text),
       onError: createCopyFailedToast(),
@@ -299,33 +302,32 @@ export function ShellTab({
 
     // File-path link provider: matches things like src/main/index.ts:42
     // in terminal output, shows a hover preview, click opens in Files.
+    function pathLinks(text: string): TerminalFileLink[] {
+      return detectPaths(text).map((h) => ({
+        start: h.startIndex,
+        end: h.endIndex,
+        text: h.raw,
+        activate: () => {
+          hoverHold.dispose();
+          setHover(null);
+          void openPeekedPathRef.current(h.path, h.line);
+        },
+        hover: (ev: MouseEvent) => {
+          // Dwell leaves selection gestures free of preview cards.
+          hoverHold.linkEnter(() => setHover({ x: ev.clientX, y: ev.clientY, projectId, path: h.path, line: h.line }));
+        },
+        leave: hoverHold.linkLeave,
+      }));
+    }
     const pathLinkProvider: ILinkProvider = {
       provideLinks(bufferLineNumber, callback) {
-        const buf = term.buffer.active;
-        const rawLine = buf.getLine(bufferLineNumber - 1);
+        const rawLine = term.buffer.active.getLine(bufferLineNumber - 1);
         if (!rawLine) { callback(undefined); return; }
-        const text = rawLine.translateToString(true);
-        const hits = detectPaths(text);
-        if (hits.length === 0) { callback(undefined); return; }
-        callback(hits.map((h) => ({
-          range: {
-            start: { x: h.startIndex + 1, y: bufferLineNumber } as IBufferCellPosition,
-            end:   { x: h.endIndex,       y: bufferLineNumber } as IBufferCellPosition,
-          },
-          text: h.raw,
-          activate: () => {
-            hoverHold.dispose();
-            setHover(null);
-            void openPeekedPathRef.current(h.path, h.line);
-          },
-          hover: (ev: MouseEvent) => {
-            // Dwell: the card opens only after the pointer rests on the
-            // path, so sweeping the mouse across output never pops a card
-            // over text the user is about to select.
-            hoverHold.linkEnter(() => setHover({ x: ev.clientX, y: ev.clientY, projectId, path: h.path, line: h.line }));
-          },
-          leave: hoverHold.linkLeave,
-        })));
+        const links = pathLinks(rawLine.translateToString(true)).map(({ start, end, ...link }) => ({
+          ...link,
+          range: { start: { x: start + 1, y: bufferLineNumber }, end: { x: end, y: bufferLineNumber } },
+        }));
+        callback(links.length ? links : undefined);
       },
     };
     // Remote shells have no local peek/preview (paths belong to the host's filesystem).
@@ -505,7 +507,7 @@ export function ShellTab({
           setEngineStatus(state.kind === 'xterm' ? 'fallback' : state.kind);
           ghosttyRef.current = candidate ?? null;
           if (candidate) {
-            candidate.reveal({ keys, clipboard, links: remoteDeviceId ? undefined : pathLinkProvider, focused: focusReg.used });
+            candidate.reveal({ keys, clipboard, pathLinks: remoteDeviceId ? undefined : pathLinks, openWebLink: openTerminalWebLink, focused: focusReg.used });
             if (standbyElement) standbyElement.style.visibility = 'hidden';
             candidateHost.inert = false;
             candidate.resize(term.cols, term.rows);
@@ -656,12 +658,22 @@ export function ShellTab({
   }, [projectId, shellIndex, remoteDeviceId, pasteFromText, hoverHold, uploads.tracker]);
 
   const findNext = useCallback((q: string) => {
+    if (ghosttyRef.current) { ghosttyRef.current.find.step(q, 1); return; }
     if (!q || !searchRef.current) return;
     searchRef.current.findNext(q, { caseSensitive: false, wholeWord: false, regex: false });
   }, []);
   const findPrev = useCallback((q: string) => {
+    if (ghosttyRef.current) { ghosttyRef.current.find.step(q, -1); return; }
     if (!q || !searchRef.current) return;
     searchRef.current.findPrevious(q, { caseSensitive: false, wholeWord: false, regex: false });
+  }, []);
+
+  const closeFind = useCallback(() => {
+    setSearchOpen(false);
+    setSearchQuery('');
+    if (ghosttyRef.current) ghosttyRef.current.find.clear();
+    else searchRef.current?.clearDecorations();
+    activeSurfaceRef.current?.focus();
   }, []);
 
   // Entering or leaving the alternate screen changes the usable width (scrollbar strip); refit.
@@ -707,8 +719,18 @@ export function ShellTab({
         setFontSize(stepTerminalFontSize(fontSize, ZOOM_STEP[action]));
       }
     };
+    function onGhosttyKey(e: KeyboardEvent) {
+      if (!(e.target instanceof Element) || !e.target.closest('[data-terminal-engine-host="ghostty"]') || !terminalTabAction(e, platform)) return;
+      // Ghostty stops rejected key events at its own capture listener.
+      e.stopPropagation();
+      onKey(e);
+    }
+    el.addEventListener('keydown', onGhosttyKey, true);
     el.addEventListener('keydown', onKey);
-    return () => el.removeEventListener('keydown', onKey);
+    return () => {
+      el.removeEventListener('keydown', onGhosttyKey, true);
+      el.removeEventListener('keydown', onKey);
+    };
   }, [fontSize, setFontSize, platform]);
 
   streamHandlersRef.current = {
@@ -841,6 +863,11 @@ export function ShellTab({
       {/* `isolate` keeps xterm's internal z-indexes (e.g. its link layer) inside the
           host, so the exit overlay, drop hint and search bar always paint above it. */}
       <div ref={termHostRef} className="relative w-full h-full isolate" style={{ visibility: 'hidden' }} data-terminal-engine={engineStatus} />
+      {(engineStatus === 'loading' || engineStatus === 'recovering' || engineStatus === 'fallback') && (
+        <p role="status" className="pointer-events-none absolute right-2 top-2 z-10 rounded-md bg-[--surface-field] px-2 py-1 text-xs text-[--text]">
+          {engineStatus === 'loading' ? 'Loading Ghostty…' : engineStatus === 'recovering' ? 'Switching to xterm.js…' : 'Using xterm.js after Ghostty failed'}
+        </p>
+      )}
       {engineStatus === 'failed' && <p className="absolute inset-x-0 top-2 text-center text-sm" role="alert" tabIndex={0}>The terminal display could not recover. Close and reopen this view to reconnect to the running shell.</p>}
       {!remoteDeviceId && sessionCorrupted && (
         <div className="absolute inset-x-0 top-3 flex items-center justify-center pointer-events-none">
@@ -983,7 +1010,7 @@ export function ShellTab({
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter')      { if (e.shiftKey) findPrev(searchQuery); else findNext(searchQuery); }
-              else if (e.key === 'Escape') { setSearchOpen(false); setSearchQuery(''); searchRef.current?.clearDecorations(); activeSurfaceRef.current?.focus(); }
+              else if (e.key === 'Escape') closeFind();
             }}
             placeholder="Find…"
             className="bg-transparent text-sm px-2 py-0.5 outline-none placeholder:text-[--text-muted] w-40"
@@ -991,7 +1018,7 @@ export function ShellTab({
           <button onClick={() => findPrev(searchQuery)} title={SHORTCUT_COPY.searchPrevTitle(platform)} className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel]">↑</button>
           <button onClick={() => findNext(searchQuery)} title={SHORTCUT_COPY.searchNextTitle(platform)} className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel]">↓</button>
           <button
-            onClick={() => { setSearchOpen(false); setSearchQuery(''); searchRef.current?.clearDecorations(); activeSurfaceRef.current?.focus(); }}
+            onClick={closeFind}
             title="Close (Esc)"
             className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel]"
           >
