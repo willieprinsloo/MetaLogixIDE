@@ -74,7 +74,12 @@ export function handleMetafileProtocol(getProjectPath: (projectId: number) => st
     try { isFile = statSync(hit.abs).isFile(); } catch { return new Response('not found', { status: 404 }); }
     if (!isFile) return new Response('not found', { status: 404 });
     const buf = readFileSync(hit.abs);
-    const bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    // Own a fresh ArrayBuffer at offset 0 — see files:read-bytes for the
+    // same pool-view trap: a view over Node's shared Buffer pool can drag
+    // the pool's extra bytes into the Response body, and iframes then
+    // render broken images for files sitting next to small reads.
+    const bytes = new Uint8Array(buf.byteLength);
+    bytes.set(buf);
     const dot = hit.abs.lastIndexOf('.');
     const ext = dot === -1 ? '' : hit.abs.slice(dot + 1).toLowerCase();
     return new Response(bytes, { headers: { 'content-type': MIME_BY_EXT[ext] ?? 'application/octet-stream' } });

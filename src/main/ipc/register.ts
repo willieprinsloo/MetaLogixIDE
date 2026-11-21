@@ -1576,9 +1576,13 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     if (st.isDirectory()) throw new Error(`${relPath} is a directory`);
     if (st.size > 50_000_000) throw new Error(`file too large (${st.size} bytes) — 50 MB cap`);
     const buf = readFileSync(abs);
-    // Serialize as plain Uint8Array over the structured clone — Electron
-    // preserves the buffer without a UTF-8 round-trip.
-    const bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    // Must OWN a fresh ArrayBuffer sized to the file — a view over Node's
+    // shared Buffer pool (readFileSync returns one; byteOffset is often
+    // non-zero) can survive Electron's structured clone with the pool's
+    // extra bytes preserved, and the renderer's Blob then draws broken
+    // images. Copy once at offset 0 to decouple from the pool.
+    const bytes = new Uint8Array(buf.byteLength);
+    bytes.set(buf);
     const ext = relPath.slice(relPath.lastIndexOf('.') + 1).toLowerCase();
     const mime = MIME_BY_EXT[ext] ?? 'application/octet-stream';
     return { bytes, mime, sizeBytes: st.size };
