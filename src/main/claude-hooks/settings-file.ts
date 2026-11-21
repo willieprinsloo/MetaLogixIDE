@@ -19,7 +19,11 @@ export interface HookGroup {
 }
 
 /** Name of a hook event the app registers. */
-export type RegisteredHookEvent = 'Notification' | 'Stop' | 'UserPromptSubmit';
+/**
+ * `SessionStart` tells group chats which Claude conversation a tab holds the moment it changes
+ * (startup, `/clear`, `/resume`), not only at the next prompt.
+ */
+export type RegisteredHookEvent = 'Notification' | 'SessionStart' | 'Stop' | 'UserPromptSubmit';
 
 /** The settings document written to disk. */
 export interface HookSettings {
@@ -49,6 +53,7 @@ export function buildHookSettings(url: string): HookSettings {
   return {
     hooks: {
       Notification: all(),
+      SessionStart: all(),
       Stop: unmatched(),
       UserPromptSubmit: unmatched(),
     },

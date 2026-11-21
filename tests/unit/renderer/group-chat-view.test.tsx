@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { GroupView, MemberInfo } from '@shared/group-chat';
 
 vi.mock('@renderer/api', () => ({ api: {} }));
-const { GroupChatView } = await import('@renderer/components/GroupChatView');
+const { GroupChatView, handleReplyClick } = await import('@renderer/components/GroupChatView');
 
 const info = (name: string, engine: MemberInfo['engine'], over: Partial<MemberInfo> = {}): MemberInfo =>
   ({ name, kind: engine === 'claude' ? 'claude-tab' : 'headless', engine, model: null, available: true, phase: null, ...over });
@@ -56,5 +56,29 @@ describe('GroupChatView', () => {
 
   it('with no group yet it offers to start one', () => {
     expect(render(null)).toContain('data-testid="group-new"');
+  });
+});
+
+describe('reply link clicks', () => {
+  const click = (href: string | null) => {
+    const opened: string[] = [];
+    let prevented = false;
+    const anchor = { getAttribute: (n: string) => (n === 'href' ? href : null) };
+    handleReplyClick({ target: { closest: (s: string) => (s === 'a' ? anchor : null) }, preventDefault: () => { prevented = true; } }, (u) => opened.push(u));
+    return { opened, prevented };
+  };
+
+  it('never lets a link navigate the app window; relative links do nothing', () => {
+    expect(click('src/x.ts')).toEqual({ opened: [], prevented: true });
+  });
+
+  it('opens http(s) links in the browser', () => {
+    expect(click('https://example.com/a')).toEqual({ opened: ['https://example.com/a'], prevented: true });
+  });
+
+  it('a click that isn’t on a link is left alone', () => {
+    let prevented = false;
+    handleReplyClick({ target: { closest: () => null }, preventDefault: () => { prevented = true; } }, () => {});
+    expect(prevented).toBe(false);
   });
 });

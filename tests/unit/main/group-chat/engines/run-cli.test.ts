@@ -76,3 +76,26 @@ describe('runCliTurn', () => {
     expect(Date.now() - t0).toBeLessThan(5000);
   });
 });
+
+describe('runCliTurn — stopping kills the whole process tree', () => {
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+  it('abort also ends the CLI’s child processes', async () => {
+    const pidFile = join(mkdtempSync(join(tmpdir(), 'tree-')), 'pid');
+    const ctl = new AbortController();
+    const done = runCliTurn({
+      cmd: [process.execPath, resolve(__dirname, 'fake-tree.cjs')], args: [], cwd, text: 'x',
+      progress: codexProgress(), parse: parseCodex, signal: ctl.signal, env: { FAKE_TREE_PID: pidFile },
+    });
+    let grandchild = 0;
+    for (let i = 0; i < 100 && !grandchild; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      try { grandchild = Number(readFileSync(pidFile, 'utf8')); } catch { /* not yet */ }
+    }
+    expect(alive(grandchild)).toBe(true);
+    ctl.abort();
+    expect(await done).toEqual({ ok: false, reply: '', error: 'stopped' });
+    for (let i = 0; i < 60 && alive(grandchild); i++) await new Promise((r) => setTimeout(r, 50));
+    expect(alive(grandchild)).toBe(false);
+  });
+});

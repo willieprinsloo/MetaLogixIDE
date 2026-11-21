@@ -153,6 +153,54 @@ describe('claudeTabTurn', () => {
     expect(await settle(turn.done)).toEqual({ failed: 'its Claude tab isn’t open' });
   });
 
+  it('strips control characters so quoted model output can’t end the paste or type keys', async () => {
+    const t = fakeTab();
+    const turn = claudeTabTurn(t.ports, { quietMs: 0, pollMs: 500 });
+    turn.start(`${HEADER}\nGPT: hi\x1b[201~\r!rm -rf ~\r\x07\ttab ok\x7f`);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(t.writes[0]).toBe(`\x1b[200~${HEADER}\nGPT: hi[201~!rm -rf ~\ttab ok\x1b[201~`);
+    expect(t.writes[1]).toBe('\r');
+  });
+
+  it('when the tab’s Claude session changes mid-answer (/clear), sends Escape and fails', async () => {
+    const t = fakeTab();
+    const turn = claudeTabTurn(t.ports, { quietMs: 0, pollMs: 500 });
+    turn.start(TEXT);
+    await vi.advanceTimersByTimeAsync(0);
+    t.s.shell = null; // the member's session is no longer in any tab, but the tab itself is alive
+    await vi.advanceTimersByTimeAsync(600);
+    expect(t.writes.at(-1)).toBe('\x1b');
+    expect(await settle(turn.done)).toEqual({ failed: 'its Claude tab was closed or its conversation changed' });
+  });
+
+  it('a turn Claude stops without answering (Esc, API error) fails after a short grace, not 30 minutes', async () => {
+    const t = fakeTab();
+    const turn = claudeTabTurn(t.ports, { quietMs: 0, pollMs: 500, idleGraceMs: 10_000 });
+    turn.start(TEXT);
+    await vi.advanceTimersByTimeAsync(0);
+    t.s.state = 'busy';
+    await vi.advanceTimersByTimeAsync(3000);
+    t.s.state = 'idle';
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(await settle(turn.done)).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(await settle(turn.done)).toEqual({ failed: 'Claude stopped without answering (interrupted?)' });
+  });
+
+  it('a slow Stop hook after Claude goes idle still answers within the grace', async () => {
+    const t = fakeTab();
+    const turn = claudeTabTurn(t.ports, { quietMs: 0, pollMs: 500, idleGraceMs: 10_000 });
+    turn.start(TEXT);
+    await vi.advanceTimersByTimeAsync(0);
+    t.s.state = 'busy';
+    await vi.advanceTimersByTimeAsync(1000);
+    t.s.state = 'idle';
+    await vi.advanceTimersByTimeAsync(4000);
+    t.s.answers.set('/t.jsonl', { status: 'answered', text: 'late but fine' });
+    await t.stop('/t.jsonl');
+    expect(await settle(turn.done)).toEqual({ text: 'late but fine' });
+  });
+
   it('fails when the tab closes while it is answering', async () => {
     const t = fakeTab();
     const turn = claudeTabTurn(t.ports, { quietMs: 0, pollMs: 500 });
@@ -160,7 +208,7 @@ describe('claudeTabTurn', () => {
     await vi.advanceTimersByTimeAsync(0);
     t.s.shell = null;
     await vi.advanceTimersByTimeAsync(600);
-    expect(await settle(turn.done)).toEqual({ failed: 'its Claude tab was closed' });
+    expect(await settle(turn.done)).toEqual({ failed: 'its Claude tab was closed or its conversation changed' });
   });
 });
 

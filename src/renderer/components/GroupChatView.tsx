@@ -8,7 +8,9 @@
  */
 import { useMemo, type ReactNode } from 'react';
 import { ENGINE_LABEL, type GroupView, type MemberEngine } from '@shared/group-chat';
+import { api } from '@renderer/api';
 import { renderMarkdown } from '@renderer/markdown/markdownRenderer';
+import { resolvePreviewLink } from '@renderer/markdown/previewLinks';
 import { lines, statusLine } from '@renderer/group-chat/group-view';
 
 /** One colour per engine, for badges and the reply edge (matches the BotOffice column). */
@@ -49,9 +51,35 @@ function EngineBadge({ engine }: { engine: MemberEngine }) {
   );
 }
 
+type ClickLike = { target: unknown; preventDefault(): void };
+type AnchorLike = { getAttribute(name: string): string | null };
+
+/**
+ * A link in a reply never navigates the app window (a relative link like `src/x.ts` would resolve
+ * inside the app and replace its UI). http(s) links open in the browser; anything else does nothing.
+ */
+export function handleReplyClick(e: ClickLike, open: (url: string) => void): void {
+  const t = e.target as { closest?: (sel: string) => AnchorLike | null } | null;
+  const anchor = t?.closest?.('a');
+  if (!anchor) return;
+  e.preventDefault();
+  const action = resolvePreviewLink(anchor.getAttribute('href'), false);
+  if (action.kind === 'external') open(action.url);
+}
+
+const openExternal = (url: string) => {
+  void api.invoke('app:open-external', { url }).catch((err: unknown) => console.error(err));
+};
+
 function Reply({ text }: { text: string }) {
   const html = useMemo(() => renderMarkdown(text), [text]);
-  return <div className="markdown text-sm leading-relaxed break-words" dangerouslySetInnerHTML={{ __html: html }} />;
+  return (
+    <div
+      className="markdown text-sm leading-relaxed break-words"
+      onClick={(e) => handleReplyClick(e, openExternal)}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
 }
 
 export function GroupChatView(p: Props) {

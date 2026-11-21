@@ -43,10 +43,20 @@ export interface ClaudeTabPorts {
 
 export const QUIET_MS = 3000;
 export const POLL_MS = 500;
+/** How long Claude may sit idle after working before a missing Stop hook means it was interrupted. */
+export const IDLE_GRACE_MS = 10_000;
 export const BRACKETED = (text: string): string => `\x1b[200~${text}\x1b[201~`;
+/**
+ * Control characters other than newline and tab. Round messages quote other members' replies,
+ * which are model output: an ESC could end the bracketed paste early and a CR could submit
+ * typed keys (e.g. Claude's `!` shell mode), so they never reach the PTY.
+ */
+const CONTROL = /[\x00-\x08\x0b-\x1f\x7f]/g;
+export const pasteSafe = (text: string): string => text.replace(CONTROL, '');
 const ESCAPE = '\x1b';
 const NOT_OPEN = 'its Claude tab isn’t open';
-const CLOSED = 'its Claude tab was closed';
+const CLOSED = 'its Claude tab was closed or its conversation changed';
+const INTERRUPTED = 'Claude stopped without answering (interrupted?)';
 
 function settleOnce() {
   let resolve!: (o: TurnOutcome) => void;
@@ -66,9 +76,12 @@ function settleOnce() {
 
 const sameShell = (a: Shell | null, b: Shell | null) => !!a && !!b && a.projectId === b.projectId && a.shellIndex === b.shellIndex;
 
-export function claudeTabTurn(ports: ClaudeTabPorts, o: { quietMs?: number; pollMs?: number } = {}): MemberTurn {
+export function claudeTabTurn(ports: ClaudeTabPorts, o: { quietMs?: number; pollMs?: number; idleGraceMs?: number } = {}): MemberTurn {
   const quietMs = o.quietMs ?? QUIET_MS;
   const pollMs = o.pollMs ?? POLL_MS;
+  const idleGraceMs = o.idleGraceMs ?? IDLE_GRACE_MS;
+  let sawBusy = false;
+  let idleSince: number | null = null;
   const s = settleOnce();
   let phase: TurnPhase = 'queued';
   let text = '';
@@ -112,7 +125,20 @@ export function claudeTabTurn(ports: ClaudeTabPorts, o: { quietMs?: number; poll
 
   function watchTab(): void {
     if (s.settled) return;
-    if (!sameShell(ports.shell(), pastedInto)) { finish({ failed: CLOSED }); return; }
+    if (!sameShell(ports.shell(), pastedInto)) {
+      // the tab closed, or it now holds another conversation (/clear, /resume): stop what our
+      // message started there (harmless if the tab is gone or already idle)
+      ports.write(pastedInto!, ESCAPE);
+      finish({ failed: CLOSED });
+      return;
+    }
+    // Claude worked and went idle, but no Stop hook brought an answer: Esc or an API error ended
+    // the turn (neither fires Stop). Fail after a grace instead of holding the round 30 minutes.
+    if (ports.state(pastedInto!) !== 'idle') { sawBusy = true; idleSince = null; }
+    else if (sawBusy) {
+      idleSince ??= ports.now();
+      if (ports.now() - idleSince >= idleGraceMs) { finish({ failed: INTERRUPTED }); return; }
+    }
     schedule(watchTab, pollMs);
   }
 
@@ -124,8 +150,8 @@ export function claudeTabTurn(ports: ClaudeTabPorts, o: { quietMs?: number; poll
 
   return {
     start(t: string) {
-      text = t;
-      header = t.split('\n', 1)[0] ?? '';
+      text = pasteSafe(t);
+      header = text.split('\n', 1)[0] ?? '';
       schedule(() => void waitForTab(), 0);
     },
     stop(reason: string) {
