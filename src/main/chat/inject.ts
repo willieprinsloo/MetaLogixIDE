@@ -97,14 +97,22 @@ function sanitiseBody(raw: string): string {
 
 /** Wire format the injector writes into recipient PTYs. Sender's shell
  * index is deliberately omitted — the receiving agent only needs the
- * family + device to reply correctly. */
+ * family + device to reply correctly.
+ *
+ * The protocol prefix is wrapped in SGR dim (`\x1b[2m` on, `\x1b[22m`
+ * off) so the recipient's shell renders it as quiet framing against the
+ * agent's own output. Dim is a pure rendering-state toggle: a TUI
+ * either honours it or ignores it, and the LLM behind still
+ * pattern-matches `[metaide-chat …]` either way. 22 (not 0) resets dim
+ * without touching color, so a subsequent body color in the agent's
+ * echo survives. */
 export function formatInjectionLine(entry: ChatEntry, selfDevice: string): string {
   const from = formatMention({
     agent: safeSeg(entry.from.agent),
     device: safeSeg(entry.from.device ?? selfDevice),
   });
   const reply = entry.reply_in && SAFE_REPLY_IN.test(entry.reply_in) ? entry.reply_in : '-';
-  return `[metaide-chat from=${from} reply=${reply} ] ${sanitiseBody(entry.body)}\n`;
+  return `\x1b[2m[metaide-chat from=${from} reply=${reply} ]\x1b[22m ${sanitiseBody(entry.body)}\n`;
 }
 
 /** Common delivery path: resolve mentions against the roster and write

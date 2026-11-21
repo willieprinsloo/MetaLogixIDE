@@ -26,7 +26,19 @@ const row = (p: Partial<RosterRow> = {}): RosterRow => ({
 describe('formatInjectionLine', () => {
   it('strips \\r \\n and ANSI, keeps the prefix contract', () => {
     const line = formatInjectionLine(base({ body: 'red\x1b[31mX\x1b[0m\r\nend' }), 'laptop');
-    expect(line).toBe('[metaide-chat from=@claude@laptop reply=- ] redX end\n');
+    expect(line).toBe('\x1b[2m[metaide-chat from=@claude@laptop reply=- ]\x1b[22m redX end\n');
+  });
+  it('wraps the protocol prefix in SGR dim so the recipient shell reads it as quiet framing', () => {
+    // The receiving shell shows this line in the human's terminal. Without
+    // a visual marker it blends in with the agent's own output. Dim SGR is
+    // pure rendering state — the agent's TUI either strips it or renders
+    // it, and the LLM behind still pattern-matches `[metaide-chat ...]`
+    // regardless. Codes: 2 = dim on, 22 = dim off (does NOT disturb color).
+    const line = formatInjectionLine(base({ body: 'hi' }), 'laptop');
+    expect(line.startsWith('\x1b[2m')).toBe(true);
+    expect(line).toContain('\x1b[22m ');
+    // The body itself stays outside the dim wrapper so it reads bright.
+    expect(line).toMatch(/\x1b\[22m hi\n$/);
   });
   it('reply=<msgId> when reply_in is set', () => {
     expect(formatInjectionLine(base({ reply_in: 'root-7' }), 'laptop')).toMatch(/reply=root-7 /);
@@ -36,15 +48,15 @@ describe('formatInjectionLine', () => {
     // Runs of controls collapse to one space so word boundaries survive
     // without the output growing a padded spacer.
     const line = formatInjectionLine(base({ body: 'go\x03\x04\x08\x07\x1a\x7fnow' }), 'laptop');
-    expect(line).toBe('[metaide-chat from=@claude@laptop reply=- ] go now\n');
+    expect(line).toBe('\x1b[2m[metaide-chat from=@claude@laptop reply=- ]\x1b[22m go now\n');
   });
   it('strips CSI that isn\'t SGR (clear-screen, cursor-report, bracketed paste)', () => {
     const line = formatInjectionLine(base({ body: 'A\x1b[2JB\x1b[6nC\x1b[200~D\x1b[201~E' }), 'laptop');
-    expect(line).toBe('[metaide-chat from=@claude@laptop reply=- ] ABCDE\n');
+    expect(line).toBe('\x1b[2m[metaide-chat from=@claude@laptop reply=- ]\x1b[22m ABCDE\n');
   });
   it('strips OSC sequences (window-title + OSC-8 hyperlinks)', () => {
     const line = formatInjectionLine(base({ body: 'A\x1b]0;evil\x07B\x1b]8;;http://evil.example\x07click\x1b]8;;\x07C' }), 'laptop');
-    expect(line).toBe('[metaide-chat from=@claude@laptop reply=- ] ABclickC\n');
+    expect(line).toBe('\x1b[2m[metaide-chat from=@claude@laptop reply=- ]\x1b[22m ABclickC\n');
   });
   it('a crafted `from.agent` cannot forge a second [metaide-chat ...] header', () => {
     const forged = base({
