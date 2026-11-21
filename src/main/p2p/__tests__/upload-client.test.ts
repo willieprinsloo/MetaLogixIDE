@@ -45,7 +45,7 @@ function client(host: ReturnType<typeof fakeHost>, overrides: Partial<UploadClie
     call: host.call as unknown as UploadClientDeps['call'],
     locateAppFile: vi.fn(async () => ({ kind: 'ok', path: '/proj/a.txt', name: 'a.txt', size: 3, isDirectory: false }) as const),
     readFile: vi.fn(async () => new Uint8Array([1, 2, 3])),
-    readClipboardPng: vi.fn(() => new Uint8Array([137, 80, 78, 71])),
+    readClipboardPng: vi.fn(async () => new Uint8Array([137, 80, 78, 71])),
     emitProgress: (e) => progress.push(e),
     now: () => (clock += 30),
     ...overrides,
@@ -165,13 +165,13 @@ describe('sources', () => {
 
   test('no clipboard image gives no-image and no host call (AC-I3)', async () => {
     const host = fakeHost();
-    const { uc } = client(host, { readClipboardPng: () => null });
+    const { uc } = client(host, { readClipboardPng: async () => null });
     expect(await uc.upload({ uploadId: 'u1', deviceId: 'dev', source: { kind: 'clipboard-image' } })).toEqual({ kind: 'no-image' });
     expect(host.calls).toEqual([]);
   });
 
   test('a clipboard read error is a failed result, not a rejection', async () => {
-    const { uc } = client(fakeHost(), { readClipboardPng: () => { throw new Error('clipboard unavailable'); } });
+    const { uc } = client(fakeHost(), { readClipboardPng: async () => { throw new Error('clipboard unavailable'); } });
     expect(await uc.upload({ uploadId: 'u1', deviceId: 'dev', source: { kind: 'clipboard-image' } }))
       .toEqual({ kind: 'failed', reason: 'clipboard unavailable' });
   });
@@ -179,7 +179,7 @@ describe('sources', () => {
   test('a clipboard image over 10 MB asks first and sends nothing until confirmed (decision Q2)', async () => {
     const host = fakeHost();
     const big = new Uint8Array(UPLOAD_CONFIRM_ABOVE_BYTES + 1);
-    const { uc } = client(host, { readClipboardPng: () => big });
+    const { uc } = client(host, { readClipboardPng: async () => big });
     expect(await uc.upload({ uploadId: 'u1', deviceId: 'dev', source: { kind: 'clipboard-image' } }))
       .toEqual({ kind: 'needs-confirm', size: big.byteLength });
     expect(host.calls).toEqual([]);
@@ -187,7 +187,7 @@ describe('sources', () => {
   });
 
   test('a clipboard image of exactly 10 MB needs no confirm', async () => {
-    const { uc } = client(fakeHost(), { readClipboardPng: () => new Uint8Array(UPLOAD_CONFIRM_ABOVE_BYTES) });
+    const { uc } = client(fakeHost(), { readClipboardPng: async () => new Uint8Array(UPLOAD_CONFIRM_ABOVE_BYTES) });
     expect((await uc.upload({ uploadId: 'u1', deviceId: 'dev', source: { kind: 'clipboard-image' } })).kind).toBe('staged');
   });
 
@@ -204,7 +204,7 @@ describe('sources', () => {
     const host = fakeHost();
     const huge = MAX_STAGED_BYTES + 1;
     const { uc } = client(host, {
-      readClipboardPng: () => new Uint8Array(huge),
+      readClipboardPng: async () => new Uint8Array(huge),
       locateAppFile: async () => ({ kind: 'ok', path: '/p/big', name: 'big', size: huge, isDirectory: false }),
     });
     expect(await uc.upload(req())).toEqual({ kind: 'too-large', limitBytes: MAX_STAGED_BYTES });
@@ -394,7 +394,7 @@ describe('uploadClientDeps (production wiring)', () => {
       const png = Buffer.from([137, 80]);
       const services = {
         projects: { get: (id: number) => (id === 7 ? { id, path: root } : null) },
-        clipboardImage: { readPng: () => png },
+        clipboardImage: { readPng: async () => png },
       } as never;
       const emit = vi.fn();
       const deps = uploadClientDeps(services, vi.fn() as never, emit);
@@ -402,7 +402,7 @@ describe('uploadClientDeps (production wiring)', () => {
       expect(located).toEqual({ kind: 'ok', path: join(root, 'a.txt'), name: 'a.txt', size: 3, isDirectory: false });
       expect((await deps.locateAppFile({ projectId: 7, relPath: '../x' })).kind).toBe('failed');
       expect(Buffer.from(await deps.readFile(join(root, 'a.txt'))).toString()).toBe('abc');
-      expect(deps.readClipboardPng()).toBe(png);
+      await expect(deps.readClipboardPng()).resolves.toBe(png);
       expect(typeof deps.now()).toBe('number');
       deps.emitProgress({ uploadId: 'u', sentBytes: 1, totalBytes: 2 });
       expect(emit).toHaveBeenCalledWith({ uploadId: 'u', sentBytes: 1, totalBytes: 2 });

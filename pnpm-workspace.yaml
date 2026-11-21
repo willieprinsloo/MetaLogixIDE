@@ -7,11 +7,16 @@ nodeLinker: hoisted
 shamefullyHoist: true
 
 allowBuilds:
-  better-sqlite3: true
-  electron: true
+  # SQLite ships platform binaries; the root install explicitly prepares Electron.
+  better-sqlite3: false
+  electron: false
   esbuild: true
   keytar: true
   node-pty: true
 
 patchedDependencies:
   '@xterm/addon-webgl@0.18.0': patches/@xterm__addon-webgl@0.18.0.patch
+
+overrides:
+  # The previous registry does not know the Electron 45 module ABI.
+  '@electron/rebuild>node-abi': 4.43.0

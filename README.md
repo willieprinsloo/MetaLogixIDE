@@ -6,7 +6,7 @@ with the IDE layer they've been missing: a shared project view, live file
 editor, structured activity log across shells, P2P discovery of your other
 dev machines, and a built-in bridge to [metaproject].
 
-Built on Electron 32 + React 18 + TypeScript.
+Built on Electron 45, React 18, and TypeScript.
 
 ## What it does
 
@@ -79,6 +79,8 @@ globals and are shadowed by per-user project profiles.
 
 ## Development
 
+Use Node.js 24 and pnpm 11. The install step downloads Electron and prepares its native modules.
+
 ```bash
 pnpm install            # one-time
 pnpm dev                # dev + HMR
@@ -87,10 +89,8 @@ pnpm test               # vitest
 pnpm dist:mac           # package a signed DMG + zip (arm64 + x64)
 ```
 
-If better-sqlite3 complains about `NODE_MODULE_VERSION`:
-- `pnpm rebuild better-sqlite3` — for CLI node (tests)
-- `pnpm postinstall` or `./node_modules/.bin/electron-rebuild -f -w better-sqlite3`
-  — for Electron (dev + packaging)
+SQLite uses the platform binary included in `better-sqlite3`. Run `pnpm rebuild:electron`
+to rebuild `node-pty` for the installed Electron version.
 
 ## Project layout
 

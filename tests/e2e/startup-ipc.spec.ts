@@ -52,6 +52,7 @@ test('settings IPC is registered before the initial renderer can invoke it', asy
 
   try {
     const win = await app.firstWindow();
+    await expect(win.getByText('Startup IPC probe')).toBeVisible();
     const result = await win.evaluate(() => window.startupSettingsResult);
 
     // An inline head script runs while loadURL is still pending. This guards

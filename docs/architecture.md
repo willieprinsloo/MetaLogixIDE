@@ -604,18 +604,13 @@ blurs what is behind the window. The app never blurs anything itself.
   paints an opaque `#000` underlay under `--bg`. The window stays solid, as it
   was before Linux windows became transparent.
 - **Blur is the compositor's.** The app does not request the
-  `ext-background-effect-v1` Wayland protocol. Electron 32.3.3 (Chromium 128)
-  binds no blur protocol, and a native addon cannot reach Chromium's
-  `wl_surface`. A compositor that blurs translucent surfaces by its own policy
-  blurs the window with no help from the app. Hyprland 0.56 or later does this
-  through its `decoration:blur` settings, for a translucent surface that has no
-  blur effect object.
-- **Wayland and XWayland.** The app sets no Ozone switch. Chromium runs as a
-  native Wayland client only if the environment sets
-  `ELECTRON_OZONE_PLATFORM_HINT=wayland` (or `auto`). Without it the window runs
-  under XWayland. The window is translucent as a native Wayland client.
-  Whether the XWayland window is translucent, and whether the compositor blurs
-  it, is recorded by the manual check in the build report, not by a code path.
+  `ext-background-effect-v1` Wayland protocol. A compositor can blur a
+  translucent window through its own policy. Hyprland exposes this policy
+  through its `decoration:blur` settings.
+- **Wayland and XWayland.** The app sets no Ozone switch. [Electron uses native
+  Wayland by default in Wayland sessions](https://github.com/electron/electron/blob/v45.4.1/docs/breaking-changes.md#removed-electron_ozone_platform_hint-environment-variable).
+  Use `--ozone-platform=x11` to force XWayland. Electron no longer reads
+  `ELECTRON_OZONE_PLATFORM_HINT`.
 - **No blur available.** On a compositor that does not blur, the translucent
   chrome shows the desktop unblurred. The user can turn Frosted chrome off.
 
@@ -1032,8 +1027,9 @@ Paste routes: macOS ⌘V and the Edit menu fire a DOM `paste` event, which the
 paste hook takes. Ctrl+Shift+V and the context-menu Paste item read the
 clipboard and call the same function (`ShellTab.tsx:183`,
 `ShellTab.tsx:599`). All routes sanitise the text. When the clipboard has no
-text, all routes try the clipboard image. The renderer is sandboxed, so the
-main process reads the image.
+text, all routes try the clipboard image. The main process reads the PNG
+representation through Electron's asynchronous clipboard API. The renderer
+does not get raw clipboard image bytes through IPC.
 
 Temporary directory:
 
@@ -1795,9 +1791,9 @@ the whole side falls back to escaped plain text.
 | `markdown-it` | 14.3.0 | Markdown parser. `html` is `false`. |
 | `highlight.js` | lockfile | Code block highlighting, and both sides of the Diff tab. |
 | `katex` | 0.16.47, exact pin | Math. Also the version `mermaid` depends on, so the bundle has one copy. |
-| `mermaid` | 11.17.2, exact pin | Diagrams. Version 12 requires Node 22, and the repo uses Node 20. |
+| `mermaid` | 11.17.2, exact pin | Diagrams. |
 | mise CLI | external, user-installed; developed against 2026.10.4 | Tasks panel listing and running. Only the `name`, `description`, `hide` and `global` fields of `mise tasks ls --json` are read. The JSON format is not documented by mise. |
-| Electron `powerSaveBlocker` | electron 32.3.3 | Keep-awake assertion, type `prevent-app-suspension`. On macOS it is a system idle-sleep assertion, not a display one; the E2E suite checks this against `pmset -g assertions`. |
+| Electron `powerSaveBlocker` | electron 45.4.1 | Keep-awake assertion, type `prevent-app-suspension`. On macOS it is a system idle-sleep assertion, not a display one; the E2E suite checks this against `pmset -g assertions`. |
 | `/usr/bin/pmset` | macOS, system | `pmset displaysleepnow` turns the display off for keep-awake. No root needed in practice; this is not documented. `pmset -g assertions` is read in E2E only. |
 | ScreenSaverEngine | macOS, system | Keep-awake darken fallback, launched with `/usr/bin/open`. |
 

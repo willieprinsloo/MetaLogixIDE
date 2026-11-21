@@ -3,7 +3,7 @@
  * AC12, AC12a, AC13, AC13a).
  *
  * AC13a: this file writes the real OS clipboard from the main process
- * (`clipboard.writeText` / `writeImage` / `clear`), so its tests run
+ * (`clipboard.writeText` / `write` / `clear`), so its tests run
  * serially against one app and never in parallel with each other.
  *
  * Routes:
@@ -50,13 +50,12 @@ test.afterAll(async () => {
 });
 
 async function setClipboardText(app: ElectronApplication, text: string): Promise<void> {
-  await app.evaluate(({ clipboard }, t) => { clipboard.clear(); clipboard.writeText(t); }, text);
+  await app.evaluate(({ clipboard }, t) => clipboard.writeText(t), text);
 }
 
 async function setClipboardImage(app: ElectronApplication, png: number[]): Promise<void> {
-  await app.evaluate(({ clipboard, nativeImage }, bytes) => {
-    clipboard.clear();
-    clipboard.writeImage(nativeImage.createFromBuffer(Buffer.from(bytes)));
+  await app.evaluate(({ clipboard, ClipboardItem }, bytes) => {
+    return clipboard.write([new ClipboardItem({ 'image/png': new Blob([Uint8Array.from(bytes)], { type: 'image/png' }) })]);
   }, png);
 }
 
