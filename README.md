@@ -86,11 +86,15 @@ pnpm install            # one-time
 pnpm dev                # dev + HMR
 pnpm typecheck          # TypeScript check across node + web
 pnpm test               # vitest
-pnpm dist:mac           # package an unsigned DMG and ZIP (arm64 and x64)
+pnpm dist:mac           # package a DMG and ZIP (arm64 and x64)
 ```
 
 SQLite uses the platform binary included in `better-sqlite3`. Run `pnpm rebuild:electron`
 to rebuild `node-pty` for the installed Electron version.
+
+The macOS packaging step ad-hoc signs the app bundle so macOS can accept native
+notifications. It does not use a Developer ID certificate, sign the DMG, or
+notarize the artifacts.
 
 ## Project layout
 

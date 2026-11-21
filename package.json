@@ -32,6 +32,7 @@
   "build": {
     "appId": "com.metalogix.metaide",
     "productName": "MetaLogix IDE",
+    "afterPack": "scripts/sign-macos-bundle.mjs",
     "directories": {
       "output": "dist"
     },
