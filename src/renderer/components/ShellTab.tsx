@@ -7,6 +7,7 @@ import { SearchAddon } from '@xterm/addon-search';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { api } from '@renderer/api';
+import { openSafeHyperlink } from '@renderer/terminal-hyperlinks';
 import { FROST_ATTR } from '@renderer/frosted-chrome-contract';
 import { openRemoteShell, type RemoteShellHandle } from '@renderer/p2p/remoteShellBridge';
 import { useShellStream } from '@renderer/hooks/useShellStream';
@@ -193,6 +194,15 @@ export function ShellTab({
     if (!termHostRef.current) return;
     termHostRef.current.style.visibility = 'hidden';
     const term = new Terminal({
+      // OSC-8 hyperlinks (ESC ] 8 ; ; URL BEL text ESC ] 8 ; ; BEL) render
+      // as styled text out of the box, but clicks only dispatch when a
+      // linkHandler is set. Routes through the same scheme-guarded helper
+      // + app:open-external path as plain-text URLs.
+      linkHandler: {
+        activate: (_ev, text) => {
+          openSafeHyperlink(text, (url) => api.invoke('app:open-external', { url }));
+        },
+      },
       scrollback: TERMINAL_SCROLLBACK_LINES,
       // Explicit SF Mono stack — first match wins. Falls back through
       // common developer monospace fonts. `ui-monospace` alone can pick
