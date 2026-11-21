@@ -110,6 +110,10 @@ stay cheap and must never wait on a child process.
   the position of a live snapshot and preserves later chunks in arrival order.
   A failed or non-live snapshot does not suppress live output. This metadata
   is local to desktop IPC and does not change the paired-device stream.
+- **Desktop terminal view source.** `ShellTab` opens one source through
+  `src/renderer/terminal/terminal-view-source.ts`. The source owns snapshot,
+  input, resize, and close for the view. A paired source receives replay on
+  the existing stream instead of requesting a desktop snapshot.
 - **Scrollback append is O(chunk).** `RollingScrollback` keeps the raw
   scrollback as a list of chunks with a running length and trims whole
   chunks from the front. It joins the chunks and snaps the cut to a line

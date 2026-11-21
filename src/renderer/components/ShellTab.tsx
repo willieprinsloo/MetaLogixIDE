@@ -8,8 +8,8 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { api } from '@renderer/api';
 import { FROST_ATTR } from '@renderer/frosted-chrome-contract';
-import { openRemoteShell, type RemoteShellHandle } from '@renderer/p2p/remoteShellBridge';
-import { openLocalTerminalStream } from '@renderer/terminal/local-terminal-source';
+import type { RemoteShellHandle } from '@renderer/p2p/remoteShellBridge';
+import { openTerminalViewSource } from '@renderer/terminal/terminal-view-source';
 import { useTerminalDrop } from '@renderer/hooks/useTerminalDrop';
 import { useTerminalPaste } from '@renderer/hooks/useTerminalPaste';
 import { dropOverlayLabel } from '@renderer/remote-upload/remote-drop';
@@ -135,7 +135,6 @@ export function ShellTab({
   const remoteDeviceId = typeof source === 'object' ? source.deviceId : null;
   const remoteHostNameRef = useRef<string>(REMOTE_INPUT_COPY.hostFallback);
   remoteHostNameRef.current = (typeof source === 'object' && source.deviceName) || REMOTE_INPUT_COPY.hostFallback;
-  const remoteRef = useRef<RemoteShellHandle | null>(null);
   // Live-data / exit handlers shared by the local pty stream and the remote bridge (assigned below).
   const streamHandlersRef = useRef<StreamHandlers>({ data: () => {}, exit: () => {} });
   const [reconnecting, setReconnecting] = useState(false);
@@ -325,16 +324,18 @@ export function ShellTab({
     // the "text wraps into a vertical column on the right" bug. We wait
     // until document.fonts is ready AND the host has real pixel dimensions
     // BEFORE opening the terminal.
-    const remote = remoteDeviceId ? openRemoteShell(remoteDeviceId, projectId, shellIndex) : null;
-    remoteRef.current = remote;
-    if (remote) {
-      wireRemoteShell(remote, { handlers: streamHandlersRef, setReconnecting, hostName: () => remoteHostNameRef.current, cancelUploads: uploads.tracker.cancel });
-    }
-    term.onData((data) => {
-      if (remote) remote.send(data);
-      else void api.invoke('shells:write', { projectId, shellIndex, data });
-    });
+    snapshotReady.current = false;
+    replayDrained.current = false;
+    pendingLive.current = '';
     termRef.current = term;
+    const viewSource = openTerminalViewSource({
+      target: { projectId, shellIndex },
+      remoteDeviceId,
+      remoteHandlers: (remote) => wireRemoteShell(remote, { handlers: streamHandlersRef, setReconnecting, hostName: () => remoteHostNameRef.current, cancelUploads: uploads.tracker.cancel }),
+      data: (data) => streamHandlersRef.current.data(data),
+      exit: (code) => streamHandlersRef.current.exit(code),
+    });
+    term.onData(viewSource.send);
     let opened = false;
     let disposed = false;
     const focusReg = terminalFocus.register({
@@ -352,10 +353,7 @@ export function ShellTab({
         if (!opened || !host) return null;
         return { width: host.clientWidth, height: host.clientHeight };
       },
-      resize: (cols, rows) => {
-        if (remote) remote.resize(cols, rows);
-        else void api.invoke('shells:resize', { projectId, shellIndex, cols, rows });
-      },
+      resize: viewSource.resize,
       fullWidthCols: () => {
         if (term.buffer.active.type !== 'alternate') return null;
         const host = termHostRef.current;
@@ -379,16 +377,8 @@ export function ShellTab({
     // Snapshot fetch runs in parallel with the open-when-ready gate below;
     // whichever finishes second writes the snapshot into a correctly-sized
     // terminal.
-    snapshotReady.current = false;
-    replayDrained.current = false;
-    pendingLive.current = '';
     let cachedSnapshot: string | null = null;
-    // Remote: the hub replays scrollback as the first stream events, so there is no snapshot to fetch.
-    const local = remote ? null : openLocalTerminalStream({ projectId, shellIndex }, {
-      data: (data) => streamHandlersRef.current.data(data),
-      exit: (code) => streamHandlersRef.current.exit(code),
-    });
-    const snapshotPromise = (local?.snapshot ?? Promise.resolve(''))
+    const snapshotPromise = viewSource.snapshot
       .then((output) => {
         cachedSnapshot = output;
         // Existing output means the process already started — an idle Claude
@@ -554,9 +544,7 @@ export function ShellTab({
       linkProviderDisposable.dispose();
       oscDisposable.dispose();
       focusReg.unregister();
-      local?.close();
-      remote?.close();
-      if (remoteRef.current === remote) remoteRef.current = null;
+      viewSource.close();
       term.dispose();
       if (termRef.current === term) termRef.current = null;
       if (fontUpdaterRef.current === fontUpdater) fontUpdaterRef.current = null;
