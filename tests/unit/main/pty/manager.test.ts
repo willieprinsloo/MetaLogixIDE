@@ -76,6 +76,22 @@ describe('PtyManager', () => {
     expect(inputs).toEqual([]);
   });
 
+  it('writeFromApp reaches the PTY without moving lastInputAt; write moves it', async () => {
+    const mgr = new PtyManager();
+    await mgr.spawn(22, 0, launch());
+    expect(mgr.lastInputAt(22, 0)).toBe(0);
+    const inputs: unknown[] = [];
+    mgr.on('input', (ev) => inputs.push(ev));
+    mgr.writeFromApp(22, 0, 'from app\r');
+    expect(inputs).toEqual([{ projectId: 22, shellIndex: 0, data: 'from app\r' }]);
+    expect(mgr.lastInputAt(22, 0)).toBe(0);
+    const before = Date.now();
+    mgr.write(22, 0, 'x');
+    expect(mgr.lastInputAt(22, 0)).toBeGreaterThanOrEqual(before);
+    expect(mgr.lastInputAt(99, 0)).toBe(0);
+    await mgr.kill(22, 0);
+  });
+
   it('kill removes the entry from list', async () => {
     const mgr = new PtyManager();
     await mgr.spawn(3, 0, launch());

@@ -8,6 +8,7 @@ import type { ProjectDefaultAgentRequest, ScopedCliProfile } from './project-def
 import type { AppFileDragPayload, ClipboardImageResult, ResolveAppFileResult, StageFileRequest, StageResult } from './terminal-drop-contract';
 import type { TasksDiscovery } from './tasks-contract';
 import type { FleetEntry, P2PSettings, P2PSettingsView } from './p2p-contract';
+import type { EngineStatus, GroupView, HeadlessEngine } from './group-chat';
 
 /**
  * Single-character git status codes we bubble up. The two-position
@@ -336,6 +337,23 @@ export interface IpcContract {
    */
   'prompts:paste':  { request: { projectId: number; shellIndex: number; text: string; submit?: boolean }; response: { ok: true } };
 
+  /* ─── Group chats between agents (docs/superpowers/specs/2026-11-19-group-chats-design.md) ─── */
+  'groups:list':          { request: { projectId: number }; response: { groups: GroupView[] } };
+  /** `claudeShell` seeds the group with that Claude tab, when it can join. */
+  'groups:create':        { request: { projectId: number; name?: string; claudeShell?: { projectId: number; shellIndex: number } }; response: { group: GroupView } };
+  'groups:update':        { request: { id: string; name?: string; maxRounds?: number }; response: { group: GroupView } };
+  'groups:add-claude':    { request: { id: string; shell: { projectId: number; shellIndex: number } }; response: { group: GroupView } };
+  'groups:add-headless':  { request: { id: string; engine: HeadlessEngine; name: string; model?: string | null }; response: { group: GroupView } };
+  'groups:remove-member': { request: { id: string; member: string }; response: { group: GroupView } };
+  /** The only call that starts a conversation. */
+  'groups:say':           { request: { id: string; text: string }; response: { group: GroupView } };
+  'groups:stop':          { request: { id: string }; response: { group: GroupView } };
+  /** Refused while the group is running. */
+  'groups:delete':        { request: { id: string }; response: { ok: true } };
+  /** The project's Claude tabs, with why one can't join yet. `id` marks tabs already in that group. */
+  'groups:joinable':      { request: { projectId: number; id?: string }; response: { tabs: Array<{ projectId: number; shellIndex: number; title: string; joinable: boolean; why?: string }> } };
+  'groups:engines':       { request: Record<string, never>; response: Record<HeadlessEngine, EngineStatus> };
+
   /* ─── Task runner (npm scripts / Makefile targets / compose services / mise tasks) ─── */
   'tasks:discover': { request: { projectId: number }; response: TasksDiscovery };
   /** Spawns the task as a new shell tab (auto-picked shellIndex). */
@@ -435,5 +453,7 @@ export interface IpcEvents {
   'app:open-file-request':  { path: string };
   /** Pushed stream events from a remote device (`closed` when the stream or its connection ends). */
   'p2p:rpc-event':          { deviceId: string; streamId: number; data?: unknown; closed?: true; reason?: string };
+  /** A group chat in this project changed; the group panel refetches `groups:list`. */
+  'groups:changed':         { projectId: number };
 }
 export type IpcEventName = keyof IpcEvents;

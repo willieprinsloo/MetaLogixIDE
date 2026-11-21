@@ -11,7 +11,8 @@ import { registerIpc } from './ipc/register';
 import { buildAppMenu } from './menu';
 import { installClaudeNotifications } from './notifications/install';
 import { installAgentStatus } from './agent-status/install';
-import { createHookFanout } from './claude-hooks/hook-fanout';
+import { createHookFanout, type HookSource } from './claude-hooks/hook-fanout';
+import { installGroupChat, type InstalledGroupChat } from './group-chat/install';
 import { rescanRootsAtBoot } from './startup/boot-rescan';
 import { startDoneNotifier } from './startup/done-notifier';
 import { startReceivers } from './startup/receivers';
@@ -376,9 +377,9 @@ function registerMainIpc(services: Services): void {
 }
 
 /** Wires Claude hook events to OS notifications, resolving target windows from this module's state. */
-function installNotifications(services: Services): void {
+function installNotifications(services: Services, hooks: HookSource): void {
   installClaudeNotifications({
-    hooks: createHookFanout(services.hookReceiver),
+    hooks,
     history: services.hookHistory,
     sessions: services.hookSessions,
     ptyManager: services.ptyManager,
@@ -426,9 +427,11 @@ function forwardPortChanges(services: Services): void {
   });
 }
 
-/** Stops the done poller, the agent-status monitor and both receivers when the app quits. */
-function stopOnQuit(services: Services, donePoll: NodeJS.Timeout, agentStatus: ReturnType<typeof installAgentStatus>): void {
+/** Stops group chats, the done poller, the agent-status monitor and both receivers when the app quits. */
+function stopOnQuit(services: Services, donePoll: NodeJS.Timeout, agentStatus: ReturnType<typeof installAgentStatus>, groupChat: InstalledGroupChat): void {
   app.on('before-quit', () => {
+    // first, so running headless engine processes are killed and nothing new starts
+    groupChat.stop();
     clearInterval(donePoll);
     agentStatus.stop();
     services.ompReceiver.stop();
@@ -440,8 +443,8 @@ function stopOnQuit(services: Services, donePoll: NodeJS.Timeout, agentStatus: R
 /**
  * App startup once Electron is ready, in a fixed order: login-shell PATH, cold-launch argv scan
  * (after ready so `existsSync` sees the app-relative CWD), Windows app id, services, receivers,
- * agent status, boot rescan, window settings, IPC, Claude notifications, main window, done
- * notifier, ports fan-out, quit teardown.
+ * agent status, group chats, boot rescan, window settings, IPC, Claude notifications, main
+ * window, done notifier, ports fan-out, quit teardown.
  */
 async function startApp(): Promise<void> {
   await adoptLoginShellPath();
@@ -450,16 +453,19 @@ async function startApp(): Promise<void> {
   const services = createServices();
   await startReceivers(services);
   const agentStatus = attachAgentStatus(services);
+  // The hook receiver holds ONE listener: fan it out once, for notifications and group chats.
+  const hooks = createHookFanout(services.hookReceiver);
+  const groupChat = installGroupChat({ services, hooks, broadcast });
   await rescanRootsAtBoot(services);
   bindWindowSettings(services);
   registerMainIpc(services);
   // P2P needs the IPC broadcaster (rpc stream events) and must never block or fail app startup.
   void startP2P(services, { emit: broadcast }).catch((err: unknown) => log.warn('[p2p] start failed', err));
-  installNotifications(services);
+  installNotifications(services, hooks);
   await openMainWindow(services);
   const donePoll = startCommandDoneNotifier(services);
   forwardPortChanges(services);
-  stopOnQuit(services, donePoll, agentStatus);
+  stopOnQuit(services, donePoll, agentStatus, groupChat);
 }
 
 const startupReady = app.whenReady().then(startApp);

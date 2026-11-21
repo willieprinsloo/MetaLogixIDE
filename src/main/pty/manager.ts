@@ -29,6 +29,8 @@ interface Entry {
   cmdStartedAt: number | null;
   /** ms epoch of the last pty:data event. Used to detect idle after work. */
   lastDataAt: number;
+  /** ms epoch of the last `write` (the user's input); `writeFromApp` leaves it alone. 0 = never. */
+  lastInputAt?: number;
   /** Guard so the same command fires exactly one notification. */
   cmdNotified: boolean;
   /** Ports the shell announced via "listening on 3000" / "Local: http://…" etc. */
@@ -162,6 +164,28 @@ export class PtyManager extends EventEmitter {
   write(projectId: number, shellIndex: number, data: string): void {
     const e = this.entries.get(key(projectId, shellIndex));
     if (!e) return;
+    e.lastInputAt = Date.now();
+    this.writeEntry(e, projectId, shellIndex, data);
+  }
+
+  /**
+   * Writes like `write` (same PTY write, same `'input'` event) but does not
+   * count as the user typing: `lastInputAt` stays put. Group chats type round
+   * messages into a Claude tab this way, so their own paste never looks like
+   * the user is mid-sentence.
+   */
+  writeFromApp(projectId: number, shellIndex: number, data: string): void {
+    const e = this.entries.get(key(projectId, shellIndex));
+    if (!e) return;
+    this.writeEntry(e, projectId, shellIndex, data);
+  }
+
+  /** ms epoch of the user's last `write` to this shell; 0 if never, or not alive. */
+  lastInputAt(projectId: number, shellIndex: number): number {
+    return this.entries.get(key(projectId, shellIndex))?.lastInputAt ?? 0;
+  }
+
+  private writeEntry(e: Entry, projectId: number, shellIndex: number, data: string): void {
     // `\r` (Enter) is our "new command" signal. Reset the notified flag so
     // the NEXT long-running command earns its own notification.
     if (data.includes('\r')) {

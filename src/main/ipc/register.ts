@@ -86,6 +86,14 @@ function validatedConfigPatch(config: unknown): Partial<ProjectConfig> {
 export type Handler<C extends IpcChannelName> = (services: Services, req: IpcRequest<C>, event?: Electron.IpcMainInvokeEvent) => Promise<IpcResponse<C>>;
 type SendEvent = <E extends IpcEventName>(channel: E, payload: IpcEvents[E]) => void;
 
+const HEADLESS_ENGINES: ReadonlySet<string> = new Set(['codex', 'gemini', 'ollama']);
+
+/** The group-chat service, or a clear error before startup has installed it. */
+function groupChat(s: Services): NonNullable<Services['groupChat']> {
+  if (!s.groupChat) throw new Error('group chats are not ready yet');
+  return s.groupChat;
+}
+
 /** Keep-alive eviction skips Claude tabs that are members of a running group chat. */
 function inRunningGroupChat(s: Services): (sh: { projectId: number; shellIndex: number }) => boolean {
   const kept = s.groupChat?.protectedShells() ?? [];
@@ -1359,6 +1367,25 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     s.shells.touch(projectId, shellIndex, new Date());
     return { ok: true } as const;
   },
+
+  /* ─── Group chats ─── */
+  'groups:list':          async (s, { projectId }) => ({ groups: groupChat(s).list(projectId) }),
+  'groups:create':        async (s, { projectId, name, claudeShell }) => ({ group: groupChat(s).create(projectId, { name, claudeShell }) }),
+  'groups:update':        async (s, { id, name, maxRounds }) => ({ group: groupChat(s).update(id, { name, maxRounds }) }),
+  'groups:add-claude':    async (s, { id, shell }) => ({ group: groupChat(s).addClaudeTab(id, shell) }),
+  'groups:add-headless':  async (s, { id, engine, name, model }) => {
+    if (!HEADLESS_ENGINES.has(engine)) throw new Error(`unknown engine: ${String(engine)}`);
+    return { group: groupChat(s).addHeadless(id, { engine, name, model }) };
+  },
+  'groups:remove-member': async (s, { id, member }) => ({ group: groupChat(s).removeMember(id, member) }),
+  'groups:say':           async (s, { id, text }) => {
+    if (typeof text !== 'string' || !text.trim()) throw new Error('the message is empty');
+    return { group: groupChat(s).say(id, text) };
+  },
+  'groups:stop':          async (s, { id }) => ({ group: groupChat(s).stop(id) }),
+  'groups:delete':        async (s, { id }) => { groupChat(s).remove(id); return { ok: true } as const; },
+  'groups:joinable':      async (s, { projectId, id }) => ({ tabs: groupChat(s).joinableClaudeTabs(projectId, id) }),
+  'groups:engines':       async (s) => groupChat(s).engineStatus(),
 
   /* ─── Task runner ─── */
   'tasks:discover': async (s, { projectId }) => {

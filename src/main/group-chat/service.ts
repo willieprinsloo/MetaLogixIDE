@@ -10,7 +10,7 @@
  *   nothing new starts; the next start finds those groups running and marks them stopped.
  */
 import { randomUUID } from 'node:crypto';
-import { ENGINE_LABEL, type GroupView, type HeadlessEngine, type MemberInfo, type TurnPhase } from '@shared/group-chat';
+import { ENGINE_LABEL, type EngineStatus, type GroupView, type HeadlessEngine, type MemberInfo, type TurnPhase } from '@shared/group-chat';
 import type { MemberRecord, StoredGroup } from '@main/repos/groups-repo';
 import { createGroups, type Delivery, type Group, type Groups } from './groups';
 import type { MemberTurn, TurnOutcome } from './members';
@@ -35,6 +35,8 @@ export interface GroupChatDeps {
   /** Live shells in the project that are running Claude. */
   liveClaudeShells: (projectId: number) => Array<Shell & { title: string }>;
   onChange: (projectId: number) => void;
+  /** Which headless engines can run right now (for the Add-member picker). */
+  engines?: () => Promise<Record<HeadlessEngine, EngineStatus>>;
   turnMs?: number;
   setTimer?: (fn: () => void, ms: number) => () => void;
   now?: () => number;
@@ -88,6 +90,11 @@ export class GroupChatService {
       if (inGroup.has(sid)) return { ...base, joinable: false, why: 'already in this group' };
       return { ...base, joinable: true };
     });
+  }
+
+  engineStatus(): Promise<Record<HeadlessEngine, EngineStatus>> {
+    const why = 'engine checks aren’t available';
+    return this.deps.engines?.() ?? Promise.resolve({ codex: { ready: false, why }, gemini: { ready: false, why }, ollama: { ready: false, why } });
   }
 
   /** Claude tabs of members of running groups: never evicted by the keep-alive cap. */
