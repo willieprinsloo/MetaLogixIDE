@@ -15,4 +15,9 @@ allowBuilds:
   node-pty: true
 
 patchedDependencies:
+  '@gespenst/core@0.2.0': patches/@gespenst__core@0.2.0.patch
+  '@gespenst/xterm@0.2.0': patches/@gespenst__xterm@0.2.0.patch
   '@xterm/addon-webgl@0.18.0': patches/@xterm__addon-webgl@0.18.0.patch
+
+overrides:
+  '@gespenst/xterm@0.2.0>@gespenst/core': '0.2.0'
