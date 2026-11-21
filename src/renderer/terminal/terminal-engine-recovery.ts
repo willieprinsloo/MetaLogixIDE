@@ -7,7 +7,7 @@ export interface TerminalRenderer {
 }
 
 type RecoveryReason = 'load-timeout' | 'load-failed' | 'renderer-fault';
-type RecoveryState = { readonly kind: 'loading' | 'ghostty' } |
+export type RecoveryState = { readonly kind: 'loading' | 'ghostty' } |
   { readonly kind: 'recovering' | 'xterm' | 'failed'; readonly reason: RecoveryReason };
 type Phase = 'loading' | 'ghostty' | 'recovering' | 'xterm' | 'failed' | 'disposed';
 

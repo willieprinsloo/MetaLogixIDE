@@ -106,17 +106,23 @@ function clipboardEvent(type: 'paste' | 'copy', text = '') {
   return { ev, store };
 }
 
+async function waitForStockEffects(): Promise<void> {
+  await vi.waitFor(() => expect(fake.osc.has(52)).toBe(true));
+}
+
 describe('remote ShellTab clipboard (diagnosis)', () => {
   test('control: a DOM paste on the remote terminal host reaches the remote PTY as a bracketed paste', async () => {
     const { host } = renderRemote();
+    await waitForStockEffects();
     const { ev } = clipboardEvent('paste', 'echo hi');
     await act(async () => { host.dispatchEvent(ev); });
     expect(ev.defaultPrevented).toBe(true);
     expect(handle.send).toHaveBeenCalledWith('\x1b[200~echo hi\x1b[201~');
   });
 
-  test('control: a DOM copy of an xterm selection in the remote terminal fills the local clipboard event', () => {
+  test('control: a DOM copy of an xterm selection in the remote terminal fills the local clipboard event', async () => {
     const { host } = renderRemote();
+    await waitForStockEffects();
     fake.selection = 'remote output';
     const { ev, store } = clipboardEvent('copy');
     act(() => { host.dispatchEvent(ev); });
@@ -124,7 +130,10 @@ describe('remote ShellTab clipboard (diagnosis)', () => {
     expect(store.get('text/plain')).toBe('remote output');
   });
 
-  const osc = (arg: string) => act(async () => { await fake.osc.get(52)?.(arg); });
+  async function osc(arg: string): Promise<void> {
+    await waitForStockEffects();
+    await act(async () => { await fake.osc.get(52)?.(arg); });
+  }
   const b64 = (t: string) => btoa(String.fromCharCode(...new TextEncoder().encode(t)));
 
   test('AC-T6: an OSC 52 clipboard write from the remote program lands on the local clipboard', async () => {
@@ -163,8 +172,9 @@ describe('remote ShellTab clipboard (diagnosis)', () => {
     writeText.mockResolvedValue(undefined);
   });
 
-  test('the OSC 52 handler is disposed on unmount', () => {
+  test('the OSC 52 handler is disposed on unmount', async () => {
     const { unmount } = renderRemote();
+    await waitForStockEffects();
     expect(fake.osc.has(52)).toBe(true);
     unmount();
     expect(fake.osc.has(52)).toBe(false);
@@ -202,6 +212,7 @@ describe('remote ShellTab clipboard (diagnosis)', () => {
 
   test('AC-T3: one paste event gives exactly one send', async () => {
     const { host } = renderRemote();
+    await waitForStockEffects();
     const { ev } = clipboardEvent('paste', 'one');
     await act(async () => { host.dispatchEvent(ev); });
     expect(handle.send).toHaveBeenCalledTimes(1);
@@ -210,12 +221,14 @@ describe('remote ShellTab clipboard (diagnosis)', () => {
   test('AC-T2: local and remote receive the same bytes for the same clipboard text', async () => {
     const text = 'line1\nline2 é🎉';
     const remote = renderRemote();
+    await waitForStockEffects();
     await act(async () => { remote.host.dispatchEvent(clipboardEvent('paste', text).ev); });
     const remoteBytes = handle.send.mock.calls.map((c) => c[0]).join('');
     remote.unmount();
     invoke.mockClear();
     const local = render(<ShellTab projectId={3} shellIndex={1} primary />);
     const lhost = local.getByTestId('shell-tab').firstElementChild as HTMLElement;
+    await waitForStockEffects();
     await act(async () => { lhost.dispatchEvent(clipboardEvent('paste', text).ev); });
     const localBytes = invoke.mock.calls.filter((c) => c[0] === 'shells:write').map((c) => (c[1] as { data: string }).data).join('');
     expect(remoteBytes).not.toBe('');

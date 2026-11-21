@@ -10,6 +10,9 @@ import { api } from '@renderer/api';
 import { FROST_ATTR } from '@renderer/frosted-chrome-contract';
 import type { RemoteShellHandle } from '@renderer/p2p/remoteShellBridge';
 import { openTerminalViewSource } from '@renderer/terminal/terminal-view-source';
+import { readTerminalEngine } from '@renderer/terminal/terminal-engine-setting';
+import { openGhosttyWithStandby } from '@renderer/terminal/engine-composition';
+import type { GhosttyView, TerminalViewSurface } from '@renderer/terminal/ghostty-view-engine';
 import { useTerminalDrop } from '@renderer/hooks/useTerminalDrop';
 import { useTerminalPaste } from '@renderer/hooks/useTerminalPaste';
 import { dropOverlayLabel } from '@renderer/remote-upload/remote-drop';
@@ -147,6 +150,10 @@ export function ShellTab({
   const [altScreen, setAltScreen] = useState(false);
   const termHostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
+  const activeSurfaceRef = useRef<TerminalViewSurface | null>(null);
+  const outputRef = useRef<((data: string) => void) | null>(null);
+  const ghosttyRef = useRef<GhosttyView | null>(null);
+  const [engineStatus, setEngineStatus] = useState<'xterm' | 'loading' | 'ghostty' | 'recovering' | 'fallback' | 'failed'>('xterm');
   const searchRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const geometrySyncRef = useRef<TerminalGeometrySynchronizer | null>(null);
@@ -218,7 +225,7 @@ export function ShellTab({
   const primaryRef = useRef(primary);
   primaryRef.current = primary;
   const shellExitedRef = useRef(false);
-  const pasteIntoTerminal = useCallback((text: string) => { termRef.current?.paste(text); }, []);
+  const pasteIntoTerminal = useCallback((text: string) => { activeSurfaceRef.current?.paste(text); }, []);
   const uploads = useUploadProgress(uploadClient());
   const remoteTarget = useRemoteTarget(remoteDeviceId, remoteHostNameRef.current, uploads.tracker);
   const pasteFromText = useTerminalPaste(termHostRef, pasteIntoTerminal, remoteTarget);
@@ -230,6 +237,11 @@ export function ShellTab({
 
   useEffect(() => {
     if (!termHostRef.current) return;
+    const opening = new AbortController();
+    let optionalView: ReturnType<typeof openGhosttyWithStandby> | undefined;
+    let ghostHost: HTMLDivElement | undefined;
+    let optionalEngine = false;
+    setEngineStatus('xterm');
     termHostRef.current.style.visibility = 'hidden';
     const term = new Terminal({
       macOptionClickForcesSelection: true,
@@ -264,24 +276,26 @@ export function ShellTab({
     term.loadAddon(new WebLinksAddon((_ev: MouseEvent, url: string) => {
       void api.invoke('app:open-external', { url }).catch((e) => console.error(e));
     }));
-    const oscDisposable = registerClipboardOsc(term, {
+    const clipboard = {
       writeText: (text) => navigator.clipboard.writeText(text),
       onError: createCopyFailedToast(),
-    });
+    } satisfies Parameters<typeof registerClipboardOsc>[1];
+    let oscDisposable: IDisposable | undefined;
     const search = new SearchAddon();
     term.loadAddon(search);
     searchRef.current = search;
-    term.attachCustomKeyEventHandler(createTerminalKeyHandler({
+    const keys = createTerminalKeyHandler({
       platform: platformRef.current,
-      hasSelection: () => term.hasSelection(),
-      getSelection: () => term.getSelection(),
+      hasSelection: () => activeSurfaceRef.current?.hasSelection() ?? false,
+      getSelection: () => activeSurfaceRef.current?.getSelection() ?? '',
       writeClipboard: (text) => navigator.clipboard.writeText(text),
       readClipboard: () => navigator.clipboard.readText(),
       paste: (text) => { void pasteFromText(text); },
       onClipboardError: (op, err) => {
         toast(SHORTCUT_COPY.clipboardErrorTitle(op), { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') });
       },
-    }));
+    });
+    term.attachCustomKeyEventHandler(keys);
 
     // File-path link provider: matches things like src/main/index.ts:42
     // in terminal output, shows a hover preview, click opens in Files.
@@ -328,6 +342,7 @@ export function ShellTab({
     replayDrained.current = false;
     pendingLive.current = '';
     termRef.current = term;
+    outputRef.current = data => term.write(data);
     const viewSource = openTerminalViewSource({
       target: { projectId, shellIndex },
       remoteDeviceId,
@@ -335,14 +350,24 @@ export function ShellTab({
       data: (data) => streamHandlersRef.current.data(data),
       exit: (code) => streamHandlersRef.current.exit(code),
     });
-    term.onData(viewSource.send);
+    function enableXtermEffects() {
+      term.onData(viewSource.send);
+      oscDisposable = registerClipboardOsc(term, clipboard);
+    }
+    const engine = readTerminalEngine(opening.signal).then(selected => {
+      if (!opening.signal.aborted && selected === 'xterm') {
+        activeSurfaceRef.current = term;
+        enableXtermEffects();
+      }
+      return selected;
+    });
     let opened = false;
     let disposed = false;
     const focusReg = terminalFocus.register({
       key: { projectId, shellIndex },
       primary: primaryRef.current,
       isOpen: () => opened && snapshotReady.current,
-      focus: () => term.focus(),
+      focus: () => activeSurfaceRef.current?.focus(),
     });
 
     const synchronizeGeometry = createTerminalGeometrySynchronizer({
@@ -353,7 +378,10 @@ export function ShellTab({
         if (!opened || !host) return null;
         return { width: host.clientWidth, height: host.clientHeight };
       },
-      resize: viewSource.resize,
+      resize: (cols, rows) => {
+        ghosttyRef.current?.resize(cols, rows);
+        viewSource.resize(cols, rows);
+      },
       fullWidthCols: () => {
         if (term.buffer.active.type !== 'alternate') return null;
         const host = termHostRef.current;
@@ -391,6 +419,7 @@ export function ShellTab({
 
     function writeSnapshotAndFlush() {
       if (termRef.current !== term || disposed) return;
+      if (optionalEngine) { startGhosttyView(); return; }
       const output = cachedSnapshot ?? '';
       if (output) term.reset();
 
@@ -438,6 +467,65 @@ export function ShellTab({
       }
     }
 
+    function startGhosttyView() {
+      const host = termHostRef.current;
+      if (!host) return;
+      const candidateHost = document.createElement('div');
+      candidateHost.className = 'absolute inset-0';
+      candidateHost.inert = true;
+      host.append(candidateHost);
+      ghostHost = candidateHost;
+      const standbyElement = term.element;
+      if (standbyElement) standbyElement.inert = true;
+      activeSurfaceRef.current = null;
+      const show = (surface: TerminalViewSurface) => {
+        activeSurfaceRef.current = surface;
+        snapshotReady.current = true;
+        host.style.visibility = '';
+      };
+      optionalView = openGhosttyWithStandby({
+        host: candidateHost,
+        standby: term,
+        send: viewSource.send,
+        appearance: () => ({
+          cols: term.cols, rows: term.rows, theme: buildTheme(), fontFamily: term.options.fontFamily,
+          fontSize: term.options.fontSize, fontWeight: term.options.fontWeight, fontWeightBold: term.options.fontWeightBold,
+          cursorBlink: true, cursorStyle: 'bar', lineHeight: 1.25, letterSpacing: 0,
+        }),
+        enableXterm(restoreFocus) {
+          enableXtermEffects();
+          candidateHost.remove();
+          if (standbyElement) { standbyElement.style.visibility = ''; standbyElement.inert = false; }
+          term.scrollToBottom();
+          show(term);
+          if (restoreFocus) term.focus();
+          else focusReg.opened();
+        },
+        onState(state, candidate) {
+          setEngineStatus(state.kind === 'xterm' ? 'fallback' : state.kind);
+          ghosttyRef.current = candidate ?? null;
+          if (candidate) {
+            candidate.reveal({ keys, clipboard, links: remoteDeviceId ? undefined : pathLinkProvider, focused: focusReg.used });
+            if (standbyElement) standbyElement.style.visibility = 'hidden';
+            candidateHost.inert = false;
+            candidate.resize(term.cols, term.rows);
+            show(candidate.surface);
+            focusReg.opened();
+          } else if (state.kind === 'recovering' || state.kind === 'failed') {
+            activeSurfaceRef.current = null;
+            snapshotReady.current = false;
+          }
+        },
+      });
+      outputRef.current = optionalView.write;
+      // Snapshot and its buffered successor enter both engines before any new live output.
+      const live = pendingLive.current;
+      pendingLive.current = '';
+      if (cachedSnapshot) optionalView.write(cachedSnapshot);
+      if (live) optionalView.write(live);
+      replayDrained.current = true;
+    }
+
     /**
      * The actual open sequence: wait for fonts + a laid-out container,
      * THEN term.open, fit, and write the snapshot. This is the fix for
@@ -461,9 +549,11 @@ export function ShellTab({
         if (performance.now() - startedAt > 2000) break;
         await new Promise<void>((r) => requestAnimationFrame(() => r()));
       }
+      const selected = await engine;
       if (disposed || termRef.current !== term) return;
       const host = termHostRef.current;
       if (!host) return;
+      optionalEngine = selected === 'ghostty';
       term.open(host);
       // Load the WebGL renderer AFTER open so its context binds to the
       // actual canvas. WebGL sidesteps the DOM renderer's row-width-vs-
@@ -508,7 +598,7 @@ export function ShellTab({
     // and trailing-space column padding. Without this, pastes into email
     // land as "Â " for NBSP and tofu boxes for Nerd Font glyphs.
     function onCopy(e: ClipboardEvent) {
-      const sel = term.getSelection();
+      const sel = activeSurfaceRef.current?.getSelection();
       if (!sel) return;
       e.preventDefault();
       const cleaned = sanitizeTerminalCopy(sel);
@@ -522,15 +612,22 @@ export function ShellTab({
     copyHost?.addEventListener('copy', onCopy);
 
     const media = window.matchMedia('(prefers-color-scheme: dark)');
-    const onScheme = () => { term.options.theme = buildTheme(); };
+    const onScheme = () => {
+      const theme = buildTheme();
+      term.options.theme = theme;
+      ghosttyRef.current?.applyAppearance({ theme });
+    };
     media.addEventListener('change', onScheme);
     // Appearance, palette and frosted-glass level changes (the level-scoped --term-fg) must refresh existing terminals.
-    const themeObserver = new MutationObserver(() => { term.options.theme = buildTheme(); });
+    const themeObserver = new MutationObserver(onScheme);
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-palette', FROST_ATTR.platform, FROST_ATTR.chromeFrost, FROST_ATTR.terminalFrost] });
 
     return () => {
       fontUpdater.dispose();
       disposed = true;
+      opening.abort();
+      optionalView?.dispose();
+      ghostHost?.remove();
       opened = false;
       window.clearTimeout(late1);
       window.clearTimeout(late2);
@@ -542,11 +639,14 @@ export function ShellTab({
       themeObserver.disconnect();
       copyHost?.removeEventListener('copy', onCopy);
       linkProviderDisposable.dispose();
-      oscDisposable.dispose();
+      oscDisposable?.dispose();
       focusReg.unregister();
       viewSource.close();
       term.dispose();
       if (termRef.current === term) termRef.current = null;
+      activeSurfaceRef.current = null;
+      outputRef.current = null;
+      ghosttyRef.current = null;
       if (fontUpdaterRef.current === fontUpdater) fontUpdaterRef.current = null;
       if (geometrySyncRef.current === synchronizeGeometry) geometrySyncRef.current = null;
       searchRef.current = null;
@@ -573,13 +673,16 @@ export function ShellTab({
   useEffect(() => {
     if (!termRef.current) return;
     termRef.current.options.fontSize = fontSize;
+    ghosttyRef.current?.applyAppearance({ fontSize });
     geometrySyncRef.current?.({ forceResize: true });
   }, [fontSize]);
 
   // Weight changes repaint without remeasuring: xterm's cell size ignores weight, so the PTY keeps its geometry.
   useEffect(() => {
     if (!termRef.current) return;
-    termRef.current.options = terminalFontWeightOptions({ weight: fontWeight, boldWeight });
+    const weights = terminalFontWeightOptions({ weight: fontWeight, boldWeight });
+    termRef.current.options = weights;
+    ghosttyRef.current?.applyAppearance(weights);
   }, [fontWeight, boldWeight]);
 
   useEffect(() => {
@@ -587,6 +690,7 @@ export function ShellTab({
     if (!updater || appliedFontFamilyRef.current === terminalFontFamily) return;
     appliedFontFamilyRef.current = terminalFontFamily;
     void updater.apply(terminalFontFamily);
+    ghosttyRef.current?.applyAppearance({ fontFamily: buildFontFamilyStack(terminalFontFamily, TERMINAL_FONT_FALLBACK) });
   }, [terminalFontFamily]);
 
   useEffect(() => {
@@ -618,14 +722,14 @@ export function ShellTab({
       if (!sessionCorrupted && /Invalid [`']?signature[`']? in [`']?thinking[`']? block/i.test(data)) {
         setSessionCorrupted(true);
       }
-      if (replayDrained.current) termRef.current?.write(data);
+      if (replayDrained.current) outputRef.current?.(data);
       else pendingLive.current += data;
     },
     exit: (code) => {
       shellExitedRef.current = true;
       const notice = '\r\n[shell exited]\r\n';
-      if (!remoteDeviceId && !replayDrained.current) pendingLive.current += notice;
-      else termRef.current?.write(notice);
+      if (!replayDrained.current) pendingLive.current += notice;
+      else outputRef.current?.(notice);
       setExitInfo({ code });
     },
   };
@@ -736,7 +840,8 @@ export function ShellTab({
     >
       {/* `isolate` keeps xterm's internal z-indexes (e.g. its link layer) inside the
           host, so the exit overlay, drop hint and search bar always paint above it. */}
-      <div ref={termHostRef} className="w-full h-full isolate" style={{ visibility: 'hidden' }} />
+      <div ref={termHostRef} className="relative w-full h-full isolate" style={{ visibility: 'hidden' }} data-terminal-engine={engineStatus} />
+      {engineStatus === 'failed' && <p className="absolute inset-x-0 top-2 text-center text-sm" role="alert" tabIndex={0}>The terminal display could not recover. Close and reopen this view to reconnect to the running shell.</p>}
       {!remoteDeviceId && sessionCorrupted && (
         <div className="absolute inset-x-0 top-3 flex items-center justify-center pointer-events-none">
           <div className="pointer-events-auto flex items-center gap-3 bg-[--danger]/15 border border-[--danger]/40 rounded-md shadow-xl px-3 py-2 text-xs text-[--text] max-w-[720px]">
@@ -878,7 +983,7 @@ export function ShellTab({
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter')      { if (e.shiftKey) findPrev(searchQuery); else findNext(searchQuery); }
-              else if (e.key === 'Escape') { setSearchOpen(false); setSearchQuery(''); searchRef.current?.clearDecorations(); termRef.current?.focus(); }
+              else if (e.key === 'Escape') { setSearchOpen(false); setSearchQuery(''); searchRef.current?.clearDecorations(); activeSurfaceRef.current?.focus(); }
             }}
             placeholder="Find…"
             className="bg-transparent text-sm px-2 py-0.5 outline-none placeholder:text-[--text-muted] w-40"
@@ -886,7 +991,7 @@ export function ShellTab({
           <button onClick={() => findPrev(searchQuery)} title={SHORTCUT_COPY.searchPrevTitle(platform)} className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel]">↑</button>
           <button onClick={() => findNext(searchQuery)} title={SHORTCUT_COPY.searchNextTitle(platform)} className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel]">↓</button>
           <button
-            onClick={() => { setSearchOpen(false); setSearchQuery(''); searchRef.current?.clearDecorations(); termRef.current?.focus(); }}
+            onClick={() => { setSearchOpen(false); setSearchQuery(''); searchRef.current?.clearDecorations(); activeSurfaceRef.current?.focus(); }}
             title="Close (Esc)"
             className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel]"
           >
@@ -902,7 +1007,7 @@ export function ShellTab({
       />
       <AnimatePresence>
         {menu && (() => {
-          const term = termRef.current;
+          const term = activeSurfaceRef.current;
           const hasSelection = !!term?.hasSelection();
           const items: ContextMenuItem[] = [
             {
@@ -923,7 +1028,7 @@ export function ShellTab({
               label: 'Copy all (visible scrollback)',
               separatorAfter: true,
               onClick: async () => {
-                const t = termRef.current;
+                const t = activeSurfaceRef.current;
                 if (!t) return;
                 const buf = t.buffer.active;
                 const lines: string[] = [];
@@ -952,10 +1057,10 @@ export function ShellTab({
             {
               label: 'Clear selection',
               disabled: !hasSelection,
-              onClick: () => { termRef.current?.clearSelection(); },
+              onClick: () => { activeSurfaceRef.current?.clearSelection(); },
             },
           ];
-          return <ContextMenu key="context-menu" x={menu.x} y={menu.y} items={items} onClose={() => { setMenu(null); termRef.current?.focus(); }} />;
+          return <ContextMenu key="context-menu" x={menu.x} y={menu.y} items={items} onClose={() => { setMenu(null); activeSurfaceRef.current?.focus(); }} />;
         })()}
       </AnimatePresence>
     </div>

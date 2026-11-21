@@ -291,8 +291,16 @@ tests render them without a DOM. Real focus, layout and colour are covered by
 The desktop settings repository stores `terminal_engine` as a viewer-local
 preference. Missing or invalid values read as `xterm` without changing the
 stored row. The existing settings IPC validates writes and sends a change
-event only after a different value is saved. The preference is not yet used
-by terminal views or exposed in General.
+event only after a different value is saved. A terminal view reads this value
+once at opening. A read failure or timeout selects xterm.js. Setting changes
+do not replace a renderer in an open view. General does not expose the choice
+while Ghostty integration is under test.
+
+A Ghostty view feeds the same shell output to an inert xterm.js standby.
+On renderer failure, the standby drains its passive writes before it takes
+over input and clipboard effects. The shell connection does not change.
+Ghostty compiles verified bundled WASM in a lazy renderer chunk. The desktop
+document's script policy permits WASM compilation, but not JavaScript eval.
 
 ### App chrome
 

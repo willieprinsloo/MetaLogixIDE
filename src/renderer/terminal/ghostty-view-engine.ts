@@ -5,10 +5,27 @@ import vt from 'virtual:metaide-ghostty-vt';
 import callbacks from 'virtual:metaide-ghostty-callbacks';
 import type { TerminalRenderer } from './terminal-engine-recovery';
 import { untilAbort } from './terminal-abort';
+import type { IBuffer, ILinkProvider, Terminal as StockTerminal } from '@xterm/xterm';
+import { registerClipboardOsc, type ClipboardOscDeps } from '../osc52';
 
-interface GhosttyView extends TerminalRenderer {
+export type TerminalViewSurface = Pick<StockTerminal, 'focus' | 'paste' | 'hasSelection' | 'getSelection' | 'clearSelection'> & {
+  readonly buffer: { readonly active: Pick<IBuffer, 'length' | 'getLine'> };
+};
+
+export interface GhosttyView extends TerminalRenderer {
+  readonly surface: TerminalViewSurface;
   write(data: string, parsed?: () => void): void;
+  resize(cols: number, rows: number): void;
+  applyAppearance(appearance: Appearance): void;
+  reveal(handlers: GhosttyInteraction): void;
   focus(): void;
+}
+
+interface GhosttyInteraction {
+  readonly keys: (event: KeyboardEvent) => boolean;
+  readonly links?: ILinkProvider;
+  readonly clipboard: ClipboardOscDeps;
+  readonly focused: () => void;
 }
 
 interface GhosttyHandlers {
@@ -17,7 +34,7 @@ interface GhosttyHandlers {
   readonly input: (data: string, source: 'key' | 'text' | 'paste' | 'mouse' | 'focus' | 'reply') => void;
 }
 
-type Appearance = Pick<GespenstTerminalOptions, 'cols' | 'rows' | 'fontFamily' | 'fontSize' | 'fontWeight' |
+export type Appearance = Pick<GespenstTerminalOptions, 'cols' | 'rows' | 'fontFamily' | 'fontSize' | 'fontWeight' |
   'fontWeightBold' | 'lineHeight' | 'letterSpacing' | 'theme' | 'cursorBlink' | 'cursorStyle'>;
 
 let compiled: PreloadedXtermRuntime | undefined;
@@ -115,9 +132,25 @@ export async function openGhosttyView(
     throw error;
   }
   return {
+    surface: terminal,
     write(data, parsed) {
       if (disposed || faulted) return;
       try { terminal.write(data, parsed); } catch { fault(); }
+    },
+    resize(cols, rows) {
+      if (disposed || faulted || (terminal.cols === cols && terminal.rows === rows)) return;
+      try { terminal.resize(cols, rows); } catch { fault(); }
+    },
+    applyAppearance(appearance) {
+      if (!disposed && !faulted) terminal.options = appearance;
+    },
+    reveal(interaction) {
+      if (disposed || faulted) return;
+      terminal.attachCustomKeyEventHandler(interaction.keys);
+      if (interaction.links) disposables.push(terminal.registerLinkProvider(interaction.links));
+      disposables.push(registerClipboardOsc(terminal, interaction.clipboard));
+      terminal.textarea?.addEventListener('focus', interaction.focused);
+      disposables.push({ dispose: () => terminal.textarea?.removeEventListener('focus', interaction.focused) });
     },
     focus() { if (!disposed && !faulted) terminal.focus(); },
     dispose,
