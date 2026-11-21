@@ -13,6 +13,7 @@ import type { ProjectConfig } from '@shared/types';
 import type { ResolvedLaunch } from '@main/domain/launch';
 import type { MiseLister, MiseListResult } from '@main/domain/mise-cli';
 import { defaultShellArgv } from '@main/domain/shell';
+import { ScreenMirror } from '@main/pty/screen-mirror';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
 import { commitAll, finishOrder, git, makeConflict, markerScript, slowCommandDir, stubGitEnv, tempProject } from '../git/temp-repo';
@@ -92,6 +93,72 @@ describe('registerIpc', () => {
     const services = { agentStatus: null } as unknown as Parameters<typeof registerIpc>[1];
     registerIpc(ipc, services, () => {});
     await expect(ipc.handlers.get('agent-state:list')!({}, undefined)).rejects.toThrow('agent status not installed');
+  });
+
+  describe('desktop snapshot replay position', () => {
+    const shell = { projectId: 4, shellIndex: 2 };
+    const identity = { pid: 42, generation: 'first', agent: null };
+
+    function replayRig() {
+      const ipc = fakeIpcMain();
+      const ptyManager = fakePtyManager();
+      ptyManager.liveShell.mockReturnValue(identity);
+      const source = new EventEmitter();
+      ptyManager.on.mockImplementation((event: string, listener: (...args: unknown[]) => void) => source.on(event, listener));
+      const sendEvent = vi.fn();
+      registerIpc(ipc, { ptyManager } as unknown as Parameters<typeof registerIpc>[1], sendEvent);
+      const invoke = ipc.handlers.get('shells:snapshot');
+      if (!invoke) throw new Error('Snapshot IPC not registered');
+      return { ptyManager, source, sendEvent, snapshot: () => invoke({}, shell) };
+    }
+
+    it('captures position before the parser barrier and keeps identical later chunks distinct', async () => {
+      const { ptyManager, source, sendEvent, snapshot } = replayRig();
+      const mirror = new ScreenMirror(80, 24);
+      ptyManager.getSnapshot.mockImplementation(() => mirror.snapshot());
+      const emit = (data: string) => {
+        source.emit('data', { ...shell, data });
+        mirror.write(data);
+      };
+      try {
+        emit('before\r\n');
+        emit('overlap\r\n');
+        const response = snapshot();
+        expect(ptyManager.getSnapshot).toHaveBeenCalledOnce();
+        emit('same\r\n');
+        emit('same\r\n');
+        const cut = await response;
+        expect(cut).toEqual({ output: expect.stringContaining('overlap'), alive: true, replayPosition: 2 });
+        expect(cut).not.toEqual(expect.objectContaining({ output: expect.stringContaining('same') }));
+        expect(sendEvent.mock.calls).toEqual([
+          ['pty:data', { ...shell, data: 'before\r\n', replayPosition: 1 }],
+          ['pty:data', { ...shell, data: 'overlap\r\n', replayPosition: 2 }],
+          ['pty:data', { ...shell, data: 'same\r\n', replayPosition: 3 }],
+          ['pty:data', { ...shell, data: 'same\r\n', replayPosition: 4 }],
+        ]);
+      } finally { mirror.dispose(); }
+    });
+
+    it.each([null, { ...identity, generation: 'replacement' }])('does not return an old snapshot when the captured generation is gone (%j)', async (current) => {
+      const { ptyManager, snapshot } = replayRig();
+      ptyManager.getSnapshot.mockResolvedValue('old state');
+      const response = snapshot();
+      ptyManager.liveShell.mockReturnValue(current);
+      await expect(response).resolves.toEqual({ output: '', alive: false, replayPosition: 0 });
+    });
+
+    it('does not serialize a shell that is not live at the cut', async () => {
+      const { ptyManager, snapshot } = replayRig();
+      ptyManager.liveShell.mockReturnValue(null);
+      await expect(snapshot()).resolves.toEqual({ output: '', alive: false, replayPosition: 0 });
+      expect(ptyManager.getSnapshot).not.toHaveBeenCalled();
+    });
+
+    it('does not turn a failed snapshot into a valid cut', async () => {
+      const { ptyManager, snapshot } = replayRig();
+      ptyManager.getSnapshot.mockRejectedValue(new Error('snapshot failed'));
+      await expect(snapshot()).rejects.toThrow('snapshot failed');
+    });
   });
 
   describe('PTY exit delivery', () => {
@@ -964,20 +1031,20 @@ describe('registerIpc', () => {
   it('shells:snapshot returns the serialized terminal state, not the raw scrollback tail', async () => {
     const ipc = fakeIpcMain();
     const ptyManager = fakePtyManager();
-    ptyManager.isAlive.mockReturnValue(true);
+    ptyManager.liveShell.mockReturnValue({ pid: 42, generation: 'live', agent: null });
     ptyManager.getScrollback.mockReturnValue('RAW-TAIL');
     ptyManager.getSnapshot.mockResolvedValue('\x1b[1mSERIALIZED');
     const services = { ptyManager } as unknown as Parameters<typeof registerIpc>[1];
     registerIpc(ipc as unknown as IpcMain, services, () => {});
     const result = await ipc.handlers.get('shells:snapshot')!({}, { projectId: 4, shellIndex: 2 });
-    expect(result).toEqual({ output: '\x1b[1mSERIALIZED', alive: true });
+    expect(result).toEqual({ output: '\x1b[1mSERIALIZED', alive: true, replayPosition: 0 });
     expect(ptyManager.getSnapshot).toHaveBeenCalledWith(4, 2);
   });
 
   it('shells:snapshot returns an empty dead snapshot when no ptyManager is wired', async () => {
     const ipc = fakeIpcMain();
     registerIpc(ipc as unknown as IpcMain, {} as unknown as Parameters<typeof registerIpc>[1], () => {});
-    await expect(ipc.handlers.get('shells:snapshot')!({}, { projectId: 1, shellIndex: 0 })).resolves.toEqual({ output: '', alive: false });
+    await expect(ipc.handlers.get('shells:snapshot')!({}, { projectId: 1, shellIndex: 0 })).resolves.toEqual({ output: '', alive: false, replayPosition: 0 });
   });
 
   it('shells:launch rejects while the permission mode is unchosen, without spawning', async () => {

@@ -9,7 +9,7 @@ import '@xterm/xterm/css/xterm.css';
 import { api } from '@renderer/api';
 import { FROST_ATTR } from '@renderer/frosted-chrome-contract';
 import { openRemoteShell, type RemoteShellHandle } from '@renderer/p2p/remoteShellBridge';
-import { useShellStream } from '@renderer/hooks/useShellStream';
+import { openLocalTerminalStream } from '@renderer/terminal/local-terminal-source';
 import { useTerminalDrop } from '@renderer/hooks/useTerminalDrop';
 import { useTerminalPaste } from '@renderer/hooks/useTerminalPaste';
 import { dropOverlayLabel } from '@renderer/remote-upload/remote-drop';
@@ -154,6 +154,7 @@ export function ShellTab({
   const fontUpdaterRef = useRef<TerminalFontUpdater | null>(null);
   const appliedFontFamilyRef = useRef<FontFamilyPreference>(null);
   const snapshotReady = useRef(false);
+  const replayDrained = useRef(false);
   const pendingLive = useRef('');
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -379,11 +380,16 @@ export function ShellTab({
     // whichever finishes second writes the snapshot into a correctly-sized
     // terminal.
     snapshotReady.current = false;
+    replayDrained.current = false;
     pendingLive.current = '';
     let cachedSnapshot: string | null = null;
     // Remote: the hub replays scrollback as the first stream events, so there is no snapshot to fetch.
-    const snapshotPromise = (remote ? Promise.resolve({ output: '' }) : api.invoke('shells:snapshot', { projectId, shellIndex }))
-      .then(({ output }) => {
+    const local = remote ? null : openLocalTerminalStream({ projectId, shellIndex }, {
+      data: (data) => streamHandlersRef.current.data(data),
+      exit: (code) => streamHandlersRef.current.exit(code),
+    });
+    const snapshotPromise = (local?.snapshot ?? Promise.resolve(''))
+      .then((output) => {
         cachedSnapshot = output;
         // Existing output means the process already started — an idle Claude
         // prompt emits nothing, so don't wait for live data to drop the overlay.
@@ -391,8 +397,7 @@ export function ShellTab({
           if (startingTimerRef.current) { clearTimeout(startingTimerRef.current); startingTimerRef.current = null; }
           setShowStarting(false);
         }
-      })
-      .catch(() => { cachedSnapshot = ''; });
+      });
 
     function writeSnapshotAndFlush() {
       if (termRef.current !== term || disposed) return;
@@ -426,12 +431,9 @@ export function ShellTab({
         if (termRef.current !== term || disposed) return;
         const live = pendingLive.current;
         pendingLive.current = '';
-        if (live) {
-          snapshotReady.current = true;
-          term.write(live, settleReplay);
-        } else {
-          settleReplay();
-        }
+        replayDrained.current = true;
+        if (live) term.write(live, settleReplay);
+        else settleReplay();
       };
 
       const live = pendingLive.current;
@@ -552,6 +554,7 @@ export function ShellTab({
       linkProviderDisposable.dispose();
       oscDisposable.dispose();
       focusReg.unregister();
+      local?.close();
       remote?.close();
       if (remoteRef.current === remote) remoteRef.current = null;
       term.dispose();
@@ -627,21 +630,17 @@ export function ShellTab({
       if (!sessionCorrupted && /Invalid [`']?signature[`']? in [`']?thinking[`']? block/i.test(data)) {
         setSessionCorrupted(true);
       }
-      if (snapshotReady.current) termRef.current?.write(data);
+      if (replayDrained.current) termRef.current?.write(data);
       else pendingLive.current += data;
     },
     exit: (code) => {
       shellExitedRef.current = true;
-      termRef.current?.write('\r\n[shell exited]\r\n');
+      const notice = '\r\n[shell exited]\r\n';
+      if (!remoteDeviceId && !replayDrained.current) pendingLive.current += notice;
+      else termRef.current?.write(notice);
       setExitInfo({ code });
     },
   };
-  useShellStream(
-    remoteDeviceId ? null : projectId,
-    shellIndex,
-    (d) => streamHandlersRef.current.data(d),
-    (c) => streamHandlersRef.current.exit(c),
-  );
 
   // After an exit, relaunch the normal way so the agent resumes its session.
   // A missing session falls back to a fresh start in main; a corrupted one has

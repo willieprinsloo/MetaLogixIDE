@@ -282,7 +282,7 @@ function p2pApi(s: Services): P2PApi {
 }
 
 /** Exported so the P2P hub can call the same implementations directly (no ipcMain round-trip). */
-export const handlers: { [C in IpcChannelName]: Handler<C> } = {
+export const handlers: { [C in Exclude<IpcChannelName, 'shells:snapshot'>]: Handler<C> } = {
   'dialogs:pick-directory': async (_s, _req, event) => {
     if (process.env.METAIDE_TEST_MODE === '1') {
       return { path: null };
@@ -845,11 +845,6 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     return { shells };
   },
   'shells:pin':   async (s, { projectId, shellIndex, pinned }) => { s.shells.setPinned(projectId, shellIndex, pinned); return { ok: true } as const; },
-  'shells:snapshot': async (s, { projectId, shellIndex }) => {
-    const alive = s.ptyManager?.isAlive(projectId, shellIndex) ?? false;
-    const output = await s.ptyManager?.getSnapshot(projectId, shellIndex) ?? '';
-    return { output, alive };
-  },
 
   'settings:get': async (s, { key }) => ({ value: s.settings.get(key) }),
   'settings:set': async (s, { key, value }) => {
@@ -1646,11 +1641,30 @@ let broadcastEvent: SendEvent | null = null;
 export function emitAliveShellsChanged(): void { broadcastEvent?.('alive-shells:changed', {}); }
 export function emitProjectsChanged(): void { broadcastEvent?.('projects:changed', { kind: 'updated' }); }
 
+function registerDesktopReplayIpc(ipcMain: IpcMain, services: Services, sendEvent: SendEvent): void {
+  let position = 0;
+  const pty = services.ptyManager;
+  pty?.on('data', (event: Omit<IpcEvents['pty:data'], 'replayPosition'>) => {
+    sendEvent('pty:data', { ...event, replayPosition: ++position });
+  });
+
+  ipcMain.handle('shells:snapshot', async (_event, { projectId, shellIndex }: IpcRequest<'shells:snapshot'>): Promise<IpcResponse<'shells:snapshot'>> => {
+    const replayPosition = position;
+    const dead = { output: '', alive: false, replayPosition };
+    const generation = pty?.liveShell(projectId, shellIndex)?.generation;
+    if (!pty || generation === undefined) return dead;
+    // getSnapshot queues the existing parser barrier before yielding. Capture the IPC cut in the same turn.
+    const output = await pty.getSnapshot(projectId, shellIndex);
+    if (pty.liveShell(projectId, shellIndex)?.generation !== generation) return dead;
+    return { output, alive: true, replayPosition };
+  });
+}
+
 /** Registers IPC handlers and forwards PTY exits only when no newer generation owns the shell. */
 export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: SendEvent, windowHooks?: WindowHooks): void {
   broadcastEvent = sendEvent;
+  registerDesktopReplayIpc(ipcMain, services, sendEvent);
   if (services.ptyManager) {
-    services.ptyManager.on('data', (ev: IpcEvents['pty:data']) => sendEvent('pty:data', ev));
     services.ptyManager.on('exit', (ev: IpcEvents['pty:exit'] & { generation: string }) => {
       const live = services.ptyManager.liveShell(ev.projectId, ev.shellIndex);
       if (live && live.generation !== ev.generation) return;
@@ -1686,7 +1700,7 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
     'settings:set-vibrancy-material': true,
   };
 
-  for (const channel of Object.keys(handlers) as IpcChannelName[]) {
+  for (const channel of Object.keys(handlers) as (keyof typeof handlers)[]) {
     if (WINDOW_CHANNELS.has(channel) || CUSTOM_EMIT_CHANNELS[channel]) continue; // wired below
     ipcMain.handle(channel, async (event, req) => {
       const fn = handlers[channel] as (s: Services, req: unknown, e?: Electron.IpcMainInvokeEvent) => Promise<unknown>;

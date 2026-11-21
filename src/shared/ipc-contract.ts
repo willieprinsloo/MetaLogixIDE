@@ -116,7 +116,8 @@ export interface IpcContract {
   /** Current live agent shells, including recognized idle shells; absent shells are non-agent idle. */
   'agent-state:list': { request: undefined; response: { shells: AgentShellStateEntry[] } };
   'shells:pin':         { request: { projectId: number; shellIndex: number; pinned: boolean }; response: { ok: true } };
-  'shells:snapshot':    { request: { projectId: number; shellIndex: number };   response: { output: string; alive: boolean } };
+  /** Desktop cut: live output at or below replayPosition is already represented in a live snapshot. */
+  'shells:snapshot':    { request: { projectId: number; shellIndex: number };   response: { output: string; alive: boolean; replayPosition: number } };
   /**
    * Snapshot of every alive shell's currently-detected ports. The main
    * process scans PTY output for common "listening on 3000" / "Local:
@@ -456,7 +457,8 @@ export type IpcResponse<C extends IpcChannelName> = IpcContract[C]['response'];
 
 // Streaming (main → renderer) event channels — separate from request/response.
 export interface IpcEvents {
-  'pty:data':               { projectId: number; shellIndex: number; data: string };
+  /** Desktop-only output position, shared across shells and increasing for the lifetime of main IPC. */
+  'pty:data':               { projectId: number; shellIndex: number; data: string; replayPosition: number };
   'pty:exit':               { projectId: number; shellIndex: number; code: number | null };
   'pty:input-owner-changed':{ projectId: number; shellIndex: number; ownerWindowId: number };
   'projects:changed':       { kind: 'added' | 'removed' | 'updated'; projectId?: number };

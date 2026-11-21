@@ -101,6 +101,15 @@ stay cheap and must never wait on a child process.
   (`src/main/pty/manager.ts`). Each event becomes one `pty:data` send per
   window. Pending output is flushed before the shell's `exit` event and on
   kill, so no byte is lost or reordered.
+- **Desktop replay position.** The main IPC registration numbers each output
+  event. It captures the current number before requesting a serialized
+  `shells:snapshot`. A live snapshot includes output through that position.
+  If the captured shell exits or is replaced before serialization completes,
+  the handler returns an empty, non-live snapshot. The local terminal view
+  subscribes before requesting the snapshot. It skips output at or below
+  the position of a live snapshot and preserves later chunks in arrival order.
+  A failed or non-live snapshot does not suppress live output. This metadata
+  is local to desktop IPC and does not change the paired-device stream.
 - **Scrollback append is O(chunk).** `RollingScrollback` keeps the raw
   scrollback as a list of chunks with a running length and trims whole
   chunks from the front. It joins the chunks and snaps the cut to a line

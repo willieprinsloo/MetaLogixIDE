@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { isValidElement, type ReactNode } from 'react';
 import type * as ReactModule from 'react';
+import type { IpcEvents, IpcResponse } from '@shared/ipc-contract';
 
 const runtime = vi.hoisted(() => {
   type Effect = { deps?: readonly unknown[]; cleanup?: () => void; run?: () => unknown };
@@ -143,14 +144,26 @@ const focusOpened = vi.hoisted(() => vi.fn());
 vi.mock('@renderer/hooks/useWindowTerminalFocus', () => ({
   terminalFocus: { register: () => ({ opened: focusOpened, used() {}, unregister() {} }) },
 }));
-const stream = vi.hoisted((): { onData: (data: string) => void } => ({ onData: () => undefined }));
-vi.mock('@renderer/hooks/useShellStream', () => ({
-  useShellStream: (_project: number, _shell: number, onData: (data: string) => void) => { stream.onData = onData; },
+type StreamEvent = IpcEvents['pty:data' | 'pty:exit'];
+const stream = vi.hoisted(() => ({
+  handlers: new Map<string, (payload: StreamEvent) => void>(),
+  nextPosition: 1,
+  onData(data: string, replayPosition?: number, projectId = 5, shellIndex = 0) {
+    const payload: IpcEvents['pty:data'] = { data, replayPosition: replayPosition ?? this.nextPosition++, projectId, shellIndex };
+    this.handlers.get('pty:data')?.(payload);
+  },
+  exit(code: number) {
+    const payload: IpcEvents['pty:exit'] = { code, projectId: 5, shellIndex: 0 };
+    this.handlers.get('pty:exit')?.(payload);
+  },
 }));
 vi.mock('@renderer/components/HoverPreview', () => ({ HoverPreview: () => null }));
 vi.mock('@renderer/components/ContextMenu', () => ({ ContextMenu: () => null }));
 const invoke = vi.hoisted(() => vi.fn());
-vi.mock('@renderer/api', () => ({ api: { invoke, on: () => () => undefined } }));
+vi.mock('@renderer/api', () => ({ api: { invoke, on: (name: string, callback: (payload: StreamEvent) => void) => {
+  stream.handlers.set(name, callback);
+  return () => stream.handlers.delete(name);
+} } }));
 
 const frameCallbacks: Array<FrameRequestCallback> = [];
 const viewport = { attached: true, clientHeight: 480, scrollHeight: 480, scrollTop: 0 };
@@ -175,8 +188,18 @@ function attachRefs(node: ReactNode): void {
 }
 vi.stubGlobal('self', globalThis);
 const { ShellTab } = await import('@renderer/components/ShellTab');
-async function mount(snapshot: Promise<{ output: string }>): Promise<TerminalProbe> {
-  invoke.mockImplementation((channel: string) => channel === 'shells:snapshot' ? snapshot : Promise.resolve(undefined));
+type Snapshot = IpcResponse<'shells:snapshot'>;
+
+function liveSnapshot(output: string, replayPosition = 0): Snapshot {
+  return { output, alive: true, replayPosition };
+}
+
+async function mount(snapshot: Promise<Snapshot>, capture?: () => void): Promise<TerminalProbe> {
+  invoke.mockImplementation((channel: string) => {
+    if (channel !== 'shells:snapshot') return Promise.resolve(undefined);
+    capture?.();
+    return snapshot;
+  });
   runtime.render('local', () => {
     const tree: unknown = ShellTab({ projectId: 5, shellIndex: 0 });
     if (!isValidElement(tree)) throw new Error('Local terminal did not render');
@@ -192,6 +215,8 @@ beforeEach(() => {
   runtime.reset();
   terminals.instances.length = 0;
   invoke.mockReset();
+  stream.handlers.clear();
+  stream.nextPosition = 1;
   focusOpened.mockReset();
   frameCallbacks.length = 0;
   host.style.visibility = '';
@@ -216,15 +241,92 @@ beforeEach(() => {
 afterEach(() => { runtime.unmount(); vi.unstubAllGlobals(); });
 
 describe('local shell initial snapshot viewport', () => {
+  it('subscribes before capture and writes only live chunks after the cut, including equal-valued chunks', async () => {
+    const snapshot = Promise.withResolvers<Snapshot>();
+    const term = await mount(snapshot.promise, () => {
+      expect(stream.handlers.has('pty:data')).toBe(true);
+      stream.onData('covered\n', 2);
+      stream.onData('repeat\n', 3);
+    });
+    stream.onData('other shell\n', 4, 5, 1);
+    stream.onData('repeat\n', 5);
+    snapshot.resolve(liveSnapshot('covered\n', 2));
+    await flush();
+    expect(term.writes).toEqual(['covered\n', 'repeat\nrepeat\n']);
+    stream.onData('older delivery\n', 1);
+    stream.onData('newest\n', 6);
+    term.finishWrite();
+    term.finishWrite();
+    expect(term.writes).toEqual(['covered\n', 'repeat\nrepeat\n', 'newest\n']);
+  });
+
+  it('ignores a late covered event but forwards fresh output between parser completion and reveal', async () => {
+    const snapshot = Promise.withResolvers<Snapshot>();
+    const term = await mount(snapshot.promise);
+    snapshot.resolve(liveSnapshot('snapshot\n', 4));
+    await flush();
+    term.finishWrite();
+    stream.onData('covered\n', 4);
+    stream.onData('first live\n', 5);
+    expect(term.writes).toEqual(['snapshot\n', 'first live\n']);
+    for (const callback of frameCallbacks.splice(0)) callback(0);
+    expect(host.style.visibility).toBe('');
+  });
+
+  it('preserves output when no valid snapshot is available', async () => {
+    const snapshot = Promise.withResolvers<Snapshot>();
+    const term = await mount(snapshot.promise);
+    stream.onData('final output\n', 2);
+    snapshot.resolve({ output: '', alive: false, replayPosition: 2 });
+    await flush();
+    expect(term.writes).toEqual(['final output\n']);
+  });
+
+  it('preserves output when snapshot capture rejects', async () => {
+    const snapshot = Promise.withResolvers<Snapshot>();
+    const term = await mount(snapshot.promise);
+    stream.onData('queued\n', 2);
+    snapshot.reject(new Error('snapshot failed'));
+    await flush();
+    expect(term.writes).toEqual(['queued\n']);
+  });
+
+  it('unsubscribes on disposal and ignores a late snapshot reply', async () => {
+    const snapshot = Promise.withResolvers<Snapshot>();
+    const term = await mount(snapshot.promise);
+    stream.onData('buffered in old view\n', 2);
+    runtime.unmount();
+    expect(stream.handlers.size).toBe(0);
+    snapshot.resolve(liveSnapshot('closed view\n', 1));
+    await flush();
+    expect(term.writes).toEqual([]);
+    expect(focusOpened).not.toHaveBeenCalled();
+  });
+
+  it('does not wait on a pending snapshot on exit or replay it after exit', async () => {
+    const snapshot = Promise.withResolvers<Snapshot>();
+    const term = await mount(snapshot.promise);
+    stream.onData('final output\n', 2);
+    stream.exit(7);
+    await flush();
+    expect(term.writes.join('')).toBe('final output\n\r\n[shell exited]\r\n');
+    term.finishWrite();
+    for (const callback of frameCallbacks.splice(0)) callback(0);
+    expect(host.style.visibility).toBe('');
+    snapshot.resolve(liveSnapshot('stale state\n', 2));
+    await flush();
+    expect(term.writes.join('')).toBe('final output\n\r\n[shell exited]\r\n');
+  });
+
   it('positions long ordinary scrollback at the newest parsed viewport on the first frame', async () => {
-    const snapshot = Promise.withResolvers<{ output: string }>();
+    const snapshot = Promise.withResolvers<Snapshot>();
     const term = await mount(snapshot.promise);
     expect(invoke).toHaveBeenCalledWith('shells:snapshot', { projectId: 5, shellIndex: 0 });
     expect(term.writes).toEqual([]);
     expect(host.style.visibility).toBe('hidden');
     expect(focusOpened).not.toHaveBeenCalled();
     const output = Array.from({ length: 48 }, (_, index) => `line ${index}\n`).join('');
-    snapshot.resolve({ output });
+    snapshot.resolve(liveSnapshot(output));
     await flush();
     expect(term.writes).toEqual([output]);
     expect(term.buffer.active.baseY).toBe(0);
@@ -251,11 +353,11 @@ describe('local shell initial snapshot viewport', () => {
   });
 
   it('waits for omp-style alternate-screen replay and queued live output before settling the first visible viewport', async () => {
-    const snapshot = Promise.withResolvers<{ output: string }>();
+    const snapshot = Promise.withResolvers<Snapshot>();
     const term = await mount(snapshot.promise);
     stream.onData('last live update\n');
     const output = `${Array.from({ length: 40 }, (_, index) => `old ${index}\n`).join('')}\u001b[?1049h\u001b[Homp newest`;
-    snapshot.resolve({ output });
+    snapshot.resolve(liveSnapshot(output));
     await flush();
     expect(term.writes).toEqual([output, 'last live update\n']);
     expect(term.scrollToBottom).not.toHaveBeenCalled();
@@ -281,10 +383,10 @@ describe('local shell initial snapshot viewport', () => {
   });
 
   it('buffers output that arrives while the initial snapshot is parsing, revealing only after its last parse', async () => {
-    const snapshot = Promise.withResolvers<{ output: string }>();
+    const snapshot = Promise.withResolvers<Snapshot>();
     const term = await mount(snapshot.promise);
     const output = Array.from({ length: 45 }, (_, index) => `old ${index}\n`).join('');
-    snapshot.resolve({ output });
+    snapshot.resolve(liveSnapshot(output));
     await flush();
     stream.onData('during replay\n');
     expect(term.writes).toEqual([output]);
@@ -303,10 +405,10 @@ describe('local shell initial snapshot viewport', () => {
   });
 
   it('does not reveal an empty snapshot before its browser viewport attaches', async () => {
-    const snapshot = Promise.withResolvers<{ output: string }>();
+    const snapshot = Promise.withResolvers<Snapshot>();
     const term = await mount(snapshot.promise);
     viewport.attached = false;
-    snapshot.resolve({ output: '' });
+    snapshot.resolve(liveSnapshot(''));
     await flush();
     expect(term.writes).toEqual([]);
     expect(host.style.visibility).toBe('hidden');
