@@ -85,6 +85,9 @@ function projectSpawnEnv(
 const miseWarnSeen = new Set<string>();
 /** Test-only: clear the mise-warn dedup set so each test starts clean. */
 export function __resetMiseWarnDedupForTests(): void { miseWarnSeen.clear(); }
+const gitPanelStatusWarnSeen = new Set<string>();
+/** Test-only: clear the git:panel-status warn dedup set. */
+export function __resetGitPanelStatusWarnDedupForTests(): void { gitPanelStatusWarnSeen.clear(); }
 async function discoverProjectTasks(s: Services, project: Project): Promise<TasksDiscovery> {
   const env = { ...process.env, ...projectSpawnEnv(s, project, {}) };
   const discovery = await discoverAllTasks(project.path, { env, listMise: s.listMise });
@@ -1339,7 +1342,13 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     const r = await runGit(p.path, ['status', '--porcelain=v1', '-z', '--branch', '--untracked-files=all'], { maxBuffer: GIT_DIFF_MAX_BYTES, timeout: 5000 });
     if (r.status !== 0 || r.tooLarge || r.timedOut) {
       const error = describeGitFailure(r, 'status');
-      log.warn('[git:panel-status] git status failed', { projectId, status: r.status, error });
+      // panel-status polls on every file-tree change, so one broken repo
+      // used to warn dozens of times. Dedup by (projectId, status, error).
+      const sig = `${projectId}|${r.status}|${error}`;
+      if (!gitPanelStatusWarnSeen.has(sig)) {
+        gitPanelStatusWarnSeen.add(sig);
+        log.warn('[git:panel-status] git status failed', { projectId, status: r.status, error });
+      }
       return { isRepo: true, ...empty, error };
     }
     return { isRepo: true, ...parseGitPanelStatus(r.stdout.toString('utf8')) };

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { IpcMain } from 'electron';
-import { registerIpc, __resetMiseWarnDedupForTests } from '@main/ipc/register';
+import { registerIpc, __resetMiseWarnDedupForTests, __resetGitPanelStatusWarnDedupForTests } from '@main/ipc/register';
 import { openDb } from '@main/db/connection';
 import { runMigrations } from '@main/db/migrator';
 import { SettingsRepo } from '@main/repos/settings-repo';
@@ -2129,6 +2129,18 @@ describe('git handlers for the Diff tab and Git panel (AC9, AC19, AC20, AC28, AC
     const res = await call('git:panel-status', { projectId: 1 });
     expect(res).toMatchObject({ isRepo: true, branch: null, ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [] });
     expect(res).toMatchObject({ error: expect.stringMatching(/not a git repository/i) });
+  });
+
+  it('git:panel-status warn fires once per (project, status, error) across repeated calls — silences file-tree-poll spam', async () => {
+    __resetGitPanelStatusWarnDedupForTests();
+    logSpy.warn.mockReset();
+    const { root, call } = gitRig();
+    mkdirSync(join(root, '.git'));
+    await call('git:panel-status', { projectId: 1 });
+    await call('git:panel-status', { projectId: 1 });
+    await call('git:panel-status', { projectId: 1 });
+    const panelWarns = logSpy.warn.mock.calls.filter((c) => c[0] === '[git:panel-status] git status failed');
+    expect(panelWarns).toHaveLength(1);
   });
 
   it('git:panel-status without .git is not a repo and carries no error', async () => {
