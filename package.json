@@ -51,8 +51,7 @@
     "asarUnpack": [
       "**/*.node",
       "node_modules/better-sqlite3/**",
-      "node_modules/node-pty/**",
-      "node_modules/keytar/**"
+      "node_modules/node-pty/**"
     ],
     "fileAssociations": [
       {
@@ -159,7 +158,6 @@
     "fuse.js": "^7.0.0",
     "highlight.js": "^11.11.1",
     "katex": "0.16.47",
-    "keytar": "^7.9.0",
     "markdown-it": "^14.3.0",
     "mermaid": "11.17.2",
     "motion": "14.0.0",

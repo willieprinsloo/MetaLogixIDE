@@ -13,6 +13,7 @@ import { wireChatInjector } from './chat/inject';
 import { readRecentChat } from './chat/log';
 import { isWorkerWindowId } from './p2p/worker/windowWorker';
 import { buildServices, type Services } from './services';
+import { createCredentialStore } from './credential-store';
 import { DROP_MAX_AGE_MS, testModeDropDir } from './drops/staging';
 import { installKeepAwake } from './keep-awake/install';
 import { registerIpc, rememberResumableHarness } from './ipc/register';
@@ -381,10 +382,14 @@ function registerWindowsAppId(): void {
 
 /** Builds the service graph from the app's install paths and the test-mode drop directory env. */
 function createServices(): Services {
-  return buildServices({
+  const services = buildServices({
     migrationsDir: resolve(app.getAppPath(), 'migrations'),
     dropDir: testModeDropDir(process.env, app.getPath('userData')),
   });
+  // safeStorage requires `app` to be ready — attach the credential store here
+  // rather than in buildServices so unit tests do not need to mock Electron.
+  services.credentialStore = createCredentialStore(app.getPath('userData'));
+  return services;
 }
 
 /** Installs the agent-status monitor, publishes its tracker on `services`, and returns the handle for shutdown. */

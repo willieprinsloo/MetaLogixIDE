@@ -25,6 +25,7 @@ import type { KeepAwakeController } from './keep-awake/port';
 import type { UsageService } from './usage/service';
 import type { P2PServices } from './p2p/types';
 import type { ChatService } from './chat/service';
+import type { CredentialStore } from './credential-store';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -61,6 +62,8 @@ export interface Services {
   p2p?: P2PServices;
   /** Agent chat bus; attached once broadcast is available (post-window setup). */
   chat?: ChatService;
+  /** safeStorage-backed credential store; attached in createServices once `app` is ready. */
+  credentialStore: CredentialStore | null;
 }
 
 /**
@@ -133,5 +136,6 @@ export function buildServices(opts: { dbPath?: string; migrationsDir?: string; h
     db, roots, projects, shells, settings, prompts, ptyManager, watcher, metaproject,
     hookSessions, hookReceiver, hookRuntime, hookHistory, agentStatus: null,
     viewedShells: new ViewedShells(), dropStaging, clipboardImage: createClipboardImage(), listMise: listMiseTasks, keepAwake: null, homeDir: home, migrationsDir,
+    credentialStore: null,
   };
 }

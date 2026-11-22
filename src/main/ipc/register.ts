@@ -56,7 +56,6 @@ function usageDebugDir(): string | undefined {
 }
 import { isInsideRoot, resolveInsideRoot } from '@main/domain/path-containment';
 import { MIME_BY_EXT } from '@shared/mime';
-import { decodeStoredSecret, encodeStoredSecret } from '@main/credential-encoding';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { StopPrimarySessionRequest } from '@shared/unload-session-contract';
 import { readRecentActivity } from '@main/activity/log';
@@ -168,35 +167,6 @@ type SendEvent = <E extends IpcEventName>(channel: E, payload: IpcEvents[E]) => 
 // Keychain service name for the metaproject credential. One row per (service,
 // account) pair, keyed by username so a user could theoretically sign into
 // multiple accounts by switching the last-used username in settings.
-const KEYTAR_SERVICE = 'metaIDE.metaproject';
-
-/**
- * Resolve keytar's function bag across the CJS/ESM interop gap. Rollup +
- * electron-vite's synthetic ESM namespace wraps CJS `module.exports` under
- * `.default`, so `(await import('keytar')).setPassword` is undefined in the
- * bundled main process. Some builds expose the functions at the top level;
- * others only via `.default`. This helper prefers whichever is present so we
- * never call `undefined` and blow up the login/remember-me path.
- */
-async function loadKeytar(): Promise<{
-  getPassword: (service: string, account: string) => Promise<string | null>;
-  setPassword: (service: string, account: string, password: string) => Promise<void>;
-  deletePassword: (service: string, account: string) => Promise<boolean>;
-}> {
-  const mod = await import('keytar');
-  const m = mod as unknown as {
-    default?: typeof mod;
-    getPassword?: typeof mod.getPassword;
-    setPassword?: typeof mod.setPassword;
-    deletePassword?: typeof mod.deletePassword;
-  };
-  const flat = m.getPassword ? m : (m.default ?? m);
-  return flat as unknown as {
-    getPassword: (service: string, account: string) => Promise<string | null>;
-    setPassword: (service: string, account: string, password: string) => Promise<void>;
-    deletePassword: (service: string, account: string) => Promise<boolean>;
-  };
-}
 
 /**
  * Merges project-scoped CLI profiles with the global defaults, deduping by
@@ -1018,15 +988,15 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     // Remember the username (never the password in settings) so the sign-in
     // card can pre-fill it next time.
     try { s.settings.set('metaproject_last_username', username); } catch { /* non-fatal */ }
-    // When the user opted in, store the password in the OS keychain. Keytar
-    // uses macOS Keychain / libsecret / Windows Credential Vault under the
-    // hood — the plaintext never touches disk in userland.
-    if (remember) {
+    // When the user opted in, store the password through Electron's
+    // safeStorage — same platform keychains keytar used (macOS Keychain /
+    // DPAPI / libsecret), minus the native-module failure mode that was
+    // dropping credentials in the bundled app.
+    if (remember && s.credentialStore) {
       try {
-        const keytar = await loadKeytar();
-        await keytar.setPassword(KEYTAR_SERVICE, username, encodeStoredSecret(password));
+        await s.credentialStore.save(username, password);
       } catch (err) {
-        console.warn('[metaproject] failed to persist credential', err);
+        log.warn('[metaproject] failed to persist credential', err);
       }
     }
     s.metaproject.connectSocket();
@@ -1035,20 +1005,19 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'metaproject:credentials-load': async (s) => {
     const username = s.settings.get('metaproject_last_username') || null;
     if (!username) return { username: null, hasPassword: false };
+    if (!s.credentialStore) return { username, hasPassword: false };
     try {
-      const keytar = await loadKeytar();
-      const stored = await keytar.getPassword(KEYTAR_SERVICE, username);
-      return { username, hasPassword: stored !== null && decodeStoredSecret(stored).text !== '' };
+      const stored = await s.credentialStore.load(username);
+      return { username, hasPassword: stored !== null && stored !== '' };
     } catch {
       return { username, hasPassword: false };
     }
   },
   'metaproject:credentials-clear': async (s) => {
     const username = s.settings.get('metaproject_last_username') || null;
-    if (username) {
+    if (username && s.credentialStore) {
       try {
-        const keytar = await loadKeytar();
-        await keytar.deletePassword(KEYTAR_SERVICE, username);
+        await s.credentialStore.clear(username);
       } catch { /* non-fatal */ }
     }
     return { ok: true } as const;
@@ -1060,21 +1029,19 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
       log.info('[metaproject] auto-login skipped: no saved username');
       return { ok: false, reason: 'no-saved-username' };
     }
+    if (!s.credentialStore) {
+      log.info('[metaproject] auto-login skipped: credential store not available');
+      return { ok: false, reason: 'no-saved-password' };
+    }
     let password: string | null = null;
     try {
-      const keytar = await loadKeytar();
-      const stored = await keytar.getPassword(KEYTAR_SERVICE, username);
-      password = stored === null ? null : decodeStoredSecret(stored).text;
+      password = await s.credentialStore.load(username);
     } catch (err) {
       log.warn('[metaproject] auto-login: keychain read failed', err);
       return { ok: false, reason: `keychain-error: ${err instanceof Error ? err.message : String(err)}` };
     }
     if (!password) {
-      // Common on dev builds: the packaged app wrote the item as
-      // `com.metalogix.metaide`, but dev-Electron runs as
-      // `com.github.Electron` so keytar returns null silently. Fall back to
-      // making the user re-enter the password once.
-      log.info(`[metaproject] auto-login skipped: no keychain password for user "${username}" (fresh login required)`);
+      log.info(`[metaproject] auto-login skipped: no saved password for user "${username}" (fresh login required)`);
       return { ok: false, reason: 'no-saved-password' };
     }
     const baseUrl = s.settings.get('metaproject_base_url') || 'https://projects.metalogix.solutions';
