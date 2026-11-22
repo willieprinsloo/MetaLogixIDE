@@ -46,6 +46,7 @@ import { dropHandlers } from '@main/drops/handlers';
 import { keepAwakeHandlers } from '@main/keep-awake/handlers';
 import { UsageService, usageDepsFor } from '@main/usage/service';
 import { LaunchCoalescer, launchKey } from '@main/ipc/shells-launch-coalesce';
+import { ensureAgentStanza, buildOnboardingNudge, nudgeAgentShell } from '@main/chat/onboard';
 
 /** `<userData>/usage-debug/` holds the last usage response per provider; undefined outside Electron (unit tests). */
 function usageDebugDir(): string | undefined {
@@ -1658,7 +1659,11 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
   },
   'chat:roster': async (s) => {
     const rows = s.chatRoster ? s.chatRoster() : [];
-    return { rows };
+    // Ground truth for "is this row local?" — the renderer's P2P hook
+    // returns '' when P2P is off, which is not the same canonical string
+    // the main process tags local rows with. Return it explicitly so the
+    // renderer doesn't leak a "·device" suffix on every local pill.
+    return { rows, selfDevice: s.selfDevice ?? '' };
   },
 
   /**
@@ -1675,6 +1680,23 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     else current[key] = cleaned;
     s.settings.set('shell_nicknames', current);
     return { ok: true as const, nickname: cleaned || null };
+  },
+
+  /**
+   * Manual re-onboard: writes the stanza if missing (idempotent) and
+   * always fires the nudge, ignoring `chat_auto_onboard` — the user
+   * explicitly asked for this one, so their earlier opt-out doesn't apply.
+   */
+  'chat:onboard-agent': async (s, { projectId, shellIndex, agent }) => {
+    const project = s.projects.get(projectId);
+    if (!project) throw new Error(`unknown project ${projectId}`);
+    const res = ensureAgentStanza(project.path, agent);
+    if (res.appended) log.info('[chat] onboarded agent (manual)', { cli: agent, file: res.file });
+    try {
+      nudgeAgentShell(s.ptyManager, projectId, shellIndex, buildOnboardingNudge(agent));
+      log.info('[chat] nudged agent (manual)', { cli: agent, shell: shellIndex });
+    } catch (err) { log.warn('[chat] manual nudge failed', { err: String(err) }); }
+    return { ok: true as const, appended: res.appended, file: res.file };
   },
 
   ...dropHandlers,

@@ -11,6 +11,8 @@ import { createReplyCap } from './chat/cap';
 import { buildRoster, type RemotePeer, type RosterRow } from './chat/roster';
 import { wireChatInjector } from './chat/inject';
 import { readRecentChat } from './chat/log';
+import { ensureAgentStanza, buildOnboardingNudge, nudgeAgentShell } from './chat/onboard';
+import { startOutboxWatcher } from './chat/outbox-watcher';
 import { isWorkerWindowId } from './p2p/worker/windowWorker';
 import { buildServices, type Services } from './services';
 import { createCredentialStore } from './credential-store';
@@ -299,7 +301,7 @@ export function listPopped(): Array<{ projectId: number; shellIndex: number }> {
  * window in turn and returns how many windows were arranged.
  */
 export function tileAllOurWindows(): number {
-  const wins = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed());
+  const wins = userWindows();
   if (wins.length === 0) return 0;
   const workArea = screen.getPrimaryDisplay().workArea;
   const sorted = [...wins].sort((a, b) => {
@@ -415,8 +417,35 @@ function attachAgentStatus(services: Services): ReturnType<typeof installAgentSt
   });
   services.agentStatus = agentStatus.tracker;
   // A harness started by hand in a terminal counts as having run here: the project's next launch of it resumes.
+  // Also seeds the chat-bus stanza into CLAUDE.md / AGENTS.md / ollama-system.md
+  // the first time each supported CLI is detected per project — otherwise the
+  // agent never learns how to post back through `.metaide/chat-outbox.jsonl`.
+  const onboarded = new Set<string>();
   agentStatus.tracker.onChange((entry) => {
-    if (entry.agent) rememberResumableHarness(services, entry.projectId, entry.agent);
+    if (!entry.agent) return;
+    rememberResumableHarness(services, entry.projectId, entry.agent);
+    if (entry.agent === 'claude' || entry.agent === 'codex' || entry.agent === 'opencode') {
+      const key = `${entry.projectId}:${entry.agent}`;
+      if (onboarded.has(key)) return;
+      onboarded.add(key);
+      const project = services.projects.get(entry.projectId);
+      if (project) {
+        const res = ensureAgentStanza(project.path, entry.agent);
+        if (res.appended) {
+          log.info('[chat] onboarded agent', { cli: entry.agent, file: res.file });
+          // Writing the stanza doesn't help a running agent — it has long
+          // since read its conventions file. Push a one-line read-this
+          // nudge into its PTY (bracketed-paste + CR, same mechanics as
+          // chat delivery), unless the user has turned the auto-nudge off.
+          if (services.settings.get('chat_auto_onboard')) {
+            try {
+              nudgeAgentShell(services.ptyManager, entry.projectId, entry.shellIndex, buildOnboardingNudge(entry.agent));
+              log.info('[chat] nudged agent to read stanza', { cli: entry.agent, shell: entry.shellIndex });
+            } catch (err) { log.warn('[chat] nudge failed', { err: String(err) }); }
+          }
+        }
+      }
+    }
   });
   return agentStatus;
 }
@@ -520,6 +549,7 @@ function installNotifications(services: Services): void {
     return buildRoster({ local, remote, agentLabels, agentStates, nicknames, selfDevice });
   };
   services.chatRoster = chatRoster;
+  services.selfDevice = selfDevice;
   wireChatInjector({
     pty: services.ptyManager,
     roster: chatRoster,
@@ -527,6 +557,8 @@ function installNotifications(services: Services): void {
     selfDevice,
     onCapHeld: (projectId, entry) =>
       broadcast('chat:changed', { projectId, entry: { ...entry, meta: { ...(entry.meta ?? {}), cap_held: true } } }),
+    onRateDropped: (projectId, entry) =>
+      broadcast('chat:changed', { projectId, entry: { ...entry, meta: { ...(entry.meta ?? {}), rate_dropped: true } } }),
     onDelivered: (projectId, entry, delivered) => {
       // Every mention was offline → flag it so the pane shows "not
       // delivered". Both branches of this bus are already carrying the
@@ -551,6 +583,17 @@ function installNotifications(services: Services): void {
       },
     },
   });
+
+  // Agent → chat-bus outbox: watches each project's
+  // `.metaide/chat-outbox.jsonl`, routes appended lines through
+  // chat.append(). Started once; new projects are added as they open
+  // (see `projects:changed` subscriber below).
+  if (services.chat) {
+    services.chatOutbox = startOutboxWatcher({
+      chat: services.chat,
+      projects: services.projects.list(),
+    });
+  }
 }
 
 /** Fanout list used by `wireChatInjector`; populated by `installNotifications`. */

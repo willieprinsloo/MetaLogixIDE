@@ -16,9 +16,13 @@ import { toast } from '@renderer/hooks/useToasts';
  * shortcut fires — any change (including the first non-zero value) lands
  * focus in the composer without the user clicking the pane.
  */
-export function AgentChatTab({ projectId, selfDevice, focusTick }: { projectId: number; selfDevice: string; focusTick?: number }) {
+export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick }: { projectId: number; selfDevice: string; focusTick?: number }) {
   const { entries, send } = useAgentChat(projectId);
-  const liveRoster = useChatRoster();
+  const { rows: liveRoster, selfDevice: rosterSelfDevice } = useChatRoster();
+  // Prefer the roster's canonical self device over the P2P hook: when
+  // P2P is off the hook returns '', which never matches `row.device` and
+  // leaks a "·device" suffix on every local pill.
+  const selfDevice = rosterSelfDevice || selfDeviceProp;
   const [draft, setDraft] = useState('');
   const listRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -65,6 +69,29 @@ export function AgentChatTab({ projectId, selfDevice, focusTick }: { projectId: 
       await api.invoke('shells:set-nickname', { projectId: r.projectId, shellIndex: r.shell, nickname: next });
     } catch (e) {
       toast('Rename failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+    }
+  };
+
+  /**
+   * Manual re-onboard for an already-running agent. Writes the stanza
+   * (idempotent) and pushes the read-this nudge into the shell. Scoped
+   * to local shells running one of the supported CLIs — remote peers and
+   * unrecognised commands have no chat-bus story.
+   */
+  const onboardAgent = async (r: { projectId: number | null; device: string; shell: number; agent: string }) => {
+    if (r.projectId == null || r.device !== selfDevice) {
+      toast('Re-onboard is only available for local shells', { kind: 'info', timeoutMs: 2000 });
+      return;
+    }
+    if (r.agent !== 'claude' && r.agent !== 'codex' && r.agent !== 'opencode') {
+      toast(`No chat-bus onboarding for ${r.agent}`, { kind: 'info', timeoutMs: 2000 });
+      return;
+    }
+    try {
+      const res = await api.invoke('chat:onboard-agent', { projectId: r.projectId, shellIndex: r.shell, agent: r.agent });
+      toast(res.appended ? `Wrote chat-bus stanza + nudged ${r.agent}` : `Nudged ${r.agent} to re-read stanza`, { kind: 'info', timeoutMs: 2500 });
+    } catch (e) {
+      toast('Onboard failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
     }
   };
 
@@ -168,10 +195,30 @@ export function AgentChatTab({ projectId, selfDevice, focusTick }: { projectId: 
                       title={needsName ? `Nickname this ${r.agent} so you can tell it apart from the other ${r.agent} shells` : `Rename ${display}`}
                       aria-label={`Rename ${display}`}
                       onClick={() => void renameAgent(r)}
-                      className={`${showPencilAlways ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'} pr-2 pl-0.5 py-0.5 ${needsName ? 'text-[--hue-amber]' : 'text-[--text-muted] hover:text-[--text]'}`}
+                      className={`${showPencilAlways ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'} pl-0.5 py-0.5 ${needsName ? 'text-[--hue-amber]' : 'text-[--text-muted] hover:text-[--text]'}`}
                     >
                       ✎
                     </button>
+                  )}
+                  {/* Re-onboard: writes the chat-bus stanza (idempotent) and pushes
+                      the read-this nudge into this shell. Only for local shells
+                      running a CLI the chat bus supports. Hidden until hover so
+                      the pill stays compact. */}
+                  {canRename && (r.agent === 'claude' || r.agent === 'codex' || r.agent === 'opencode') && (
+                    <button
+                      title={`Re-teach ${display} about the metaIDE chat bus (writes the stanza if missing and pushes "please read" into this shell)`}
+                      aria-label={`Re-onboard ${display}`}
+                      onClick={() => void onboardAgent(r)}
+                      className="opacity-0 group-hover:opacity-100 focus:opacity-100 pr-2 pl-0.5 py-0.5 text-[--text-muted] hover:text-[--text]"
+                    >
+                      ↻
+                    </button>
+                  )}
+                  {/* Keep the trailing pad consistent when the re-onboard button
+                      is absent (non-supported CLI pills) — the pencil already
+                      used pr-2, so swap it back in via a tiny spacer. */}
+                  {canRename && !(r.agent === 'claude' || r.agent === 'codex' || r.agent === 'opencode') && (
+                    <span className="pr-2" aria-hidden="true" />
                   )}
                 </div>
               );
@@ -204,7 +251,7 @@ export function AgentChatTab({ projectId, selfDevice, focusTick }: { projectId: 
           ) : entries.map((e) => (
             <div
               key={e.id}
-              className={`text-sm ${e.meta?.cap_held || e.meta?.undelivered ? 'opacity-60 border-l-2 border-[--hue-red] pl-2' : ''}`}
+              className={`text-sm ${e.meta?.cap_held || e.meta?.undelivered || e.meta?.rate_dropped ? 'opacity-60 border-l-2 border-[--hue-red] pl-2' : ''}`}
             >
               <span className="text-[--text-muted] text-xs">
                 {new Date(e.ts).toLocaleTimeString()}{' '}
@@ -218,6 +265,9 @@ export function AgentChatTab({ projectId, selfDevice, focusTick }: { projectId: 
               )}
               {e.meta?.undelivered && !e.meta?.cap_held && (
                 <span className="text-[--hue-red] text-xs ml-2" title="No matching agent shell is running right now; the message is in the log but nobody received it.">· not delivered (no matching agent online)</span>
+              )}
+              {e.meta?.rate_dropped && !e.meta?.cap_held && !e.meta?.undelivered && (
+                <span className="text-[--hue-red] text-xs ml-2" title="This agent is posting faster than the per-shell rate limit (3 messages per second); the injector dropped the message to protect the recipient.">· rate-limited (sender over budget)</span>
               )}
             </div>
           ))}

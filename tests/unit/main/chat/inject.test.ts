@@ -177,6 +177,59 @@ describe('wireChatInjector', () => {
     expect(pty.write).not.toHaveBeenCalled();
   });
 
+  it('cap=rate triggers onRateDropped and does NOT write', () => {
+    const pty = { write: vi.fn() };
+    const cap = {
+      admit: () => 'rate' as const,
+      admitWithRelease: () => ({ verdict: 'rate' as const, released: [] as string[] }),
+      release: () => [] as string[],
+    };
+    const onRateDropped = vi.fn();
+    const onCapHeld = vi.fn();
+    const subs: Array<(p: { projectId: number; entry: ChatEntry }) => void> = [];
+    wireChatInjector({
+      pty,
+      roster: () => [row({ shell: 2, agent: 'codex' })],
+      cap,
+      selfDevice: 'laptop',
+      onCapHeld,
+      onRateDropped,
+      hooks: { onChatChanged: (cb) => { subs.push(cb); } },
+    });
+    subs[0]!({ projectId: 7, entry: base({ to: [{ agent: 'codex' }] }) });
+    expect(onRateDropped).toHaveBeenCalledWith(7, expect.objectContaining({ id: expect.any(String) }));
+    expect(onCapHeld).not.toHaveBeenCalled();
+    expect(pty.write).not.toHaveBeenCalled();
+  });
+
+  it('rate_dropped re-broadcast does NOT recurse into the cap again', () => {
+    // Mirror of the cap_held guard: a chat:changed carrying meta.rate_dropped
+    // must not re-enter admit* or fire onRateDropped a second time.
+    const pty = { write: vi.fn() };
+    const admit = vi.fn().mockReturnValue('rate' as const);
+    const admitWithRelease = vi.fn().mockReturnValue({ verdict: 'rate' as const, released: [] as string[] });
+    const cap = { admit, admitWithRelease, release: () => [] as string[] };
+    const onRateDropped = vi.fn();
+    const subs: Array<(p: { projectId: number; entry: ChatEntry }) => void> = [];
+    wireChatInjector({
+      pty,
+      roster: () => [row({ shell: 2, agent: 'codex' })],
+      cap,
+      selfDevice: 'laptop',
+      onCapHeld: vi.fn(),
+      onRateDropped,
+      hooks: { onChatChanged: (cb) => { subs.push(cb); } },
+    });
+    subs[0]!({
+      projectId: 1,
+      entry: base({ meta: { rate_dropped: true }, to: [{ agent: 'codex' }] }),
+    });
+    expect(admit).not.toHaveBeenCalled();
+    expect(admitWithRelease).not.toHaveBeenCalled();
+    expect(onRateDropped).not.toHaveBeenCalled();
+    expect(pty.write).not.toHaveBeenCalled();
+  });
+
   it('cap_held re-broadcast does NOT recurse into the cap again', () => {
     // Regression: broadcast('chat:changed') with meta.cap_held=true re-enters
     // the injector listener; the shallow spread preserves `to` so the empty-to

@@ -43,6 +43,7 @@ export const DEFAULT_SETTINGS: SettingsMap = {
     { name: 'opencode',     argv: ['opencode'], icon: '⌬' },
   ],
   'shell_nicknames':               {},
+  'chat_auto_onboard':             true,
 };
 
 /**

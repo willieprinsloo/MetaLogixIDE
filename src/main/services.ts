@@ -64,6 +64,10 @@ export interface Services {
   chat?: ChatService;
   /** Live roster snapshot for `chat:roster` IPC — set alongside `chat`. */
   chatRoster?: () => import('./chat/roster').RosterRow[];
+  /** Canonical self device name (the one `buildRoster` tags local rows with). */
+  selfDevice?: string;
+  /** Tails `.metaide/chat-outbox.jsonl` in every project and routes new lines through `chat.append`. */
+  chatOutbox?: import('./chat/outbox-watcher').OutboxWatcher;
   /** safeStorage-backed credential store; attached in createServices once `app` is ready. */
   credentialStore: CredentialStore | null;
 }

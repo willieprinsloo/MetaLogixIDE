@@ -19,9 +19,15 @@ export function isWorkerWindowId(id: number): boolean {
  * Replies and events are accepted only from this window's webContents.
  */
 export function createWindowWorker(): TransportWorker {
+  // The worker is a hidden runtime, not a user window. `show: false` keeps it
+  // off-screen, but without `skipTaskbar` macOS still lists it in the app's
+  // Window menu and the ⌘` cycle — one stray click reveals a blank frame.
+  // `type: 'panel'` on darwin additionally keeps it out of Mission Control.
   const win = new BrowserWindow({
     show: false,
+    skipTaskbar: true,
     autoHideMenuBar: true,
+    ...(process.platform === 'darwin' ? { type: 'panel' as const } : {}),
     webPreferences: {
       preload: join(here, '../preload/p2pWorker.js'),
       contextIsolation: true,

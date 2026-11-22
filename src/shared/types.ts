@@ -152,4 +152,11 @@ export type SettingsMap = {
    * `shells:set-nickname` only.
    */
   'shell_nicknames':               Record<string, string>;
+  /**
+   * Inject a one-time nudge into a supported CLI's shell the first time
+   * metaIDE writes the chat-bus stanza into its project memory file. Off
+   * silences the nudge; the stanza is still written so a fresh shell
+   * picks it up on its own.
+   */
+  'chat_auto_onboard':             boolean;
 };

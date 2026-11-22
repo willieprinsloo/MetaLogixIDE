@@ -43,6 +43,10 @@ export interface ChatEntry {
      *  shows "not delivered" so the human knows the message wasn't
      *  injected into any CLI. */
     undelivered?: boolean;
+    /** True when per-shell rate limiting dropped the message. Set on the
+     *  re-broadcast after the drop, so the sender sees their message dim
+     *  with "rate-limited" instead of it silently vanishing. */
+    rate_dropped?: boolean;
   };
 }
 

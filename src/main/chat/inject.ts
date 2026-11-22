@@ -38,6 +38,11 @@ export interface WireChatInjectorDeps {
   selfDevice: string;
   /** Called when the cap gate holds delivery — the pane uses this to badge. */
   onCapHeld: (projectId: number, entry: ChatEntry) => void;
+  /** Called when per-shell rate limiting drops delivery. The pane uses
+   *  this to badge the row "rate-limited"; without it, the sender has no
+   *  signal that the message vanished. Optional for backwards compat with
+   *  tests that don't care about the badge. */
+  onRateDropped?: (projectId: number, entry: ChatEntry) => void;
   /** Called after delivery resolved — the pane uses `delivered` to flag
    *  messages whose `to` list has no matching local shell. Not called for
    *  rate-dropped or cap-held entries (those have their own surfacing). */
@@ -149,15 +154,21 @@ function deliver(deps: WireChatInjectorDeps, projectId: number, entry: ChatEntry
       if (row.shell === entry.from.shell && row.device === entry.from.device) continue;
       if (seen.has(row.shell)) continue;
       seen.add(row.shell);
-      // Write body + Enter as two steps so Ink's input handler processes
-      // them as separate events: a paste-like text chunk, then a single
-      // Enter keystroke that submits. Writing them concatenated in one
-      // chunk made Ink treat the whole thing as a bracketed paste and
-      // never fire its "return" key event, so the message sat in the
-      // prompt. 30ms is below the user-visible latency floor and well
-      // above node-pty's flush granularity.
-      deps.pty.write(projectId, row.shell, line);
-      setTimeout(() => { deps.pty.write(projectId, row.shell, '\r'); }, 30);
+      // Explicit bracketed paste + separate Enter. Bracketed-paste
+      // markers (ESC[200~ … ESC[201~) tell any VT-aware TUI "this chunk
+      // is paste content, don't treat any byte inside it as a key event".
+      // Claude Code and Codex both enable bracketed-paste mode on startup
+      // (`\x1b[?2004h`), and both respect the brackets. Sending the body
+      // this way removes the timing guesswork that broke Codex — different
+      // agents disagree on paste-debounce windows, but they agree on the
+      // brackets.
+      //
+      // After a 40 ms gap the CR arrives as a standalone keypress and
+      // every tested TUI (Claude Code, Codex, plain bash readline, zsh,
+      // opencode) treats it as Enter = submit.
+      const bracketed = `\x1b[200~${line}\x1b[201~`;
+      deps.pty.write(projectId, row.shell, bracketed);
+      setTimeout(() => { deps.pty.write(projectId, row.shell, '\r'); }, 40);
       delivered++;
     }
   }
@@ -172,7 +183,7 @@ export function wireChatInjector(deps: WireChatInjectorDeps): void {
     // cap for them — doing so would admit as 'cap' again and recurse
     // via `onCapHeld` until the stack blows, or trigger another
     // undelivered broadcast and loop the same way.
-    if (entry.meta?.cap_held || entry.meta?.undelivered) return;
+    if (entry.meta?.cap_held || entry.meta?.undelivered || entry.meta?.rate_dropped) return;
     const { verdict, released } = deps.cap.admitWithRelease(entry);
     // A human post releases every message queued behind the cap. Replay
     // them through the normal delivery path in insertion order — the
@@ -185,6 +196,7 @@ export function wireChatInjector(deps: WireChatInjectorDeps): void {
     }
     if (verdict === 'rate') {
       console.debug('[chat] rate-limited', { entry: entry.id });
+      deps.onRateDropped?.(projectId, entry);
       return;
     }
     if (verdict === 'cap') {

@@ -227,6 +227,9 @@ export interface IpcContract {
         mention: string;
         nickname: string | null;
       }>;
+      /** Canonical device name the main process tags local rows with — use
+       * this (not the P2P hook) to decide "is this a local pill?". */
+      selfDevice: string;
     };
   };
   /**
@@ -237,6 +240,17 @@ export interface IpcContract {
   'shells:set-nickname': {
     request: { projectId: number; shellIndex: number; nickname: string | null };
     response: { ok: true; nickname: string | null };
+  };
+  /**
+   * Manual re-onboard for an already-running agent shell. Writes the
+   * chat-bus stanza if missing (idempotent) and pushes the one-line
+   * read-this nudge into the shell's PTY, regardless of the
+   * `chat_auto_onboard` setting — a manual trigger is itself consent.
+   * `appended` reports whether the stanza was newly written.
+   */
+  'chat:onboard-agent': {
+    request: { projectId: number; shellIndex: number; agent: 'claude' | 'codex' | 'opencode' };
+    response: { ok: true; appended: boolean; file: string };
   };
   'files:list-all':  { request: { projectId: number; limit?: number; filter?: string };     response: { files: Array<{ relPath: string; name: string }>; total: number; truncated: boolean } };
   'files:write':     { request: { projectId: number; relPath: string; content: string };    response: { ok: true; sizeBytes: number } };
