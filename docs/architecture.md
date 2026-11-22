@@ -312,8 +312,11 @@ On macOS, Option-drag selects text in Ghostty without sending mouse input
 to the shell. An ordinary drag still reaches apps that enable mouse reporting.
 Shift-click extends a Ghostty text selection from its anchor. A plain selection
 click clears the old highlight and sets a new anchor.
-On renderer failure, the standby drains its passive writes before it takes
-over input and clipboard effects. The shell connection does not change.
+The standby parser handles live clipboard writes after local snapshot replay,
+including during Ghostty startup and fallback. Ghostty does not duplicate
+those writes. On renderer failure, the standby drains its output before it
+takes over keyboard input. It restores focus only if no newer interaction
+took focus. The shell connection does not change.
 Ghostty compiles verified bundled WASM in a lazy renderer chunk. The desktop
 document's script policy permits WASM compilation, but not JavaScript eval.
 
@@ -1112,8 +1115,8 @@ bracketed paste on that sends an empty bracketed pair.
 
 Paste routes: macOS ⌘V and the Edit menu fire a DOM `paste` event, which the
 paste hook takes. Ctrl+Shift+V and the context-menu Paste item read the
-clipboard and call the same function (`ShellTab.tsx:183`,
-`ShellTab.tsx:599`). All routes sanitise the text. When the clipboard has no
+clipboard and call the same function (`pasteFromText` in
+`src/renderer/components/ShellTab.tsx`). All routes sanitise the text. When the clipboard has no
 text, all routes try the clipboard image. The main process reads the image.
 Electron 43 retains `clipboard.readImage()`, which reads native Windows PNG-only
 clipboard entries. Before upgrading to a newer major, verify that terminal

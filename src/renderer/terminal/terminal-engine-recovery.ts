@@ -14,8 +14,8 @@ type Phase = 'loading' | 'ghostty' | 'recovering' | 'xterm' | 'failed' | 'dispos
 interface RecoveryOptions {
   readonly openGhostty: (signal: AbortSignal, onFault: () => void) => Promise<TerminalRenderer>;
   /** Promote an already-fed standby. Neither operation may acquire a shell stream. */
-  readonly promoteXterm: (signal: AbortSignal, restoreFocus: boolean) => Promise<TerminalRenderer>;
-  readonly hasFocus: () => boolean;
+  readonly promoteXterm: (signal: AbortSignal, restoreFocus: () => boolean) => Promise<TerminalRenderer>;
+  readonly captureFocus: (signal: AbortSignal) => () => boolean;
   readonly onState: (state: RecoveryState) => void;
 }
 
@@ -39,7 +39,7 @@ export function openRecoverableTerminal(options: RecoveryOptions): TerminalRende
   function recover(reason: RecoveryReason): void {
     if (phase !== 'loading' && phase !== 'ghostty') return;
     const budget = phase === 'loading' ? STARTUP_DEADLINE_MS - (performance.now() - startedAt) : RUNTIME_RECOVERY_MS;
-    const restoreFocus = options.hasFocus();
+    const restoreFocus = options.captureFocus(standby.signal);
     phase = 'recovering';
     clearTimeout(deadline);
     candidate.abort();

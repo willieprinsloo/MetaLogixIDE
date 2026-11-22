@@ -6,7 +6,6 @@ import callbacks from 'virtual:metaide-ghostty-callbacks';
 import type { TerminalRenderer } from './terminal-engine-recovery';
 import { untilAbort } from './terminal-abort';
 import type { IBuffer, ILink, Terminal as StockTerminal } from '@xterm/xterm';
-import { registerClipboardOsc, type ClipboardOscDeps } from '../osc52';
 import { createTerminalFind, type TerminalFind } from './terminal-view-find';
 import { createGhosttyFindPaint } from './ghostty-find-paint';
 import { enableGhosttyOptionSelection } from './ghostty-option-selection';
@@ -31,7 +30,6 @@ interface GhosttyInteraction {
   readonly keys: (event: KeyboardEvent) => boolean;
   readonly pathLinks?: (text: string) => readonly TerminalFileLink[];
   readonly openWebLink: (url: string) => void;
-  readonly clipboard: ClipboardOscDeps;
   readonly focused: () => void;
 }
 
@@ -190,7 +188,6 @@ export async function openGhosttyView(
           callback(links.length ? links : undefined);
         },
       }));
-      disposables.push(registerClipboardOsc(terminal, interaction.clipboard));
       terminal.textarea?.addEventListener('focus', interaction.focused);
       disposables.push({ dispose: () => terminal.textarea?.removeEventListener('focus', interaction.focused) });
     },

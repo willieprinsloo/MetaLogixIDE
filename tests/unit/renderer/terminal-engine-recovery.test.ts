@@ -9,8 +9,8 @@ function rig() {
   const events: string[] = [];
   const focus = vi.fn(() => true);
   const openGhostty = vi.fn<(signal: AbortSignal, fault: () => void) => Promise<TerminalRenderer>>(() => ghostty.promise);
-  const promoteXterm = vi.fn<(signal: AbortSignal, restoreFocus: boolean) => Promise<TerminalRenderer>>(() => standby.promise);
-  const view = openRecoverableTerminal({ openGhostty, promoteXterm, hasFocus: focus, onState: state => events.push(state.kind) });
+  const promoteXterm = vi.fn<(signal: AbortSignal, restoreFocus: () => boolean) => Promise<TerminalRenderer>>(() => standby.promise);
+  const view = openRecoverableTerminal({ openGhostty, promoteXterm, captureFocus: () => focus, onState: state => events.push(state.kind) });
   return { view, ghostty, standby, candidate, xterm, events, focus, openGhostty, promoteXterm };
 }
 
@@ -35,7 +35,7 @@ describe('one-view renderer recovery', () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(r.events).toEqual(['loading', 'recovering']);
     expect(r.openGhostty.mock.calls[0]?.[0].aborted).toBe(true);
-    expect(r.promoteXterm.mock.calls).toEqual([[expect.any(AbortSignal), true]]);
+    expect(r.promoteXterm.mock.calls).toEqual([[expect.any(AbortSignal), r.focus]]);
     r.standby.resolve(r.xterm);
     r.ghostty.resolve(r.candidate);
     await vi.advanceTimersByTimeAsync(10_000);
@@ -72,7 +72,7 @@ describe('one-view renderer recovery', () => {
     fault?.();
     expect(r.events).toEqual(['loading', 'ghostty', 'recovering']);
     await vi.advanceTimersByTimeAsync(0);
-    expect(r.promoteXterm.mock.calls).toEqual([[expect.any(AbortSignal), false]]);
+    expect(r.promoteXterm.mock.calls[0]?.[1]()).toBe(false);
     await vi.advanceTimersByTimeAsync(5000);
     expect(r.events.at(-1)).toBe('failed');
     expect(r.promoteXterm.mock.calls[0]?.[0].aborted).toBe(true);

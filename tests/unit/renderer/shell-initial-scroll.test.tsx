@@ -71,7 +71,7 @@ type TerminalProbe = {
   finishWrite(): void;
   userScroll(position: number): void;
 };
-const terminals = vi.hoisted(() => ({ instances: [] as TerminalProbe[] }));
+const terminals = vi.hoisted(() => ({ instances: [] as TerminalProbe[], failOpen: false }));
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
     options: Record<string, unknown> = {};
@@ -94,7 +94,10 @@ vi.mock('@xterm/xterm', () => ({
     attachCustomKeyEventHandler() {}
     registerLinkProvider() { return { dispose() {} }; }
     onData() {}
-    open() { this.opened = true; }
+    open() {
+      if (terminals.failOpen) throw new Error('DOM renderer unavailable');
+      this.opened = true;
+    }
     reset() {
       this.buffer.normal.baseY = 0;
       this.buffer.normal.viewportY = 0;
@@ -137,6 +140,7 @@ vi.mock('@renderer/terminal-font-update', () => ({
 vi.mock('@renderer/fonts/font-settings-context', () => ({ useFontSettings: () => ({ terminalFontFamily: null }) }));
 vi.mock('@renderer/fonts/terminal-font-size-context', () => ({ useTerminalFontSize: () => ({ size: 13, ready: true, setSize() {} }) }));
 vi.mock('@renderer/fonts/terminal-font-weight-context', () => ({ useTerminalFontWeight: () => ({ weight: 400, boldWeight: 700, ready: true }) }));
+vi.mock('@renderer/terminal/terminal-padding-context', () => ({ useTerminalPadding: () => ({ left: 12, right: 12, top: 8, bottom: 4 }) }));
 vi.mock('@renderer/shortcut-platform', () => ({ useShortcutPlatform: () => 'other' }));
 vi.mock('@renderer/hooks/useTerminalDrop', () => ({ useTerminalDrop: () => ({ overlay: null, handlers: {} }) }));
 vi.mock('@renderer/hooks/useTerminalPaste', () => ({ useTerminalPaste: () => async () => undefined }));
@@ -194,17 +198,21 @@ function liveSnapshot(output: string, replayPosition = 0): Snapshot {
   return { output, alive: true, replayPosition };
 }
 
+function renderShell(): unknown {
+  return runtime.render('local', () => {
+    const tree: unknown = ShellTab({ projectId: 5, shellIndex: 0 });
+    if (!isValidElement(tree)) throw new Error('Local terminal did not render');
+    return tree;
+  }, attachRefs);
+}
+
 async function mount(snapshot: Promise<Snapshot>, capture?: () => void): Promise<TerminalProbe> {
   invoke.mockImplementation((channel: string) => {
     if (channel !== 'shells:snapshot') return Promise.resolve(undefined);
     capture?.();
     return snapshot;
   });
-  runtime.render('local', () => {
-    const tree: unknown = ShellTab({ projectId: 5, shellIndex: 0 });
-    if (!isValidElement(tree)) throw new Error('Local terminal did not render');
-    return tree;
-  }, attachRefs);
+  renderShell();
   await flush();
   const instance = terminals.instances[0];
   if (!instance?.opened) throw new Error('Local terminal did not open');
@@ -214,6 +222,7 @@ async function mount(snapshot: Promise<Snapshot>, capture?: () => void): Promise
 beforeEach(() => {
   runtime.reset();
   terminals.instances.length = 0;
+  terminals.failOpen = false;
   invoke.mockReset();
   stream.handlers.clear();
   stream.nextPosition = 1;
@@ -241,6 +250,15 @@ beforeEach(() => {
 afterEach(() => { runtime.unmount(); vi.unstubAllGlobals(); });
 
 describe('local shell initial snapshot viewport', () => {
+  it('shows a recovery message without restarting the shell when the default renderer cannot open', async () => {
+    terminals.failOpen = true;
+    invoke.mockResolvedValue(liveSnapshot(''));
+    renderShell();
+    await flush();
+    expect(JSON.stringify(renderShell())).toContain('The terminal display could not');
+    expect(stream.handlers.has('pty:data')).toBe(true);
+    expect(invoke.mock.calls.some(([channel]) => channel === 'shells:launch')).toBe(false);
+  });
   it('subscribes before capture and writes only live chunks after the cut, including equal-valued chunks', async () => {
     const snapshot = Promise.withResolvers<Snapshot>();
     const term = await mount(snapshot.promise, () => {

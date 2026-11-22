@@ -358,14 +358,14 @@ export function ShellTab({
       data: (data) => streamHandlersRef.current.data(data),
       exit: (code) => streamHandlersRef.current.exit(code),
     });
-    function enableXtermEffects() {
-      term.onData(viewSource.send);
-      oscDisposable = registerClipboardOsc(term, clipboard);
+    function enableXtermClipboard() {
+      if (!opening.signal.aborted) oscDisposable = registerClipboardOsc(term, clipboard);
     }
     const engine = readTerminalEngine(opening.signal).then(selected => {
       if (!opening.signal.aborted && selected === 'xterm') {
         activeSurfaceRef.current = term;
-        enableXtermEffects();
+        term.onData(viewSource.send);
+        enableXtermClipboard();
       }
       return selected;
     });
@@ -374,7 +374,7 @@ export function ShellTab({
     const focusReg = terminalFocus.register({
       key: { projectId, shellIndex },
       primary: primaryRef.current,
-      isOpen: () => opened && snapshotReady.current,
+      isOpen: () => snapshotReady.current,
       focus: () => activeSurfaceRef.current?.focus(),
     });
 
@@ -495,10 +495,13 @@ export function ShellTab({
       optionalView = openGhosttyWithStandby({
         host: candidateHost,
         standby: term,
+        standbyAvailable: () => opened,
+        snapshot: cachedSnapshot ?? '',
+        enableClipboard: enableXtermClipboard,
         send: viewSource.send,
         canRefit: () => !isTerminalGeometryHeld(),
         alignGrid(cols, rows) {
-          if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
+          if (opened && (term.cols !== cols || term.rows !== rows)) term.resize(cols, rows);
           viewSource.resize(cols, rows);
         },
         appearance: () => ({
@@ -507,21 +510,20 @@ export function ShellTab({
           cursorBlink: true, cursorStyle: 'bar', lineHeight: 1.25, letterSpacing: 0,
         }),
         enableXterm(restoreFocus) {
-          enableXtermEffects();
+          term.onData(viewSource.send);
           candidateHost.remove();
           if (standbyElement) { standbyElement.style.visibility = ''; standbyElement.inert = false; }
           optionalEngine = false;
           syncXtermGeometry({ forceResize: true });
           term.scrollToBottom();
           show(term);
-          if (restoreFocus) term.focus();
-          else focusReg.opened();
+          focusReg.opened(restoreFocus);
         },
         onState(state, candidate) {
           setEngineStatus(state.kind === 'xterm' ? 'fallback' : state.kind);
           ghosttyRef.current = candidate ?? null;
           if (candidate) {
-            candidate.reveal({ platform: platformRef.current, keys, clipboard, pathLinks: remoteDeviceId ? undefined : pathLinks, openWebLink: openTerminalWebLink, focused: focusReg.used });
+            candidate.reveal({ platform: platformRef.current, keys, pathLinks: remoteDeviceId ? undefined : pathLinks, openWebLink: openTerminalWebLink, focused: focusReg.used });
             if (standbyElement) standbyElement.style.visibility = 'hidden';
             candidateHost.inert = false;
             show(candidate.surface);
@@ -536,7 +538,6 @@ export function ShellTab({
       // Snapshot and its buffered successor enter both engines before any new live output.
       const live = pendingLive.current;
       pendingLive.current = '';
-      if (cachedSnapshot) optionalView.write(cachedSnapshot);
       if (live) optionalView.write(live);
       replayDrained.current = true;
     }
@@ -549,6 +550,21 @@ export function ShellTab({
      * because xterm computed a bogus cell size and every wrap landed at
      * the wrong column.
      */
+    function openXterm(host: HTMLElement): boolean {
+      try { term.open(host); }
+      catch (error) {
+        console.warn('[metaide] xterm.js display unavailable', error);
+        return false;
+      }
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => { try { webgl.dispose(); } catch { /* fine */ } });
+        term.loadAddon(webgl);
+      } catch (e) { console.warn('[metaide] webgl renderer unavailable, falling back to DOM', e); }
+      term.textarea?.addEventListener('focus', focusReg.used);
+      return true;
+    }
+
     async function openWhenReady(): Promise<void> {
       await initialFontUpdate;
       try { await document.fonts.ready; }
@@ -569,23 +585,16 @@ export function ShellTab({
       const host = termHostRef.current;
       if (!host) return;
       optionalEngine = selected === 'ghostty';
-      term.open(host);
-      // Load the WebGL renderer AFTER open so its context binds to the
-      // actual canvas. WebGL sidesteps the DOM renderer's row-width-vs-
-      // container-width overflow bug that produced the vertical-stripe
-      // artefact when cols were slightly off from the container's pixel
-      // width (Chrome would wrap the "row" div's overflow into the next
-      // visual line). If WebGL init fails (no GPU / driver hiccup) we
-      // silently fall back to the DOM renderer.
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => { try { webgl.dispose(); } catch { /* fine */ } });
-        term.loadAddon(webgl);
-      } catch (e) { console.warn('[metaide] webgl renderer unavailable, falling back to DOM', e); }
-      opened = true;
-      term.textarea?.addEventListener('focus', () => focusReg.used());
-      // First fit AFTER open so xterm has an element to measure.
-      syncXtermGeometry();
+      opened = openXterm(host);
+      if (opened) syncXtermGeometry();
+      else if (!optionalEngine) {
+        activeSurfaceRef.current = null;
+        outputRef.current = null;
+        pendingLive.current = '';
+        replayDrained.current = true;
+        setEngineStatus('failed');
+        return;
+      }
       // Snapshot may already be back — write it into the correctly-sized
       // terminal. If not yet, the .then() below picks up.
       if (cachedSnapshot != null) writeSnapshotAndFlush();
@@ -884,7 +893,7 @@ export function ShellTab({
           {engineStatus === 'loading' ? 'Loading Ghostty…' : engineStatus === 'recovering' ? 'Switching to xterm.js…' : 'Using xterm.js after Ghostty failed'}
         </p>
       )}
-      {engineStatus === 'failed' && <p className="absolute inset-x-0 top-2 text-center text-sm" role="alert" tabIndex={0}>The terminal display could not recover. Close and reopen this view to reconnect to the running shell.</p>}
+       {engineStatus === 'failed' && <p className="absolute inset-x-0 top-2 text-center text-sm" role="alert" tabIndex={0}>The terminal display could not recover. Switch away and back to reconnect to the running shell.</p>}
       {!remoteDeviceId && sessionCorrupted && (
         <div className="absolute inset-x-0 top-3 flex items-center justify-center pointer-events-none">
           <div className="pointer-events-auto flex items-center gap-3 bg-[--danger]/15 border border-[--danger]/40 rounded-md shadow-xl px-3 py-2 text-xs text-[--text] max-w-[720px]">

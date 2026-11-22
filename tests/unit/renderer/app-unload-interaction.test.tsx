@@ -200,8 +200,8 @@ describe('mounted App guarded unload', () => {
     expect(document.querySelector('[aria-modal="true"]')).toBeNull();
   });
 
-  it('routes header and palette to selected shell only, preserving sibling and identity on success', async () => {
-    await click('Unload session (close shell)');
+  it('routes row and palette to the intended primary shell, preserving sibling and identity on success', async () => {
+    await click('Row unload 1');
     expect(document.querySelector('[aria-modal="true"]')?.textContent).toContain('Project 1');
     await click('Unload session');
     expect(stops()).toEqual([{ channel: 'shells:stop-primary', payload: {
@@ -228,7 +228,7 @@ describe('mounted App guarded unload', () => {
     expect(bridge.shells).toEqual([{ projectId: 1, shellIndex: 2 }]);
   });
 
-  it('makes header and palette unload unavailable without primary even if a sibling survives', async () => {
+  it('makes row and palette unload unavailable without primary even if a sibling survives', async () => {
     await act(async () => {
       bridge.shells = bridge.shells.filter((shell) => !(shell.projectId === 1 && shell.shellIndex === 0));
       for (const listener of bridge.listeners.get('alive-shells:changed') ?? []) listener();

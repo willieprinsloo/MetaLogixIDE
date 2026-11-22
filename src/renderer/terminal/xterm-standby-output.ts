@@ -3,16 +3,16 @@ interface StandbyParser {
 }
 
 interface StandbyOutput {
-  write(data: string): void;
+  write(data: string, parsed?: () => void): void;
   promote(signal: AbortSignal, enableEffects: () => void): Promise<void>;
 }
 
-/** Feed a headless xterm with no effect listeners until the last passive write has parsed. */
+/** Feed standby history; transfer interactive input only after the last passive write parses. */
 export function createXtermStandbyOutput(parser: StandbyParser): StandbyOutput {
   let submitted = 0;
   let promotionStarted = false;
   return {
-    write(data) { submitted++; parser.write(data); },
+    write(data, parsed) { submitted++; parser.write(data, parsed); },
     async promote(signal, enableEffects) {
       if (promotionStarted) throw new Error('Xterm standby promotion already attempted');
       promotionStarted = true;
