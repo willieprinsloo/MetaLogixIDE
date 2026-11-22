@@ -17,11 +17,15 @@ function setup({ snapshot = '', standbyAvailable = true } = {}) {
   const term = new Terminal({ allowProposedApi: true });
   const clipboard = vi.fn<(text: string) => Promise<void>>(async () => {});
   const write = vi.fn((data: string, parsed?: () => void) => parsed?.());
-  const candidate = { write, fit: () => undefined, dispose: vi.fn(() => host.replaceChildren()) };
+  const candidate = { write, fit: vi.fn<() => { cols: number; rows: number } | undefined>(), dispose: vi.fn(() => host.replaceChildren()) };
   const candidateReady = Promise.withResolvers<typeof candidate>();
   let fault: (() => void) | undefined;
-  openGhosttyView.mockImplementation((_host, _appearance, _signal, hooks: { fault: () => void }) => {
+  let layoutChanged: (() => void) | undefined;
+  let input: ((data: string) => void) | undefined;
+  openGhosttyView.mockImplementation((_host, _appearance, _signal, hooks: { fault: () => void; layoutChanged: () => void; input: (data: string) => void }) => {
     fault = hooks.fault;
+    layoutChanged = hooks.layoutChanged;
+    input = hooks.input;
     return candidateReady.promise;
   });
   let advanceDrain: (() => void) | undefined;
@@ -31,14 +35,18 @@ function setup({ snapshot = '', standbyAvailable = true } = {}) {
   } };
   const states: string[] = [];
   const enableXterm = vi.fn();
+  const alignGrid = vi.fn();
+  const send = vi.fn();
+  const canRefit = vi.fn(() => true);
   const view = openGhosttyWithStandby({
     host, standby, standbyAvailable: () => standbyAvailable, snapshot,
     enableClipboard: () => registerClipboardOsc(term, { writeText: clipboard, onError: vi.fn() }),
-    canRefit: () => true, alignGrid: vi.fn(), send: vi.fn(), enableXterm,
+    canRefit, alignGrid, send, enableXterm,
     appearance: () => ({ fontSize: 12 }), onState: state => states.push(state.kind),
   });
   cleanups.push(() => { view.dispose(); term.dispose(); host.remove(); });
-  return { host, candidateReady, candidate, view, clipboard, states, enableXterm,
+  return { host, candidateReady, candidate, view, clipboard, states, enableXterm, alignGrid, send, canRefit,
+    layoutChanged: () => layoutChanged?.(), input: (data: string) => input?.(data),
     fault: () => fault?.(), isDraining: () => Boolean(advanceDrain),
     releaseDrain: () => { const finish = advanceDrain; advanceDrain = undefined; finish?.(); },
   };
@@ -99,4 +107,34 @@ it('reveals Ghostty independently of an unavailable standby and then reports a f
   r.fault();
   await vi.waitFor(() => expect(r.states).toEqual(['loading', 'ghostty', 'recovering', 'failed']));
   expect(r.enableXterm).not.toHaveBeenCalled();
+});
+
+it('coalesces refit requests and forwards input only from the current renderer', async () => {
+  const r = setup();
+  await vi.waitFor(() => expect(openGhosttyView).toHaveBeenCalledOnce());
+  r.input('ignored before ready');
+  r.candidate.fit.mockReturnValue({ cols: 80, rows: 24 });
+  r.candidateReady.resolve(r.candidate);
+  await vi.waitFor(() => expect(r.states.at(-1)).toBe('ghostty'));
+  r.input('active input');
+  expect(r.send.mock.calls).toEqual([['active input']]);
+  expect(r.alignGrid.mock.calls).toEqual([[80, 24]]);
+  r.layoutChanged();
+  r.layoutChanged();
+  await Promise.resolve();
+  expect(r.candidate.fit).toHaveBeenCalledTimes(2);
+  expect(r.alignGrid).toHaveBeenCalledOnce();
+
+  r.canRefit.mockReturnValue(false);
+  r.candidate.fit.mockReturnValue({ cols: 100, rows: 30 });
+  r.layoutChanged();
+  await Promise.resolve();
+  expect(r.alignGrid).toHaveBeenCalledOnce();
+  r.canRefit.mockReturnValue(true);
+  r.layoutChanged();
+  await Promise.resolve();
+  expect(r.alignGrid.mock.calls).toEqual([[80, 24], [100, 30]]);
+  r.fault();
+  r.input('ignored after fault');
+  expect(r.send.mock.calls).toEqual([['active input']]);
 });

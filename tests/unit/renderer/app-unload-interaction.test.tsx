@@ -18,9 +18,11 @@ const bridge = vi.hoisted(() => ({
   generation: 'launch-1',
   state: 'idle' as 'idle' | 'busy' | 'blocked',
   failStop: false,
+  launchPlain: null as Promise<{ shellIndex: number }> | null,
   calls: [] as Array<{ channel: string; payload: unknown }>,
   listeners: new Map<string, Set<() => void>>(),
 }));
+const requestTerminalFocus = vi.hoisted(() => vi.fn());
 
 vi.mock('@renderer/api', () => ({
   api: {
@@ -46,7 +48,7 @@ vi.mock('@renderer/api', () => ({
         for (const listener of bridge.listeners.get('alive-shells:changed') ?? []) listener();
         return { kind: 'stopped' };
       }
-      if (channel === 'shells:launch-plain') return { shellIndex: 3 };
+      if (channel === 'shells:launch-plain') return bridge.launchPlain ?? { shellIndex: 3 };
       return {};
     },
   },
@@ -68,7 +70,8 @@ vi.mock('@renderer/hooks/useAgentStates', () => ({
 }));
 vi.mock('@renderer/hooks/useWindowTerminalFocus', () => ({
   useWindowTerminalFocus: () => undefined,
-  terminalFocus: { requestProjectFocus: () => undefined, cancelRequest: () => undefined, requestFocus: () => undefined },
+  terminalFocus: { requestProjectFocus: () => undefined, cancelRequest: () => undefined, requestFocus: requestTerminalFocus },
+  activeElementKind: () => document.activeElement?.tagName === 'INPUT' ? 'text-entry' : 'none',
 }));
 vi.mock('@renderer/hooks/useTerminalGeometryHold', () => ({ useTerminalGeometryHold: () => undefined }));
 vi.mock('@renderer/hooks/usePrefersReducedMotion', () => ({ usePrefersReducedMotion: () => false }));
@@ -107,7 +110,12 @@ vi.mock('@renderer/components/ChatTab', () => ({ ChatTab: () => null }));
 vi.mock('@renderer/components/Settings', () => ({ Settings: () => null }));
 vi.mock('@renderer/components/NewProjectDialog', () => ({ NewProjectDialog: ({ open }: { open: boolean }) =>
   open ? <div role="dialog" aria-label="New project">New project</div> : null }));
-vi.mock('@renderer/components/ShellTabsBar', () => ({ ShellTabsBar: () => null }));
+vi.mock('@renderer/components/ShellTabsBar', () => ({ ShellTabsBar: ({ active, onSelect }: {
+  active: number; onSelect: (shellIndex: number) => void;
+}) => <div>
+  <output data-testid="active-terminal-fixture">{active}</output>
+  <button onClick={() => onSelect(2)}>Select sibling terminal</button>
+</div> }));
 vi.mock('@renderer/components/ShellSplit', () => ({ ShellSplit: () => null }));
 
 let container: HTMLDivElement | null = null;
@@ -135,6 +143,8 @@ beforeEach(async () => {
   bridge.state = 'idle';
   bridge.generation = 'launch-1';
   bridge.failStop = false;
+  bridge.launchPlain = null;
+  requestTerminalFocus.mockClear();
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => window.setTimeout(() => callback(0), 0));
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   const rect = new DOMRect(0, 0, 44, 44);
@@ -172,7 +182,40 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-describe('mounted App guarded unload', () => {
+describe('mounted App terminal routing', () => {
+  it('activates and requests terminal focus when a keyboard launch is still current', async () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    await click('Shell');
+    await shortcut('t');
+    expect(document.querySelector('[data-testid="active-terminal-fixture"]')?.textContent).toBe('3');
+    expect(requestTerminalFocus).toHaveBeenLastCalledWith({ projectId: 1, shellIndex: 3 });
+  });
+
+  it('does not activate a late keyboard launch after the user chooses a different terminal', async () => {
+    await click('Shell');
+    const launch = Promise.withResolvers<{ shellIndex: number }>();
+    bridge.launchPlain = launch.promise;
+    await shortcut('t');
+    expect(bridge.calls).toContainEqual({ channel: 'shells:launch-plain', payload: { projectId: 1 } });
+    await click('Select sibling terminal');
+    await act(async () => { launch.resolve({ shellIndex: 3 }); });
+    expect(document.querySelector('[data-testid="active-terminal-fixture"]')?.textContent).toBe('2');
+  });
+
+  it('preserves the newer text entry and active terminal when a keyboard launch replies', async () => {
+    await click('Shell');
+    const launch = Promise.withResolvers<{ shellIndex: number }>();
+    bridge.launchPlain = launch.promise;
+    await shortcut('t');
+    expect(bridge.calls).toContainEqual({ channel: 'shells:launch-plain', payload: { projectId: 1 } });
+    const field = document.createElement('input');
+    container?.append(field);
+    field.focus();
+    await act(async () => { launch.resolve({ shellIndex: 3 }); });
+    expect(document.querySelector('[data-testid="active-terminal-fixture"]')?.textContent).toBe('0');
+    expect(document.activeElement).toBe(field);
+  });
+
   it('routes unselected row without switching selection; cancel and Escape restore opener focus', async () => {
     const opener = button('Row unload 2');
     opener.focus();
