@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   chmodSync,
   existsSync,
@@ -8,6 +8,14 @@ import {
   readFileSync,
   rmSync,
 } from 'node:fs';
+
+const logMock = vi.hoisted(() => ({
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+}));
+vi.mock('electron-log/main', () => ({ default: logMock }));
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { dropHandlers } from '@main/drops/handlers';
@@ -60,6 +68,10 @@ beforeEach(() => {
   mkdirSync(join(root, 'proj-evil'));
   dropDir = join(root, 'drops');
   clipboardPng = null;
+  logMock.info.mockReset();
+  logMock.warn.mockReset();
+  logMock.error.mockReset();
+  logMock.debug.mockReset();
 });
 
 afterEach(() => {
@@ -232,5 +244,40 @@ describe('drops:stage-clipboard-image (AC12, AC13, AC14)', () => {
       kind: 'failed',
       reason: 'clipboard unavailable',
     });
+  });
+});
+
+describe('drops handlers — user-driven failures do not warn/error at log level', () => {
+  it('drops:resolve-app-file "unknown project" is logged at debug, not warn', async () => {
+    await resolveAppFile({ projectId: 999, relPath: 'nope' });
+    expect(logMock.warn).not.toHaveBeenCalled();
+    expect(logMock.debug).toHaveBeenCalledWith(
+      '[drops] drops:resolve-app-file failed',
+      expect.objectContaining({ kind: 'failed' }),
+    );
+  });
+
+  it('drops:stage-file too-large is logged at debug, not warn', async () => {
+    await stageFile({
+      name: 'big.bin',
+      mime: 'application/octet-stream',
+      bytes: new Uint8Array(MAX_STAGED_BYTES + 1),
+    });
+    expect(logMock.warn).not.toHaveBeenCalled();
+    expect(logMock.debug).toHaveBeenCalledWith(
+      '[drops] drops:stage-file too-large',
+      expect.objectContaining({ kind: 'too-large' }),
+    );
+  });
+
+  it('drops:stage-clipboard-image "clipboard unavailable" is logged at debug, not error', async () => {
+    const s = services();
+    s.clipboardImage = { readPng: () => { throw new Error('clipboard unavailable'); } };
+    await dropHandlers['drops:stage-clipboard-image'](s, undefined);
+    expect(logMock.error).not.toHaveBeenCalled();
+    expect(logMock.debug).toHaveBeenCalledWith(
+      '[drops] clipboard image read failed',
+      expect.any(Error),
+    );
   });
 });
