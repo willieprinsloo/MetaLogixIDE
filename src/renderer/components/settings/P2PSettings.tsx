@@ -30,21 +30,22 @@ function PairModal({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     let alive = true;
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    // The code is minted by the relay on first connect; until then main answers relay_not_ready, so keep trying briefly.
-    const attempt = (n: number) => {
-      api.invoke('p2p:pair-generate-code', undefined).then(
-        (res) => { if (alive) { setPair(res); setError(null); } },
-        (e: unknown) => {
-          if (!alive) return;
-          const msg = e instanceof Error ? e.message : String(e);
-          if (/relay_not_ready/.test(msg) && n < 15) retry = setTimeout(() => attempt(n + 1), 1000);
-          else setError(/relay_not_ready/.test(msg) ? 'Not connected to the relay yet. Check the relay address and try again.' : /serve_disabled/.test(msg) ? 'Turn on "Serve this machine" first.' : msg);
-        },
-      );
-    };
-    attempt(0);
-    return () => { alive = false; if (retry) clearTimeout(retry); };
+    // Main waits for the relay to be ready (up to 10s) before resolving, so
+    // this call succeeds on first try in the normal case and throws exactly
+    // once if the relay is actually down.
+    api.invoke('p2p:pair-generate-code', undefined).then(
+      (res) => { if (alive) { setPair(res); setError(null); } },
+      (e: unknown) => {
+        if (!alive) return;
+        const msg = e instanceof Error ? e.message : String(e);
+        setError(
+          /relay_not_ready/.test(msg) ? 'Not connected to the relay yet. Check the relay address and try again.' :
+          /serve_disabled/.test(msg) ? 'Turn on "Serve this machine" first.' :
+          msg,
+        );
+      },
+    );
+    return () => { alive = false; };
   }, []);
 
   useEffect(() => {

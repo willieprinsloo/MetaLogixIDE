@@ -157,6 +157,28 @@ function publishPrimary(s: Services, projectId: number, argv: string[]): void {
 const SHELLS_LAUNCH_COALESCER = new LaunchCoalescer<{ shellIndex: number }>();
 
 /**
+ * The pairing code is minted by the relay on its first Hello, so a call to
+ * `generatePairCode` immediately after settings-open can beat the relay
+ * and throw `relay_not_ready`. The renderer used to retry at 1s × 15,
+ * each attempt logging "Error occurred in handler for ...: relay_not_ready"
+ * at error (107 of these last week). Wait for readiness here instead — one
+ * IPC, one log at worst if the relay really is down.
+ */
+async function waitForPairCode(s: Services): Promise<{ code: string; expiresAt: number }> {
+  const start = Date.now();
+  const deadlineMs = 10_000;
+  for (;;) {
+    try {
+      return p2pApi(s).generatePairCode();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg !== 'relay_not_ready' || Date.now() - start >= deadlineMs) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+}
+
+/**
  * The real body of `shells:launch`, hoisted out so the handler can run it
  * under the coalescer. `project` is the already-resolved row (with
  * `firstLaunchedAt` nulled out for forceFirst), so this function makes no
@@ -1427,7 +1449,7 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'p2p:fleet-list':         async (s) => ({ fleet: s.p2p ? await s.p2p.api.fleetList() : [] }),
   'p2p:settings-get':       async (s) => p2pApi(s).getSettings(),
   'p2p:settings-set':       async (s, patch) => { await p2pApi(s).setSettings(patch); return { ok: true } as const; },
-  'p2p:pair-generate-code': async (s) => p2pApi(s).generatePairCode(),
+  'p2p:pair-generate-code': async (s) => waitForPairCode(s),
   'p2p:pair-redeem-code':   async (s, { code }) => p2pApi(s).redeemPairCode(code),
   'p2p:revoke-device':      async (s, { deviceId }) => { await p2pApi(s).revokeDevice(deviceId); return { ok: true } as const; },
   'p2p:reconnect-device':   async (s, { deviceId }) => { await p2pApi(s).reconnectDevice(deviceId); return { ok: true } as const; },
