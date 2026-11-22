@@ -20,11 +20,11 @@ export function ghosttyCorePolicy() {
       replacements: [],
     }],
     [realpathSync(join(packageDirectory, 'dist/index.js')), {
-      digest: 'b7ae27a93862bb1b8d52682a3422a7443ac0c7e6be0ab03678b54ff9f8b4f6c8',
+      digest: 'd8324eed1637589a663a7dad207d8a23f7cbd1b5e7355891a07616f9c8bdb9e1',
       replacements: [[worker, workerDisabled] as const],
     }],
     [realpathSync(join(packageDirectory, 'dist/chunks/core-DxIkt0Aw.js')), {
-      digest: 'b096df05d9726cb980b1c2f0216d2e3d32fa408c174a62e8adc7a113be8e39b8',
+      digest: 'a6d88f21242a7ab6bad572cd41ccb60d47f2bfe84792acfb84159db69a914691',
       replacements: assets,
     }],
   ]);

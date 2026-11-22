@@ -277,6 +277,7 @@ version footer and the Done bar. Each section is its own module in
 |---|---|
 | `GeneralPanel.tsx` | Appearance, Fonts, Terminal, Workspace and Notifications sections. Loads and saves the General settings, including the "Record agent activity" switch (`activity_log_enabled`) in Workspace. |
 | `TerminalEngineControl.tsx` | Terminal engine radios. Displays the saved value while a save is pending. On failure, retains the previous value and reports the error. |
+| `TerminalPaddingControl.tsx` | Horizontal and vertical padding fields. Enter or blur commits a whole number from 0 to 32 px. Reset restores the default for that axis. |
 | `RootsPanel.tsx`, `LaunchPanel.tsx`, `MetaprojectPanel.tsx` | The other sections. |
 | `primitives.tsx` | `SettingsSection`, `SettingRow`, `SettingStack`, `WorkspaceNumber`, `Switch`, and the older `Header` and `Field`. |
 | `PaletteCards.tsx`, `palette-swatches.ts` | Palette cards (`aria-pressed` buttons) and their preview colours. |
@@ -289,6 +290,13 @@ Components below `GeneralPanel` take values and callbacks as props, so unit
 tests render them without a DOM. Real focus, layout and colour are covered by
 `tests/e2e/settings-board.spec.ts`.
 
+Terminal padding is a desktop-local preference. Separate values control the
+horizontal and vertical insets. The default is 12 px on each side, 8 px above,
+and 4 px below. A custom vertical value applies equally above and below.
+Open local tabs, splits, and popouts receive committed updates. `ShellTab`
+observes the inner viewport and refits the current engine without reopening the
+view or restarting the shell. Paired shells keep the default padding.
+
 The desktop settings repository stores `terminal_engine` as a viewer-local
 preference. Missing or invalid values read as `xterm` without changing the
 stored row. The existing settings IPC validates writes and sends a change
@@ -300,6 +308,10 @@ offers xterm.js (the default) and Ghostty (WASM).
 A Ghostty view feeds the same shell output to an inert xterm.js standby.
 Ghostty fits the terminal with its own cell measurements. The shell and the
 standby use that grid until xterm.js takes over and fits the pane itself.
+On macOS, Option-drag selects text in Ghostty without sending mouse input
+to the shell. An ordinary drag still reaches apps that enable mouse reporting.
+Shift-click extends a Ghostty text selection from its anchor. A plain selection
+click clears the old highlight and sets a new anchor.
 On renderer failure, the standby drains its passive writes before it takes
 over input and clipboard effects. The shell connection does not change.
 Ghostty compiles verified bundled WASM in a lazy renderer chunk. The desktop
@@ -311,7 +323,15 @@ The chrome around the content (title bar, activity bar, sidebar columns and
 status bar) is one continuous surface, `--surface-chrome`, painted once on the
 window root. Regions are separated by tone and spacing, not borders. The main
 area and the popout's content are rounded sheets (`--surface-sheet`) inset on
-that surface. Dialogs and popovers keep their edges because they float.
+that surface. The main sheet has 8px side margins and 14px corners. It starts
+at the bottom of the toolbar with no extra gap. When the toolbar is hidden,
+the sheet has a 2px top margin. The bottom margin is 2px above the status bar
+and 8px when the bar is hidden. A single terminal has a subtle 1px border.
+In split mode, each terminal paints a separate 14px rounded card with a
+1px gray border, regardless of focus. The workspace has no shared terminal
+border or background, so the workspace chrome is visible through the 10px
+resize gap.
+Dialogs and popovers keep their edges because they float.
 
 `src/renderer/styles.css` ("Chrome surfaces and semantic hues") derives every
 chrome token from the palette tokens above, so all palettes and both
@@ -461,8 +481,15 @@ chrome"). `styles.css` is not changed by this layer. On macOS:
 | Chrome root (`[data-chrome-root]`) | `--surface-chrome`: the opaque `--chrome-solid` at `--chrome-glass-alpha`. At Chrome frost Subtle that is 0.805 to 0.87 per palette and theme; Medium and Strong are lower (see "Frosted glass settings"). |
 | Main and popout sheet, chat column (`[data-view="chat"]`) | `--sheet-solid`, alpha 1. |
 | Sheet while a shell shows (`[data-sheet-content="shell"]`), Terminal frost not Off | `--surface-terminal`: `--sheet-solid` at `--terminal-live-alpha`. |
-| Split-shell cards | `--surface-pane`: `--pane-solid`. With Terminal frost on, cards follow the sheet; only at Chrome Subtle with Terminal Subtle do they add their own glass, as before. |
+| Split-shell cards | Each card uses the terminal sheet surface. Presets and Custom set the opacity of both cards without changing the workspace chrome in the gap. |
 | Raw `--panel`, `--panel-strong`, `--chat-surface` | Same colour, alpha 1, so menus, popovers and inputs are never more translucent than before. |
+
+**Custom terminal opacity.** Settings → General → Appearance → Frosted glass
+keeps the terminal presets and adds Custom. The 10–100% slider previews the
+background in the current window and saves at the end of the edit. Open
+windows receive the saved value. Reset returns to 70%. The setting does not
+change terminal text opacity or native window material. Reduce Transparency
+keeps the surface opaque without discarding the saved value.
 
 Hover, selected, active and field fills (`--surface-hover`, `--surface-active`,
 `--accent-soft`, `--surface-field`) and the Tasks badge fill
@@ -947,7 +974,7 @@ kill.
 
 Rules:
 
-- Motion uses the `motion` package (pinned at 14.0.0) through a strict
+- Pane folds and menus use the `motion` package (pinned at 14.0.0) through a strict
   `LazyMotion` with `domAnimation` in `main.tsx`, under
   `MotionConfig reducedMotion="user"`. Only `m.*` elements are used.
 - A fold animates one CSS variable, `--fold`, on the folding pane's
@@ -966,6 +993,33 @@ Rules:
   drops its backdrop, role and test id and takes no pointer or keyboard
   input; reopening during an exit reuses the same instance, and a menu
   opened with `autoFocus` refocuses its first item.
+- Desktop local terminal chips fade and move vertically on pointer or keyboard add or close;
+  surviving chips slide horizontally to their new positions. The strip uses
+  pre/post-commit chip positions and Web Animations, so Motion's global
+  layout feature set and terminal geometry stay unchanged. With Reduce
+  Motion enabled, only the chip fades remain. Project switches, restores,
+  and chip selection do not animate membership.
+- A launch animates only if its returned index identifies the next
+  unambiguous addition; if an alive-list update beats the reply, the chip
+  appears without motion. The project-keyed strip records close intent before
+  the close request. When the chip leaves, an inert copy fades within the old
+  viewport bounds, independent of any new shell reusing its index. A rejected
+  close clears its intent. Animation never delays a close or controls PTY or focus.
+- The icon-only top-row tabs keep accessible names and show labels on hover
+  or keyboard focus. The Diff count and unsaved marker stay visible. These
+  tabs crossfade their selected background in place; their panels do not slide.
+- The desktop toolbar sits above the main sheet, aligned with the workspace
+  column, with 6px padding above and below its controls. Board is an icon
+  with a tooltip. The status bar shows the project
+  name and active agent. The terminal strip is centered in the toolbar, including
+  at medium window widths. It moves below the workspace icons and project
+  controls when the workspace column is narrower than 620px.
+  Tabs scroll within the strip. Add remains beside the tabs, and its menu
+  stays within the header's horizontal bounds. The icon-only Split toggle
+  sits immediately before Popout at the right edge.
+- Local terminal tab navigation does not animate the terminal panel. The old
+  view is removed without a snapshot. The new view appears at full opacity
+  once its terminal engine is ready. Tab chip motion is independent of the panel.
 
 ### Terminal focus
 
@@ -996,6 +1050,9 @@ Rules:
   is one pending request; a newer one replaces it, and starting a new
   switch or scrollback jump cancels it. A switch that lands on the Files
   tab requests nothing.
+- A new local terminal tab requests focus for its shell when the launch
+  succeeds. If the user navigates elsewhere or focuses a different text
+  field while the launch waits, the new tab does not take over.
 - A request expires after `FOCUS_REQUEST_TTL_MS`. It is honoured when no
   overlay is open and no text-entry element has focus, checked when the
   terminal opens, or at once when it is already open. A window blur drops
@@ -1282,11 +1339,10 @@ Rules:
 
 ### Local primary-session unload
 
-The local project-row X, selected-project header X, and palette Unload current session
-open one confirmation dialog. The action stops only shell index 0. Other shells,
+The local project-row X and the **Unload current session** palette action
+open the same confirmation dialog. The action stops only shell index 0. Other shells,
 project records, files, and the selected project remain unchanged
-(`src/renderer/App.tsx:288-306,429-460,874-876`;
-`src/renderer/components/Sidebar.tsx:282-420`).
+(`src/renderer/App.tsx`; `src/renderer/components/Sidebar.tsx`).
 
 The dialog inspects the live PTY generation and the agent state for shell 0.
 It warns when that agent is busy or needs input. It also warns when shell 0

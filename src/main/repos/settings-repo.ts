@@ -1,6 +1,7 @@
 import type { Database } from 'better-sqlite3';
 import type { SettingsMap } from '@shared/types';
 import { DEFAULT_TERMINAL_ENGINE, TERMINAL_ENGINE_KEY, isTerminalEngine } from '@shared/terminal-engine';
+import { isTerminalPaddingKey, isTerminalPaddingValue, TERMINAL_PADDING_KEYS } from '@shared/terminal-padding';
 import { withPermissionMode } from '@main/domain/claude-permission-mode';
 
 export const DEFAULT_SETTINGS: SettingsMap = {
@@ -15,6 +16,8 @@ export const DEFAULT_SETTINGS: SettingsMap = {
   'max_watched_paths':             500,
   'theme':                         'dark',
   [TERMINAL_ENGINE_KEY]:           DEFAULT_TERMINAL_ENGINE,
+  [TERMINAL_PADDING_KEYS.horizontal]: null,
+  [TERMINAL_PADDING_KEYS.vertical]:   null,
   'ui_font_family':                null,
   'terminal_font_family':          null,
   'terminal_font_size':            null,
@@ -32,6 +35,7 @@ export const DEFAULT_SETTINGS: SettingsMap = {
   'frost_chrome':                  true,
   'chrome_frost_level':            'subtle',
   'terminal_frost_level':          'off',
+  'terminal_frost_opacity':        70,
   'vibrancy_material':             'sidebar',
   'app_env':                       {},
   // Seeded named CLIs the "+ new shell" menu shows out of the box. The bare
@@ -69,13 +73,14 @@ function isRetiredProfile(p: { name: string; argv: readonly string[] }): boolean
 }
 
 function parseStoredSetting(key: string, raw: string): unknown {
-  if (key !== TERMINAL_ENGINE_KEY) return JSON.parse(raw);
+  if (key !== TERMINAL_ENGINE_KEY && !isTerminalPaddingKey(key)) return JSON.parse(raw);
   try {
     const value: unknown = JSON.parse(raw);
+    if (isTerminalPaddingKey(key)) return isTerminalPaddingValue(value) ? value : null;
     return isTerminalEngine(value) ? value : DEFAULT_TERMINAL_ENGINE;
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
-    return DEFAULT_TERMINAL_ENGINE;
+    return DEFAULT_SETTINGS[key];
   }
 }
 

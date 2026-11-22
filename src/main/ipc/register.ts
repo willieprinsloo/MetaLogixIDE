@@ -9,7 +9,7 @@ import { discoverAllTasks } from '@main/domain/tasks';
 import { randomUUID } from 'node:crypto';
 import { parseMetaproject } from '@shared/parse-metaproject';
 import type { VibrancyMaterial } from '@shared/frosted-glass';
-import { isChromeFrostLevel, isTerminalFrostLevel, isVibrancyMaterial } from '@shared/frosted-glass';
+import { isChromeFrostLevel, isTerminalFrostMode, isTerminalFrostOpacity, isVibrancyMaterial, TERMINAL_FROST_OPACITY_KEY } from '@shared/frosted-glass';
 import { profileLaunchArgv, resolveLaunch } from '@main/domain/launch';
 import { harnessOf, type AgentHarness } from '@shared/agent-harness';
 import { parseProjectDefaultAgent, setProjectDefaultAgent } from '@main/domain/project-default-agent';
@@ -24,6 +24,7 @@ import { isClaudePermissionMode } from '@shared/claude-permission-mode';
 import type { P2PApi } from '../p2p/types';
 import { isFontSettingKey, parseFontFamilyPreference } from '@shared/font-settings';
 import { TERMINAL_ENGINE_KEY, isTerminalEngine } from '@shared/terminal-engine';
+import { isTerminalPaddingKey, isTerminalPaddingValue } from '@shared/terminal-padding';
 import { TERMINAL_FONT_SIZE_KEY, parseTerminalFontSize } from '@shared/terminal-font-size';
 import {
   TERMINAL_FONT_WEIGHT_KEY,
@@ -287,6 +288,18 @@ function setSetting(s: Services, { key, value }: IpcRequest<'settings:set'>): bo
   if (typeof key !== 'string') throw new Error('Invalid settings key');
   if (key === TERMINAL_ENGINE_KEY) {
     if (!isTerminalEngine(value)) throw new Error('Invalid terminal engine');
+    if (s.settings.get(key) === value) return false;
+    s.settings.set(key, value);
+    return true;
+  }
+  if (isTerminalPaddingKey(key)) {
+    if (!isTerminalPaddingValue(value)) throw new Error('Invalid terminal padding');
+    if (s.settings.get(key) === value) return false;
+    s.settings.set(key, value);
+    return true;
+  }
+  if (key === TERMINAL_FROST_OPACITY_KEY) {
+    if (!isTerminalFrostOpacity(value)) throw new Error('Invalid terminal frost opacity');
     if (s.settings.get(key) === value) return false;
     s.settings.set(key, value);
     return true;
@@ -1013,7 +1026,7 @@ export const handlers: { [C in Exclude<IpcChannelName, 'shells:snapshot' | 'sett
     return { ok: true } as const;
   },
   'settings:set-terminal-frost-level': async (s, { level }) => {
-    if (!isTerminalFrostLevel(level)) return { ok: false, error: 'invalid' } as const;
+    if (!isTerminalFrostMode(level)) return { ok: false, error: 'invalid' } as const;
     s.settings.set('terminal_frost_level', level);
     return { ok: true } as const;
   },

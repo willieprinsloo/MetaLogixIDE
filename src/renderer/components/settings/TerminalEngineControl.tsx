@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { api } from '@renderer/api';
 import { DEFAULT_TERMINAL_ENGINE, isTerminalEngine, TERMINAL_ENGINE_KEY, type TerminalEngine } from '@shared/terminal-engine';
-import { SettingRow, SettingsSection } from './primitives';
+import { SettingRow } from './primitives';
 
 const ENGINES = [{ id: 'xterm', label: 'xterm.js' }, { id: 'ghostty', label: 'Ghostty (WASM)' }] as const;
 const LABEL = 'Terminal engine';
@@ -67,7 +67,7 @@ export function TerminalEngineControl() {
   }
 
   return (
-    <SettingsSection title="Terminal">
+    <>
       <SettingRow label={LABEL}>
         <div role="radiogroup" aria-label={LABEL} aria-describedby={hint} aria-busy={saving}
           className="inline-flex gap-0.5 rounded-[11px] bg-[--surface-field] p-[3px]">
@@ -83,6 +83,6 @@ export function TerminalEngineControl() {
       </SettingRow>
       <p id={hint} className="text-xs text-[--text-muted]">Applies when you open or reopen a terminal view. Open views stay as they are.</p>
       {error && <p role="alert" className="text-xs text-[--text-muted]">{error}</p>}
-    </SettingsSection>
+    </>
   );
 }

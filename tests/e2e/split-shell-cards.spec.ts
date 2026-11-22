@@ -60,7 +60,7 @@ async function expectColour(
   win: Page, el: Locator, prop: 'color' | 'background-color', token: `--${string}`, what: string, soft = false,
 ): Promise<void> {
   const got = await elementColour(win, el, prop);
-  const want = await resolveToken(win, token);
+  const want = await resolveToken(win, token, el);
   (soft ? expect.soft : expect)(colourDistance(got, want), `${what}: ${prop} ${fmtColour(got)} should be ${token} ${fmtColour(want)}`).toBeLessThanOrEqual(3);
 }
 
@@ -69,9 +69,7 @@ async function leftShare(win: Page): Promise<number> {
   return win.evaluate((sel) => {
     const left = document.querySelector(sel)!;
     const row = left.parentElement!;
-    const cs = getComputedStyle(row);
-    const content = row.getBoundingClientRect().width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-    return left.getBoundingClientRect().width / content;
+    return left.getBoundingClientRect().width / row.getBoundingClientRect().width;
   }, LEFT);
 }
 
@@ -139,24 +137,17 @@ const paneFocused = (win: Page) => win.evaluate(({ l, r }) => ({
   right: document.querySelector(r)?.getAttribute('data-pane-focused') ?? null,
 }), { l: LEFT, r: RIGHT });
 
-/* ─────────────────────────────── strip pill ─────────────────────────────── */
+/* ─────────────────────────────── Split toolbar button ─────────────────────────────── */
 
-test('AC1–AC5, AC4a: the Split pill is a labelled toggle, right-most in the strip, with the new-shell button beside the chips', async () => {
+test('the Split icon is an accessible toggle immediately before Popout, with Add beside the terminal tabs', async () => {
   await withApp(['alpha'], async ({ app, win }) => {
     const p = pill(win);
-    await expect(p).toHaveText(SPLIT_COPY.pill);
-    expect(await css(p, ['height', 'padding-left', 'padding-right', 'border-top-left-radius', 'column-gap', 'font-size'])).toEqual({
-      height: '28px', 'padding-left': '10px', 'padding-right': '10px', 'border-top-left-radius': '7px', 'column-gap': '7px', 'font-size': '12px',
-    });
-    const icon = await rect(p.locator('svg'));
-    expect.soft([icon.width, icon.height], 'AC1 12px split icon').toEqual([12, 12]);
-    // (A Range-based text measurement here left Chromium with no :hover state, so read the DOM order instead.)
-    expect(await p.evaluate((n) => [n.firstChild?.nodeName, n.lastChild?.nodeType === Node.TEXT_NODE]), 'icon, then the text')
-      .toEqual(['svg', true]);
+    await expect(p).toHaveText('');
+    await expect(p.locator('svg')).toBeVisible();
 
     // AC2/AC3 unpressed.
     await expect(p).toHaveAttribute('aria-pressed', 'false');
-    await expect(p).toHaveAccessibleName(SPLIT_COPY.pill);
+    await expect(p).toHaveAccessibleName(SPLIT_COPY.buttonLabel);
     await moveMouseAway(win);
     const offBg = await elementColour(win, p, 'background-color');
     expect(offBg.a, 'unpressed background is transparent').toBe(0);
@@ -164,26 +155,24 @@ test('AC1–AC5, AC4a: the Split pill is a labelled toggle, right-most in the st
     await expect(await hoverTooltip(win, p)).toHaveText(SPLIT_COPY.tooltipOff);
     await expectColour(win, p, 'background-color', '--surface-hover', 'hovered unpressed pill');
 
-    // AC4 order and right inset.
+    // The two far-right controls stay together, separate from the centered terminal strip.
     const geo = await win.evaluate((sel) => {
       const pillEl = document.querySelector(`[data-testid="${sel}"]`)!;
       const plus = document.querySelector('[data-testid="tabbar-new-shell"]')!;
       const chips = [...document.querySelectorAll('[data-testid="shell-tab-button"]')];
-      let strip: Element | null = pillEl.parentElement;
-      while (strip && !strip.contains(plus)) strip = strip.parentElement;
+      const bar = pillEl.closest('[data-testid="main-tab-bar"]');
+      if (!bar) throw new Error('Split must be in the workspace bar');
       return {
         chipsRight: Math.max(...chips.map((c) => c.getBoundingClientRect().right)),
         plusX: plus.getBoundingClientRect().x,
         plusRight: plus.getBoundingClientRect().right,
         pillX: pillEl.getBoundingClientRect().x,
-        inset: strip!.getBoundingClientRect().right - pillEl.getBoundingClientRect().right,
-        lastControl: [...strip!.querySelectorAll('button')].at(-1) === pillEl,
+        lastControls: [...bar.querySelectorAll('button')].slice(-2).map(el => el.getAttribute('data-testid')),
       };
     }, SPLIT_TESTIDS.toggle);
     expect(geo.chipsRight, 'chips come before the new-shell button').toBeLessThanOrEqual(geo.plusX);
     expect(geo.plusRight, 'new-shell button comes before the pill').toBeLessThan(geo.pillX);
-    expect(geo.lastControl, 'the pill is the right-most control').toBe(true);
-    expect.soft(geo.inset, 'AC4: pill right edge is 14px from the strip right edge').toBeCloseTo(14, 0);
+    expect(geo.lastControls).toEqual([SPLIT_TESTIDS.toggle, 'popout-shell']);
 
     // AC4a: the + is outside the chips' horizontal scroller.
     const outside = await win.evaluate(() => {
@@ -195,7 +184,7 @@ test('AC1–AC5, AC4a: the Split pill is a labelled toggle, right-most in the st
     });
     expect(outside, 'the chips scroll, the + button is not inside that scroller').toEqual({ hasScroller: true, containsPlus: false });
 
-    // AC4a: the menu anchors left and stays on-screen in a 900px window.
+    // AC4a: the menu stays beside Add, clamped to the workspace in a 900px window.
     await app.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0]!.setContentSize(900, 700); });
     await expect.poll(() => win.evaluate(() => window.innerWidth)).toBe(900);
     await win.getByTestId('tabbar-new-shell').click();
@@ -204,26 +193,27 @@ test('AC1–AC5, AC4a: the Split pill is a labelled toggle, right-most in the st
     await waitSettled(win);
     const m = await rect(menu);
     const plus = await rect(win.getByTestId('tabbar-new-shell'));
-    expect(m.x, 'menu left edge is the button left edge').toBeCloseTo(plus.x, 0);
-    expect(m.x).toBeGreaterThanOrEqual(0);
-    expect(m.right, 'menu fits in a 900px window').toBeLessThanOrEqual(900);
+    const bar = await rect(win.getByTestId('main-tab-bar'));
+    const left = Math.max(bar.x, Math.min(plus.x, bar.right - m.width));
+    expect(m.x, 'menu anchors to Add when space permits, otherwise stays inside the bar').toBeCloseTo(left, 0);
+    expect(m.y).toBeGreaterThanOrEqual(plus.y + plus.height);
+    expect(m.right, 'menu fits in the workspace').toBeLessThanOrEqual(bar.right + 0.5);
     await win.keyboard.press('Escape');
     await expect(menu).toHaveCount(0);
     await app.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0]!.setContentSize(1400, 900); });
 
-    // AC5: keyboard reaches the pill with a 7px ring.
-    await win.getByTestId('tabbar-new-shell').focus();
+    // Keyboard reaches Split just before Popout, with a visible focus ring.
+    await win.getByTestId('reveal-project-folder').focus();
     await win.keyboard.press('Tab');
     const ring = await focusRing(p);
-    expect(ring.focused, 'Tab from the new-shell button lands on the pill').toBe(true);
+    expect(ring.focused, 'Tab from Reveal Folder lands on Split').toBe(true);
     expect(ring.visible && ring.outline !== 'none', 'visible keyboard focus ring').toBe(true);
-    expect(ring.radius, 'ring radius matches the pill').toBe('7px');
 
-    // AC2/AC3/AC5 pressed: a click opens the split.
-    await p.click();
+    // Keyboard activation opens the split.
+    await win.keyboard.press('Space');
     await expect(win.getByTestId(SPLIT_TESTIDS.right)).toBeVisible();
     await expect(p).toHaveAttribute('aria-pressed', 'true');
-    await expect(p, 'the name does not change with state').toHaveAccessibleName(SPLIT_COPY.pill);
+    await expect(p, 'the name does not change with state').toHaveAccessibleName(SPLIT_COPY.buttonLabel);
     await expect(await hoverTooltip(win, p)).toHaveText(SPLIT_COPY.tooltipOn);
     await moveMouseAway(win);
     await p.blur();
@@ -238,34 +228,40 @@ test('AC1–AC5, AC4a: the Split pill is a labelled toggle, right-most in the st
 
 /* ─────────────────────────────── cards and gutter ─────────────────────────────── */
 
-test('AC6–AC10, AC11, AC12: cards, inset, gutter, separator semantics, drag and keyboard resize', async () => {
+test('split cards expose workspace chrome through the gap and keep drag and keyboard resize', async () => {
   await withApp(['alpha'], async ({ app, win }) => {
     const projectId = await projectIdByName(win, 'alpha');
+    const workspace = win.locator('main');
     const single = await rect(win.locator('[data-testid="shell-tab"]'));
 
     // AC12 single mode: no card, inset or header.
     await expect(headers(win)).toHaveCount(0);
     expect((await css(win.locator(LEFT), ['border-top-left-radius'])) ['border-top-left-radius'], 'single pane has no card radius').toBe('0px');
     expect(await win.evaluate((s) => getComputedStyle(document.querySelector(s)!.parentElement!).padding, LEFT), 'single pane has no inset').toBe('0px');
+    const singleSurface = await elementColour(win, workspace, 'background-color');
+    await expect(workspace).toHaveCSS('border-top-width', '1px');
 
     await openSplit(win, 'alpha');
-    // AC6 cards.
+    expect.soft((await elementColour(win, workspace, 'background-color')).a, 'no shared terminal background under the gutter').toBe(0);
+    expect.soft((await css(workspace, ['border-width']))['border-width'], 'no border framing both cards').toBe('0px');
+    // Each card paints the terminal surface independently and reaches the workspace edges.
     for (const sel of [LEFT, RIGHT]) {
       const card = win.locator(sel);
-      expect((await css(card, ['border-top-left-radius', 'border-bottom-right-radius'])), `${sel} radius`).toEqual({
-        'border-top-left-radius': '10px', 'border-bottom-right-radius': '10px',
+      expect.soft((await css(card, ['border-top-left-radius', 'border-bottom-right-radius'])), `${sel} radius`).toEqual({
+        'border-top-left-radius': '14px', 'border-bottom-right-radius': '14px',
       });
-      await expectColour(win, card, 'background-color', '--surface-pane', `${sel} card`);
+      expect.soft(await elementColour(win, card, 'background-color'), `${sel} uses the same surface as the single terminal`).toEqual(singleSurface);
     }
-    const pane = await elementColour(win, win.locator(LEFT), 'background-color');
-    const sheet = await elementColour(win, win.locator('main'), 'background-color');
-    expect(colourDistance(pane, sheet), `pane surface ${fmtColour(pane)} differs from the sheet ${fmtColour(sheet)}`).toBeGreaterThan(2);
-    expect(await win.evaluate((s) => getComputedStyle(document.querySelector(s)!.parentElement!).padding, LEFT), 'AC6 row inset').toBe('8px');
+    const [outer, left, right] = await Promise.all([workspace, win.locator(LEFT), win.locator(RIGHT)].map(rect));
+    expect.soft([left.x, left.y, left.height], 'left card aligns with the workspace').toEqual([outer.x, outer.y, outer.height]);
+    expect.soft([right.x + right.width, right.y, right.height], 'right card aligns with the workspace').toEqual([outer.x + outer.width, outer.y, outer.height]);
 
     // AC7 gutter and grip.
     const g = gutter(win);
     const gb = await rect(g);
     expect(gb.width, 'gutter 10px').toBe(10);
+    expect(gb.x).toBeCloseTo(left.x + left.width, 1);
+    expect(gb.x + gb.width).toBeCloseTo(right.x, 1);
     const gcss = await css(g, ['cursor', 'background-color']);
     expect(gcss.cursor).toBe('col-resize');
     expect((await resolveColour(win, gcss['background-color']!)).a, 'gutter transparent').toBe(0);
@@ -346,6 +342,8 @@ test('AC6–AC10, AC11, AC12: cards, inset, gutter, separator semantics, drag an
     }, LEFT);
     expect(Math.abs(widths.left - widths.parent), '.split-left fills its parent after close').toBeLessThan(0.5);
     expect(await rect(win.locator('[data-testid="shell-tab"]')), 'single-mode shell-tab geometry unchanged').toEqual(single);
+    await expect(workspace).toHaveCSS('border-top-width', '1px');
+    expect(await elementColour(win, workspace, 'background-color')).toEqual(singleSurface);
   });
 });
 
@@ -488,6 +486,16 @@ test('AC21–AC26: exactly one pane is marked; clicks move the mark and keystrok
     const checkEmphasis = async (on: 'left' | 'right') => {
       const off = on === 'left' ? 'right' : 'left';
       const sel = { left: LEFT, right: RIGHT };
+      const [leftBorder, rightBorder] = await Promise.all([LEFT, RIGHT].map(async (selector) => {
+        const card = win.locator(selector);
+        expect.soft(await css(card, ['border-width', 'border-style']), `${selector} has a border regardless of focus`).toEqual({
+          'border-width': '1px', 'border-style': 'solid',
+        });
+        return elementColour(win, card, 'border-top-color');
+      }));
+      expect.soft(leftBorder, 'both cards use the same border color').toEqual(rightBorder);
+      expect.soft([leftBorder.r, leftBorder.g, leftBorder.b], 'neutral gray border').toEqual(Array(3).fill(leftBorder.r));
+      expect.soft(leftBorder.a, 'border is visible').toBeGreaterThan(0);
       expect(await ringOf(sel[on]), `AC23: ${on} card ring`).toBe(wantRing);
       expect(await ringOf(sel[off]), `AC23: ${off} card has no ring`).toBe('none');
       const onH = win.locator(`${sel[on]} [data-testid="${SPLIT_TESTIDS.header}"]`);
@@ -646,7 +654,8 @@ test('AC62: a project switch or leaving the Shell tab during the fold-out cancel
     const r2 = await openSplit(win, 'alpha');
     await win.evaluate((ids) => {
       (document.querySelector(`[data-testid="${ids.toTab}"]`) as HTMLElement).click();
-      const files = [...document.querySelectorAll<HTMLElement>('button')].find((b) => b.textContent?.trim() === 'Files')!;
+      const files = document.querySelector<HTMLButtonElement>('button[aria-label="Files"]');
+      if (!files) throw new Error('Files tab button missing');
       files.click();
     }, SPLIT_TESTIDS);
     await win.waitForTimeout(600);

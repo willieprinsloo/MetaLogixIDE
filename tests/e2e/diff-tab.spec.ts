@@ -289,9 +289,12 @@ async function focusMain(app: ElectronApplication): Promise<void> {
   }).toBe(true);
 }
 
-/** Computed fill of a tab button (the active tab wears the accent tint). */
-async function tabFill(loc: Locator): Promise<string> {
-  return loc.evaluate((el) => getComputedStyle(el).backgroundColor);
+/** Computed color and visibility of the active-fill layer. */
+async function tabFill(loc: Locator): Promise<{ color: string; opacity: string }> {
+  return loc.locator('.main-tab-selection').evaluate(el => {
+    const style = getComputedStyle(el);
+    return { color: style.backgroundColor, opacity: style.opacity };
+  });
 }
 
 /* ═══════════════════════════════ 1. placement ═══════════════════════════════ */
@@ -301,12 +304,12 @@ test('tab bar keeps existing tabs in order with Settings immediately after Diff 
   const tabBar = win.getByTestId(DIFF_TESTIDS.tabBar);
   const checkOrder = async () => {
     const buttons = tabBar.locator('button');
-    await expect(buttons.nth(0)).toHaveText('Shell');
-    await expect(buttons.nth(1)).toHaveText('Files');
+    await expect(buttons.nth(0)).toHaveAccessibleName('Shell');
+    await expect(buttons.nth(1)).toHaveAccessibleName('Files');
     await expect(buttons.nth(2)).toHaveAttribute('data-testid', DIFF_TESTIDS.tab);
-    await expect(buttons.nth(2)).toContainText(DIFF_COPY.tabLabel);
+    await expect(buttons.nth(2)).toHaveAccessibleName(/^Diff(?:$|[, (])/);
     await expect(buttons.nth(3)).toHaveAttribute('data-testid', PROJECT_SETTINGS_TESTIDS.tab);
-    await expect(buttons.nth(3)).toHaveText(PROJECT_SETTINGS_COPY.tab);
+    await expect(buttons.nth(3)).toHaveAccessibleName(PROJECT_SETTINGS_COPY.tab);
     await expect(tabBar.getByRole('button', { name: 'Env', exact: true })).toHaveCount(0);
   };
   await checkOrder();
@@ -316,14 +319,14 @@ test('tab bar keeps existing tabs in order with Settings immediately after Diff 
   const diff = win.getByTestId(DIFF_TESTIDS.tab);
   const activeColour = await tabFill(shell);
   const inactiveColour = await tabFill(files);
-  expect(activeColour, 'control: active and inactive tab fills differ').not.toBe(inactiveColour);
+  expect(activeColour.opacity, 'control: the active fill is visible').toBe('1');
+  expect(inactiveColour.opacity, 'control: the inactive fill is hidden').toBe('0');
 
   await diff.click();
   await expect(panelOf(win)).toBeVisible();
   await expect(win.locator('[data-testid="shell-tab"]'), 'the Shell body is gone').toHaveCount(0);
-  // The tab buttons animate their colours (transition-colors), so wait for the transition to settle.
-  await expect.poll(() => tabFill(diff), { message: 'Diff wears the active fill' }).toBe(activeColour);
-  await expect.poll(() => tabFill(shell), { message: 'Shell is now inactive' }).toBe(inactiveColour);
+  await expect.poll(() => tabFill(diff), { message: 'Diff wears the active fill' }).toEqual(activeColour);
+  await expect.poll(() => tabFill(shell), { message: 'Shell is now inactive' }).toEqual(inactiveColour);
 
   // The other project (harness-default, not seeded) shows the same tab bar.
   await selectProject(win, OTHER);
@@ -1008,7 +1011,7 @@ test('tab label count is the unique changed-path count, absent on a non-repo pro
 
   await selectProject(win, OTHER);
   await expect(panelOf(win).getByTestId(DIFF_TESTIDS.empty)).toHaveText(DIFF_COPY.notRepo);
-  await expect(win.getByTestId(DIFF_TESTIDS.tab)).toContainText(DIFF_COPY.tabLabel);
+  await expect(win.getByTestId(DIFF_TESTIDS.tab)).toHaveAccessibleName(DIFF_COPY.tabLabel);
   await expect(count).toHaveCount(0, { timeout: 9000 });
   await expect(win.getByTestId(DIFF_TESTIDS.tab)).not.toHaveAttribute('aria-label', /changed/);
 });

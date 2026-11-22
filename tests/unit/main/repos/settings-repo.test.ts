@@ -86,6 +86,47 @@ describe('SettingsRepo', () => {
     });
   });
 
+  describe('desktop terminal padding', () => {
+    it('keeps independent overrides, including zero, after reopening the database', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'st-padding-'));
+      function withRepo(run: (repo: SettingsRepo) => void): void {
+        const db = openDb(join(dir, 'db'));
+        try {
+          runMigrations(db, migrationsDir);
+          const repo = new SettingsRepo(db);
+          repo.seedDefaults();
+          run(repo);
+        } finally { db.close(); }
+      }
+      try {
+        withRepo(repo => {
+          repo.set('terminal_padding_horizontal', 0);
+          repo.set('terminal_padding_vertical', 32);
+        });
+        withRepo(repo => {
+          expect(repo.get('terminal_padding_horizontal')).toBe(0);
+          expect(repo.get('terminal_padding_vertical')).toBe(32);
+          repo.set('terminal_padding_horizontal', null);
+        });
+        withRepo(repo => expect(repo.getAll()).toMatchObject({
+          terminal_padding_horizontal: null, terminal_padding_vertical: 32,
+        }));
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it.each(['not JSON', '33', '1.5', '"12"'])('uses Default for corrupt padding %s', raw => {
+      const db = openDb(':memory:');
+      try {
+        runMigrations(db, migrationsDir);
+        const repo = new SettingsRepo(db);
+        repo.seedDefaults();
+        db.prepare('UPDATE settings SET value = ? WHERE key = ?').run(raw, 'terminal_padding_horizontal');
+        expect(repo.get('terminal_padding_horizontal')).toBeNull();
+        expect(repo.getAll().terminal_padding_horizontal).toBeNull();
+      } finally { db.close(); }
+    });
+  });
+
   it('seeds all defaults', () => {
     const repo = seed();
     expect(repo.get('keep_alive_cap')).toBe(DEFAULT_SETTINGS.keep_alive_cap);

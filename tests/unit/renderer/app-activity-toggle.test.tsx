@@ -146,7 +146,7 @@ afterEach(async () => {
 describe('App activity-log switch', () => {
   it('shows the Activity tab button when on and hides it when off (AC8)', async () => {
     await mount({ activity: true, tab: 'shell' });
-    expect(tabButton()?.textContent).toBe('Activity');
+    expect(tabButton()?.getAttribute('aria-label')).toBe('Activity');
     await root!.unmount();
     root = null; container!.remove();
     await mount({ activity: false, tab: 'shell' });

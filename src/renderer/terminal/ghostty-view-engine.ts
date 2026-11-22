@@ -9,6 +9,7 @@ import type { IBuffer, ILink, Terminal as StockTerminal } from '@xterm/xterm';
 import { registerClipboardOsc, type ClipboardOscDeps } from '../osc52';
 import { createTerminalFind, type TerminalFind } from './terminal-view-find';
 import { createGhosttyFindPaint } from './ghostty-find-paint';
+import { enableGhosttyOptionSelection } from './ghostty-option-selection';
 import { terminalWebLinks, type TerminalFileLink, fileLinksInRow } from './terminal-view-links';
 
 export type TerminalViewSurface = Pick<StockTerminal, 'focus' | 'paste' | 'hasSelection' | 'getSelection' | 'clearSelection'> & {
@@ -26,6 +27,7 @@ export interface GhosttyView extends TerminalRenderer {
 }
 
 interface GhosttyInteraction {
+  readonly platform: 'mac' | 'other';
   readonly keys: (event: KeyboardEvent) => boolean;
   readonly pathLinks?: (text: string) => readonly TerminalFileLink[];
   readonly openWebLink: (url: string) => void;
@@ -177,6 +179,7 @@ export async function openGhosttyView(
     },
     reveal(interaction) {
       if (disposed || faulted) return;
+      if (interaction.platform === 'mac') disposables.push(enableGhosttyOptionSelection(native, fault));
       terminal.attachCustomKeyEventHandler(interaction.keys);
       disposables.push(terminal.registerLinkProvider({
         provideLinks(line, callback) {

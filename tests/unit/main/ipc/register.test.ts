@@ -470,6 +470,48 @@ describe('registerIpc', () => {
     });
   });
 
+  describe.each(['terminal_padding_horizontal', 'terminal_padding_vertical'])('%s settings IPC', key => {
+    function rig() {
+      const ipc = fakeIpcMain();
+      const settings = realSettings();
+      const events = vi.fn();
+      registerIpc(ipc, { settings } as Parameters<typeof registerIpc>[1], events);
+      function handler(channel: string) {
+        const fn = ipc.handlers.get(channel);
+        if (!fn) throw new Error(`Missing IPC handler for ${channel}`);
+        return fn;
+      }
+      return {
+        events,
+        read: () => handler('settings:get')({}, { key }),
+        write: (value: unknown) => handler('settings:set')({}, { key, value }),
+      };
+    }
+
+    it('persists each override including zero, and resets with null', async () => {
+      const { read, write, events } = rig();
+      await expect(read()).resolves.toEqual({ value: null });
+      await expect(write(null)).resolves.toEqual({ ok: true });
+      for (const value of [0, 32, null]) {
+        await expect(write(value)).resolves.toEqual({ ok: true });
+        await expect(write(value)).resolves.toEqual({ ok: true });
+        await expect(read()).resolves.toEqual({ value });
+      }
+      expect(events.mock.calls).toEqual(Array.from({ length: 3 }, () => ['settings:changed', { key }]));
+    });
+
+    it('rejects invalid values without overwriting the saved padding or emitting changes', async () => {
+      const { read, write, events } = rig();
+      await write(8);
+      events.mockClear();
+      for (const value of [-1, 33, 3.5, '8', true, {}, [8], Infinity, NaN, undefined]) {
+        await expect(write(value)).rejects.toThrow(/invalid terminal padding/i);
+        await expect(read()).resolves.toEqual({ value: 8 });
+      }
+      expect(events).not.toHaveBeenCalled();
+    });
+  });
+
   it('activity:list still returns the stored entries while activity_log_enabled is off (AC17)', async () => {
     const ipc = fakeIpcMain();
     const settings = realSettings();
@@ -1260,7 +1302,7 @@ describe('registerIpc', () => {
     });
 
     describe('settings:set-terminal-frost-level', () => {
-      it.each(['off', 'subtle', 'medium', 'strong'])('a valid level %s persists, returns ok and emits settings:changed once', async (level) => {
+      it.each(['off', 'subtle', 'medium', 'strong', 'custom'])('a valid level %s persists, returns ok and emits settings:changed once', async (level) => {
         const { ipc, settings, events } = setup();
         await expect(ipc.handlers.get('settings:set-terminal-frost-level')!({}, { level })).resolves.toEqual({ ok: true });
         expect(settings.get('terminal_frost_level')).toBe(level);
@@ -1278,6 +1320,24 @@ describe('registerIpc', () => {
         const { ipc, settings, events } = setup();
         await expect(ipc.handlers.get('settings:set-terminal-frost-level')!({}, {})).resolves.toEqual({ ok: false, error: 'invalid' });
         expect(settings.get('terminal_frost_level')).toBe('off');
+        expect(events).toEqual([]);
+      });
+    });
+
+    describe('settings:set terminal_frost_opacity', () => {
+      it.each([10, 100])('stores %s and emits only for a changed value', async (value) => {
+        const { ipc, settings, events } = setup();
+        const set = ipc.handlers.get('settings:set')!;
+        await set({}, { key: 'terminal_frost_opacity', value });
+        await set({}, { key: 'terminal_frost_opacity', value });
+        expect(settings.get('terminal_frost_opacity')).toBe(value);
+        expect(events).toEqual([{ channel: 'settings:changed', payload: { key: 'terminal_frost_opacity' } }]);
+      });
+
+      it.each([9, 101, 50.5, '50', null])('rejects %j without writing or emitting', async (value) => {
+        const { ipc, settings, events } = setup();
+        await expect(ipc.handlers.get('settings:set')!({}, { key: 'terminal_frost_opacity', value })).rejects.toThrow('Invalid terminal frost opacity');
+        expect(settings.get('terminal_frost_opacity')).toBe(70);
         expect(events).toEqual([]);
       });
     });

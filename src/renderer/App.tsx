@@ -63,7 +63,7 @@ import { usePoppedShells } from './hooks/usePoppedShells';
 import { useProjectShells } from './hooks/useProjectShells';
 import { useGitStatus } from './hooks/useGitStatus';
 import { useWindowFullscreen } from './hooks/useWindowFullscreen';
-import { terminalFocus, useWindowTerminalFocus } from './hooks/useWindowTerminalFocus';
+import { activeElementKind, terminalFocus, useWindowTerminalFocus } from './hooks/useWindowTerminalFocus';
 import { useReportViewedShells } from './hooks/useReportViewedShells';
 import { Tooltip } from './components/Tooltip';
 import { FoldPane } from './components/FoldPane';
@@ -77,12 +77,13 @@ const STATUS_BAR_HEIGHT = 34;
 import { useSplitLifecycle } from './hooks/useSplitLifecycle';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { StatusDot } from './components/StatusDot';
-import { useProjectAgentState, useShellAgentState } from './hooks/useAgentStates';
+import { useShellAgentState } from './hooks/useAgentStates';
 import { useApplyUiFont } from './fonts/use-apply-ui-font';
-import { XIcon } from './components/shell-icons';
 import { ICON_SIZE } from './components/icon-size';
-import { ShellTabsBar } from './components/ShellTabsBar';
+import { ShellTabsBar, type ShellLaunched, type ShellTabMotion } from './components/ShellTabsBar';
+import { SplitButton } from './components/SplitButton';
 import { ShellSplit } from './components/ShellSplit';
+import { WorkspaceTabButton } from './components/WorkspaceTabButton';
 import { ShellTabDot } from './components/ShellTabDot';
 import { SPLIT_RATIO_DEFAULT, sanitizeRatio } from './split-ratio';
 import { shellChipLabel, stripShells } from './shell-label';
@@ -189,11 +190,13 @@ function MainApp() {
     return () => { cancelled = true; };
   }, []);
   const [selected, setSelected] = useState<Project | null>(null);
+  const selectionRequestRef = useRef(0);
   // A project on a paired machine, shown in place of the local main body until a local project is picked.
   const [remotePane, setRemotePane] = useState<OpenPaneRequest | null>(null);
+  const remotePaneRef = useRef(remotePane);
+  remotePaneRef.current = remotePane;
   const openPane = useCallback((req: OpenPaneRequest) => setRemotePane(req), []);
   // -1 never matches a real project id, so this reads idle when nothing is selected.
-  const selectedAgentState = useProjectAgentState(selected?.id ?? -1);
   // Keep a live ref of `selected` so the shortcut handler (bound once in a
   // useEffect with an empty dep list) always reads the current project.
   const selectedRef = useRef<Project | null>(null);
@@ -318,7 +321,7 @@ function MainApp() {
   const activeShellAgentStateLabel = activeShellAgentLabel ? activeShellAgentState : null;
   const showStatusBar = useShowStatusBar();
   const reduceMotion = useReducedMotion() ?? false;
-  // Hold terminal geometry while the status bar folds and the sheet's margins animate, then refit once.
+  // Hold terminal geometry while the status bar folds, then refit once.
   const [statusBarAnimating, setStatusBarAnimating] = useState(false);
   const statusBarFirst = useRef(true);
   useLayoutEffect(() => {
@@ -429,25 +432,57 @@ function MainApp() {
     }
   }, [selected, activeShellIndex, isPopped]);
 
+  const tabLaunchRef = useRef(0);
+  const tabMotionRef = useRef<ShellTabMotion>(null);
+  function selectTerminalTab(shellIndex: number) {
+    if (!selected) return;
+    ++tabLaunchRef.current;
+    terminalFocus.cancelRequest();
+    setActiveShellIndex(shellIndex);
+  }
+
+  const restoreClosedTerminal = useCallback((projectId: number, shellIndex: number) => {
+    if (shellIndex === 0 || selectedRef.current?.id !== projectId || activeShellIndexRef.current !== shellIndex) return;
+    setActiveShellIndexFor(projectId, 0);
+  }, [setActiveShellIndexFor]);
+
+  const beginTerminalTabLaunch = useCallback((projectId: number, onLaunched?: ShellLaunched) => {
+    const launch = ++tabLaunchRef.current;
+    terminalFocus.cancelRequest();
+    const selection = selectionRequestRef.current;
+    const main = mainTabRef.current;
+    const view = activeViewRef.current;
+    const remote = remotePaneRef.current;
+    const opener = document.activeElement;
+    const isCurrent = () => launch === tabLaunchRef.current && selection === selectionRequestRef.current &&
+      selectedRef.current?.id === projectId && main === mainTabRef.current && view === activeViewRef.current && remote === remotePaneRef.current;
+    return (shellIndex: number) => {
+      if (!isCurrent()) return;
+      onLaunched?.(shellIndex);
+      if (opener !== document.activeElement && activeElementKind() === 'text-entry') return;
+      setMainTab('shell');
+      setActiveShellIndexFor(projectId, shellIndex);
+      if (document.hasFocus()) terminalFocus.requestFocus({ projectId, shellIndex });
+    };
+  }, [setActiveShellIndexFor, setMainTab]);
+
   /** Launches a plain shell in the selected project: a new tab (⌘T) or, with `newWindow`, a new window (⌘⇧T). */
-  const openNewTerminal = useCallback((newWindow: boolean) => {
+  const openNewTerminal = useCallback((newWindow: boolean, onLaunched?: ShellLaunched) => {
     const p = selectedRef.current;
     if (!p) return;
+    const activate = newWindow ? null : beginTerminalTabLaunch(p.id, onLaunched);
     void (async () => {
       try {
         const { shellIndex } = await api.invoke('shells:launch-plain', { projectId: p.id });
         if (newWindow) {
           await api.invoke('windows:popout-shell', { projectId: p.id, shellIndex });
           toast(`New terminal in ${p.name}`, { kind: 'info' });
-        } else {
-          setMainTab('shell');
-          setActiveShellIndex(shellIndex);
-        }
+        } else activate?.(shellIndex);
       } catch (err) {
         toast('Failed to open terminal', { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') });
       }
     })();
-  }, [setActiveShellIndex, setMainTab]);
+  }, [beginTerminalTabLaunch]);
   const openNewTerminalRef = useRef(openNewTerminal);
   openNewTerminalRef.current = openNewTerminal;
 
@@ -636,7 +671,7 @@ function MainApp() {
       prompts: () => setPromptsOpen(true),
       'scrollback-search': () => setScrollbackOpen(true),
       'toggle-help': () => setHelpOpen((v) => !v),
-      'new-terminal': () => openNewTerminalRef.current(false),
+      'new-terminal': () => openNewTerminalRef.current(false, tabMotionRef.current?.launchResult()),
       'new-terminal-window': () => openNewTerminalRef.current(true),
     };
     function onKey(e: KeyboardEvent) {
@@ -662,10 +697,13 @@ function MainApp() {
         if (!p) return;
         e.preventDefault();
         const idx = activeShellIndexRef.current;
+        const cancelCloseMotion = tabMotionRef.current?.beginClose(idx);
         (async () => {
           try {
             await api.invoke('shells:kill', { projectId: p.id, shellIndex: idx });
+            restoreClosedTerminal(p.id, idx);
           } catch (err) {
+            cancelCloseMotion?.();
             toast('Failed to close tab', { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') });
           }
         })();
@@ -686,7 +724,7 @@ function MainApp() {
       window.removeEventListener('keydown', capture, true);
       window.removeEventListener('keydown', bubble);
     };
-  }, [openPalette, toggleSidebar, platform]);
+  }, [openPalette, toggleSidebar, platform, restoreClosedTerminal]);
 
   // Keep the OS window title in sync with the current project so it reads
   // "lawreader — MetaLogix IDE" in Mission Control, Dock previews, and every
@@ -698,7 +736,6 @@ function MainApp() {
 
   useExternalDragGuard();
 
-  const selectionRequestRef = useRef(0);
   /** Selects `p` as the sidebar does and launches its shell; resolves true when it selected `p`, false when the open failed or a newer pick superseded it. */
   async function pick(p: Pick<Project, 'id'>): Promise<boolean> {
     setProjectSettingsTarget(null);
@@ -839,38 +876,23 @@ function MainApp() {
     }
   }
 
-  /** Spawn an ad-hoc plain shell in the project's cwd as an inline tab. */
-  async function newPlainShellAsTab() {
-    if (!selected) return;
-    try {
-      const { shellIndex } = await api.invoke('shells:launch-plain', { projectId: selected.id });
-      setMainTab('shell');
-      setActiveShellIndex(shellIndex);
-    } catch (e) {
-      toast('Failed to open terminal', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
-      console.error(e);
-    }
-  }
-
   /** Spawn a named CLI profile (Claude, Llama, custom…). */
-  async function launchCliProfile(profileName: string, mode: 'tab' | 'window') {
+  async function launchCliProfile(profileName: string, mode: 'tab' | 'window', onLaunched?: ShellLaunched) {
     if (!selected) return;
+    const activate = mode === 'tab' ? beginTerminalTabLaunch(selected.id, onLaunched) : null;
     try {
       const { shellIndex } = await api.invoke('shells:launch-cli', { projectId: selected.id, profileName });
       if (mode === 'window') {
         await api.invoke('windows:popout-shell', { projectId: selected.id, shellIndex });
         toast(`${profileName} in ${selected.name}`, { kind: 'info' });
-      } else {
-        setMainTab('shell');
-        setActiveShellIndex(shellIndex);
-      }
+      } else activate?.(shellIndex);
     } catch (e) {
       toast(`Failed to launch ${profileName}`, { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
     }
   }
 
   /** Run a one-off custom command, optionally saving it as a project profile. */
-  async function launchCustomCli(name: string, cmdLine: string, save: boolean, mode: 'tab' | 'window') {
+  async function launchCustomCli(name: string, cmdLine: string, save: boolean, mode: 'tab' | 'window', onLaunched?: ShellLaunched) {
     if (!selected) return;
     // Very small argv splitter: whitespace + double-quoted groups. Not a
     // shell — we don't do variable expansion or piping. Users who need that
@@ -880,6 +902,7 @@ function MainApp() {
     let m: RegExpExecArray | null;
     while ((m = re.exec(cmdLine)) !== null) argv.push(m[1] ?? m[2] ?? '');
     if (argv.length === 0) throw new Error('empty command');
+    const activate = mode === 'tab' ? beginTerminalTabLaunch(selected.id, onLaunched) : null;
     try {
       const { shellIndex } = await api.invoke('shells:launch-cli', {
         projectId: selected.id,
@@ -890,10 +913,7 @@ function MainApp() {
       if (mode === 'window') {
         await api.invoke('windows:popout-shell', { projectId: selected.id, shellIndex });
         toast(`${name || argv[0]} in ${selected.name}`, { kind: 'info' });
-      } else {
-        setMainTab('shell');
-        setActiveShellIndex(shellIndex);
-      }
+      } else activate?.(shellIndex);
     } catch (e) {
       toast('Failed to launch CLI', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
     }
@@ -911,13 +931,14 @@ function MainApp() {
   const [followFiles, setFollowFiles] = usePersistedState<boolean>('metaide.followFiles', false, (v): v is boolean => typeof v === 'boolean');
   useAgentFileFollow(selected?.id ?? null, followFiles && activityEnabled, (t) => void openFileTarget(t));
 
-  async function killShell(shellIndex: number) {
-    if (!selected) return;
+  async function killShell(shellIndex: number, cancelCloseMotion?: () => void) {
+    if (!selected) { cancelCloseMotion?.(); return; }
     try {
       await api.invoke('shells:kill', { projectId: selected.id, shellIndex });
-      if (activeShellIndex === shellIndex) setActiveShellIndex(0);
+      restoreClosedTerminal(selected.id, shellIndex);
       if (rightShellIndex === shellIndex) setRightShellIndex(null);
     } catch (e) {
+      cancelCloseMotion?.();
       toast('Failed to close terminal', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
     }
   }
@@ -944,10 +965,6 @@ function MainApp() {
       const { arranged } = await api.invoke('windows:tile-all', undefined as never);
       toast(`Tiled ${arranged} window${arranged === 1 ? '' : 's'}`, { kind: 'success', timeoutMs: 1200 });
     } catch (e) { toast('Tile failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
-  }
-
-  function unloadCurrent(event: React.MouseEvent<HTMLButtonElement>) {
-    if (selected && primaryAlive) openUnloadSession(selected, event.currentTarget);
   }
 
   const mainSheetContent: SheetContent = mainTab === 'shell' ? 'shell' : 'other';
@@ -1052,62 +1069,58 @@ function MainApp() {
             </FoldPane>
           )}
         </AnimatePresence>
-        <div className="flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden" data-testid="main-column">
-          <main
-            className={`flex flex-1 flex-col min-h-0 min-w-0 bg-[--surface-sheet] transition-[margin,border-radius] duration-200 ease-out motion-reduce:transition-none ${
-              showStatusBar ? 'mt-2 mr-2 rounded-[14px]' : 'mt-0 mr-0 rounded-none'
-            }`}
-            data-sheet-content={mainSheetContent}
-            data-status-bar={showStatusBar ? 'shown' : 'hidden'}
-          >
-            <div className={`drag flex-wrap items-center gap-1.5 px-3 pt-2.5 pb-1.5 text-xs shrink-0 ${remotePane ? 'hidden' : 'flex'}`} data-testid={DIFF_TESTIDS.tabBar}>
-              <TabButton active={mainTab === 'shell'} onClick={() => setMainTab('shell')}>Shell</TabButton>
-              <TabButton active={mainTab === 'files'} onClick={() => setMainTab('files')}>Files</TabButton>
-              <TabButton
-                active={mainTab === 'diff'}
-                onClick={() => setMainTab('diff')}
-                testId={DIFF_TESTIDS.tab}
-                ariaLabel={diffCount !== null ? DIFF_COPY.tabCountLabel(diffCount) : undefined}
-              >
-                {DIFF_COPY.tabLabel}
-                {diffCount !== null && (
-                  <span aria-hidden className="ml-1.5 font-mono text-[10px] text-[--hue-orange-text]" data-testid={DIFF_TESTIDS.tabCount}>
-                    {diffCount}
-                  </span>
+        <div className="workspace-header-container flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden" data-testid="main-column">
+            <header className="workspace-header-row drag relative shrink-0 items-center gap-x-1.5 gap-y-1 px-3 py-1.5 text-xs" hidden={!!remotePane} data-testid={DIFF_TESTIDS.tabBar}>
+              <div className="workspace-destinations flex min-w-0 flex-wrap items-center gap-1.5">
+                <WorkspaceTabButton tab="shell" label="Shell" active={mainTab === 'shell'} onClick={() => setMainTab('shell')} />
+                <WorkspaceTabButton tab="files" label="Files" active={mainTab === 'files'} onClick={() => setMainTab('files')} />
+                <WorkspaceTabButton tab="diff" label={DIFF_COPY.tabLabel}
+                  active={mainTab === 'diff'}
+                  onClick={() => setMainTab('diff')}
+                  testId={DIFF_TESTIDS.tab}
+                  ariaLabel={diffCount !== null ? DIFF_COPY.tabCountLabel(diffCount) : undefined}
+                >
+                  {diffCount !== null && (
+                    <span aria-hidden className="ml-1.5 font-mono text-[10px] text-[--hue-orange-text]" data-testid={DIFF_TESTIDS.tabCount}>
+                      {diffCount}
+                    </span>
+                  )}
+                </WorkspaceTabButton>
+                <WorkspaceTabButton tab="settings" label={PROJECT_SETTINGS_COPY.tab}
+                  active={mainTab === 'settings'}
+                  onClick={openSelectedProjectSettings}
+                  testId={PROJECT_SETTINGS_TESTIDS.tab}
+                  ariaLabel={envDirty ? ENV_COPY.tabUnsavedLabel : undefined}
+                >
+                  {envDirty && (
+                    <span aria-hidden className="ml-1 text-[--accent]" data-testid={ENV_TESTIDS.unsaved}>
+                      {ENV_COPY.tabUnsavedMarker}
+                    </span>
+                  )}
+                </WorkspaceTabButton>
+                {activityEnabled && (
+                  <WorkspaceTabButton tab="activity" label="Activity" active={mainTab === 'activity'} onClick={() => setMainTab('activity')} testId={ACTIVITY_LOG_TESTIDS.tabButton} />
                 )}
-              </TabButton>
-              <TabButton
-                active={mainTab === 'settings'}
-                onClick={openSelectedProjectSettings}
-                testId={PROJECT_SETTINGS_TESTIDS.tab}
-                ariaLabel={envDirty ? ENV_COPY.tabUnsavedLabel : undefined}
-              >
-                {PROJECT_SETTINGS_COPY.tab}
-                {envDirty && (
-                  <span aria-hidden className="ml-1 text-[--accent]" data-testid={ENV_TESTIDS.unsaved}>
-                    {ENV_COPY.tabUnsavedMarker}
-                  </span>
-                )}
-              </TabButton>
-              {activityEnabled && (
-                <TabButton active={mainTab === 'activity'} onClick={() => setMainTab('activity')} testId={ACTIVITY_LOG_TESTIDS.tabButton}>Activity</TabButton>
+              </div>
+              {!remotePane && selected && mainTab === 'shell' && (
+                <ShellTabsBar
+                  key={`shell-tabs-${selected.id}`}
+                  projectId={selected.id}
+                  shells={stripShells(projectShells, rightShellIndex, split.hiddenShells)}
+                  active={activeShellIndex}
+                  onSelect={selectTerminalTab}
+                  onClose={killShell}
+                  motionRef={tabMotionRef}
+                  defaultCliName={selected.config.defaultCliName ?? null}
+                  onDefaultCliChanged={applyDefaultAgentProject}
+                  onLaunchProfile={(name, onLaunched) => void launchCliProfile(name, 'tab', onLaunched)}
+                  onLaunchPlainTab={(onLaunched) => openNewTerminal(false, onLaunched)}
+                  onLaunchCustom={(name, cmdLine, save, onLaunched) => void launchCustomCli(name, cmdLine, save, 'tab', onLaunched)}
+                />
               )}
-              <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 pr-2">
+              <div className="workspace-project-actions flex min-w-0 flex-wrap items-center justify-end gap-2 pr-2">
                 {selected && (
                   <>
-                    <span className="flex min-w-0 items-center gap-1.5 text-[--text] pl-2 pr-1 py-0.5 rounded-md bg-[--surface-active] text-[11px] max-w-[280px]" title={selected.path}>
-                      <StatusDot state={selectedAgentState} />
-                      <span className="truncate font-medium">{selected.name}</span>
-                      {primaryAlive && <button
-                        onClick={unloadCurrent}
-                        className="ml-1 text-[--text-muted] hover:text-[--danger] hover:bg-[--panel]/60 w-4 h-4 flex shrink-0 items-center justify-center rounded focus-visible:ring-2 focus-visible:ring-[--accent]"
-                        title="Unload session (close shell)"
-                        aria-label="Unload session (close shell)"
-                        data-testid="unload-current"
-                      >
-                        <XIcon />
-                      </button>}
-                    </span>
                     <MetaprojectBoardButton project={selected} onRequestLink={() => setActiveView('chat')} />
                     <Tooltip label="Prompt library" shortcut={SHORTCUT_COPY.promptsShortcut(platform)}>
                       <button
@@ -1144,36 +1157,29 @@ function MainApp() {
                         <RevealFolderIcon />
                       </button>
                     </Tooltip>
-                    <Tooltip label="Pop the active shell into its own window">
-                      <button
-                        onClick={popoutCurrent}
-                        className="text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel-strong]"
-                        data-testid="popout-shell"
-                      >
-                        <PopoutIcon />
-                      </button>
-                    </Tooltip>
+                    <div className="no-drag flex shrink-0 items-center gap-2">
+                      {mainTab === 'shell' && (
+                        <SplitButton on={rightShellIndex != null} onToggle={() => (rightShellIndex != null ? split.closeSplit() : void openSplit())} />
+                      )}
+                      <Tooltip label="Pop the active shell into its own window">
+                        <button
+                          onClick={popoutCurrent}
+                          className="text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel-strong]"
+                          data-testid="popout-shell"
+                        >
+                          <PopoutIcon />
+                        </button>
+                      </Tooltip>
+                    </div>
                   </>
                 )}
               </div>
-            </div>
+            </header>
+          <main
+            className={`workspace-sheet mx-2 mt-0.5 flex flex-1 flex-col min-h-0 min-w-0 rounded-[14px] bg-[--surface-sheet] ${showStatusBar ? 'mb-0.5' : 'mb-2'}`}
+            data-sheet-content={mainSheetContent}
+          >
             <div className="flex-1 relative min-h-0 flex flex-col">
-              {!remotePane && selected && mainTab === 'shell' && (
-                <ShellTabsBar
-                  projectId={selected.id}
-                  shells={stripShells(projectShells, rightShellIndex, split.hiddenShells)}
-                  active={activeShellIndex}
-                  onSelect={setActiveShellIndex}
-                  onClose={killShell}
-                  defaultCliName={selected.config.defaultCliName ?? null}
-                  onDefaultCliChanged={applyDefaultAgentProject}
-                  onLaunchProfile={(name) => void launchCliProfile(name, 'tab')}
-                  onLaunchPlainTab={newPlainShellAsTab}
-                  onLaunchCustom={(name, cmdLine, save) => void launchCustomCli(name, cmdLine, save, 'tab')}
-                  splitOn={rightShellIndex != null}
-                  onToggleSplit={() => (rightShellIndex != null ? split.closeSplit() : void openSplit())}
-                />
-              )}
               {activeView === 'fleet'
                 ? <FleetView
                     localShells={localAliveShells}
@@ -1407,32 +1413,6 @@ function PopoutShell({ projectId, shellIndex }: PopoutInfo) {
   );
 }
 
-interface TabButtonProps {
-  active: boolean;
-  onClick: () => void;
-  testId?: string;
-  ariaLabel?: string;
-  children: React.ReactNode;
-}
-
-function TabButton({ active, onClick, testId, ariaLabel, children }: TabButtonProps) {
-  return (
-    <button
-      onClick={onClick}
-      data-testid={testId}
-      aria-label={ariaLabel}
-      aria-current={active ? 'page' : undefined}
-      className={`h-7 px-2 rounded-lg transition-colors ${
-        active
-          ? 'bg-[--accent-soft] text-[--accent-soft-text] font-medium'
-          : 'text-[--text-muted] hover:text-[--text] hover:bg-[--surface-hover]'
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
 function EmptyState() {
   const { roots } = useRoots();
   const platform = useShortcutPlatform();
@@ -1554,38 +1534,36 @@ function MetaprojectBoardButton({ project, onRequestLink }: { project: Project; 
     ? baseUrl.replace(/\/$/, '')
     : `https://${baseUrl.replace(/^\/+/, '').replace(/\/$/, '')}`;
   const url = isLinked ? `${normalizedBase}/projects/${numericId}` : '';
+  const label = isLinked ? 'Open project board' : 'Link project board';
   return (
-    <button
-      onClick={async () => {
-        // Unlinked → surface the link/create banner in the chat rail so the
-        // user can wire this local project to a metaproject board in one
-        // click; the banner already has both "Link existing" and "Create new".
-        if (!isLinked) {
-          toast('Not linked yet — pick or create a metaproject board', { kind: 'info' });
-          onRequestLink();
-          return;
-        }
-        try {
-          await api.invoke('app:open-external', { url });
-        } catch (e) {
-          toast('Could not open the board', { kind: 'error', detail: `${String(e).replace(/^Error:\s*/, '')} — URL: ${url}` });
-        }
-      }}
-      className={`text-[11px] px-2 py-0.5 rounded-md flex items-center gap-1.5 ${
-        isLinked ? 'hover:bg-[--panel-strong] text-[--text]' : 'text-[--text-muted] hover:bg-[--panel-strong] hover:text-[--text]'
-      }`}
-      title={isLinked ? `Open ${linked} on the metaproject board` : 'Not linked to a metaproject board — click to link or create one'}
-      data-testid="metaproject-board"
-    >
-      <span className="text-[--hue-purple]"><BoardIcon /></span>
-      <span>{isLinked ? 'Board' : 'Board · link'}</span>
-    </button>
+    <Tooltip label={label} focusable>
+      <button
+        type="button"
+        onClick={async () => {
+          if (!isLinked) {
+            toast('Not linked yet — pick or create a metaproject board', { kind: 'info' });
+            onRequestLink();
+            return;
+          }
+          try {
+            await api.invoke('app:open-external', { url });
+          } catch (e) {
+            toast('Could not open the board', { kind: 'error', detail: `${String(e).replace(/^Error:\s*/, '')} — URL: ${url}` });
+          }
+        }}
+        className="no-drag w-7 h-7 flex items-center justify-center rounded text-[--hue-purple] hover:bg-[--panel-strong]"
+        aria-label={label}
+        data-testid="metaproject-board"
+      >
+        <span aria-hidden="true" className="pointer-events-none"><BoardIcon /></span>
+      </button>
+    </Tooltip>
   );
 }
 
 function BoardIcon() {
   return (
-    <svg width={ICON_SIZE.sm} height={ICON_SIZE.sm} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width={ICON_SIZE.md} height={ICON_SIZE.md} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3" y="4" width="18" height="16" rx="2" />
       <line x1="9" y1="4" x2="9" y2="20" />
       <line x1="15" y1="4" x2="15" y2="20" />

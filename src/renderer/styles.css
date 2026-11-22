@@ -650,6 +650,80 @@ input::placeholder, textarea::placeholder {
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
 }
 
+.main-tab-button {
+  position: relative;
+  color: var(--text-muted);
+  transition: color 140ms ease, background-color 140ms ease;
+}
+.main-tab-button:not([aria-current]):hover {
+  color: var(--text);
+  background-color: var(--surface-hover);
+}
+.main-tab-button[aria-current] { color: var(--accent-soft-text); }
+.main-tab-selection {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--accent-soft);
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(0.96);
+  transition: opacity 140ms var(--ease-out), transform 160ms var(--ease-out);
+}
+.main-tab-button[aria-current] .main-tab-selection {
+  opacity: 1;
+  transform: none;
+}
+.workspace-destinations > :has(> .main-tab-button),
+.workspace-project-actions > :has(> button) { -webkit-app-region: no-drag; }
+
+.workspace-header-container { container: workspace-header / inline-size; }
+.workspace-header-row:not([hidden]) + .workspace-sheet { margin-top: 0; }
+.workspace-sheet[data-sheet-content="shell"] {
+  border: 1px solid color-mix(in oklab, var(--text) 12%, transparent);
+}
+.workspace-sheet:has(> div > [data-split-layout]) {
+  background-color: transparent;
+  border: 0;
+}
+[data-split-layout] [data-pane-focused] {
+  border: 1px solid light-dark(rgb(0 0 0 / 0.18), rgb(255 255 255 / 0.18));
+}
+.workspace-header-row:not([hidden]) {
+  display: grid;
+  grid-template: 'destinations actions' auto / minmax(0, max-content) minmax(0, 1fr);
+  reading-flow: grid-rows;
+}
+.workspace-destinations { grid-area: destinations; }
+.workspace-project-actions { grid-area: actions; }
+.shell-tabs-bar { grid-area: terminals; justify-self: center; }
+.workspace-header-row:has(> .shell-tabs-bar) {
+  grid-template-areas: 'destinations actions' 'terminals terminals';
+}
+/* Equal side tracks keep the strip centered. On medium widths only the tabs give up space. */
+@container workspace-header (min-width: 620px) {
+  .workspace-header-row:has(> .shell-tabs-bar) {
+    grid-template: 'destinations terminals actions' auto / minmax(14rem, 1fr) minmax(0, 1.4fr) minmax(14rem, 1fr);
+  }
+  .workspace-header-row:has(> .shell-tabs-bar) > .workspace-destinations,
+  .workspace-header-row:has(> .shell-tabs-bar) > .workspace-project-actions { flex-wrap: nowrap; }
+}
+
+.new-shell-trigger { anchor-name: --add-shell; }
+.new-shell-menu {
+  --new-shell-menu-width: 18rem;
+  position-anchor: --add-shell;
+  top: anchor(bottom);
+  left: clamp(0px, anchor(left), calc(100% - var(--new-shell-menu-width)));
+  width: min(100%, var(--new-shell-menu-width));
+}
+.new-shell-menu-custom { --new-shell-menu-width: 20rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  .main-tab-selection { transition-property: opacity; }
+  .main-tab-selection, .terminal-chip { transform: none !important; }
+}
+
 /* Mouse-opened modals: backdrop fades, panel settles in from 96%. Centered
  * origin on purpose — modals aren't anchored to a trigger. No transform in
  * the resting state so the panel never becomes a containing block. */

@@ -11,6 +11,7 @@ import { FROST_ATTR } from '@renderer/frosted-chrome-contract';
 import type { RemoteShellHandle } from '@renderer/p2p/remoteShellBridge';
 import { openTerminalViewSource } from '@renderer/terminal/terminal-view-source';
 import { readTerminalEngine } from '@renderer/terminal/terminal-engine-setting';
+import { useTerminalPadding } from '@renderer/terminal/terminal-padding-context';
 import { openGhosttyWithStandby } from '@renderer/terminal/engine-composition';
 import type { GhosttyView, TerminalViewSurface } from '@renderer/terminal/ghostty-view-engine';
 import type { TerminalFileLink } from '@renderer/terminal/terminal-view-links';
@@ -47,6 +48,7 @@ import { stepTerminalFontSize } from '@shared/terminal-font-size';
 import { buildFontFamilyStack } from '@renderer/fonts/font-family';
 import { TERMINAL_FONT_FALLBACK, type FontFamilyPreference } from '@shared/font-settings';
 import { TERMINAL_SCROLLBACK_LINES } from '@shared/terminal-scrollback';
+import { DEFAULT_TERMINAL_PADDING } from '@shared/terminal-padding';
 import {
   createTerminalFontUpdater,
   createTerminalGeometrySynchronizer,
@@ -141,6 +143,9 @@ export function ShellTab({
   source?: 'local' | { kind: 'remote'; deviceId: string; deviceName?: string };
 }) {
   const remoteDeviceId = typeof source === 'object' ? source.deviceId : null;
+  const padding = useTerminalPadding();
+  const horizontalPadding = (remoteDeviceId === null ? padding.horizontal : null) ?? DEFAULT_TERMINAL_PADDING.sides;
+  const verticalPadding = remoteDeviceId === null ? padding.vertical : null;
   const remoteHostNameRef = useRef<string>(REMOTE_INPUT_COPY.hostFallback);
   remoteHostNameRef.current = (typeof source === 'object' && source.deviceName) || REMOTE_INPUT_COPY.hostFallback;
   // Live-data / exit handlers shared by the local pty stream and the remote bridge (assigned below).
@@ -241,13 +246,14 @@ export function ShellTab({
   });
 
   useEffect(() => {
-    if (!termHostRef.current) return;
+    const terminalHost = termHostRef.current;
+    if (!terminalHost) return;
     const opening = new AbortController();
     let optionalView: ReturnType<typeof openGhosttyWithStandby> | undefined;
     let ghostHost: HTMLDivElement | undefined;
     let optionalEngine = false;
     setEngineStatus('xterm');
-    termHostRef.current.style.visibility = 'hidden';
+    terminalHost.style.visibility = 'hidden';
     const term = new Terminal({
       macOptionClickForcesSelection: true,
       scrollback: TERMINAL_SCROLLBACK_LINES,
@@ -515,7 +521,7 @@ export function ShellTab({
           setEngineStatus(state.kind === 'xterm' ? 'fallback' : state.kind);
           ghosttyRef.current = candidate ?? null;
           if (candidate) {
-            candidate.reveal({ keys, clipboard, pathLinks: remoteDeviceId ? undefined : pathLinks, openWebLink: openTerminalWebLink, focused: focusReg.used });
+            candidate.reveal({ platform: platformRef.current, keys, clipboard, pathLinks: remoteDeviceId ? undefined : pathLinks, openWebLink: openTerminalWebLink, focused: focusReg.used });
             if (standbyElement) standbyElement.style.visibility = 'hidden';
             candidateHost.inert = false;
             show(candidate.surface);
@@ -598,7 +604,8 @@ export function ShellTab({
     window.addEventListener('focus', passiveSync);
 
     const ro = new ResizeObserver(passiveSync);
-    if (containerRef.current) ro.observe(containerRef.current);
+    // Padding can change the fit host without changing the outer frame.
+    if (termHostRef.current) ro.observe(termHostRef.current);
     const bufferChange = term.buffer.onBufferChange((buffer) => setAltScreen(buffer.type === 'alternate'));
 
     // Intercept every copy from the terminal (Cmd+C, right-click Copy,
@@ -865,7 +872,9 @@ export function ShellTab({
         setMenu({ x: e.clientX, y: e.clientY });
       }}
       data-alt-screen={altScreen || undefined}
-      className="relative w-full h-full min-h-0 px-3 pt-2 pb-1 bg-transparent focus:outline-none"
+      className="relative w-full h-full min-h-0 bg-transparent focus:outline-none"
+      style={{ paddingInline: horizontalPadding, paddingTop: verticalPadding ?? DEFAULT_TERMINAL_PADDING.top,
+        paddingBottom: verticalPadding ?? DEFAULT_TERMINAL_PADDING.bottom }}
     >
       {/* `isolate` keeps xterm's internal z-indexes (e.g. its link layer) inside the
           host, so the exit overlay, drop hint and search bar always paint above it. */}
