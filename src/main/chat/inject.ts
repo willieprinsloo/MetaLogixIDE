@@ -112,7 +112,18 @@ export function formatInjectionLine(entry: ChatEntry, selfDevice: string): strin
     device: safeSeg(entry.from.device ?? selfDevice),
   });
   const reply = entry.reply_in && SAFE_REPLY_IN.test(entry.reply_in) ? entry.reply_in : '-';
-  return `\x1b[2m[metaide-chat from=${from} reply=${reply} ]\x1b[22m ${sanitiseBody(entry.body)}\n`;
+  // Plain-text prefix, no SGR dim: TUI agents (Claude Code, Codex,
+  // opencode, …) read stdin through Ink's input widget, where a bare
+  // `\x1b` is the Escape key. The leading `\x1b[2m` wrapper used to get
+  // interpreted as "ESC + unknown CSI", which cleared the input buffer
+  // before the body ever made it, so the message sat in the prompt and
+  // never submitted. Plain ASCII makes the TUI insert the whole line
+  // verbatim. The Enter keystroke (CR) is NOT appended here — the caller
+  // writes the body and CR as two separate PTY writes with a small gap
+  // between them, so Ink's input handler sees text first, then an Enter
+  // key event. Concatenating them made Ink treat the whole chunk as one
+  // paste and skip submit.
+  return `[metaide-chat from=${from} reply=${reply} ] ${sanitiseBody(entry.body)}`;
 }
 
 /** Common delivery path: resolve mentions against the roster and write
@@ -138,7 +149,15 @@ function deliver(deps: WireChatInjectorDeps, projectId: number, entry: ChatEntry
       if (row.shell === entry.from.shell && row.device === entry.from.device) continue;
       if (seen.has(row.shell)) continue;
       seen.add(row.shell);
+      // Write body + Enter as two steps so Ink's input handler processes
+      // them as separate events: a paste-like text chunk, then a single
+      // Enter keystroke that submits. Writing them concatenated in one
+      // chunk made Ink treat the whole thing as a bracketed paste and
+      // never fire its "return" key event, so the message sat in the
+      // prompt. 30ms is below the user-visible latency floor and well
+      // above node-pty's flush granularity.
       deps.pty.write(projectId, row.shell, line);
+      setTimeout(() => { deps.pty.write(projectId, row.shell, '\r'); }, 30);
       delivered++;
     }
   }

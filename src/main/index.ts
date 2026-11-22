@@ -70,6 +70,19 @@ const popoutWindows = new Map<string, BrowserWindow>(); // key = `${projectId}:$
 const pendingFileOpens: string[] = [];
 let rendererReadyForFiles = false;
 
+/**
+ * Collapse any string to the mention-segment grammar
+ * (`^[a-z][a-z0-9-]{0,31}$`) used by the `[metaide-chat …]` injection
+ * header and the `@mention` grammar in the UI. Strips dots, underscores,
+ * and uppercase that would otherwise hit `safeSeg`'s `"unknown"` fallback
+ * for hostnames like `MacBook-Pro.home`.
+ */
+function canonicalDevice(raw: string): string {
+  const slug = raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32);
+  if (!slug) return 'unknown';
+  return /^[a-z]/.test(slug) ? slug : `d-${slug}`.slice(0, 32);
+}
+
 function flushPendingFileOpens(): void {
   if (!rendererReadyForFiles) return;
   while (pendingFileOpens.length > 0) {
@@ -468,7 +481,11 @@ function installNotifications(services: Services): void {
   // remote P2P append, companion CLI). `deviceId` is the P2P deviceName
   // when p2p has started, else the hostname — stable per machine, good
   // enough to disambiguate `@claude@mac-mini` in the UI.
-  const selfDevice = services.p2p?.api.getSettings().deviceName ?? hostname();
+  // Canonicalise to the mention-segment grammar (lowercase, [a-z0-9-],
+  // starts with a letter, ≤32 chars) so `hostname()` outputs like
+  // "MacBook-Pro.home" don't collapse to the literal "unknown" placeholder
+  // the injection line uses when its input fails validation.
+  const selfDevice = canonicalDevice(services.p2p?.api.getSettings().deviceName ?? hostname());
   services.chat = createChatService({
     projects: services.projects,
     deviceId: selfDevice,
@@ -499,8 +516,10 @@ function installNotifications(services: Services): void {
       agentStates[row.shellIndex] = row.state;
     }
     const remote: RemotePeer[] = []; // populated by Task 7's P2P cache
-    return buildRoster({ local, remote, agentLabels, agentStates, selfDevice });
+    const nicknames = services.settings.get('shell_nicknames');
+    return buildRoster({ local, remote, agentLabels, agentStates, nicknames, selfDevice });
   };
+  services.chatRoster = chatRoster;
   wireChatInjector({
     pty: services.ptyManager,
     roster: chatRoster,

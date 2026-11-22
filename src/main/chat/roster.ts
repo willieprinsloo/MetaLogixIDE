@@ -25,12 +25,14 @@ export interface RemotePeer {
 }
 
 export interface RosterRow {
+  projectId: number;
   device: string;
   shell: number;
   agent: string;
   label: string;
   state: 'idle' | 'busy' | 'blocked' | null;
   mention: string;
+  nickname: string | null;
 }
 
 export interface BuildRosterInput {
@@ -40,26 +42,33 @@ export interface BuildRosterInput {
   agentLabels: Record<number, string>;
   /** shellIndex → tracked state for local shells. Missing → null. */
   agentStates: Record<number, 'idle' | 'busy' | 'blocked' | null>;
+  /** "<projectId>:<shellIndex>" → nickname (local shells only for now). */
+  nicknames?: Record<string, string>;
   selfDevice: string;
 }
 
 interface Intermediate {
+  projectId: number;
   device: string;
   shell: number;
   agent: string;
   state: 'idle' | 'busy' | 'blocked' | null;
+  nickname: string | null;
 }
 
 export function buildRoster(input: BuildRosterInput): RosterRow[] {
+  const nicks = input.nicknames ?? {};
   const rows: Intermediate[] = [];
   for (const s of input.local) {
     const agent = input.agentLabels[s.shellIndex];
     if (!agent) continue;
     rows.push({
+      projectId: s.projectId,
       device: input.selfDevice,
       shell: s.shellIndex,
       agent,
       state: input.agentStates[s.shellIndex] ?? null,
+      nickname: nicks[`${s.projectId}:${s.shellIndex}`] ?? null,
     });
   }
   for (const peer of input.remote) {
@@ -67,10 +76,13 @@ export function buildRoster(input: BuildRosterInput): RosterRow[] {
       const agent = s.agent;
       if (!agent) continue;
       rows.push({
+        projectId: s.projectId,
         device: peer.device,
         shell: s.shellIndex,
         agent,
         state: s.agentState ?? null,
+        // Remote nicknames would need peer-side sync; not wired yet.
+        nickname: null,
       });
     }
   }
@@ -91,14 +103,17 @@ export function buildRoster(input: BuildRosterInput): RosterRow[] {
     const sameAgentOnDevice = occ.get(`${r.agent}@${r.device}`) ?? 0;
     const shellPart = sameAgentOnDevice > 1 ? `#${r.shell}` : '';
     const devicePart = r.device === input.selfDevice ? '' : `@${r.device}`;
+    // Nickname wins when set — "@frontend-dev" beats "@claude#2".
+    const handle = r.nickname ?? `${r.agent}${shellPart}`;
     return {
+      projectId: r.projectId,
       device: r.device,
       shell: r.shell,
       agent: r.agent,
       state: r.state,
-      // Human-readable label used in the pane list.
-      label: devicePart ? `${r.agent} (${r.device})` : r.agent,
-      mention: `@${r.agent}${shellPart}${devicePart}`,
+      nickname: r.nickname,
+      label: devicePart ? `${handle} (${r.device})` : handle,
+      mention: `@${handle}${devicePart}`,
     };
   });
 }

@@ -200,7 +200,16 @@ export function ShellTab({
       // + app:open-external path as plain-text URLs.
       linkHandler: {
         activate: (_ev, text) => {
-          openSafeHyperlink(text, (url) => api.invoke('app:open-external', { url }));
+          void openSafeHyperlink(text, {
+            invokeOpenExternal: (url) => api.invoke('app:open-external', { url }),
+            invokeResolveLocal: (url) => api.invoke('app:resolve-local-file', { url }),
+            openInIde: (projectId, relPath) => {
+              // Broadcast to App.tsx, which owns the route switch and
+              // openInFiles state. CustomEvent avoids threading a callback
+              // through every shell host.
+              window.dispatchEvent(new CustomEvent('metaide:open-in-files', { detail: { projectId, relPath } }));
+            },
+          });
         },
       },
       scrollback: TERMINAL_SCROLLBACK_LINES,
@@ -232,7 +241,13 @@ export function ShellTab({
     term.loadAddon(unicode11);
     term.unicode.activeVersion = '11';
     term.loadAddon(new WebLinksAddon((_ev: MouseEvent, url: string) => {
-      void api.invoke('app:open-external', { url }).catch((e) => console.error(e));
+      void openSafeHyperlink(url, {
+        invokeOpenExternal: (u) => api.invoke('app:open-external', { url: u }),
+        invokeResolveLocal: (u) => api.invoke('app:resolve-local-file', { url: u }),
+        openInIde: (projectId, relPath) => {
+          window.dispatchEvent(new CustomEvent('metaide:open-in-files', { detail: { projectId, relPath } }));
+        },
+      });
     }));
     const search = new SearchAddon();
     term.loadAddon(search);

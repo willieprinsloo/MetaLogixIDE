@@ -62,6 +62,8 @@ export interface Services {
   p2p?: P2PServices;
   /** Agent chat bus; attached once broadcast is available (post-window setup). */
   chat?: ChatService;
+  /** Live roster snapshot for `chat:roster` IPC — set alongside `chat`. */
+  chatRoster?: () => import('./chat/roster').RosterRow[];
   /** safeStorage-backed credential store; attached in createServices once `app` is ready. */
   credentialStore: CredentialStore | null;
 }

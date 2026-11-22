@@ -58,6 +58,7 @@ function usageDebugDir(): string | undefined {
 import { isInsideRoot, resolveInsideRoot } from '@main/domain/path-containment';
 import { MIME_BY_EXT } from '@shared/mime';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { StopPrimarySessionRequest } from '@shared/unload-session-contract';
 import { readRecentActivity } from '@main/activity/log';
 import { ACTIVITY_PAGE_MAX } from '@shared/activity';
@@ -986,6 +987,30 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     await shell.openExternal(url);
     return { ok: true } as const;
   },
+
+  /**
+   * Resolve a `file://` URL (or absolute path) against every known project
+   * root. Used by the shell's OSC-8 link handler to prefer opening a local
+   * file in the IDE's Files tab (with its HTML preview / image viewer /
+   * markdown render) over launching the system browser, where relative
+   * assets break because the browser's base path is wrong. Returns null
+   * when the path doesn't lie inside any project root.
+   */
+  'app:resolve-local-file': async (s, { url }) => {
+    let abs: string;
+    try {
+      if (url.startsWith('file://')) abs = fileURLToPath(url);
+      else if (url.startsWith('/')) abs = url;
+      else return { match: null } as const;
+    } catch { return { match: null } as const; }
+    for (const p of s.projects.list()) {
+      if (isInsideRoot(p.path, abs)) {
+        const rel = relative(p.path, abs);
+        return { match: { projectId: p.id, relPath: rel.split(/[/\\]/).join('/') } } as const;
+      }
+    }
+    return { match: null } as const;
+  },
   'app:get-log-path': async () => ({ path: log.transports.file.getFile().path }),
   'app:get-version':  async () => ({ version: app.getVersion() }),
   'app:reveal-log-file': async () => {
@@ -1631,6 +1656,26 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     if (!s.chat) throw new Error('chat service not ready');
     return s.chat.list(req);
   },
+  'chat:roster': async (s) => {
+    const rows = s.chatRoster ? s.chatRoster() : [];
+    return { rows };
+  },
+
+  /**
+   * Set or clear a shell's nickname. Nickname becomes the Roster label and
+   * `@mention` string ("@frontend-dev" vs. "@claude#2"). Pass null or an
+   * empty string to clear. Nickname is sanitized to [a-z0-9_-] (lowercased)
+   * so mentions remain unambiguously parseable.
+   */
+  'shells:set-nickname': async (s, { projectId, shellIndex, nickname }) => {
+    const current = { ...s.settings.get('shell_nicknames') };
+    const key = `${projectId}:${shellIndex}`;
+    const cleaned = (nickname ?? '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32);
+    if (!cleaned) delete current[key];
+    else current[key] = cleaned;
+    s.settings.set('shell_nicknames', current);
+    return { ok: true as const, nickname: cleaned || null };
+  },
 
   ...dropHandlers,
   ...keepAwakeHandlers,
@@ -1664,6 +1709,7 @@ export const CHANNEL_EMITS: Partial<Record<IpcChannelName, IpcEventName[]>> = {
   'shells:kill':    ['alive-shells:changed'],
   'shells:stop-primary': ['alive-shells:changed'],
   'shells:pin':     ['alive-shells:changed'],
+  'shells:set-nickname': ['alive-shells:changed'],
 };
 
 function eventPayload<E extends IpcEventName>(name: E): IpcEvents[E] {

@@ -145,4 +145,11 @@ export type SettingsMap = {
   'vibrancy_material':             VibrancyMaterial;
   /** App-wide env variables applied to every spawn; project variables override. Write via settings:set-app-env only. */
   'app_env':                       Record<string, string>;
+  /**
+   * Per-shell human-readable nicknames used by the Agents Roster as the
+   * `@mention` label. Keyed `"<projectId>:<shellIndex>"`; value is the
+   * nickname (never empty — delete the key to clear). Write via
+   * `shells:set-nickname` only.
+   */
+  'shell_nicknames':               Record<string, string>;
 };

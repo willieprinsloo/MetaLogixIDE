@@ -377,6 +377,7 @@ function MainApp() {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [openInFiles, setOpenInFiles] = useState<{ relPath: string; line: number | null } | null>(null);
+  const [filesActivePath, setFilesActivePath] = useState<string | null>(null);
   const [paletteRequest, setPaletteRequest] = useState<PaletteRequest | null>(null);
   const paletteOpenRef = useRef(false);
   paletteOpenRef.current = paletteRequest != null;
@@ -614,6 +615,29 @@ function MainApp() {
     return () => { off(); };
   }, []);
 
+  // Terminal link clicks for local files (file:// URLs, bare absolute paths)
+  // that resolve inside a known project route here. We switch the window
+  // to the file's project if needed and open it in the Files tab — HTML
+  // renders in the sandboxed iframe, images in the image viewer, etc.
+  useEffect(() => {
+    const handler = async (ev: Event) => {
+      const detail = (ev as CustomEvent<{ projectId: number; relPath: string }>).detail;
+      if (!detail) return;
+      try {
+        const { project } = await api.invoke('projects:open', { id: detail.projectId });
+        if (project) {
+          setRemotePane(null);
+          setActiveView('projects');
+          setSelected(project);
+        }
+      } catch { /* fine — fall through to show in current project if ids match */ }
+      setMainTab('files');
+      requestAnimationFrame(() => setOpenInFiles({ relPath: detail.relPath, line: null }));
+    };
+    window.addEventListener('metaide:open-in-files', handler);
+    return () => window.removeEventListener('metaide:open-in-files', handler);
+  }, []);
+
   // Click-to-focus for "command done" OS notifications: the main process
   // fires `shell:focus-request` with a (projectId, shellIndex). We look up
   // the project (it may not be the one currently selected), open it, and
@@ -822,6 +846,7 @@ function MainApp() {
             openRelPath={openInFiles?.relPath ?? null}
             openLine={openInFiles?.line ?? null}
             onOpenRelPathConsumed={() => setOpenInFiles(null)}
+            onActivePathChange={setFilesActivePath}
             isFullscreen={fullscreen}
             onFullscreenToggle={toggleFullscreen}
           />
@@ -1140,11 +1165,11 @@ function MainApp() {
                         <SearchIcon />
                       </button>
                     </Tooltip>
-                    <Tooltip label="Reveal project folder in Finder">
+                    <Tooltip label={filesActivePath ? `Reveal ${filesActivePath} in Finder` : 'Reveal project folder in Finder'}>
                       <button
                         onClick={async () => {
                           try {
-                            await api.invoke('files:reveal', { projectId: selected.id, relPath: '' });
+                            await api.invoke('files:reveal', { projectId: selected.id, relPath: filesActivePath ?? '' });
                           } catch (e) {
                             toast('Could not open the folder', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
                           }
@@ -1265,7 +1290,21 @@ function MainApp() {
               data-testid="agents-dock"
               aria-label="Agents"
             >
-              <AgentChatTab projectId={selected.id} selfDevice={selfDeviceName} focusTick={agentsComposerFocusTick} />
+              <div className="shrink-0 flex items-center justify-between pl-3 pr-1.5 py-1 border-b border-[--border] text-[11px] text-[--text-muted]">
+                <span className="uppercase tracking-wide">Agents</span>
+                <button
+                  onClick={() => setAgentsDockOpen(false)}
+                  title="Close Agents pane (⌘J to reopen)"
+                  aria-label="Close Agents pane"
+                  className="w-5 h-5 flex items-center justify-center rounded hover:bg-[--panel-strong] hover:text-[--text]"
+                  data-testid="agents-dock-close"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="flex-1 min-h-0">
+                <AgentChatTab projectId={selected.id} selfDevice={selfDeviceName} focusTick={agentsComposerFocusTick} />
+              </div>
             </aside>
           </>
         )}

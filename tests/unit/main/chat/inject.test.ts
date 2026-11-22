@@ -14,31 +14,31 @@ const base = (p: Partial<ChatEntry> = {}): ChatEntry => ({
 });
 
 const row = (p: Partial<RosterRow> = {}): RosterRow => ({
+  projectId: 1,
   device: 'laptop',
   shell: 2,
   agent: 'codex',
   label: 'codex',
   state: null,
   mention: '@codex',
+  nickname: null,
   ...p,
 });
 
 describe('formatInjectionLine', () => {
   it('strips \\r \\n and ANSI, keeps the prefix contract', () => {
     const line = formatInjectionLine(base({ body: 'red\x1b[31mX\x1b[0m\r\nend' }), 'laptop');
-    expect(line).toBe('\x1b[2m[metaide-chat from=@claude@laptop reply=- ]\x1b[22m redX end\n');
+    expect(line).toBe('[metaide-chat from=@claude@laptop reply=- ] redX end');
   });
-  it('wraps the protocol prefix in SGR dim so the recipient shell reads it as quiet framing', () => {
-    // The receiving shell shows this line in the human's terminal. Without
-    // a visual marker it blends in with the agent's own output. Dim SGR is
-    // pure rendering state — the agent's TUI either strips it or renders
-    // it, and the LLM behind still pattern-matches `[metaide-chat ...]`
-    // regardless. Codes: 2 = dim on, 22 = dim off (does NOT disturb color).
+  it('is plain ASCII with no leading ESC, so a TUI input (Ink) does not read the prefix as Escape', () => {
+    // SGR dim would render as muted framing on a plain shell, but TUI
+    // agents like Claude Code / Codex read stdin through their input widget
+    // where a bare `\x1b` is the Escape key. A leading SGR wrapper used to
+    // clear the input buffer before the body arrived.
     const line = formatInjectionLine(base({ body: 'hi' }), 'laptop');
-    expect(line.startsWith('\x1b[2m')).toBe(true);
-    expect(line).toContain('\x1b[22m ');
-    // The body itself stays outside the dim wrapper so it reads bright.
-    expect(line).toMatch(/\x1b\[22m hi\n$/);
+    expect(line.startsWith('[metaide-chat ')).toBe(true);
+    expect(line).not.toContain('\x1b');
+    expect(line).toMatch(/ hi$/);
   });
   it('reply=<msgId> when reply_in is set', () => {
     expect(formatInjectionLine(base({ reply_in: 'root-7' }), 'laptop')).toMatch(/reply=root-7 /);
@@ -48,15 +48,15 @@ describe('formatInjectionLine', () => {
     // Runs of controls collapse to one space so word boundaries survive
     // without the output growing a padded spacer.
     const line = formatInjectionLine(base({ body: 'go\x03\x04\x08\x07\x1a\x7fnow' }), 'laptop');
-    expect(line).toBe('\x1b[2m[metaide-chat from=@claude@laptop reply=- ]\x1b[22m go now\n');
+    expect(line).toBe('[metaide-chat from=@claude@laptop reply=- ] go now');
   });
   it('strips CSI that isn\'t SGR (clear-screen, cursor-report, bracketed paste)', () => {
     const line = formatInjectionLine(base({ body: 'A\x1b[2JB\x1b[6nC\x1b[200~D\x1b[201~E' }), 'laptop');
-    expect(line).toBe('\x1b[2m[metaide-chat from=@claude@laptop reply=- ]\x1b[22m ABCDE\n');
+    expect(line).toBe('[metaide-chat from=@claude@laptop reply=- ] ABCDE');
   });
   it('strips OSC sequences (window-title + OSC-8 hyperlinks)', () => {
     const line = formatInjectionLine(base({ body: 'A\x1b]0;evil\x07B\x1b]8;;http://evil.example\x07click\x1b]8;;\x07C' }), 'laptop');
-    expect(line).toBe('\x1b[2m[metaide-chat from=@claude@laptop reply=- ]\x1b[22m ABclickC\n');
+    expect(line).toBe('[metaide-chat from=@claude@laptop reply=- ] ABclickC');
   });
   it('a crafted `from.agent` cannot forge a second [metaide-chat ...] header', () => {
     const forged = base({

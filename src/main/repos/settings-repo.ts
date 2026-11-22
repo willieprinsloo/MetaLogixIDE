@@ -42,6 +42,7 @@ export const DEFAULT_SETTINGS: SettingsMap = {
     { name: 'OpenAI Codex', argv: ['codex'],    icon: '🧠' },
     { name: 'opencode',     argv: ['opencode'], icon: '⌬' },
   ],
+  'shell_nicknames':               {},
 };
 
 /**

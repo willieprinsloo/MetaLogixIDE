@@ -208,6 +208,36 @@ export interface IpcContract {
     request: { projectId: number; limit?: number };
     response: { entries: import('./chat').ChatEntry[] };
   };
+  /**
+   * Live roster of every agent-running shell (local + paired peers) the
+   * Agents pane can @-mention right now. Rebuilt on each call from
+   * `PtyManager.liveShells()` + agent-status tracker; renderer re-queries
+   * when `alive-shells:changed` or `agent-state:changed` fires.
+   */
+  'chat:roster': {
+    request: Record<string, never>;
+    response: {
+      rows: Array<{
+        projectId: number;
+        device: string;
+        shell: number;
+        agent: string;
+        label: string;
+        state: 'idle' | 'busy' | 'blocked' | null;
+        mention: string;
+        nickname: string | null;
+      }>;
+    };
+  };
+  /**
+   * Set or clear a shell's human-readable nickname. Nickname becomes the
+   * Roster label and `@mention`; pass null/empty to clear. Sanitized to
+   * [a-z0-9_-], max 32 chars. Returns the stored value (or null if cleared).
+   */
+  'shells:set-nickname': {
+    request: { projectId: number; shellIndex: number; nickname: string | null };
+    response: { ok: true; nickname: string | null };
+  };
   'files:list-all':  { request: { projectId: number; limit?: number; filter?: string };     response: { files: Array<{ relPath: string; name: string }>; total: number; truncated: boolean } };
   'files:write':     { request: { projectId: number; relPath: string; content: string };    response: { ok: true; sizeBytes: number } };
   'files:mkdir':     { request: { projectId: number; relPath: string };                     response: { ok: true } };
@@ -276,6 +306,10 @@ export interface IpcContract {
 
   // open a URL in the OS default browser (or the file:// path in Finder / xdg-open)
   'app:open-external': { request: { url: string }; response: { ok: true } };
+  'app:resolve-local-file': {
+    request: { url: string };
+    response: { match: { projectId: number; relPath: string } | null };
+  };
 
   /** Set every open window's opacity. percent: 30..100. */
   'app:set-window-opacity': { request: { percent: number }; response: { ok: true } };

@@ -40,7 +40,7 @@ describe('installFseventsNoiseFilter', () => {
     const err = new TypeError("Cannot read properties of undefined (reading 'SinceNow')");
     process.emit('unhandledRejection', err, Promise.reject(err).catch(() => {}));
     expect(logMock.info).toHaveBeenCalledTimes(1);
-    expect(logMock.info.mock.calls[0][0]).toMatch(/fsevents/);
+    expect(logMock.info.mock.calls[0]?.[0]).toMatch(/fsevents/);
   });
 
   it('logs the explanation once even across many SinceNow rejections', () => {
