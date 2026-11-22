@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { IpcMain } from 'electron';
-import { registerIpc } from '@main/ipc/register';
+import { registerIpc, __resetMiseWarnDedupForTests } from '@main/ipc/register';
 import { openDb } from '@main/db/connection';
 import { runMigrations } from '@main/db/migrator';
 import { SettingsRepo } from '@main/repos/settings-repo';
@@ -33,6 +33,14 @@ vi.mock('electron', async (importOriginal) => ({
   shell: { showItemInFolder: electronStubs.showItemInFolder },
   app: { getFileIcon: electronStubs.getFileIcon },
 }));
+
+const logSpy = vi.hoisted(() => ({
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+}));
+vi.mock('electron-log/main', () => ({ default: logSpy }));
 
 function fakeIpcMain(): IpcMain & { handlers: Map<string, (e: unknown, req: unknown) => Promise<unknown>> } {
   const handlers = new Map<string, (e: unknown, req: unknown) => Promise<unknown>>();
@@ -1972,6 +1980,18 @@ describe('tasks:discover and tasks:run with mise tasks', () => {
     const r = (await rig.call('tasks:discover', { projectId: rig.a.id })) as { tasks: { id: string }[]; notices: unknown[] };
     expect(r.tasks.map((t) => t.id)).toEqual(['npm:dev']);
     expect(r.notices).toEqual([{ source: 'mise', kind: 'not-found' }]);
+  });
+
+  it('[tasks] mise listing failed warn fires once per (project, kind) across repeated discovers — silences the 368/week log spam', async () => {
+    __resetMiseWarnDedupForTests();
+    logSpy.warn.mockReset();
+    const rig = miseRig({ kind: 'not-found' });
+    await rig.call('tasks:discover', { projectId: rig.a.id });
+    await rig.call('tasks:discover', { projectId: rig.a.id });
+    await rig.call('tasks:discover', { projectId: rig.a.id });
+    const miseWarns = logSpy.warn.mock.calls.filter((c) => c[0] === '[tasks] mise listing failed');
+    expect(miseWarns).toHaveLength(1);
+    expect(miseWarns[0]).toEqual(['[tasks] mise listing failed', { projectId: rig.a.id, kind: 'not-found' }]);
   });
 
   it.each(['tasks:discover', 'tasks:run'])('%s lists mise in the project root with the inherited env plus the project and app vars (AC6)', async (channel) => {

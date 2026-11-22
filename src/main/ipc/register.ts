@@ -82,10 +82,20 @@ function projectSpawnEnv(
  * logging the kind of any listing failure. `tasks:run` calls this on every run, never a cache, so an id
  * the current listing does not report, including any mise id while the config is untrusted, is refused (AC9, AC22).
  */
+const miseWarnSeen = new Set<string>();
+/** Test-only: clear the mise-warn dedup set so each test starts clean. */
+export function __resetMiseWarnDedupForTests(): void { miseWarnSeen.clear(); }
 async function discoverProjectTasks(s: Services, project: Project): Promise<TasksDiscovery> {
   const env = { ...process.env, ...projectSpawnEnv(s, project, {}) };
   const discovery = await discoverAllTasks(project.path, { env, listMise: s.listMise });
-  for (const n of discovery.notices) log.warn('[tasks] mise listing failed', { projectId: project.id, kind: n.kind });
+  // Log each (project, kind) pair once per session — tasks:run calls this on
+  // every run, which flooded the log with 368 identical warns last week.
+  for (const n of discovery.notices) {
+    const sig = `${project.id}|${n.kind}`;
+    if (miseWarnSeen.has(sig)) continue;
+    miseWarnSeen.add(sig);
+    log.warn('[tasks] mise listing failed', { projectId: project.id, kind: n.kind });
+  }
   return discovery;
 }
 
