@@ -45,6 +45,7 @@ import { readDiffSides } from '@main/git/diff-sides';
 import { dropHandlers } from '@main/drops/handlers';
 import { keepAwakeHandlers } from '@main/keep-awake/handlers';
 import { UsageService, usageDepsFor } from '@main/usage/service';
+import { LaunchCoalescer, launchKey } from '@main/ipc/shells-launch-coalesce';
 
 /** `<userData>/usage-debug/` holds the last usage response per provider; undefined outside Electron (unit tests). */
 function usageDebugDir(): string | undefined {
@@ -140,6 +141,95 @@ function publishPrimary(s: Services, projectId: number, argv: string[]): void {
   const nowIso = new Date().toISOString().slice(0, 19).replace('T', ' ');
   s.shells.upsert({ projectId, shellIndex: 0, model: null, launchArgv: argv, startedAt: nowIso, lastActiveAt: nowIso, pinned: false });
   emitAliveShellsChanged();
+}
+
+/** One-at-a-time per (projectId, shellIndex). See the `shells:launch` handler. */
+const SHELLS_LAUNCH_COALESCER = new LaunchCoalescer<{ shellIndex: number }>();
+
+/**
+ * The real body of `shells:launch`, hoisted out so the handler can run it
+ * under the coalescer. `project` is the already-resolved row (with
+ * `firstLaunchedAt` nulled out for forceFirst), so this function makes no
+ * decisions about which variant to launch — it only acts on it.
+ */
+async function doShellsLaunch(s: Services, project: Project): Promise<{ shellIndex: number }> {
+  const projectId = project.id;
+  // Idempotent: clicking an already-open project (or a tab the sidebar
+  // thinks might not be alive) used to re-enter here and throw "already
+  // spawned". Just return the index — the renderer re-attaches the stream.
+  if (s.ptyManager.isAlive(projectId, 0)) return { shellIndex: 0 };
+  assertProjectPathExists(project);
+  const cap = s.settings.get('keep_alive_cap');
+  const alive = s.shells.list();
+  if (alive.length >= cap) {
+    const decision = chooseEvictee(alive, cap, projectId, new Date());
+    if (decision.evictee) {
+      await s.ptyManager.kill(decision.evictee.projectId, decision.evictee.shellIndex);
+      s.shells.remove(decision.evictee.projectId, decision.evictee.shellIndex);
+    } else if (decision.reason === 'all-pinned') {
+      throw new Error('all shells are pinned — unpin one or raise cap');
+    }
+  }
+
+  const launchOptions = { resumeBlocked: (harness: AgentHarness) => harnessBusy(s, projectId, harness, 0) };
+  let launch = resolveLaunch(project, s.settings, s.homeDir, process.env, launchOptions);
+  let fallbackApplied = false;
+
+  // If a Claude continuation (--continue) exits within ~2.5s with "no
+  // conversation found", retry using the first variant instead. This
+  // handles the case where the on-disk claude session was cleared. The
+  // shell is published as soon as it spawns, so the tab label and status
+  // dot never wait on this check; other launches skip it entirely.
+  if (isClaudeContinuation(launch)) {
+    const settlement = await new Promise<'ok' | 'no-session' | { error: string }>((resolveP) => {
+      // The settle timer must also drop the exit listener, or one leaks per relaunch.
+      const timer = setTimeout(() => { s.ptyManager.off('exit', onExit); resolveP('ok'); }, 2500);
+      const onExit = (ev: { projectId: number; shellIndex: number; generation: string; code: number | null; uptimeMs?: number; earlyOutput?: string }) => {
+        if (ev.projectId !== projectId || ev.shellIndex !== 0) return;
+        const live = s.ptyManager.liveShell(projectId, 0);
+        if (live && live.generation !== ev.generation) return;
+        clearTimeout(timer);
+        s.ptyManager.off('exit', onExit);
+        const text = (ev.earlyOutput ?? '').toLowerCase();
+        if ((ev.uptimeMs ?? 0) < 2500 && /no conversation found to continue|no previous session|--continue.*(?:no|not)/i.test(text)) {
+          resolveP('no-session');
+        } else {
+          resolveP('ok');
+        }
+      };
+      s.ptyManager.on('exit', onExit);
+      // Surface spawn failures instead of swallowing them — a missing
+      // `claude` binary used to end up as a blank terminal with no cause.
+      void s.ptyManager.spawn(projectId, 0, launch).then(() => publishPrimary(s, projectId, launch.argv)).catch((err: unknown) => {
+        clearTimeout(timer);
+        s.ptyManager.off('exit', onExit);
+        resolveP({ error: err instanceof Error ? err.message : String(err) });
+      });
+    });
+
+    if (typeof settlement === 'object' && 'error' in settlement) {
+      throw new Error(`shell failed to start: ${settlement.error}`);
+    }
+
+    if (settlement === 'no-session') {
+      // Force the "first" variant: temporarily null out firstLaunchedAt
+      // in the resolved project view, re-resolve, then restart cleanly.
+      s.projects.updateConfig(projectId, {}); // touch — no-op
+      const reProject = { ...project, firstLaunchedAt: null };
+      launch = resolveLaunch(reProject, s.settings, s.homeDir, process.env, launchOptions);
+      fallbackApplied = true;
+      await s.ptyManager.spawn(projectId, 0, launch);
+      publishPrimary(s, projectId, launch.argv);
+    }
+  } else {
+    await s.ptyManager.spawn(projectId, 0, launch);
+    publishPrimary(s, projectId, launch.argv);
+  }
+
+  if (!project.firstLaunchedAt) s.projects.setFirstLaunched(projectId, new Date());
+  rememberResumable(s, projectId, launch.argv);
+  void fallbackApplied; // future: return this to renderer as a toast reason
+  return { shellIndex: 0 };
 }
 
 /** Validates a local guarded-unload target before reading PTY or tracker state. */
@@ -459,82 +549,11 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     // sessions stay on disk untouched: plain `claude` never resumes one, and
     // `claude --resume` must still be able to list them.
     const project = forceFirst ? { ...projectRow, firstLaunchedAt: null } : projectRow;
-    // Idempotent: clicking an already-open project (or a tab the sidebar
-    // thinks might not be alive) used to re-enter here and throw "already
-    // spawned". Just return the index — the renderer re-attaches the stream.
-    if (s.ptyManager.isAlive(projectId, 0)) return { shellIndex: 0 };
-    assertProjectPathExists(project);
-    const cap = s.settings.get('keep_alive_cap');
-    const alive = s.shells.list();
-    if (alive.length >= cap) {
-      const decision = chooseEvictee(alive, cap, projectId, new Date());
-      if (decision.evictee) {
-        await s.ptyManager.kill(decision.evictee.projectId, decision.evictee.shellIndex);
-        s.shells.remove(decision.evictee.projectId, decision.evictee.shellIndex);
-      } else if (decision.reason === 'all-pinned') {
-        throw new Error('all shells are pinned — unpin one or raise cap');
-      }
-    }
-
-    const launchOptions = { resumeBlocked: (harness: AgentHarness) => harnessBusy(s, projectId, harness, 0) };
-    let launch = resolveLaunch(project, s.settings, s.homeDir, process.env, launchOptions);
-    let fallbackApplied = false;
-
-    // If a Claude continuation (--continue) exits within ~2.5s with "no
-    // conversation found", retry using the first variant instead. This
-    // handles the case where the on-disk claude session was cleared. The
-    // shell is published as soon as it spawns, so the tab label and status
-    // dot never wait on this check; other launches skip it entirely.
-    if (isClaudeContinuation(launch)) {
-      const settlement = await new Promise<'ok' | 'no-session' | { error: string }>((resolveP) => {
-        // The settle timer must also drop the exit listener, or one leaks per relaunch.
-        const timer = setTimeout(() => { s.ptyManager.off('exit', onExit); resolveP('ok'); }, 2500);
-        const onExit = (ev: { projectId: number; shellIndex: number; generation: string; code: number | null; uptimeMs?: number; earlyOutput?: string }) => {
-          if (ev.projectId !== projectId || ev.shellIndex !== 0) return;
-          const live = s.ptyManager.liveShell(projectId, 0);
-          if (live && live.generation !== ev.generation) return;
-          clearTimeout(timer);
-          s.ptyManager.off('exit', onExit);
-          const text = (ev.earlyOutput ?? '').toLowerCase();
-          if ((ev.uptimeMs ?? 0) < 2500 && /no conversation found to continue|no previous session|--continue.*(?:no|not)/i.test(text)) {
-            resolveP('no-session');
-          } else {
-            resolveP('ok');
-          }
-        };
-        s.ptyManager.on('exit', onExit);
-        // Surface spawn failures instead of swallowing them — a missing
-        // `claude` binary used to end up as a blank terminal with no cause.
-        void s.ptyManager.spawn(projectId, 0, launch).then(() => publishPrimary(s, projectId, launch.argv)).catch((err: unknown) => {
-          clearTimeout(timer);
-          s.ptyManager.off('exit', onExit);
-          resolveP({ error: err instanceof Error ? err.message : String(err) });
-        });
-      });
-
-      if (typeof settlement === 'object' && 'error' in settlement) {
-        throw new Error(`shell failed to start: ${settlement.error}`);
-      }
-
-      if (settlement === 'no-session') {
-        // Force the "first" variant: temporarily null out firstLaunchedAt
-        // in the resolved project view, re-resolve, then restart cleanly.
-        s.projects.updateConfig(projectId, {}); // touch — no-op
-        const reProject = { ...project, firstLaunchedAt: null };
-        launch = resolveLaunch(reProject, s.settings, s.homeDir, process.env, launchOptions);
-        fallbackApplied = true;
-        await s.ptyManager.spawn(projectId, 0, launch);
-        publishPrimary(s, projectId, launch.argv);
-      }
-    } else {
-      await s.ptyManager.spawn(projectId, 0, launch);
-      publishPrimary(s, projectId, launch.argv);
-    }
-
-    if (!project.firstLaunchedAt) s.projects.setFirstLaunched(projectId, new Date());
-    rememberResumable(s, projectId, launch.argv);
-    void fallbackApplied; // future: return this to renderer as a toast reason
-    return { shellIndex: 0 };
+    // Coalesce concurrent launches for the same slot: the `isAlive` check
+    // below is synchronous, but the `spawn` it fronts is awaited, so a
+    // second IPC arriving in that gap used to trip "already spawned: N:0"
+    // from the PTY manager's single-entry guard.
+    return SHELLS_LAUNCH_COALESCER.run(launchKey(projectId, 0), () => doShellsLaunch(s, project));
   },
   'shells:launch-plain': async (s, { projectId }) => {
     const project = s.projects.get(projectId);

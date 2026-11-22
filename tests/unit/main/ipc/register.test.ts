@@ -1368,6 +1368,33 @@ describe('primary shell tab publication (no wait on resume checks)', () => {
       r.close();
     }
   });
+
+  it('two concurrent shells:launch calls coalesce — spawn runs once, no "already spawned" throw', async () => {
+    const r = rig();
+    r.projects.setFirstLaunched(r.a.id, new Date());
+    r.settings.set('default_launch_cmd.subsequent', { argv: ['bash'], env: {} });
+    // Hold spawn open so both IPCs enter the handler before the first resolves.
+    let release!: () => void;
+    const spawnStarted = new Promise<void>((resolve) => { release = resolve; });
+    r.ptyManager.spawn.mockImplementation(async () => {
+      await spawnStarted;
+      // The rig's default `alive` toggle runs after spawn resolves; emulate it here.
+      r.ptyManager.isAlive.mockReturnValue(true);
+    });
+    try {
+      const a = r.call('shells:launch', { projectId: r.a.id });
+      const b = r.call('shells:launch', { projectId: r.a.id });
+      await vi.advanceTimersByTimeAsync(0);
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(a).resolves.toEqual({ shellIndex: 0 });
+      await expect(b).resolves.toEqual({ shellIndex: 0 });
+      expect(r.ptyManager.spawn).toHaveBeenCalledTimes(1);
+    } finally {
+      await vi.runAllTimersAsync();
+      r.close();
+    }
+  });
 });
 
 describe('shells:set-default-cli — project default-agent boundary', () => {
