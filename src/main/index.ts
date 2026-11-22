@@ -26,6 +26,7 @@ import { rescanRootsAtBoot } from './startup/boot-rescan';
 import { startDoneNotifier } from './startup/done-notifier';
 import { startReceivers } from './startup/receivers';
 import { installCrashObservability } from './startup/crash-observability';
+import { installFseventsNoiseFilter } from './startup/suppress-fsevents-noise';
 import { withoutHookConfirmed } from './notifications/claude-notifier';
 import { resolveLoginShellPath } from './domain/login-shell-path';
 import { computeTileLayout } from './window-tiling';
@@ -53,6 +54,7 @@ log.transports.file.level = 'info';
 log.transports.console.level = 'debug';
 Object.assign(console, log.functions);
 installCrashObservability({ log, app, crashReporter, pid: process.pid });
+installFseventsNoiseFilter();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
