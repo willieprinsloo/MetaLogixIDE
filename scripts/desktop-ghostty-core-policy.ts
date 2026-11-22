@@ -3,7 +3,9 @@ import { realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 
-const packageDirectory = dirname(createRequire(import.meta.url).resolve('@gespenst/core/package.json'));
+const resolvePackage = createRequire(import.meta.url).resolve;
+const packageDirectory = dirname(resolvePackage('@gespenst/core/package.json'));
+const wrapperDirectory = dirname(resolvePackage('@gespenst/xterm/package.json'));
 const worker = 'new Worker(new URL(``+new URL(`assets/terminal-worker-CfcHI8XP.js`,import.meta.url).href,``+import.meta.url),{type:`module`,name:`gespenst`})';
 const workerDisabled = '(() => { throw new Error("Ghostty workers are disabled"); })()';
 const assets = ['ghostty-vt.wasm', 'ghostty-callbacks.wasm'].map(file =>
@@ -13,6 +15,10 @@ const assets = ['ghostty-vt.wasm', 'ghostty-callbacks.wasm'].map(file =>
 /** Prevent the pinned wrapper's unused default asset paths from emitting a second WASM or worker. */
 export function ghosttyCorePolicy() {
   const paths = new Map([
+    [realpathSync(join(wrapperDirectory, 'dist/index.js')), {
+      digest: 'd4e3cc6d01e5366fbda95275cd0c320531d5402def385fd892dc6a18c7fc3dfd',
+      replacements: [],
+    }],
     [realpathSync(join(packageDirectory, 'dist/index.js')), {
       digest: 'b7ae27a93862bb1b8d52682a3422a7443ac0c7e6be0ab03678b54ff9f8b4f6c8',
       replacements: [[worker, workerDisabled] as const],
@@ -29,7 +35,8 @@ export function ghosttyCorePolicy() {
     transform(code: string, id: string) {
       const policy = paths.get(id);
       if (!policy) return;
-      if (createHash('sha256').update(code).digest('hex') !== policy.digest) throw new Error('Unexpected Ghostty loader or worker glue');
+      if (createHash('sha256').update(code).digest('hex') !== policy.digest) throw new Error(`Unexpected Ghostty JavaScript digest: ${id}`);
+      if (policy.replacements.length === 0) return;
       for (const [before, after] of policy.replacements) {
         if (code.split(before).length !== 2) throw new Error('Unrecognized Ghostty asset reference');
         code = code.replace(before, after);

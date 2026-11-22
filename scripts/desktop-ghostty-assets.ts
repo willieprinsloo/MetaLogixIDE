@@ -3,11 +3,12 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import postcss from 'postcss';
 import { GHOSTTY_HOST_SELECTOR } from '../src/shared/terminal-engine';
+import provenance from '../resources/ghostty/PROVENANCE.json';
 
 const resolvePackage = createRequire(import.meta.url).resolve;
 const assets = {
-  vt: ['@gespenst/core/ghostty-vt.wasm', 'e40fe5d53319c4d9ab9283802e2844ded9ca86eba52894f865fc67a849620166'],
-  callbacks: ['@gespenst/core/ghostty-callbacks.wasm', 'b1469aa7900b0c10f272bcb150d5c815def2cd536bf734d9e46ac6c50eea2edb'],
+  vt: ['@gespenst/core/ghostty-vt.wasm', provenance.wasm.vt.sha256],
+  callbacks: ['@gespenst/core/ghostty-callbacks.wasm', provenance.wasm.callbacks.sha256],
   stylesheet: ['@gespenst/xterm/css/xterm.css', 'e3257903000058c3958ade2add3d7ef089f144686690f02ff1402d6a2fea6f82'],
 } as const;
 const virtualPrefix = 'virtual:metaide-ghostty-';

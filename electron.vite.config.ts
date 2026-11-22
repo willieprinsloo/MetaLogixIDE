@@ -65,6 +65,7 @@ export default defineConfig({
   renderer: {
     root: 'src/renderer',
     build: {
+      manifest: 'asset-manifest.json',
       rollupOptions: {
         input: {
           index: resolve('src/renderer/index.html'),

@@ -17,6 +17,7 @@
     "lint": "eslint . --ext .ts,.tsx",
     "format": "prettier --write .",
     "test": "ELECTRON_RUN_AS_NODE=1 electron node_modules/vitest/vitest.mjs run",
+    "test:terminal-artifacts": "node --test tests/packaging/check-desktop-terminal-artifacts.mjs",
     "test:watch": "ELECTRON_RUN_AS_NODE=1 electron node_modules/vitest/vitest.mjs",
     "test:e2e": "playwright test",
     "test:e2e:full": "electron-vite build && playwright test",
@@ -44,6 +45,7 @@
     ],
     "files": [
       "out/**/*",
+      "resources/ghostty/**/*",
       "migrations/**/*",
       "package.json",
       "!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,test,__tests__,tests,powered-test,example,examples,*.d.ts,tsconfig*.json}",
