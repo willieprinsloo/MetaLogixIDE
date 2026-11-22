@@ -43,6 +43,7 @@ export function FilesTab({
   openRelPath,
   openLine,
   onOpenRelPathConsumed,
+  onActivePathChange,
   isFullscreen = false,
   onFullscreenToggle,
 }: {
@@ -50,6 +51,9 @@ export function FilesTab({
   openRelPath?: string | null;
   openLine?: number | null;
   onOpenRelPathConsumed?: () => void;
+  /** Fires when the user focuses a different file tab — used by the title-bar
+   * "Reveal in Finder" button so it can target the current file instead of the project root. */
+  onActivePathChange?: (relPath: string | null) => void;
   /** True when the host window is in native fullscreen; toolbars render an exit affordance. */
   isFullscreen?: boolean;
   /** Fire the window-level fullscreen toggle IPC; wired from App.tsx so the hook lives at the top. */
@@ -181,6 +185,9 @@ export function FilesTab({
   // Reset when project switches.
   useEffect(() => { void loadDir(undefined); setOpenFiles([]); setActivePath(null); }, [loadDir]);
 
+  // Keep the parent informed of the focused file — the title-bar "Reveal" uses this.
+  useEffect(() => { onActivePathChange?.(activePath); }, [activePath, onActivePathChange]);
+
   const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = rootRef.current;
@@ -212,7 +219,7 @@ export function FilesTab({
         dir={dir}
         openFileRelPath={activePath}
         gitFiles={gitStatus.files}
-        onGoUp={() => loadDir(undefined)}
+        onNavigate={(relPath) => loadDir(relPath)}
         onOpen={openEntry}
         onRefresh={() => loadDir(dir)}
         width={treeWidth}
@@ -389,14 +396,14 @@ function TabXIcon() {
 }
 
 function FileTreePane({
-  projectId, entries, dir, openFileRelPath, gitFiles, onGoUp, onOpen, onRefresh, width,
+  projectId, entries, dir, openFileRelPath, gitFiles, onNavigate, onOpen, onRefresh, width,
 }: {
   projectId: number;
   entries: Entry[];
   dir: string | undefined;
   openFileRelPath: string | null;
   gitFiles: Record<string, GitFileStatus>;
-  onGoUp: () => void;
+  onNavigate: (relPath?: string) => void;
   onOpen: (e: Entry) => void;
   onRefresh: () => void;
   width: number;
@@ -489,17 +496,51 @@ function FileTreePane({
     { label: 'Refresh',     onClick: onRefresh },
   ];
 
+  const segments = dir ? dir.split('/').filter(Boolean) : [];
+  const parentDir = segments.length <= 1 ? undefined : segments.slice(0, -1).join('/');
+
   return (
     <div className="shrink-0 overflow-y-auto py-2 px-1 text-sm" style={{ width }} onContextMenu={bgMenu}>
-      <div className="px-2 py-1 text-[11px] text-[--text-muted] font-mono truncate" title={dir ?? '/'}>
-        {dir ?? '/'}
+      <div
+        className="px-2 py-1 text-[11px] text-[--text-muted] font-mono flex items-center flex-wrap gap-x-0.5 gap-y-0.5"
+        title={dir ?? '/'}
+      >
+        <button
+          onClick={() => onNavigate(undefined)}
+          className="hover:text-[--text] hover:underline px-0.5 rounded"
+          title="Go to project root"
+        >
+          /
+        </button>
+        {segments.map((seg, i) => {
+          const segPath = segments.slice(0, i + 1).join('/');
+          const isLast = i === segments.length - 1;
+          return (
+            <span key={segPath} className="flex items-center gap-0.5 min-w-0">
+              <span className="text-[--text-muted]/50">›</span>
+              {isLast ? (
+                <span className="truncate text-[--text]" title={seg}>{seg}</span>
+              ) : (
+                <button
+                  onClick={() => onNavigate(segPath)}
+                  className="truncate hover:text-[--text] hover:underline px-0.5 rounded"
+                  title={`Go to ${segPath}`}
+                >
+                  {seg}
+                </button>
+              )}
+            </span>
+          );
+        })}
       </div>
       {dir && (
         <button
-          onClick={onGoUp}
-          className="w-full text-left px-2 py-1 rounded-md hover:bg-[--panel-strong] text-[--text-muted]"
+          onClick={() => onNavigate(parentDir)}
+          className="w-full text-left px-2 py-1 rounded-md hover:bg-[--panel-strong] text-[--text-muted] flex items-center gap-2"
+          title={parentDir ? `Up to ${parentDir}` : 'Up to project root'}
         >
-          ← root
+          <span>↰</span>
+          <span className="truncate">..</span>
         </button>
       )}
       <ul>
