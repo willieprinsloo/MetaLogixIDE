@@ -47,9 +47,8 @@ const RENDERERS: Record<string, () => string> = {
     ),
   'new-project': () =>
     renderToStaticMarkup(
-      createElement(MetaprojectSessionProvider, {
-        children: createElement(NewProjectDialog, { open: true, roots: [], onClose: noop, onCreated: noop }),
-      }),
+      createElement(MetaprojectSessionProvider, null,
+        createElement(NewProjectDialog, { open: true, roots: [], onClose: noop, onCreated: noop })),
     ),
   'permission-mode': () =>
     renderToStaticMarkup(createElement(PermissionModeDialog, { onConfirm: noopAsync, error: null })),

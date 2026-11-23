@@ -1,7 +1,7 @@
 /** Loads registered assignments and current-account project choices without sharing stale picker results. */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api } from '@renderer/api';
-import type { MetaprojectAssignment, MetaprojectFailure, MetaprojectRemoteProject, MetaprojectResult } from '@shared/metaproject-contract';
+import type { MetaprojectFailure, MetaprojectRemoteProject, MetaprojectResult } from '@shared/metaproject-contract';
 import { useMetaprojectSession } from './session';
 
 export type Load<T> = { kind: 'loading' } | { kind: 'error'; reason: MetaprojectFailure } | { kind: 'loaded'; value: T };

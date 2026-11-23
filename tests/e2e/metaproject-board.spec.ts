@@ -416,3 +416,27 @@ test('Chat keeps a refused draft and sends it only on the next explicit attempt'
     { path: CHAT_PATH, method: 'POST', authenticated: true },
   ]);
 });
+
+test('global Chat can send once over the shared socket even with no accessible project', async ({
+  profile,
+  originA,
+}) => {
+  originA.state.globalOnly = true;
+  const { win } = await profile.launch();
+  const settings = await configure(win, originA);
+  await settings.getByRole('button', { name: 'Sign in to Metaproject' }).click();
+  await signIn(win, originA);
+  await expect(settings.getByRole('button', { name: 'Sign out and forget' })).toBeVisible();
+  await settings.getByRole('button', { name: 'Close settings' }).click();
+  await openProject(win);
+  await openChat(win);
+  await expect.poll(() => originA.joined).toContain(CHANNEL_ID);
+  const composer = win.getByPlaceholder(`Message #${originA.name} room — Enter to send`);
+  const text = 'Global message without a project';
+  await composer.fill(text);
+  await composer.press('Enter');
+  await expect(composer).toHaveValue('');
+  await expect(win.getByText(text, { exact: true }).and(win.locator(':not(textarea)'))).toBeVisible();
+  expect(originA.state.globalSubmissions).toBe(1);
+  expect(originA.requests.some(({ path, method }) => path === CHAT_PATH && method === 'POST')).toBe(false);
+});

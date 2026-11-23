@@ -320,6 +320,7 @@ export interface IpcContract extends MetaprojectIpc {
   };
   'metaproject:join-channel':   { request: { channelId: number; epoch: number }; response: { ok: true } };
   'metaproject:send-message':   { request: { projectId: number; channelId: number; message: string; parentMessageId?: number | null; epoch: number }; response: { ok: true } };
+  'metaproject:send-global-message': { request: { channelId: number; message: string; parentMessageId?: number | null; epoch: number }; response: { submitted: true } };
   'metaproject:mark-read':      { request: { projectId: number; channelId: number; lastMessageId: number; epoch: number }; response: { ok: true } };
   'metaproject:edit-message':   { request: { projectId: number; channelId: number; messageId: number; message: string; epoch: number }; response: { ok: true } };
   'metaproject:delete-message': { request: { projectId: number; channelId: number; messageId: number; epoch: number }; response: { ok: true } };

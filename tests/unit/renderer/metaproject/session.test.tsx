@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { MetaprojectSessionProvider, useSignInIntent } from '@renderer/metaproject/session';
 import { ChatTab } from '@renderer/components/ChatTab';
+import { MetaprojectPanel } from '@renderer/components/settings/MetaprojectPanel';
 import { useAssignment } from '@renderer/metaproject/useAssignment';
 
 const bridge = vi.hoisted(() => ({ invoke: vi.fn(), on: vi.fn<(channel: string, listener: (event: unknown) => void) => () => void>(() => () => {}), toast: vi.fn() }));
@@ -70,6 +71,101 @@ it('cancels the submitted attempt when its target changes and ignores late compl
   expect(resume).not.toHaveBeenCalled();
 });
 
+async function renderSettings(snapshot: object) {
+  const listeners = new Map<string, (event: unknown) => void>();
+  bridge.on.mockImplementation((channel, listener) => { listeners.set(channel, listener); return () => { listeners.delete(channel); }; });
+  bridge.invoke.mockImplementation(async (channel) => {
+    if (channel === 'metaproject:session-status') return snapshot;
+    throw new Error(`Unexpected ${channel}`);
+  });
+  await act(async () => root.render(<MetaprojectSessionProvider><MetaprojectPanel /></MetaprojectSessionProvider>));
+  const input = node.querySelector<HTMLInputElement>('input[data-testid="metaproject-base-url"]');
+  if (!input) throw new Error('Missing service origin control');
+  const button = (text: string) => [...node.querySelectorAll('button')].find((b) => b.textContent === text);
+  return {
+    input, button,
+    click: async (text: string) => {
+      const control = button(text);
+      if (!control || control.disabled) throw new Error(`Unavailable ${text} button`);
+      await act(async () => control.click());
+    },
+    change: (text: string) => act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }),
+    changeSession: (snapshot: object) => act(async () => {
+      const listener = listeners.get('metaproject:session-changed');
+      if (!listener) throw new Error('Missing account status listener');
+      listener(snapshot);
+    }),
+  };
+}
+
+it('validates and normalizes origin, and does not forget sign-in until the user confirms', async () => {
+  const ui = await renderSettings(signed);
+  const newOrigin = 'https://other.invalid';
+  let fail = true;
+  bridge.invoke.mockImplementation(async (channel) => {
+    if (channel === 'metaproject:session-origin') return fail ? { ok: false, reason: 'network' } : { ok: true, value: { ...out, epoch: 3, origin: newOrigin, configuredOrigin: newOrigin } };
+    throw new Error(`Unexpected ${channel}`);
+  });
+  await ui.change(`${origin}/board`);
+  await ui.click('Save service origin');
+  expect(node.querySelector('[role="alert"]')?.textContent).toContain('Enter an HTTPS origin');
+  await ui.change('https://FIXTURE.invalid:443/');
+  await ui.click('Save service origin');
+  expect(ui.input.value).toBe(origin);
+  await ui.change('https://OTHER.invalid:443/');
+  await ui.click('Save service origin');
+  const confirmation = node.querySelector('[aria-label="Confirm service origin change"]');
+  expect(confirmation?.textContent).toContain(`Switch to ${newOrigin}? This signs you out`);
+  expect(ui.button('Save service origin')?.disabled).toBe(true);
+  await ui.click('Cancel origin change');
+  expect(ui.button('Switch origin')).toBeUndefined();
+  expect(bridge.invoke).not.toHaveBeenCalledWith('metaproject:session-origin', expect.anything());
+  await ui.click('Save service origin');
+  await ui.click('Switch origin');
+  expect(bridge.invoke).toHaveBeenCalledWith('metaproject:session-origin', { epoch: 2, origin: newOrigin });
+  expect(node.querySelector('[role="alert"]')?.textContent).toContain('Could not reach Metaproject');
+  expect(ui.input.value).toBe('https://OTHER.invalid:443/');
+  fail = false;
+  await ui.click('Save service origin');
+  await ui.click('Switch origin');
+  expect(ui.input.value).toBe(newOrigin);
+  expect(ui.button('Sign out and forget')).toBeUndefined();
+  expect(node.querySelector('[role="alert"]')).toBeNull();
+});
+
+it('discards an earlier epoch’s confirmation and lets the user retry incomplete forget', async () => {
+  const ui = await renderSettings(signed);
+  await ui.change('https://other.invalid');
+  await ui.click('Save service origin');
+  expect(ui.button('Switch origin')).toBeDefined();
+  await ui.changeSession({ ...out, phase: 'signing-in', epoch: 3, attemptId: 'fixture-attempt' });
+  expect(ui.button('Switch origin')).toBeUndefined();
+  expect(ui.input.disabled).toBe(true);
+  expect(ui.button('Save service origin')?.disabled).toBe(true);
+  const incomplete = { ...out, epoch: 4, warning: 'forget-incomplete' };
+  await ui.changeSession({ ...signed, epoch: 3 });
+  let finish: ((value: unknown) => void) | undefined;
+  bridge.invoke.mockImplementation(async (channel, input) => {
+    if (channel === 'metaproject:session-logout' && input.epoch === 3) return new Promise((resolve) => { finish = resolve; });
+    if (channel === 'metaproject:session-logout' && input.epoch === 4) return { ok: true, value: { ...out, epoch: 5 } };
+    throw new Error(`Unexpected ${channel}`);
+  });
+  await ui.click('Sign out and forget');
+  expect(bridge.invoke).toHaveBeenCalledWith('metaproject:session-logout', { epoch: 3 });
+  expect(ui.button('Sign out and forget')?.disabled).toBe(true);
+  expect(ui.input.disabled).toBe(true);
+  await act(async () => finish?.({ ok: true, value: incomplete }));
+  expect(node.textContent).toContain('could not clear remembered sign-in');
+  await ui.click('Retry sign-out');
+  expect(bridge.invoke).toHaveBeenCalledWith('metaproject:session-logout', { epoch: 4 });
+  expect(bridge.invoke).not.toHaveBeenCalledWith('metaproject:session-origin', expect.anything());
+  expect(ui.button('Retry sign-out')).toBeUndefined();
+  expect(node.textContent).not.toContain('could not clear remembered sign-in');
+});
+
 const channelId = 9;
 const remoteProjectId = 42;
 const msg = (id: number, message: string) => ({ id, channel_id: channelId, user_id: 1, message, created_at: '2026-11-23T12:00:00Z', parent_message_id: null });
@@ -114,12 +210,13 @@ function chat() {
   return { emit, defaultInvoke, render, button, click, input };
 }
 
-it('uses the same accessible remote scope for all mutations and preserves a newer draft on refusal', async () => {
+it('uses the project room’s REST scope for all mutations and preserves a newer draft on refusal', async () => {
   const ui = chat();
   let rejectSend: ((reason: Error) => void) | undefined;
   let rejectEdit: ((reason: Error) => void) | undefined;
   vi.stubGlobal('confirm', () => true);
   bridge.invoke.mockImplementation(async (channel) => {
+    if (channel === 'metaproject:list-all-channels') return { channels: [{ id: channelId, project_id: remoteProjectId, name: 'project', is_private: false }] };
     if (channel === 'metaproject:list-messages') return { messages: [msg(10, 'original')] };
     if (channel === 'metaproject:send-message') return new Promise((_, reject) => { rejectSend = reject; });
     if (channel === 'metaproject:edit-message') return new Promise((_, reject) => { rejectEdit = reject; });
@@ -151,14 +248,62 @@ it('uses the same accessible remote scope for all mutations and preserves a newe
   for (const action of ['send-message', 'edit-message', 'delete-message']) expect(bridge.invoke.mock.calls.filter(([name]) => name === `metaproject:${action}`)).toHaveLength(1);
 });
 
-it('does not fabricate a project scope when only global Chat is available', async () => {
+it.each(['empty', 'failed'])('submits in a global room with a %s project list and renders only a real echo', async (projects) => {
   const ui = chat();
-  bridge.invoke.mockImplementation(async (channel) => ui.defaultInvoke(channel, false));
+  bridge.invoke.mockImplementation(async (channel) => {
+    if (channel === 'metaproject:send-global-message') return { submitted: true };
+    if (channel === 'metaproject:assignment-list' && projects === 'failed') return { ok: false, reason: 'network' };
+    return ui.defaultInvoke(channel, false);
+  });
   await ui.render();
-  expect(node.textContent).toContain('No accessible Metaproject project');
-  const composer = node.querySelector('textarea');
-  expect(composer?.disabled).toBe(true);
+  expect(node.textContent).toContain('Message history is unavailable without an accessible Metaproject project');
+  const composer = await ui.input('  real global message  ');
+  expect(composer.disabled).toBe(false);
+  await act(async () => composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+  expect(bridge.invoke).toHaveBeenCalledWith('metaproject:send-global-message', { epoch: 2, channelId, message: 'real global message' });
+  expect(composer.value).toBe('');
   expect(bridge.invoke.mock.calls.some(([channel]) => channel === 'metaproject:list-messages' || channel === 'metaproject:send-message')).toBe(false);
+  expect(node.textContent).not.toContain('real global message');
+  const message = { ...msg(10, 'real global message'), project_id: null, attachments: [{ id: 8, filename: 'notes.txt', file_size: 10 }] };
+  for (const [epoch, room, incoming] of [[1, channelId, message], [2, 11, { ...message, channel_id: 11 }], [2, channelId, { ...message, channel_id: 11 }]] as const) {
+    await ui.emit('metaproject:chat-event', { epoch, event: 'channel_message', payload: { channel_id: room, message: incoming } });
+    expect(node.textContent).not.toContain('real global message');
+  }
+  const echo = { epoch: 2, event: 'channel_message', payload: { channel_id: channelId, message } };
+  await ui.emit('metaproject:chat-event', echo);
+  await ui.emit('metaproject:chat-event', echo);
+  expect(node.textContent?.match(/real global message/g)).toHaveLength(1);
+  expect(ui.button('Edit')).toBeUndefined();
+  expect(ui.button('Delete')).toBeUndefined();
+  expect(node.textContent).toContain('notes.txt');
+  expect(ui.button('Download to Downloads')?.disabled).toBe(true);
+});
+
+it('uses global dispatch even with a REST scope and retains unsent or newer input on failures', async () => {
+  const ui = chat();
+  let fail: ((reason: Error) => void) | undefined;
+  bridge.invoke.mockImplementation(async (channel) => {
+    if (channel === 'metaproject:list-messages') return { messages: [] };
+    if (channel === 'metaproject:send-global-message') return new Promise((_, reject) => { fail = reject; });
+    return ui.defaultInvoke(channel);
+  });
+  await ui.render();
+  expect(bridge.invoke).toHaveBeenCalledWith('metaproject:list-messages', { epoch: 2, channelId, projectId: remoteProjectId, limit: 50 });
+  const composer = await ui.input('draft to keep');
+  const enter = () => act(async () => composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+  await enter();
+  expect(bridge.invoke).toHaveBeenCalledWith('metaproject:send-global-message', { epoch: 2, channelId, message: 'draft to keep' });
+  await act(async () => fail?.(new Error('socket unavailable')));
+  expect(composer.value).toBe('draft to keep');
+  expect(bridge.toast).toHaveBeenCalledWith('Could not send the message. Try again.', { kind: 'error' });
+  const sends = () => bridge.invoke.mock.calls.filter(([name]) => name === 'metaproject:send-global-message');
+  expect(sends()).toHaveLength(1);
+  await enter();
+  await ui.input('different draft');
+  await act(async () => fail?.(new Error('socket unavailable')));
+  expect(composer.value).toBe('different draft');
+  expect(sends()).toHaveLength(2);
+  expect(bridge.invoke).not.toHaveBeenCalledWith('metaproject:send-message', expect.anything());
 });
 
 it('refreshes the scoped row after a REST edit acknowledgement without waiting for a socket echo', async () => {
@@ -166,7 +311,7 @@ it('refreshes the scoped row after a REST edit acknowledgement without waiting f
   let text = 'original';
   let reads = 0;
   bridge.invoke.mockImplementation(async (channel) => {
-    if (channel === 'metaproject:list-messages') { reads++; return { messages: [msg(10, text)] }; }
+    if (channel === 'metaproject:list-messages') { reads++; return { messages: [{ ...msg(10, text), project_id: null }] }; }
     if (channel === 'metaproject:edit-message') { text = 'acknowledged'; return { ok: true }; }
     return ui.defaultInvoke(channel);
   });
@@ -175,16 +320,24 @@ it('refreshes the scoped row after a REST edit acknowledgement without waiting f
   await ui.click('Edit');
   await ui.input('acknowledged', true);
   await ui.click('Save');
+  expect(bridge.invoke).toHaveBeenCalledWith('metaproject:edit-message', { epoch: 2, channelId, projectId: remoteProjectId, messageId: 10, message: 'acknowledged' });
   expect(reads).toBe(2);
   expect(node.textContent).toContain('acknowledged');
   expect(node.textContent).not.toContain('original');
 });
 
-it('refreshes after verified reconnect and reconciles live edits and deletes before history resolves', async () => {
+it('refreshes only after a confirmed room rejoin and reconciles live edits and deletes before history resolves', async () => {
   const ui = chat();
   let reads = 0;
   let finish: ((value: unknown) => void) | undefined;
-  bridge.invoke.mockImplementation(async (channel) => {
+  let reconnect = false;
+  const joins = new Map<number, (value: { ok: true }) => void>();
+  bridge.invoke.mockImplementation(async (channel, input) => {
+    if (channel === 'metaproject:list-all-channels') return { channels: [
+      { id: channelId, project_id: null, name: 'general', is_private: false },
+      { id: 11, project_id: remoteProjectId, name: 'project chat', is_private: false },
+    ] };
+    if (channel === 'metaproject:join-channel' && reconnect) return new Promise((resolve) => { joins.set(input.channelId, resolve); });
     if (channel === 'metaproject:list-messages') {
       if (++reads === 1) return { messages: [msg(10, 'stale edit')] };
       return new Promise((resolve) => { finish = resolve; });
@@ -195,7 +348,13 @@ it('refreshes after verified reconnect and reconciles live edits and deletes bef
   expect(node.textContent).toContain('stale edit');
   await ui.emit('metaproject:session-changed', { ...signed, connected: false });
   expect(reads).toBe(1);
+  reconnect = true;
   await ui.emit('metaproject:session-changed', signed);
+  expect([...joins.keys()]).toEqual([channelId, 11]);
+  expect(reads).toBe(1);
+  await act(async () => joins.get(11)?.({ ok: true }));
+  expect(reads).toBe(1);
+  await act(async () => joins.get(channelId)?.({ ok: true }));
   expect(reads).toBe(2);
   expect(finish).toBeDefined();
   await ui.emit('metaproject:chat-event', { epoch: 2, event: 'channel_message_edited', payload: { channel_id: channelId, message: msg(10, 'live edit') } });
@@ -206,6 +365,39 @@ it('refreshes after verified reconnect and reconciles live edits and deletes bef
   expect(node.textContent).not.toContain('stale edit');
   expect(node.textContent).not.toContain('stale deleted text');
   expect([...node.querySelectorAll('button[title="Edit"]')]).toHaveLength(2);
+});
+
+it('keeps REST history available when the live join is refused and retries the subscription on request', async () => {
+  const ui = chat();
+  let denied = true;
+  bridge.invoke.mockImplementation(async (channel) => {
+    if (channel === 'metaproject:join-channel' && denied) throw new Error('join refused');
+    if (channel === 'metaproject:list-messages') return { messages: [msg(10, 'REST still works')] };
+    return ui.defaultInvoke(channel);
+  });
+  await ui.render();
+  expect(bridge.invoke).toHaveBeenCalledWith('metaproject:join-channel', { epoch: 2, channelId });
+  expect(node.querySelector('[role="alert"]')?.textContent).toContain('Could not subscribe to live Chat updates');
+  expect(node.textContent).toContain('REST still works');
+  const joins = () => bridge.invoke.mock.calls.filter(([name]) => name === 'metaproject:join-channel').length;
+  const before = joins();
+  denied = false;
+  await ui.click('Retry Chat');
+  expect(joins()).toBeGreaterThan(before);
+  expect(node.querySelector('[role="alert"]')).toBeNull();
+  expect(node.textContent).toContain('REST still works');
+});
+
+it('never borrows another project’s REST scope for its project room', async () => {
+  const ui = chat();
+  bridge.invoke.mockImplementation(async (channel) => {
+    if (channel === 'metaproject:list-all-channels') return { channels: [{ id: channelId, project_id: 99, name: 'restricted', is_private: true }] };
+    return ui.defaultInvoke(channel);
+  });
+  await ui.render();
+  expect(node.textContent).toContain('No accessible Metaproject project for this channel');
+  expect(node.querySelector('textarea')?.disabled).toBe(true);
+  expect(bridge.invoke).not.toHaveBeenCalledWith('metaproject:list-messages', expect.anything());
 });
 
 function FolderChat() {

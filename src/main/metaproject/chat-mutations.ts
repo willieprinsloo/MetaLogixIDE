@@ -13,7 +13,7 @@ export type ChatMutation = Target & Change;
 export type ChatRead = <T>(path: string, schema: z.ZodType<T>, request: WebMutation) => Promise<T>;
 const id = z.number().int().positive();
 const accepted = z.object({ success: z.literal(true) });
-const saved = accepted.extend({ message: z.object({ id, channel_id: id, project_id: id }) });
+const saved = accepted.extend({ message: z.object({ id, channel_id: id, project_id: id.nullable() }) });
 const deleted = saved.extend({ id });
 const ok = { ok: true } as const;
 

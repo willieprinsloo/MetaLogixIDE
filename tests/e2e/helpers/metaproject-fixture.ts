@@ -24,6 +24,10 @@ const loginShape = z.object({
 });
 const draftShape = z.object({ is_draft: z.literal(true) });
 const sendShape = z.object({ message: z.string().min(1), parent_message_id: z.null() });
+const globalSend = z.tuple([
+  z.literal('send_channel_message'),
+  sendShape.extend({ channel_id: z.literal(CHANNEL_ID) }),
+]);
 
 // ws is already pinned by engine.io-client. Use its real WebSocket server,
 // with the minimal Engine.IO v4 / Socket.IO namespace/event packets below.
@@ -89,6 +93,8 @@ export interface MetaprojectFixture {
     rejected: number;
     sockets: number;
     refuseChatSend: boolean;
+    globalOnly: boolean;
+    globalSubmissions: number;
     redirects: Redirects;
   };
   publishChat(text: string): void;
@@ -155,11 +161,11 @@ const boardScript = `document.getElementById('draft').addEventListener('click', 
   } catch { result.textContent = 'Failed'; }
 });`;
 
-function chatMessage(actor: number, id: number, text: string): object {
+function chatMessage(actor: number, id: number, text: string, projectId: number | null = REMOTE_ID): object {
   return {
     id,
     channel_id: CHANNEL_ID,
-    project_id: REMOTE_ID,
+    project_id: projectId,
     user_id: actor,
     user_name: 'Fixture teammate',
     message: text,
@@ -187,6 +193,8 @@ export async function startMetaprojectFixture(label: 'A' | 'B'): Promise<Metapro
     rejected: 0,
     sockets: 0,
     refuseChatSend: false,
+    globalOnly: false,
+    globalSubmissions: 0,
     redirects: {},
   };
   const clients = new Map<FixtureSocket, { ready: boolean; joined: boolean }>();
@@ -262,15 +270,15 @@ export async function startMetaprojectFixture(label: 'A' | 'B'): Promise<Metapro
       state.logouts++;
       return redirect(res, '/?logout=success');
     }
-    if (p === '/api/projects') return json(res, 200, { success: true, projects: [project] });
+    if (p === '/api/projects') return json(res, 200, { success: true, projects: state.globalOnly ? [] : [project] });
     if (p === `/api/projects/${REMOTE_ID}`) return json(res, 200, { success: true, project });
     if (p === '/api/users') return json(res, 200, { success: true, users: [user] });
     if (p === '/api/chat/channels/' || p === `/api/projects/${REMOTE_ID}/chat/channels/`) {
+      const wantsGlobal = url.searchParams.get('scope') === 'global';
+      const channel = { id: CHANNEL_ID, name: `${name} room`, project_id: state.globalOnly ? null : REMOTE_ID, is_private: false };
       return json(res, 200, {
         success: true,
-        channels: [
-          { id: CHANNEL_ID, name: `${name} room`, project_id: REMOTE_ID, is_private: false },
-        ],
+        channels: wantsGlobal && !state.globalOnly ? [] : [channel],
       });
     }
     if (p === CHAT_PATH && method === 'GET')
@@ -384,6 +392,11 @@ export async function startMetaprojectFixture(label: 'A' | 'B'): Promise<Metapro
             ws.send(
               `42${JSON.stringify(['channel_joined', { channel_id: CHANNEL_ID, active_users: [] }])}`,
             );
+          }
+          const submission = globalSend.safeParse(incoming);
+          if (entry.joined && state.globalOnly && submission.success) {
+            state.globalSubmissions++;
+            publish(chatMessage(actorId, 120 + state.globalSubmissions, submission.data[1].message, null));
           }
         }
       });

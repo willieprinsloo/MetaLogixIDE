@@ -1,5 +1,6 @@
 /** Owns the local creation draft and optional, independently cancellable assignment step. */
 import { useState } from 'react';
+import type { AssignmentCreateOutcome, MetaprojectResult } from '@shared/metaproject-contract';
 import type { Project, Root } from '@shared/types';
 import { api } from '@renderer/api';
 import { useAssignmentOperation, type AssignmentChoice } from './assignment-operations';
@@ -54,22 +55,29 @@ export function useNewProject(roots: Root[], defaultRootId: number | null | unde
   const [created, setCreated] = useState<Project | null>(null);
   const choice = pickAssignment(wiring);
   const canSubmit = !operation.busy && (created !== null || (local.nameOk && local.rootId !== null && local.gitOk && choice !== undefined));
+
+  async function finishProject(project: Project, intent: Intent) {
+    setCreated(project);
+    if (!choice || wiring.epoch === undefined) { onCreated(project); return; }
+    setStep('assignment');
+    const notice = await assignFolder(project.id, { choice, epoch: wiring.epoch, current: wiring.current }, intent);
+    if (!intent.current()) return;
+    if (notice) setError(notice); else onCreated(project);
+  }
+
+  async function createProject(rootId: number, intent: Intent) {
+    setError(null); setStep('local');
+    try {
+      const { project } = await createLocal(local, rootId);
+      if (intent.current()) await finishProject(project, intent);
+    } catch (e) { if (intent.current()) setError(String(e).replace(/^Error:\s*/, '')); }
+    finally { if (intent.current()) setStep(null); }
+  }
+
   const submit = () => operation.run(async (intent) => {
     if (!canSubmit) return;
     if (created) { onCreated(created); return; }
-    if (local.rootId === null) return;
-    setError(null); setStep('local');
-    try {
-      const { project } = await createLocal(local, local.rootId);
-      if (!intent.current()) return;
-      setCreated(project);
-      if (!choice || wiring.epoch === undefined) { onCreated(project); return; }
-      setStep('assignment');
-      const notice = await assignFolder(project.id, { choice, epoch: wiring.epoch, current: wiring.current }, intent);
-      if (!intent.current()) return;
-      if (notice) setError(notice); else onCreated(project);
-    } catch (e) { if (intent.current()) setError(String(e).replace(/^Error:\s*/, '')); }
-    finally { if (intent.current()) setStep(null); }
+    if (local.rootId !== null) await createProject(local.rootId, intent);
   });
   return { local, wiring, error, created, canSubmit, submit, saving: operation.busy, canDismiss: step !== 'local',
     cancel: operation.cancel, savingStep: step === 'assignment' ? 'Assigning Metaproject…' : local.mode === 'empty' ? 'Creating project…' : 'Cloning project…' };
@@ -97,12 +105,17 @@ async function assignFolder(projectId: number, { choice, epoch, current }: NewAs
   if (!valid()) return stale;
   try {
     const context = await api.invoke('metaproject:assignment-get', { projectId });
-    if (!valid() || (context.ok && context.value.projectId !== projectId)) return stale;
-    if (!context.ok) return `Local project created without an assignment. ${failureCopy[context.reason]}`;
-    const result = await intent.apply(context.value, { ...choice, epoch });
     if (!valid()) return stale;
-    if (!result.ok) return `Local project created without a new assignment. ${failureCopy[result.reason]} Review Project Settings.`;
-    if (result.value.kind === 'created-not-assigned') return `Created Metaproject project ${result.value.project.name} (#${result.value.project.id}), but it was not assigned to the local folder. ${failureCopy[result.value.reason]} Link the existing project from Project Settings.`;
-    return result.value.kind === 'committed-reload' ? `${assignmentReloadCopy} Open the local project and review Project Settings.` : null;
+    if (!context.ok) return `Local project created without an assignment. ${failureCopy[context.reason]}`;
+    if (context.value.projectId !== projectId) return stale;
+    const result = await intent.apply(context.value, { ...choice, epoch });
+    return valid() ? assignmentNotice(result) : stale;
   } catch { return 'Local project created, but its assignment could not be confirmed. Review Project Settings.'; }
+}
+
+function assignmentNotice(result: MetaprojectResult<AssignmentCreateOutcome>): string | null {
+  if (!result.ok) return `Local project created without a new assignment. ${failureCopy[result.reason]} Review Project Settings.`;
+  const { value } = result;
+  if (value.kind === 'created-not-assigned') return `Created Metaproject project ${value.project.name} (#${value.project.id}), but it was not assigned to the local folder. ${failureCopy[value.reason]} Link the existing project from Project Settings.`;
+  return value.kind === 'committed-reload' ? `${assignmentReloadCopy} Open the local project and review Project Settings.` : null;
 }

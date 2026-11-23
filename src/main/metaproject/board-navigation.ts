@@ -16,7 +16,7 @@ function isAuthPath(path: string): boolean { return /^\/auth(?:\/|$)/.test(path)
 
 function isProtected(path: string, topLevel: boolean): boolean {
   if (/^\/api\/(?:projects|stories|chat|users|user\/preferences)(?:\/|$)/.test(path)) return true;
-  return topLevel && /^\/(?:projects|dashboard|old-dashboard|help|settings|uploads)(?:\/|$)/.test(path);
+  return topLevel && (path === '/digest' || /^\/(?:projects|dashboard|old-dashboard|help|settings|uploads)(?:\/|$)/.test(path));
 }
 
 function isExpiry(reply: Reply, origin: MetaprojectOrigin): boolean {
@@ -33,9 +33,13 @@ export function guestReplyDecision(reply: Reply, origin: MetaprojectOrigin): Met
   const topLevel = reply.resourceType === 'mainFrame';
   if (isProtected(url.pathname, topLevel) && isExpiry(reply, origin)) return 'expired';
   if (!topLevel) return null;
-  if (reply.statusCode === 403) return 'denied';
-  if (reply.statusCode === 404) return 'not-found';
-  return reply.statusCode >= 500 ? 'network' : null;
+  return mainFrameFailure(reply.statusCode);
+}
+
+function mainFrameFailure(status: number): MetaprojectFailure | null {
+  if (status === 403) return 'denied';
+  if (status === 404) return 'not-found';
+  return status >= 500 ? 'network' : null;
 }
 
 /** Bind policy before load and return the teardown that restores the partition's default guard. */
@@ -76,7 +80,7 @@ export function bindGuestNavigation(jar: Session, contents: WebContents, origin:
     event.preventDefault();
     if (event.isMainFrame && !state.outcome) fail('protocol');
   });
-  bindGuestInteraction(contents, origin, state, events, fail, () => navigable !== null);
+  bindGuestInteraction({ contents, origin, state, events, fail, isExternal: () => navigable !== null });
   return () => { bindPartitionGuard(jar, origin); jar.webRequest.onHeadersReceived(null); };
 }
 
@@ -84,7 +88,16 @@ function safeWebUrl(url: URL): boolean {
   return !url.username && !url.password && ['http:', 'https:'].includes(url.protocol);
 }
 
-function bindGuestInteraction(contents: WebContents, origin: MetaprojectOrigin, state: GuestNavigation, events: GuestEvents, fail: (reason: MetaprojectFailure) => void, isExternal: () => boolean): void {
+type GuestInteraction = {
+  readonly contents: WebContents;
+  readonly origin: MetaprojectOrigin;
+  readonly state: GuestNavigation;
+  readonly events: GuestEvents;
+  readonly fail: (reason: MetaprojectFailure) => void;
+  readonly isExternal: () => boolean;
+};
+
+function bindGuestInteraction({ contents, origin, state, events, fail, isExternal }: GuestInteraction): void {
   contents.setWindowOpenHandler(({ url, postBody, disposition }) => {
     if (!state.initial && !postBody && disposition !== 'default' && URL.parse(url)?.origin !== origin) events.candidate(url);
     return { action: 'deny' };

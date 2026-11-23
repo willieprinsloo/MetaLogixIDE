@@ -4,7 +4,7 @@ import { AccountStatus, useMetaprojectSession, useSignInIntent } from '@renderer
 import { AssignmentPanel } from '@renderer/metaproject/AssignmentPanel';
 import { mpButton, persistenceCopy } from '@renderer/metaproject/messages';
 import type { Load } from '@renderer/metaproject/useAssignment';
-import { useChatComposer, useChatHistory, useChatState, useCurrentChat, useMessageEdit, type Attachment, type Channel, type ChatScope, type Message as Msg, type SignedIn } from '@renderer/metaproject/chat-state';
+import { useChatComposer, useChatHistory, useChatState, useCurrentChat, useMessageEdit, type Attachment, type Channel, type ChatScope, type ChatSendScope, type Message as Msg, type SignedIn } from '@renderer/metaproject/chat-state';
 import { SHORTCUT_COPY } from '@renderer/shortcut-copy';
 import { api } from '@renderer/api';
 import { toast } from '@renderer/hooks/useToasts';
@@ -54,10 +54,10 @@ type Rooms = ReturnType<typeof useChatState>;
 type WorkspaceProps = { rooms: Rooms; status: SignedIn; numericMpId: number | null; compact: boolean };
 
 function ChatWorkspace({ rooms, status, numericMpId, compact }: WorkspaceProps) {
-  const history = useChatHistory(rooms.scope, status, rooms.retry, maybeNotify);
+  const history = useChatHistory(rooms, status, maybeNotify);
   return <>
     <ChannelNavigation rooms={rooms} numericMpId={numericMpId} compact={compact} unreadByChannel={history.unread} />
-    <ChatConversation key={`${rooms.active?.id}:${rooms.scope?.projectId}`} rooms={rooms} status={status} compact={compact} history={history} />
+    <ChatConversation key={rooms.active?.id} rooms={rooms} status={status} compact={compact} history={history} />
   </>;
 }
 
@@ -104,7 +104,7 @@ function ChatConversation({ rooms, status, compact, history }: ConversationProps
   return <div className="flex-1 flex flex-col min-h-0">
     <ChatRoomHeader status={status} channel={rooms.active} />
     <ChatHistoryView rooms={rooms} status={status} compact={compact} history={history} />
-    <ChatRoomComposer channel={rooms.active} scope={rooms.scope} users={rooms.users} refresh={history.refresh} />
+    <ChatRoomComposer channel={rooms.active} scope={rooms.sendScope} users={rooms.users} refresh={history.refresh} />
   </div>;
 }
 
@@ -135,7 +135,9 @@ function ChatHistoryView({ rooms, status, compact, history }: ConversationProps)
           {error && <div role="alert" className="mx-3 mb-2 px-3 py-1.5 rounded-md text-xs bg-[--danger]/10 text-[--danger] border border-[--danger]/30">
             {chatReadError({ channelError, projectError, joinError, historyError: history.error })} <button className={mpButton} onClick={reload}>Retry Chat</button>
           </div>}
-          {unavailable && !projectError && <p role="status" className="p-3">No accessible Metaproject project for this channel. Messages are unavailable.</p>}
+          {unavailable && <p role="status" className="p-3">{activeChannel?.project_id === null
+            ? 'Message history is unavailable without an accessible Metaproject project.'
+            : 'No accessible Metaproject project for this channel. Messages are unavailable.'}</p>}
           {loadingMessages && messages.length === 0 && !error && (
             <div className="flex items-center justify-center gap-2 text-[--text-muted] text-sm p-6">
               <span className="mp-spinner" aria-hidden />
@@ -143,7 +145,7 @@ function ChatHistoryView({ rooms, status, compact, history }: ConversationProps)
             </div>
           )}
           <MessageList
-            key={activeChannel?.id}
+            key={rooms.messageKey}
             messages={messages}
             myUserId={status.actor.id}
             scope={scope}
@@ -175,7 +177,7 @@ function EmptyChatHistory({ channel, compact }: { channel: Channel | null; compa
             </div>;
 }
 
-function ChatRoomComposer({ channel, scope, users, refresh }: { channel: Channel | null; scope: ChatScope | undefined; users: Rooms['users']; refresh: () => void }) {
+function ChatRoomComposer({ channel, scope, users, refresh }: { channel: Channel | null; scope: ChatSendScope | undefined; users: Rooms['users']; refresh: () => void }) {
   const composer = useChatComposer(scope, refresh);
   return <div className="p-2 border-t border-[--border] bg-[--panel]/40">
           <MentionComposer
@@ -541,8 +543,7 @@ function formatBytes(n: number): string {
  *   • Reveal in Finder — only shown after a successful download so the row
  *     has something to point at. Repeated downloads re-use the last-saved
  *     path unless the user closes/reopens the pane.
- * Global-channel attachments still need a project_id in the URL; the parent
- * (MessageList) computes a fallback from any accessible project.
+ * Global-channel attachments still require the verified REST project context.
  */
 function AttachmentRow({ attachment, projectId }: { attachment: Attachment; projectId: number | null }) {
   const { epoch, isCurrent } = useCurrentChat();
@@ -585,7 +586,7 @@ function AttachmentRow({ attachment, projectId }: { attachment: Attachment; proj
       </div>
       <button
         onClick={download}
-        disabled={busy}
+        disabled={busy || projectId === null}
         title={savedPath ? `Re-download to Downloads` : 'Download to Downloads'}
         className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel]"
       >

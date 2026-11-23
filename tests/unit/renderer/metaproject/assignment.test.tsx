@@ -171,3 +171,51 @@ it.each(['preflight', 'mutation', 'committed'])('keeps the New Project assignmen
     expect(onCreated).not.toHaveBeenCalled();
   } finally { ui.dispose(); }
 });
+
+it.each(['wrong-folder', 'read-failed', 'write-failed', 'remote-created', 'assigned'] as const)('opens the already-created local folder safely after %s', async (outcome) => {
+  const ui = fixture();
+  const onCreated = vi.fn();
+  const roots = [{ id: 1, path: '/fixture', addedAt: '2026-11-23T12:00:00Z', sortOrder: 0 }];
+  const project = { id: 7, name: 'seven' };
+  bridge.invoke.mockImplementation(async (channel) => {
+    if (channel === 'metaproject:session-status') return signedIn;
+    if (channel === 'projects:create') return { project };
+    if (channel === 'metaproject:assignment-get') {
+      if (outcome === 'read-failed') return { ok: false, reason: 'network' };
+      return { ok: true, value: outcome === 'wrong-folder' ? { ...linked, projectId: 8 } : linked };
+    }
+    if (channel === 'metaproject:assignment-create') {
+      if (outcome === 'write-failed') return { ok: false, reason: 'denied' };
+      if (outcome === 'remote-created') return { ok: true, value: { kind: 'created-not-assigned', reason: 'conflict', project: { id: 42, name: 'seven' } } };
+      return { ok: true, value: { kind: 'assigned', assignment: linked } };
+    }
+    throw new Error(`Unexpected ${channel}`);
+  });
+  try {
+    await ui.render(<NewProjectDialog open roots={roots} onClose={vi.fn()} onCreated={onCreated} />);
+    const name = ui.node.querySelector<HTMLInputElement>('[data-testid="new-project-name"]');
+    if (!name) throw new Error('Missing folder name input');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(name, 'seven');
+      name.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await ui.click('Create new');
+    await ui.click('Create');
+    expect(bridge.invoke).toHaveBeenCalledWith('projects:create', { rootId: 1, name: 'seven', initGit: true });
+    expect(bridge.invoke).toHaveBeenCalledWith('metaproject:assignment-get', { projectId: 7 });
+    const notices = {
+      'wrong-folder': 'without a confirmed assignment', 'read-failed': 'Could not reach Metaproject',
+      'write-failed': 'does not have access', 'remote-created': 'Created Metaproject project seven (#42), but it was not assigned',
+    };
+    if (outcome !== 'assigned') {
+      expect(onCreated).not.toHaveBeenCalled();
+      expect(ui.node.textContent).toContain(notices[outcome]);
+      await ui.click('Open local project');
+    }
+    expect(onCreated.mock.calls).toEqual([[project]]);
+    const writes = (channel: string) => bridge.invoke.mock.calls.filter(([name]) => name === channel);
+    expect(writes('projects:create')).toHaveLength(1);
+    if (outcome === 'wrong-folder' || outcome === 'read-failed') expect(writes('metaproject:assignment-create')).toHaveLength(0);
+    else expect(writes('metaproject:assignment-create')).toEqual([['metaproject:assignment-create', { operationId, projectId: 7, revision: linked.revision, epoch: 4, name: 'seven' }]]);
+  } finally { ui.dispose(); }
+});

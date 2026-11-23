@@ -209,6 +209,7 @@ function registerAttachmentHandler(chat: ReturnType<typeof chatHandlers>): void 
 function registerChatMutations(chat: ReturnType<typeof chatHandlers>): void {
   chat('metaproject:join-channel', z.strictObject(chatChannel), (client, input) => client.joinChannel(input.channelId));
   chat('metaproject:send-message', z.strictObject({ ...chatProject, message: chatMessage, parentMessageId: positive.nullish() }), (client, input) => client.mutateChat({ ...input, kind: 'send' }));
+  chat('metaproject:send-global-message', z.strictObject({ ...chatChannel, message: chatMessage, parentMessageId: positive.nullish() }), (client, input, current) => client.sendGlobalMessage(input, current));
   chat('metaproject:mark-read', z.strictObject({ ...chatProject, lastMessageId: positive }), (client, input) => client.mutateChat({ ...input, kind: 'mark-read' }));
   chat('metaproject:edit-message', z.strictObject({ ...chatWithMessage, message: chatMessage }), (client, input) => client.mutateChat({ ...input, kind: 'edit' }));
   chat('metaproject:delete-message', z.strictObject(chatWithMessage), (client, input) => client.mutateChat({ ...input, kind: 'delete' }));

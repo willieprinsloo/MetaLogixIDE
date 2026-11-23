@@ -36,6 +36,17 @@ it('preserves a well-formed nested mapping and quoted unrelated values', () => {
   expect(editMetaprojectAssignment(doc, null)).toBe(text);
 });
 
+it.each(["'Dave''s: plan' # label", '"first: second" # label', 'https://example.test/path#section'])('preserves an unrelated scalar verbatim: %s', value => {
+  const text = `other: ${value}\n`;
+  const doc = parseAssignmentDocument(text);
+  if (!doc) throw new Error('invalid fixture');
+  expect(editMetaprojectAssignment(doc, null)).toBe(text);
+});
+
+it.each(["'unterminated", '"bad\\escape"', '"quoted"#missing-separator', "'closed' extra", ': ambiguous'])('rejects malformed scalar tokens: %s', value => {
+  expect(parseAssignmentDocument(`other: ${value}\n`)).toBeNull();
+});
+
 describe('parseMetaproject', () => {
   it('reads project_id and board_url', () => {
     const out = parseMetaproject('project_id: PROJ-42\nboard_url: https://metaproject.internal\n');

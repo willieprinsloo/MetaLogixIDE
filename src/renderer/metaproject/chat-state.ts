@@ -1,4 +1,4 @@
-/** Account-scoped Chat context, history reconciliation, and acknowledged mutations. */
+/** Account-scoped Chat context, live and historical messages, and mutation dispatch. */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { z } from 'zod';
 import { api } from '@renderer/api';
@@ -12,6 +12,8 @@ export type Channel = IpcContract['metaproject:list-all-channels']['response']['
 export type Message = IpcContract['metaproject:list-messages']['response']['messages'][number] & { deleted?: boolean };
 export type Attachment = NonNullable<Message['attachments']>[number];
 export type ChatScope = Pick<IpcContract['metaproject:list-messages']['request'], 'epoch' | 'channelId' | 'projectId'>;
+export type ChatSendScope = { kind: 'project'; target: ChatScope }
+  | { kind: 'global'; target: Pick<ChatScope, 'epoch' | 'channelId'> };
 
 /** Discards operation feedback after this consumer leaves its account or view. */
 export function useCurrentChat() {
@@ -23,22 +25,23 @@ export function useCurrentChat() {
   return { epoch, isCurrent };
 }
 
-type Mutation = 'send-message' | 'edit-message' | 'delete-message';
+type Mutation = 'send-message' | 'send-global-message' | 'edit-message' | 'delete-message';
 const mutationFailure: Record<Mutation, string> = {
   'send-message': 'Could not send the message. Try again.',
+  'send-global-message': 'Could not send the message. Try again.',
   'edit-message': 'Could not edit the message.',
   'delete-message': 'Could not delete the message.',
 };
 
-/** An invoke resolves only after server acknowledgement; failure never resends the write. */
+/** Waits for a REST acknowledgement or global socket submission; failure never resends the write. */
 export async function mutateChat<K extends Mutation>(action: K, input: IpcContract[`metaproject:${K}`]['request'], current: () => boolean): Promise<boolean> {
   if (!current()) return false;
   try { await api.invoke(`metaproject:${action}`, input); return current(); }
   catch { if (current()) toast(mutationFailure[action], { kind: 'error' }); return false; }
 }
 
-/** Restores only the submitted draft on error, never overwriting newer user input. */
-export function useChatComposer(scope: ChatScope | undefined, refresh: () => void) {
+/** Restores only the failed draft, never overwriting newer user input. */
+export function useChatComposer(scope: ChatSendScope | undefined, refresh: () => void) {
   const { isCurrent } = useCurrentChat();
   const [value, setValue] = useState('');
   const version = useRef(0);
@@ -48,10 +51,17 @@ export function useChatComposer(scope: ChatScope | undefined, refresh: () => voi
     if (!message || !scope || !isCurrent()) return;
     const sent = ++version.current;
     setValue('');
-    const saved = await mutateChat('send-message', { ...scope, message }, isCurrent);
-    if (saved) refresh(); else if (isCurrent() && version.current === sent) setValue(value);
+    if (await sendChat(scope, message, isCurrent, refresh)) return;
+    if (isCurrent() && version.current === sent) setValue(value);
   };
   return { value, change, send };
+}
+
+async function sendChat(scope: ChatSendScope, message: string, current: () => boolean, refresh: () => void) {
+  if (scope.kind === 'global') return mutateChat('send-global-message', { ...scope.target, message }, current);
+  const saved = await mutateChat('send-message', { ...scope.target, message }, current);
+  if (saved) refresh();
+  return saved;
 }
 
 /** Preserves a newer edit if another edit is acknowledged or a live update arrives. */
@@ -125,17 +135,30 @@ function useChannels(epoch: number, assignedId: number | null, retry: number) {
 
 function useJoinChannels(channels: Channel[], { connected, epoch }: SignedIn, retry: number) {
   const [error, setError] = useState(false);
-  const { current } = useMetaprojectSession();
-  useEffect(() => {
+  const [settled, setSettled] = useState<Record<number, number>>({});
+  const sequence = useRef(0);
+  const { current, chatGeneration } = useMetaprojectSession();
+  useLayoutEffect(() => {
     let live = true;
     setError(false);
     if (!connected) return;
-    void Promise.all(channels.map(({ id: channelId }) => api.invoke('metaproject:join-channel', { epoch, channelId }))).catch(() => {
-      if (live && current()?.epoch === epoch) setError(true);
-    });
+    const attempt = ++sequence.current;
+    const valid = () => {
+      const now = current();
+      return live && now?.phase === 'signed-in' && now.epoch === epoch && now.connected;
+    };
+    for (const { id: channelId } of channels) {
+      void api.invoke('metaproject:join-channel', { epoch, channelId }).then(() => {
+        if (valid()) setSettled((prior) => ({ ...prior, [channelId]: attempt }));
+      }).catch(() => {
+        if (!valid()) return;
+        setError(true);
+        setSettled((prior) => prior[channelId] === undefined ? { ...prior, [channelId]: attempt } : prior);
+      });
+    }
     return () => { live = false; };
-  }, [channels, connected, epoch, current, retry]);
-  return error;
+  }, [channels, connected, epoch, current, retry, chatGeneration]);
+  return { error, settled };
 }
 
 function scopeId(channel: Channel | null, assignedId: number | null, projects: MetaprojectRemoteProject[] | undefined) {
@@ -144,17 +167,34 @@ function scopeId(channel: Channel | null, assignedId: number | null, projects: M
   return projects.find(({ id }) => id === assignedId)?.id ?? projects[0]?.id;
 }
 
+type RoomContext = {
+  channelId: number | undefined;
+  scope: ChatScope | undefined;
+  sendScope: ChatSendScope | undefined;
+  messageKey: string | undefined;
+};
+
+function roomContext(channel: Channel | null, projectId: number | undefined, epoch: number): RoomContext {
+  if (!channel) return { channelId: undefined, scope: undefined, sendScope: undefined, messageKey: undefined };
+  const channelId = channel.id;
+  const scope = projectId === undefined ? undefined : { epoch, channelId, projectId };
+  if (channel.project_id === null) return { channelId, scope, sendScope: { kind: 'global', target: { epoch, channelId } }, messageKey: `${channelId}:${projectId ?? 'live'}` };
+  const sendScope = scope && { kind: 'project' as const, target: scope };
+  return { channelId, scope, sendScope, messageKey: scope && `${channelId}:${projectId}` };
+}
+
 /** Resolves accessible channel and project context independently of the local folder ID. */
 export function useChatState(status: SignedIn, assignedId: number | null) {
   const [retry, bump] = useState(0);
   const { projects, projectError, users } = useChatProjects(status.epoch, retry);
   const channels = useChannels(status.epoch, assignedId, retry);
-  const joinError = useJoinChannels(channels.channels, status, retry);
-  const projectId = scopeId(channels.active, assignedId, projects);
-  const scope = channels.active && projectId !== undefined ? { epoch: status.epoch, channelId: channels.active.id, projectId } : undefined;
+  const join = useJoinChannels(channels.channels, status, retry);
+  const room = roomContext(channels.active, scopeId(channels.active, assignedId, projects), status.epoch);
+  const joinAttempt = room.channelId === undefined ? undefined : join.settled[room.channelId];
   const projectNames = Object.fromEntries((projects ?? []).map((p) => [p.id, p.name]));
-  return { ...channels, scope, projectError, joinError, users, projectNames, retry, reload: () => bump((n) => n + 1),
-    unavailable: !!channels.active && projects !== undefined && !scope };
+  return { ...channels, ...room, projectError, joinError: join.error, users, projectNames, retry, reload: () => bump((n) => n + 1),
+    historyAttempt: joinAttempt ?? (status.connected ? undefined : 0),
+    unavailable: !!channels.active && projects !== undefined && !room.scope };
 }
 
 const id = z.number().int().positive();
@@ -196,19 +236,16 @@ type Read = { changes: Change[] };
 type History = { key: string; messages: Message[]; loading?: boolean; error?: boolean };
 const emptyMessages: Message[] = [];
 
-/** Reconnect reads replace stale history, with live events since read start replayed over it. */
-export function useChatHistory(scope: ChatScope | undefined, status: SignedIn, retry: number, notify: MessageEvent) {
-  const { current, chatGeneration } = useMetaprojectSession();
-  const { epoch, actor } = status;
-  const channelId = scope?.channelId;
+type HistoryRoom = Pick<ReturnType<typeof useChatState>, 'channelId' | 'scope' | 'messageKey' | 'historyAttempt' | 'retry'>;
+
+function useHistoryRead({ channelId, scope, messageKey: key, historyAttempt, retry }: HistoryRoom, epoch: number) {
+  const { current } = useMetaprojectSession();
   const projectId = scope?.projectId;
-  const key = scope ? `${channelId}:${projectId}` : undefined;
   const reading = useRef<Read | null>(null);
   const [history, setHistory] = useState<History>();
-  const { unread, received } = useUnreadNotifications(channelId, actor.username, notify);
   const [refreshCount, increment] = useState(0);
   useLayoutEffect(() => {
-    if (key === undefined || channelId === undefined || projectId === undefined) { setHistory(undefined); return; }
+    if (key === undefined || channelId === undefined || projectId === undefined || historyAttempt === undefined) return;
     const request: Read = { changes: [] };
     reading.current = request;
     const valid = () => reading.current === request && current()?.epoch === epoch;
@@ -221,7 +258,16 @@ export function useChatHistory(scope: ChatScope | undefined, status: SignedIn, r
       if (valid()) reading.current = null;
     });
     return () => { if (reading.current === request) reading.current = null; };
-  }, [channelId, projectId, key, epoch, current, retry, chatGeneration, refreshCount]);
+  }, [channelId, projectId, key, epoch, current, retry, historyAttempt, refreshCount]);
+  return { reading, history, setHistory, refresh: () => increment((n) => n + 1) };
+}
+
+/** Reads scoped history after confirmed joins and displays actual live global messages without a project. */
+export function useChatHistory(room: HistoryRoom, { epoch, actor }: SignedIn, notify: MessageEvent) {
+  const { current } = useMetaprojectSession();
+  const { channelId, messageKey: key } = room;
+  const { reading, history, setHistory, refresh } = useHistoryRead(room, epoch);
+  const { unread, received } = useUnreadNotifications(channelId, actor.username, notify);
   useLayoutEffect(() => api.on('metaproject:chat-event', ({ epoch: incoming, event, payload }) => {
     const now = current();
     if (incoming !== epoch || now?.phase !== 'signed-in' || now.epoch !== epoch) return;
@@ -230,11 +276,12 @@ export function useChatHistory(scope: ChatScope | undefined, status: SignedIn, r
     if (change.kind === 'new') received(change.message);
     if (key === undefined || channelId !== change.channelId) return;
     reading.current?.changes.push(change);
-    setHistory((prior) => prior?.key === key ? { ...prior, messages: applyChange(prior.messages, change) } : prior);
-  }), [channelId, key, current, epoch, received]);
+    setHistory((prior) => prior?.key === key ? { ...prior, messages: applyChange(prior.messages, change) }
+      : { key, messages: applyChange(emptyMessages, change) });
+  }), [channelId, key, current, epoch, received, reading, setHistory]);
   const visible = key !== undefined && history?.key === key ? history : undefined;
-  return { messages: visible?.messages ?? emptyMessages, loading: visible?.loading ?? false, error: visible?.error ?? false, unread,
-    refresh: () => increment((n) => n + 1) };
+  return { messages: visible?.messages ?? emptyMessages, loading: visible?.loading ?? (!!room.scope && room.historyAttempt === undefined),
+    error: visible?.error ?? false, unread, refresh };
 }
 
 function useUnreadNotifications(channelId: number | undefined, username: string, notify: MessageEvent) {

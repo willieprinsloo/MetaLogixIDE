@@ -19,6 +19,8 @@ const socketMessage = z.object({ channel_id: id, message });
 const socketDeleted = z.object({ channel_id: id, message_id: id });
 const channelJoined = z.object({ channel_id: id });
 type Join = { result: Promise<{ ok: true }>; finish(error?: WebFailure): void };
+type GlobalSend = { readonly channelId: number; readonly message: string; readonly parentMessageId?: number | null };
+const globalSendEvent = 'send_channel_message';
 export interface CreateRemote { name: string; description?: string; projectType?: 'kanban' | 'sprint' | 'dcad' }
 interface ClientOptions {
   origin: MetaprojectOrigin;
@@ -170,6 +172,30 @@ export class MetaprojectClient {
     return mutateChat((path, schema, mutation) => this.read(path, schema, mutation), input);
   }
 
+  /** Submit once on the same verified socket after a protected workspace membership read; not a delivery acknowledgement. */
+  async sendGlobalMessage(input: GlobalSend, current: () => boolean): Promise<{ submitted: true }> {
+    this.assertSendOwner(current);
+    const socket = this.writableSocket();
+    const visible = await this.listAllChannels('global');
+    this.assertSendOwner(current);
+    if (this.writableSocket() !== socket) throw new WebFailure('network');
+    if (!visible.some(room => room.id === input.channelId && room.project_id === null)) throw new WebFailure('denied');
+    emitGlobalMessage(socket, input);
+    return { submitted: true };
+  }
+
+  private assertSendOwner(current: () => boolean): void {
+    if (this.options.signal.aborted || !current()) throw new WebFailure('stale');
+  }
+
+  private writableSocket(): Socket {
+    const socket = this.socket;
+    if (!this.verified || !socket?.connected) throw new WebFailure('network');
+    const engine = socket.io.engine;
+    if (engine?.readyState !== 'open' || !engine.transport?.writable) throw new WebFailure('network');
+    return socket;
+  }
+
   private async read<T>(path: string, schema: z.ZodType<T>, mutation?: WebMutation): Promise<T> {
     const { jar, origin, request, signal } = this.options;
     try {
@@ -217,4 +243,22 @@ export class MetaprojectClient {
       throw error;
     }
   }
+}
+
+function emitGlobalMessage(socket: Socket, input: GlobalSend): void {
+  const body = { channel_id: input.channelId, message: input.message, parent_message_id: input.parentMessageId ?? null };
+  let outgoing = false;
+  function dispatched(event: unknown, payload: unknown): void {
+    if (event === globalSendEvent && payload === body) outgoing = true;
+  }
+  socket.onAnyOutgoing(dispatched);
+  try { socket.volatile.emit(globalSendEvent, body); }
+  catch { throw new WebFailure('network'); }
+  finally {
+    socket.offAnyOutgoing(dispatched);
+    // Socket.IO can buffer even volatile packets when the heartbeat expires on a writable transport.
+    const pending = socket.sendBuffer.findIndex(({ data }: { data?: unknown }) => Array.isArray(data) && data[0] === globalSendEvent && data[1] === body);
+    if (pending !== -1) socket.sendBuffer.splice(pending, 1);
+  }
+  if (!outgoing) throw new WebFailure('network');
 }

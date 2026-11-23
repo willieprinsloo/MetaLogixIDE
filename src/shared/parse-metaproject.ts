@@ -83,8 +83,16 @@ function tokenize(text: string): MappingLine[] | null {
 function scalar(value: string): 'mapping' | 'scalar' | 'invalid' {
   const text = value.trim();
   if (!text || text.startsWith('#')) return 'mapping';
-  if (text.startsWith("'")) return /^'(?:[^']|'')*'(?:[ \t]+#.*)?$/.test(text) ? 'scalar' : 'invalid';
-  if (text.startsWith('"')) return /^"[^"\\]*"(?:[ \t]+#.*)?$/.test(text) ? 'scalar' : 'invalid';
+  if (text.startsWith("'") || text.startsWith('"')) return quotedScalar(text);
+  return plainScalar(text);
+}
+
+function quotedScalar(text: string): 'scalar' | 'invalid' {
+  const quote = text.startsWith("'") ? /^'(?:[^']|'')*'(?:[ \t]+#.*)?$/ : /^"[^"\\]*"(?:[ \t]+#.*)?$/;
+  return quote.test(text) ? 'scalar' : 'invalid';
+}
+
+function plainScalar(text: string): 'scalar' | 'invalid' {
   const plain = text.split(/[ \t]+#/, 1)[0] ?? '';
   return /^(?:[!&*|>@`{}[\],%]|[-?:](?:[ \t]|$))|:(?:[ \t]|$)/.test(plain) ? 'invalid' : 'scalar';
 }

@@ -134,7 +134,8 @@ function useExternalDecision(board: ReturnType<typeof useLease>, covered: boolea
   useLayoutEffect(() => {
     if (candidate || covered || !restore.current) return;
     restore.current = false;
-    if (focus.current?.disabled === false) focus.current.focus(); else board.lease.current && focus.current?.parentElement?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+    if (focus.current?.disabled === false) focus.current.focus();
+    else if (board.lease.current) focus.current?.parentElement?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
   }, [candidate, covered, focus, board.lease]);
   async function handleExternal(approved: boolean) {
     if (!candidate || lease.current !== candidate.viewId || submitted.current === candidate) return;
