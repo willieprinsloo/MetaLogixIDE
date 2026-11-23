@@ -55,7 +55,9 @@ function absolutePath(path: string, cwd: string): string {
   return isAbsolute(path) ? path : `${cwd}${sep}${path}`;
 }
 
-function pathAliases(absolute: string, entryAt: RootFilesystem['entry']): PathAliases {
+type PathStep = (from: string, to: string) => void;
+
+function pathAliases(absolute: string, entryAt: RootFilesystem['entry'], checkStep?: PathStep): PathAliases {
   let parent = parse(absolute).root;
   const pending = components(absolute.slice(parent.length));
   const dependencies: string[] = [];
@@ -65,13 +67,17 @@ function pathAliases(absolute: string, entryAt: RootFilesystem['entry']): PathAl
     if (!name || name === '.') continue;
     if (name === '..') {
       dependencies.push(parent);
-      parent = dirname(parent);
+      const next = dirname(parent);
+      checkStep?.(parent, next);
+      parent = next;
       continue;
     }
     const entry = join(parent, name);
+    checkStep?.(parent, entry);
     const info = entryAt(entry);
     if (info.kind !== 'symlink') {
       parent = info.kind === 'missing' ? entry : info.canonical;
+      checkStep?.(entry, parent);
       continue;
     }
     dependencies.push(entry);
@@ -102,6 +108,14 @@ function projectProtectedPaths(projectPath: string): readonly string[] {
   return [activityPath(projectPath), join(projectPath, '.metaide/env'), join(projectPath, '.metaide/cli-profiles.json')];
 }
 
+function requireProjectStep(root: string, from: string, to: string): void {
+  if (isInsideRoot(root, to)) return;
+  // An absolute in-project link restarts from the filesystem root. Its ordinary
+  // ancestor prefixes are fine, but a step out of the project is not.
+  if (!isInsideRoot(root, from) && isInsideRoot(to, root)) return;
+  throw new Error('protected resource leaves the project');
+}
+
 /** Returns the verified root for this call. An ambiguous/unreadable boundary never grants access. */
 export function workspaceRootFor(project: RegisteredRoot, policy: WorkspaceRootPolicy): string | undefined {
   try {
@@ -110,12 +124,12 @@ export function workspaceRootFor(project: RegisteredRoot, policy: WorkspaceRootP
     const canonical = policy.fs.directory(absolute);
     const roots = [resolve(absolute), canonical];
     const entries = new Map<string, PathEntry>();
-    function aliases(path: string): PathAliases {
+    function aliases(path: string, checkStep?: PathStep): PathAliases {
       return pathAliases(absolutePath(path, cwd), (entry) => {
         const info = entries.get(entry) ?? policy.fs.entry(entry);
         entries.set(entry, info);
         return info;
-      });
+      }, checkStep);
     }
 
     for (const path of policy.protectedPaths()) {
@@ -132,6 +146,12 @@ export function workspaceRootFor(project: RegisteredRoot, policy: WorkspaceRootP
         const resource = aliases(path);
         if (roots.some((root) => overlaps(root, resource))) return undefined;
       }
+    }
+    // Start from the real root so the selected root's own lexical alias isn't
+    // mistaken for an external dependency of a resource kept inside the project.
+    for (const path of projectProtectedPaths(canonical)) {
+      const { locations, dependencies } = aliases(path, (from, to) => requireProjectStep(canonical, from, to));
+      if ([...locations, ...dependencies].some((location) => !isInsideRoot(canonical, location))) return undefined;
     }
     return canonical;
   } catch {

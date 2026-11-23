@@ -50,10 +50,65 @@ describe('remote workspace root policy', () => {
       const entries = new Map([[join(other.path, '.metaide', file), symlink(target)], [target, missing]]);
       const policy = fixture({ registeredRoots: () => [project, other, ordinary] }, entries);
       expect(workspaceRootFor(project, policy)).toBeUndefined();
-      expect(workspaceRootFor(other, policy)).toBe(other.path);
+      expect(workspaceRootFor(other, policy)).toBeUndefined();
       expect(workspaceRootFor(ordinary, policy)).toBe(ordinary.path);
     },
   );
+
+  test.each(['activity.jsonl', 'env', 'cli-profiles.json'])(
+    'refuses a selected root when its %s classification includes an external dependency',
+    (file) => {
+      const ordinary = { id: 2, path: path('ordinary') };
+      const outside = path('external-resource');
+      const policy = fixture({ registeredRoots: () => [project, ordinary] }, new Map([
+        [join(project.path, '.metaide', file), symlink(outside)],
+        [outside, symlink(join(project.path, 'resource'))],
+      ]));
+      expect(workspaceRootFor(project, policy)).toBeUndefined();
+      expect(workspaceRootFor(ordinary, policy)).toBe(ordinary.path);
+    },
+  );
+
+  test('refuses an ordinary resource step outside the canonical boundary', () => {
+    const resource: Entry = { kind: 'ordinary', canonical: path('outside/resource') };
+    const policy = fixture({}, new Map([[join(project.path, '.metaide', 'activity.jsonl'), resource]]));
+    expect(workspaceRootFor(project, policy)).toBeUndefined();
+  });
+
+  test.each([base, ['..', '..', 'project', 'resource'].join(sep)])(
+    'refuses a protected resource classified as reaching the project parent (%s)',
+    (target) => {
+      const resource = join(project.path, '.metaide', 'activity.jsonl');
+      expect(workspaceRootFor(project, fixture({}, new Map([[resource, symlink(target)]])))).toBeUndefined();
+    },
+  );
+
+  test('keeps in-root resource links eligible under a symlinked selected root', () => {
+    const selected = { ...project, path: path('selected-alias') };
+    const entries = new Map([
+      [selected.path, symlink(project.path)],
+      [join(project.path, '.metaide'), symlink(join(project.path, 'resources'))],
+      [join(project.path, 'resources', 'activity.jsonl'), symlink(join('..', 'resource'))],
+      [join(project.path, 'resource'), missing],
+    ]);
+    const policy = fixture({ registeredRoots: () => [selected] }, entries);
+    const fs = { ...policy.fs, directory: () => project.path };
+    expect(workspaceRootFor(selected, { ...policy, fs })).toBe(project.path);
+  });
+
+  test('rejects an external intermediate directory even when the selected root is registered by alias', () => {
+    const selected = { ...project, path: path('selected-alias') };
+    const external = path('external-directory');
+    const resources = join(project.path, 'resources');
+    const entries = new Map([
+      [selected.path, symlink(project.path)],
+      [join(project.path, '.metaide'), symlink(external)],
+      [external, symlink(resources)],
+    ]);
+    const policy = fixture({ registeredRoots: () => [selected] }, entries);
+    const fs = { ...policy.fs, directory: () => project.path };
+    expect(workspaceRootFor(selected, { ...policy, fs })).toBeUndefined();
+  });
 
   test('keeps a normal nested child eligible unless it overlaps the parent’s protected locations', () => {
     const child = { id: 2, path: path('project/child') };

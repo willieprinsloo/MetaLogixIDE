@@ -11,6 +11,7 @@ vi.mock('electron', async (importOriginal) => ({
 import { RpcPeer } from '../rpc';
 import { pairedTransports } from './_pairedTransports';
 import { wireHub, scrubParams, type HubOptions } from '../hub';
+import { nodeWorkspaceRootFs } from '../workspace-root-policy';
 import { handlers } from '../../ipc/register';
 import { PtyManager } from '../../pty/manager';
 import { openDb } from '../../db/connection';
@@ -267,6 +268,30 @@ describe('paired desktop workspace', () => {
     workspaceDiagnosticPaths.mockReturnValueOnce({ ...external, logFile: join(projectRoot, 'diagnostic-logs', 'main.log') });
     await expect(info()).rejects.toMatchObject(denied);
     await expect(info()).resolves.toEqual({ activityEnabled: true });
+  });
+
+  test('inventories the distinct resolved locations of the active and rotated diagnostic files', async () => {
+    const diagnosticsDir = join(realpathSync(dir), 'diagnostic-logs');
+    const logFile = join(diagnosticsDir, 'host.main.log');
+    const archive = join(diagnosticsDir, 'host.main.old.log');
+    const activeRoot = join(dir, 'active-location');
+    const archivedRoot = join(dir, 'archived-location');
+    mkdirSync(activeRoot);
+    mkdirSync(archivedRoot);
+    const activeId = projects.upsert(rootId, activeRoot, 'Active location').id;
+    const archivedId = projects.upsert(rootId, archivedRoot, 'Archived location').id;
+    const entries = new Map([[logFile, join(activeRoot, 'fixture')], [archive, join(archivedRoot, 'fixture')]]);
+    const entry = nodeWorkspaceRootFs.entry;
+    vi.spyOn(nodeWorkspaceRootFs, 'entry').mockImplementation((name) => {
+      const target = entries.get(name);
+      return target === undefined ? entry(name) : { kind: 'symlink', target };
+    });
+    const { client } = setup({ ...allowed, workspaceDiagnosticPaths: () => ({ logFile, crashDumps: join(dir, 'dumps') }) });
+    const denied = { code: 'forbidden', message: 'this project is not available through remote workspace' };
+    await expect(client.call('workspace.info', { projectId: activeId })).rejects.toMatchObject(denied);
+    await expect(client.call('workspace.info', { projectId: archivedId })).rejects.toMatchObject(denied);
+    await expect(client.call('workspace.fileRead', { projectId, relPath: 'a.txt' }))
+      .resolves.toMatchObject({ content: 'hello file' });
   });
 
   test.skipIf(process.platform === 'win32')('checks configured audit backup aliases on each request', async () => {

@@ -1,7 +1,7 @@
 import { app } from 'electron';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, lstatSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
-import { dirname, join, resolve, sep } from 'node:path';
+import { dirname, join, parse, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { RpcMethods, type Params, type Result, type RpcMethodName } from '../../shared/p2p-contract';
 import type { Services } from '../services';
@@ -61,6 +61,12 @@ const SECRET_KEY = /token|secret|password/i;
 const RegisteredRoots = z.array(z.object({ id: z.number(), path: z.string().min(1) }));
 const DatabaseFiles = z.array(z.object({ file: z.string() }));
 
+function diagnosticLogPaths(logFile: string): readonly string[] {
+  const { dir, name, ext } = parse(logFile);
+  // The app uses electron-log's default archive strategy. Either file may itself be an alias.
+  return [logFile, join(dir, `${name}.old${ext}`), dirname(logFile)];
+}
+
 function hostWorkspacePolicy(
   s: Services, auditPath: string, opts: Pick<HubOptions, 'workspaceIdentityPaths' | 'workspaceDiagnosticPaths'>,
 ): WorkspaceRootPolicy {
@@ -74,8 +80,7 @@ function hostWorkspacePolicy(
       const diagnostics = opts.workspaceDiagnosticPaths?.();
       return [
         ...(opts.workspaceIdentityPaths ?? []),
-        // The file can itself be an alias; the containing directory protects sibling rotations.
-        ...(diagnostics ? [diagnostics.logFile, dirname(diagnostics.logFile), diagnostics.crashDumps] : []),
+        ...(diagnostics ? [...diagnosticLogPaths(diagnostics.logFile), diagnostics.crashDumps] : []),
         join(s.homeDir, '.metaide'),
         app.getPath('userData'),
         s.dropStaging.dir,
