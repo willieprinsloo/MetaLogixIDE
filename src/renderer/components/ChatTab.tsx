@@ -1,22 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { MetaprojectAssignment, MetaprojectSessionSnapshot } from '@shared/metaproject-contract';
+import { AccountStatus, useMetaprojectSession, useSignInIntent } from '@renderer/metaproject/session';
+import { AssignmentPanel } from '@renderer/metaproject/AssignmentPanel';
+import { mpButton, persistenceCopy } from '@renderer/metaproject/messages';
+import type { Load } from '@renderer/metaproject/useAssignment';
 import { SHORTCUT_COPY } from '@renderer/shortcut-copy';
 import { api } from '@renderer/api';
 import { toast } from '@renderer/hooks/useToasts';
-import { usePersistedState } from '@renderer/hooks/usePersistedState';
 import {
-  ChatBubbleIcon,
-  CloseIcon,
   DeleteIcon,
   DownloadIcon,
   EditIcon,
   EmptyChannelIcon,
   FileIcon,
   FolderOpenIcon,
-  LinkPlugIcon,
 } from './chat-icons';
 
 interface Channel { id: number; project_id: number | null; name: string; is_private: boolean }
-interface MpProject { id: number; name: string; identifier?: string | null }
 interface MsgUser { id: number; username: string; display_name?: string; avatar_url?: string | null }
 interface Attachment {
   id: number;
@@ -43,256 +43,160 @@ interface Msg {
 
 interface Props {
   projectId: number;
-  metaprojectProjectId: string | null;
-  /**
-   * Renders a channel dropdown at the top instead of a horizontal channels
-   * sidebar, so the whole component fits inside the ~400 px side rail.
-   */
+  assignment: Load<MetaprojectAssignment>;
   compact?: boolean;
-  /**
-   * Called when the user wants to close the chat panel without signing in
-   * (close button on the login card, Esc key). Used by the activity-bar
-   * host to switch back to the Projects view so the panel stops reopening
-   * on next launch.
-   */
   onDismiss?: () => void;
 }
 
-/**
- * Real chat over the metaproject Socket.IO channel. The main process holds
- * the connection; here we speak IPC. On mount:
- *   1. Ask for status. If not logged in, show a compact login card.
- *   2. Otherwise: list channels for the project, pick the first, load
- *      recent messages, subscribe to `channel_message` for incoming.
- */
-export function ChatTab({ projectId, metaprojectProjectId, compact = false, onDismiss }: Props) {
-  const numericMpId = useMemo(() => {
-    if (!metaprojectProjectId) return null;
-    const n = Number(metaprojectProjectId.replace(/^[A-Za-z]+-/, ''));
-    return Number.isFinite(n) ? n : null;
-  }, [metaprojectProjectId]);
+type SignedIn = Extract<MetaprojectSessionSnapshot, { phase: 'signed-in' }>;
 
-  const [status, setStatus] = useState<{ loggedIn: boolean; connected: boolean; userName: string | null; userId: number | null } | null>(null);
+/** Keeps only the current account's Chat data mounted. An unlinked folder can still use global rooms. */
+export function ChatTab({ projectId, assignment, compact = false, onDismiss }: Props) {
+  const { snapshot } = useMetaprojectSession();
+  const signIn = useSignInIntent(projectId);
+  const [deferredProject, setDeferredProject] = useState<number | null>(null);
+  const linked = assignment.kind === 'loaded' && assignment.value.kind === 'linked' ? assignment.value : null;
+  if (snapshot?.phase !== 'signed-in' || deferredProject === projectId) return <div className="space-y-3 p-3 text-sm">
+    {snapshot?.phase === 'signed-in' ? <button className={mpButton} onClick={() => setDeferredProject(null)}>Open Chat</button> :
+      <AccountStatus onSignIn={() => signIn('Open Chat', () => setDeferredProject(null), () => setDeferredProject(projectId))} />}
+    {onDismiss && <button className={mpButton} onClick={onDismiss}>Close Chat</button>}
+  </div>;
+  return <ActiveChat key={`${snapshot.epoch}:${projectId}:${linked?.revision ?? ''}`} status={snapshot} projectId={projectId} numericMpId={linked?.remoteId ?? null} compact={compact} />;
+}
+
+function useCurrentChat() {
+  const { current, snapshot } = useMetaprojectSession();
+  const epoch = snapshot?.epoch ?? -1;
+  const live = useRef(false);
+  useLayoutEffect(() => { live.current = true; return () => { live.current = false; }; }, [epoch]);
+  const isCurrent = () => { const now = current(); return live.current && now?.phase === 'signed-in' && now.epoch === epoch; };
+  return { epoch, isCurrent };
+}
+
+interface ActiveProps { status: SignedIn; projectId: number; numericMpId: number | null; compact: boolean }
+
+function ActiveChat({ status, projectId, numericMpId, compact }: ActiveProps) {
+  const { current } = useMetaprojectSession();
+  const { epoch, actor, connected } = status;
+  const { isCurrent } = useCurrentChat();
   const [channels, setChannels] = useState<Channel[]>([]);
   const [activeChannel, setActiveChannel] = useState<Channel | null>(null);
-  const [messages, setMessages] = useState<Msg[]>([]);
+  const [history, setHistory] = useState<{ channelId: number; messages: Msg[] }>();
+  const messages = history?.channelId === activeChannel?.id ? history?.messages ?? [] : [];
   const [composer, setComposer] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [loadingChannels, setLoadingChannels] = useState(false);
+  const [channelError, setChannelError] = useState(false);
+  const [historyError, setHistoryError] = useState(false);
+  const [loadingChannels, setLoadingChannels] = useState(true);
   const [loadingMessages, setLoadingMessages] = useState(false);
-  // id → name lookup for the "Other projects" group so the dropdown shows
-  // human labels instead of `— proj 42`. Fetched once when the user logs in
-  // and cached for the session; a project rename in metaproject won't reflect
-  // until app restart, which is acceptable for a hint label.
   const [projectNames, setProjectNames] = useState<Record<number, string>>({});
-  // Directory of active users — powers the composer's @-autocomplete. Loaded
-  // once at login; small enough that caching in memory is fine.
+  const [projectContextId, setProjectContextId] = useState<number>();
+  const notifications = useRef(new Set<Notification>());
   const [users, setUsers] = useState<Array<{ id: number; username: string }>>([]);
-  // Per-channel unread counter. Bumps on channel_message events when the
-  // message's channel isn't the currently-viewed one (or when the chat rail
-  // is hidden entirely). Persisted so restarts don't lose the state.
-  const [unreadByChannel, setUnreadByChannel] = usePersistedState<Record<string, number>>(
-    'metaide.unreadByChannel',
-    {},
-    (v): v is Record<string, number> => typeof v === 'object' && v !== null && !Array.isArray(v),
-  );
+  const [unreadByChannel, setUnreadByChannel] = useState<Record<string, number>>({});
   const listRef = useRef<HTMLDivElement>(null);
+  const [retry, retryRead] = useState(0);
+  const historyProjectId = activeChannel?.project_id ?? projectContextId ?? channels.find((c) => c.project_id != null)?.project_id ?? undefined;
 
-  const refreshStatus = useCallback(async () => {
-    const s = await api.invoke('metaproject:status', undefined as never);
-    setStatus(s);
+  useEffect(() => {
+    let live = true;
+    const valid = () => live && current()?.epoch === epoch;
+    void api.invoke('metaproject:assignment-list', { epoch }).then((result) => {
+      if (!valid() || !result.ok || result.value.epoch !== epoch) return;
+      const projects = result.value.projects;
+      setProjectNames(Object.fromEntries(projects.map((p) => [p.id, p.name])));
+      setProjectContextId(projects.find((p) => p.id === numericMpId)?.id ?? projects[0]?.id);
+    }).catch(() => { /* Optional labels fall back to project IDs. */ });
+    void api.invoke('metaproject:list-users', { epoch }).then(({ users }) => { if (valid()) setUsers(users); })
+      .catch(() => { /* Usernames can still be entered in the composer. */ });
+    return () => { live = false; };
+  }, [current, epoch, numericMpId]);
+
+  useEffect(() => {
+    let live = true;
+    const valid = () => live && current()?.epoch === epoch;
+    setLoadingChannels(true); setChannelError(false);
+    void api.invoke('metaproject:list-all-channels', { scope: 'all', epoch }).then(({ channels: next }) => {
+      if (!valid()) return;
+      setChannels(next);
+      setActiveChannel((prior) => next.find((c) => c.id === prior?.id) ?? next.find((c) => numericMpId !== null && c.project_id === numericMpId) ?? next.find((c) => c.project_id === null) ?? next[0] ?? null);
+    }).catch(() => { if (valid()) setChannelError(true); }).finally(() => { if (valid()) setLoadingChannels(false); });
+    return () => { live = false; };
+  }, [current, epoch, numericMpId, retry]);
+
+  useEffect(() => {
+    if (!connected) return;
+    for (const c of channels) void api.invoke('metaproject:join-channel', { epoch, channelId: c.id }).catch(() => undefined);
+  }, [channels, connected, epoch]);
+
+  useEffect(() => {
+    const channelId = activeChannel?.id;
+    if (channelId === undefined || historyProjectId === undefined) return;
+    let live = true;
+    const valid = () => live && current()?.epoch === epoch;
+    setHistoryError(false); setLoadingMessages(true);
+    void api.invoke('metaproject:list-messages', { channelId, limit: 50, projectId: historyProjectId, epoch }).then(({ messages: next }) => {
+      if (!valid()) return;
+      setHistory((prior) => {
+        const liveMessages = prior?.channelId === channelId ? prior.messages : [];
+        const ids = new Set(next.map((m) => m.id));
+        return { channelId, messages: [...next, ...liveMessages.filter((m) => !ids.has(m.id))] };
+      });
+    }).catch(() => { if (valid()) setHistoryError(true); }).finally(() => { if (valid()) setLoadingMessages(false); });
+    return () => { live = false; };
+  }, [activeChannel?.id, historyProjectId, current, epoch, retry]);
+
+  useEffect(() => {
+    if (activeChannel) setUnreadByChannel((prev) => ({ ...prev, [String(activeChannel.id)]: 0 }));
+  }, [activeChannel]);
+
+  useLayoutEffect(() => api.on('metaproject:chat-event', ({ epoch: incoming, event, payload }) => {
+    const now = current();
+    if (incoming !== epoch || now?.phase !== 'signed-in' || now.epoch !== epoch || !payload || typeof payload !== 'object') return;
+    const p = payload as { channel_id?: number; message?: Msg; message_id?: number };
+    const channelId = p.channel_id;
+    if (channelId === undefined) return;
+    const message = p.message;
+    if (event === 'channel_message' && message) {
+      if (activeChannel?.id === channelId) setHistory((prior) => {
+        const entries = prior?.channelId === channelId ? prior.messages : [];
+        return { channelId, messages: entries.some((m) => m.id === message.id) ? entries : [...entries, message] };
+      });
+      else setUnreadByChannel((previous) => ({ ...previous, [channelId]: (previous[channelId] ?? 0) + 1 }));
+      const notice = maybeNotify(message, actor.username);
+      if (notice) {
+        const active = notifications.current;
+        active.add(notice);
+        notice.onclose = () => { active.delete(notice); };
+      }
+    }
+    if (activeChannel?.id !== channelId || (event !== 'channel_message_edited' && event !== 'channel_message_deleted')) return;
+    setHistory((prior) => prior?.channelId === channelId ? { channelId, messages: prior.messages.map((m) => {
+      if (event === 'channel_message_edited' && message?.id === m.id) return { ...m, ...message };
+      if (event === 'channel_message_deleted' && p.message_id === m.id) return { ...m, message: '[message deleted]', deleted: true };
+      return m;
+    }) } : prior);
+  }), [activeChannel?.id, actor.username, current, epoch]);
+
+  useLayoutEffect(() => {
+    const active = notifications.current;
+    return () => { for (const notice of active) notice.close(); active.clear(); };
   }, []);
-
-  useEffect(() => { void refreshStatus(); }, [refreshStatus]);
-
-  // Hydrate project-name lookup once we're logged in — cheap single call,
-  // reused everywhere a channel needs to name its parent project.
-  useEffect(() => {
-    if (!status?.loggedIn) return;
-    (async () => {
-      try {
-        const { projects } = await api.invoke('metaproject:list-projects', undefined as never);
-        const map: Record<number, string> = {};
-        for (const p of projects) map[p.id] = p.name;
-        setProjectNames(map);
-      } catch { /* names remain empty; fallback shows "proj N" */ }
-      try {
-        const { users } = await api.invoke('metaproject:list-users', undefined as never);
-        setUsers(users);
-      } catch { /* mentions still work by typing usernames verbatim */ }
-    })();
-  }, [status?.loggedIn]);
-
-  // Load channels once we're logged in. Uses the workspace-scoped endpoint
-  // so the sidebar shows EVERY channel the user is in across every project
-  // — regardless of whether the currently-selected local project has a
-  // metaproject link. When the local project IS linked, prefer opening a
-  // channel from that project first so the initial view feels contextual.
-  const [refreshCounter, setRefreshCounter] = useState(0);
-  useEffect(() => {
-    if (!status?.loggedIn) return;
-    setLoadingChannels(true);
-    (async () => {
-      try {
-        const { channels } = await api.invoke('metaproject:list-all-channels', { scope: 'all' });
-        setChannels(channels);
-        if (channels.length > 0 && !activeChannel) {
-          // Prefer a channel matching the selected project's metaproject id;
-          // fall back to the first global channel, then anything.
-          const preferred =
-            (numericMpId != null && channels.find((c) => c.project_id === numericMpId)) ||
-            channels.find((c) => c.project_id == null) ||
-            channels[0];
-          if (preferred) setActiveChannel(preferred);
-        }
-        // Auto-switch when the user picks a different project while the
-        // chat pane is open: jump to that project's first channel so chat
-        // context follows the selection.
-        if (channels.length > 0 && activeChannel && numericMpId != null && activeChannel.project_id !== numericMpId) {
-          const nextForProject = channels.find((c) => c.project_id === numericMpId);
-          if (nextForProject) setActiveChannel(nextForProject);
-        }
-        // Subscribe to EVERY channel the user is in so per-channel unread
-        // counters can bump for background rooms — not just the one that's
-        // currently visible in the pane. Cheap: join is a socket emit.
-        for (const c of channels) {
-          try { await api.invoke('metaproject:join-channel', { channelId: c.id }); }
-          catch { /* per-channel join failure isn't fatal */ }
-        }
-      } catch (e) {
-        setError(String(e).replace(/^Error:\s*/, ''));
-      } finally {
-        setLoadingChannels(false);
-      }
-    })();
-  }, [status?.loggedIn, numericMpId, activeChannel, refreshCounter]);
-
-  // Whenever the active channel changes: load history + join room.
-  useEffect(() => {
-    if (!activeChannel) { setMessages([]); return; }
-    setError(null);
-    setLoadingMessages(true);
-    (async () => {
-      try {
-        // The server's messages endpoint always requires a project_id in the
-        // path. For a project-scoped channel use its own project_id; for a
-        // global channel, borrow the current local project's link, and if
-        // that's not set either, borrow any project_id off another channel
-        // in the user's list (resolve_channel accepts any org-mate).
-        const anyProjectId = activeChannel.project_id
-          ?? numericMpId
-          ?? channels.find((c) => c.project_id != null)?.project_id
-          ?? undefined;
-        if (anyProjectId == null) throw new Error('cannot fetch messages: no accessible project_id for this channel');
-        const { messages } = await api.invoke('metaproject:list-messages', { channelId: activeChannel.id, limit: 50, projectId: anyProjectId });
-        setMessages(messages);
-        await api.invoke('metaproject:join-channel', { channelId: activeChannel.id });
-      } catch (e) {
-        setError(String(e).replace(/^Error:\s*/, ''));
-      } finally {
-        setLoadingMessages(false);
-      }
-    })();
-  }, [activeChannel, numericMpId]);
-
-  // Clear the unread dot for the channel the user just opened. Runs whenever
-  // activeChannel changes, including the initial open after channel load.
-  useEffect(() => {
-    if (!activeChannel) return;
-    setUnreadByChannel((prev) => {
-      const key = String(activeChannel.id);
-      if (!prev[key]) return prev;
-      // Rebuild without the cleared key (dynamic delete trips eslint).
-      const next: Record<string, number> = {};
-      for (const [k, v] of Object.entries(prev)) if (k !== key) next[k] = v;
-      return next;
-    });
-  }, [activeChannel, setUnreadByChannel]);
-
-  // Subscribe to server events. Fan out to per-channel + notification logic.
-  useEffect(() => {
-    const off = api.on('metaproject:event', ({ event, payload }) => {
-      if (event === 'connect')             void refreshStatus();
-      if (event === 'disconnect')          void refreshStatus();
-      if (event === 'connect_error') {
-        const p = payload as { message?: string } | string | undefined;
-        const msg = typeof p === 'string' ? p : (p?.message ?? 'connect failed');
-        setError(`Live chat offline: ${msg}`);
-      }
-      if (event === 'channel_message') {
-        const p = payload as { channel_id: number; message: Msg };
-        // Live-append when the message is for the currently-viewed channel.
-        if (activeChannel && p.channel_id === activeChannel.id) {
-          setMessages((prev) => [...prev, p.message]);
-        } else {
-          // Different channel → bump that channel's unread counter so a dot
-          // appears in the sidebar. Cleared when the user opens that channel.
-          setUnreadByChannel((prev) => ({ ...prev, [String(p.channel_id)]: (prev[String(p.channel_id)] ?? 0) + 1 }));
-        }
-        // Fire an OS notification if the current user is @mentioned or the
-        // app window is unfocused — regardless of which channel it hit.
-        maybeNotify(p.message, status?.userName ?? null);
-      }
-      if (event === 'channel_message_edited' && activeChannel) {
-        const p = payload as { channel_id: number; message: Msg };
-        if (p.channel_id !== activeChannel.id) return;
-        setMessages((prev) => prev.map((m) => (m.id === p.message.id ? { ...m, ...p.message } : m)));
-      }
-      if (event === 'channel_message_deleted' && activeChannel) {
-        const p = payload as { channel_id: number; message_id: number };
-        if (p.channel_id !== activeChannel.id) return;
-        setMessages((prev) => prev.map((m) => (m.id === p.message_id ? { ...m, message: '[message deleted]', deleted: true } : m)));
-      }
-      if (event === 'chat_error') {
-        const p = payload as { error?: string };
-        toast('Chat error', { kind: 'error', detail: p?.error ?? 'unknown' });
-      }
-    });
-    return () => { off(); };
-  }, [activeChannel, refreshStatus, status?.userName]);
-
-  // Auto-scroll on new messages.
-  useEffect(() => {
-    const el = listRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages]);
+  useEffect(() => { const el = listRef.current; if (el) el.scrollTop = el.scrollHeight; }, [history]);
 
   async function send() {
     const msg = composer.trim();
-    if (!msg || !activeChannel) return;
+    if (!msg || !activeChannel || !isCurrent()) return;
     setComposer('');
-    try {
-      await api.invoke('metaproject:send-message', { channelId: activeChannel.id, message: msg });
-    } catch (e) {
-      setComposer(msg);
-      toast('Send failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+    try { await api.invoke('metaproject:send-message', { epoch, channelId: activeChannel.id, message: msg }); }
+    catch {
+      if (!isCurrent()) return;
+      setComposer((draft) => draft || msg);
+      toast('Could not send the message. Try again.', { kind: 'error' });
     }
   }
 
-  if (!status) {
-    return (
-      <div className="h-full flex items-center justify-center gap-2 text-sm text-[--text-muted]">
-        <span className="mp-spinner" aria-hidden />
-        <span>Loading chat…</span>
-      </div>
-    );
-  }
-
-  if (!status.loggedIn) {
-    return <LoginCard onLoggedIn={refreshStatus} onDismiss={onDismiss} />;
-  }
-
-  // Only shown when the SELECTED local project isn't linked to a metaproject
-  // project. Chat still works below (global + other-project channels), but a
-  // banner at the top lets the user link this project or create a new one so
-  // the sidebar's "This project" section starts appearing.
-  const linkBanner = numericMpId == null ? (
-    <LinkOrCreateBanner
-      localProjectId={projectId}
-      onLinked={() => setRefreshCounter((n) => n + 1)}
-    />
-  ) : null;
-
+  const error = channelError || historyError;
+  const linkBanner = numericMpId === null && projectId > 0 ? <AssignmentPanel projectId={projectId} compact /> : null;
   return (
     <div className="h-full flex flex-col min-h-0">
       {linkBanner}
@@ -306,7 +210,7 @@ export function ChatTab({ projectId, metaprojectProjectId, compact = false, onDi
               <span>Loading…</span>
             </div>
           )}
-          {!loadingChannels && channels.length === 0 && <div className="px-3 py-2 text-[--text-muted]">No channels yet.</div>}
+          {!loadingChannels && !channelError && channels.length === 0 && <div className="px-3 py-2 text-[--text-muted]">No channels yet.</div>}
           {(() => {
             const grouped = groupChannels(channels, numericMpId);
             return (
@@ -328,6 +232,7 @@ export function ChatTab({ projectId, metaprojectProjectId, compact = false, onDi
       {compact && (
         <div className="px-3 py-2 border-b border-[--border] bg-[--panel]/40 shrink-0 flex items-center gap-2">
           <select
+            aria-label="Chat channel"
             value={activeChannel?.id ?? ''}
             onChange={(e) => {
               const c = channels.find((ch) => ch.id === Number(e.target.value));
@@ -337,7 +242,7 @@ export function ChatTab({ projectId, metaprojectProjectId, compact = false, onDi
             className="flex-1 bg-[--panel-strong] border border-[--border] rounded-md px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-[--accent]/60"
           >
             {loadingChannels && channels.length === 0 && <option>Loading…</option>}
-            {!loadingChannels && channels.length === 0 && <option>No channels</option>}
+            {!loadingChannels && !channelError && channels.length === 0 && <option>No channels</option>}
             {(() => {
               const grouped = groupChannels(channels, numericMpId);
               return (
@@ -388,16 +293,19 @@ export function ChatTab({ projectId, metaprojectProjectId, compact = false, onDi
       <div className="flex-1 flex flex-col min-h-0">
         <div className="px-3 py-1.5 border-b border-[--border] text-[11px] text-[--text-muted] flex items-center gap-2">
           <span className="flex items-center gap-1">
-            <span className={`inline-block w-1.5 h-1.5 rounded-full ${status.connected ? 'bg-green-500 live-dot' : 'bg-amber-400'}`} />
-            {status.connected ? 'connected' : 'reconnecting…'}
+            <span className={`inline-block w-1.5 h-1.5 rounded-full ${connected ? 'bg-green-500 live-dot' : 'bg-amber-400'}`} />
+            {connected ? 'connected' : 'reconnecting…'}
           </span>
           <span className="opacity-60">·</span>
-          <span>{status.userName ?? 'signed in'}</span>
+          <span>{actor.display_name || actor.username}</span>
           <span className="opacity-60">·</span>
           <span className="font-mono">{activeChannel ? `#${activeChannel.name}` : 'no channel'}</span>
         </div>
         <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto py-2 bg-[--chat-surface]">
-          {error && <div className="mx-3 mb-2 px-3 py-1.5 rounded-md text-xs bg-[--danger]/10 text-[--danger] border border-[--danger]/30">{error}</div>}
+          {status.warning && <p className="px-3 py-1.5 text-xs" role="alert">{persistenceCopy[status.warning]}</p>}
+          {error && <div role="alert" className="mx-3 mb-2 px-3 py-1.5 rounded-md text-xs bg-[--danger]/10 text-[--danger] border border-[--danger]/30">
+            {channelError ? 'Could not load chat channels.' : 'Could not load messages.'} <button className={mpButton} onClick={() => retryRead((n) => n + 1)}>Retry Chat</button>
+          </div>}
           {loadingMessages && messages.length === 0 && !error && (
             <div className="flex items-center justify-center gap-2 text-[--text-muted] text-sm p-6">
               <span className="mp-spinner" aria-hidden />
@@ -405,15 +313,11 @@ export function ChatTab({ projectId, metaprojectProjectId, compact = false, onDi
             </div>
           )}
           <MessageList
+            key={activeChannel?.id}
             messages={messages}
-            myUserId={status.userId}
+            myUserId={actor.id}
             channelId={activeChannel?.id ?? null}
-            projectIdForAttachments={
-              activeChannel?.project_id
-              ?? numericMpId
-              ?? channels.find((c) => c.project_id != null)?.project_id
-              ?? null
-            }
+            projectIdForAttachments={historyProjectId ?? null}
           />
           {!loadingMessages && messages.length === 0 && !error && (
             <div className="h-full min-h-[120px] flex flex-col items-center justify-center gap-2 text-center text-[--text-muted] px-6">
@@ -440,8 +344,6 @@ export function ChatTab({ projectId, metaprojectProjectId, compact = false, onDi
           />
         </div>
       </div>
-        {/* Preserve unused parameter to avoid lint noise. */}
-        <input type="hidden" value={projectId} readOnly />
       </div>
     </div>
   );
@@ -642,321 +544,6 @@ function ChannelGroup({ label, channels, activeId, onPick, projectNames, unread 
   );
 }
 
-function LinkOrCreateBanner({ localProjectId, onLinked }: { localProjectId: number; onLinked: () => void }) {
-  const [mode, setMode] = useState<'idle' | 'pick' | 'new'>('idle');
-  const [busy, setBusy] = useState(false);
-  const [projects, setProjects] = useState<MpProject[]>([]);
-  const [filter, setFilter] = useState('');
-  const [newName, setNewName] = useState('');
-
-  async function openPicker() {
-    setBusy(true);
-    try {
-      const { projects } = await api.invoke('metaproject:list-projects', undefined as never);
-      setProjects(projects);
-      setMode('pick');
-    } catch (e) {
-      toast('Failed to list projects', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
-    } finally { setBusy(false); }
-  }
-
-  async function linkTo(mpId: number) {
-    setBusy(true);
-    try {
-      await api.invoke('metaproject:link-local-project', { projectId: localProjectId, metaprojectProjectId: mpId });
-      toast('Linked to metaproject', { kind: 'success' });
-      setMode('idle');
-      onLinked();
-    } catch (e) {
-      toast('Link failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
-    } finally { setBusy(false); }
-  }
-
-  async function createAndLink() {
-    const name = newName.trim();
-    if (!name) return;
-    setBusy(true);
-    try {
-      const { project } = await api.invoke('metaproject:create-project', { name });
-      await api.invoke('metaproject:link-local-project', { projectId: localProjectId, metaprojectProjectId: project.id });
-      toast(`Created and linked "${name}"`, { kind: 'success' });
-      setMode('idle');
-      setNewName('');
-      onLinked();
-    } catch (e) {
-      toast('Create failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
-    } finally { setBusy(false); }
-  }
-
-  const filtered = filter.trim()
-    ? projects.filter((p) => p.name.toLowerCase().includes(filter.toLowerCase()) || (p.identifier ?? '').toLowerCase().includes(filter.toLowerCase()))
-    : projects;
-
-  return (
-    <div className="shrink-0 border-b border-[--border] bg-[--panel]/60 backdrop-blur-md">
-      <div className="px-3 py-2.5">
-        {mode === 'idle' && (
-          <div className="flex items-start gap-3">
-            <div className="w-8 h-8 rounded-md bg-[color:var(--accent)]/15 border border-[color:var(--accent)]/30 flex items-center justify-center shrink-0">
-              <LinkPlugIcon />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-[13px] font-semibold text-[--text] leading-snug">
-                Link this folder to a project
-              </div>
-              <div className="text-[11px] text-[--text-muted] leading-snug mt-0.5">
-                Pick an existing metaproject to attach team chat to this folder, or spin up a new one — takes one click.
-              </div>
-              <div className="mt-2 flex items-center gap-2">
-                <button
-                  onClick={openPicker}
-                  disabled={busy}
-                  className="text-xs font-medium px-3 py-1.5 rounded-md pressable bg-[color:var(--accent)] text-[--accent-text] hover:brightness-110 disabled:opacity-50"
-                >
-                  {busy ? 'Loading…' : 'Link existing'}
-                </button>
-                <button
-                  onClick={() => setMode('new')}
-                  disabled={busy}
-                  className="text-xs font-medium px-3 py-1.5 rounded-md border border-[--border] hover:bg-[--panel-strong] text-[--text] disabled:opacity-50"
-                >
-                  Create new
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {mode === 'pick' && (
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <div className="text-[13px] font-semibold flex-1">Pick a project to link</div>
-              <button className="text-[11px] text-[--text-muted] hover:text-[--text] px-1.5 py-0.5" onClick={() => setMode('idle')}>Cancel</button>
-            </div>
-            <input
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              placeholder="Filter…"
-              autoFocus
-              className="w-full bg-[--panel-strong] border border-[--border] rounded-md px-2.5 py-1.5 text-xs outline-none focus:ring-1 focus:ring-[--accent]/60"
-            />
-            {filtered.length === 0 && (
-              <div className="text-[11px] text-[--text-muted] py-2 text-center">
-                {projects.length === 0 ? 'No projects available.' : 'No matches — try a different filter.'}
-              </div>
-            )}
-            {filtered.length > 0 && (
-              <div className="max-h-52 overflow-y-auto space-y-0.5 -mx-1 px-1">
-                {filtered.map((p) => (
-                  <button
-                    key={p.id}
-                    onClick={() => void linkTo(p.id)}
-                    disabled={busy}
-                    className="group w-full text-left px-2.5 py-2 rounded-md hover:bg-[color:var(--accent)]/15 flex items-center gap-2 border border-transparent hover:border-[color:var(--accent)]/40 disabled:opacity-50"
-                  >
-                    <div className="w-6 h-6 rounded-md bg-[--panel-strong] border border-[--border] flex items-center justify-center text-[10px] font-semibold text-[--text-muted] shrink-0">
-                      {p.name.slice(0, 1).toUpperCase()}
-                    </div>
-                    <span className="flex-1 truncate text-xs font-medium text-[--text]">{p.name}</span>
-                    {p.identifier && <span className="text-[10px] font-mono text-[--text-muted] opacity-70">{p.identifier}</span>}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {mode === 'new' && (
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <div className="text-[13px] font-semibold flex-1">Create a new project</div>
-              <button className="text-[11px] text-[--text-muted] hover:text-[--text] px-1.5 py-0.5" onClick={() => { setMode('idle'); setNewName(''); }}>Cancel</button>
-            </div>
-            <input
-              value={newName}
-              autoFocus
-              onChange={(e) => setNewName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && newName.trim()) void createAndLink(); }}
-              placeholder="Project name (e.g. lawreader)"
-              className="w-full bg-[--panel-strong] border border-[--border] rounded-md px-2.5 py-1.5 text-xs outline-none focus:ring-1 focus:ring-[--accent]/60"
-            />
-            <div className="flex items-center gap-2">
-              <button
-                onClick={createAndLink}
-                disabled={busy || !newName.trim()}
-                className="flex-1 text-xs font-medium pressable bg-[color:var(--accent)] text-[--accent-text] rounded-md py-1.5 hover:brightness-110 disabled:opacity-50"
-              >
-                {busy ? 'Creating…' : 'Create + link'}
-              </button>
-            </div>
-            <div className="text-[10px] text-[--text-muted]">
-              Creates a Kanban project on the metaproject board and writes <code className="font-mono opacity-80">project_id</code> to this folder&apos;s <code className="font-mono opacity-80">.metaproject.yaml</code>.
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function LoginCard({ onLoggedIn, onDismiss }: { onLoggedIn: () => void; onDismiss?: () => void }) {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [remember, setRemember] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const autoTried = useRef(false);
-
-  // On mount: pre-fill the last-used username, and if the OS keychain has a
-  // saved password for it, silently attempt an auto-sign-in. If auto-login
-  // fails (server down, password rotated), we surface the reason and let
-  // the user type a fresh password — the checkbox stays on so a corrected
-  // login refreshes the saved credential.
-  useEffect(() => {
-    if (autoTried.current) return;
-    autoTried.current = true;
-    (async () => {
-      try {
-        const { username: u, hasPassword } = await api.invoke('metaproject:credentials-load', undefined as never);
-        if (u) setUsername(u);
-        if (u && hasPassword) {
-          setBusy(true);
-          const res = await api.invoke('metaproject:auto-login', undefined as never);
-          if (res.ok) {
-            toast(`Signed in to metaproject as ${res.userName ?? u}`, { kind: 'success' });
-            onLoggedIn();
-          } else if (res.reason && !res.reason.startsWith('no-saved')) {
-            setErr(res.reason);
-          }
-          setBusy(false);
-        }
-      } catch { /* fine — show manual login */ }
-    })();
-    // onLoggedIn is stable from parent; refs prevent re-runs
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function submit() {
-    setBusy(true); setErr(null);
-    try {
-      const { userName } = await api.invoke('metaproject:login', { username, password, remember });
-      toast(`Signed in to metaproject as ${userName}`, { kind: 'success' });
-      onLoggedIn();
-    } catch (e) {
-      setErr(String(e).replace(/^Error:\s*/, ''));
-    } finally { setBusy(false); }
-  }
-  async function forget() {
-    try {
-      await api.invoke('metaproject:credentials-clear', undefined as never);
-      setPassword('');
-      toast('Forgot saved metaproject password', { kind: 'info' });
-    } catch { /* fine */ }
-  }
-  // Esc dismisses the card when a dismiss handler is wired (lets the user
-  // close the chat panel without signing in). Without this, the panel is
-  // only closable via the Activity bar — and reopens on next launch because
-  // activeView is persisted.
-  useEffect(() => {
-    if (!onDismiss) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onDismiss(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onDismiss]);
-
-  return (
-    <div className="chat-signin h-full flex items-center justify-center p-6">
-      <div className="relative w-[360px] space-y-4 bg-[--panel-strong] border border-[--border] rounded-xl p-6 shadow-xl">
-        {onDismiss && (
-          <button
-            onClick={onDismiss}
-            title="Close (Esc)"
-            aria-label="Close sign-in panel"
-            className="absolute top-2 right-2 w-7 h-7 flex items-center justify-center rounded-md text-[--text-muted] hover:text-[--text] hover:bg-[--panel]"
-            data-testid="mp-login-dismiss"
-          >
-            <CloseIcon />
-          </button>
-        )}
-        <div className="text-center space-y-1.5">
-          <div className="mx-auto w-10 h-10 rounded-md bg-[color:var(--accent)]/15 border border-[color:var(--accent)]/30 flex items-center justify-center">
-            <ChatBubbleIcon />
-          </div>
-          <div className="text-base font-semibold text-[--text]">Sign in to chat</div>
-          <div className="text-xs text-[--text-muted] leading-snug">
-            Same credentials as your metaproject board.
-          </div>
-        </div>
-        <div className="space-y-2">
-          <label className="block text-[10px] uppercase tracking-wider font-semibold text-[--text-muted]">Email or username</label>
-          <input
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            placeholder="you@example.com"
-            autoFocus
-            className="w-full bg-[--panel] border border-[--border] rounded-md px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-[--accent]/60"
-            data-testid="mp-login-username"
-          />
-        </div>
-        <div className="space-y-2">
-          <label className="block text-[10px] uppercase tracking-wider font-semibold text-[--text-muted]">Password</label>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') void submit(); }}
-            placeholder="••••••••"
-            className="w-full bg-[--panel] border border-[--border] rounded-md px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-[--accent]/60"
-            data-testid="mp-login-password"
-          />
-        </div>
-        <label className="flex items-center gap-2 text-xs text-[--text-muted] select-none cursor-pointer">
-          <input
-            type="checkbox"
-            checked={remember}
-            onChange={(e) => setRemember(e.target.checked)}
-            className="accent-[color:var(--accent)]"
-            data-testid="mp-login-remember"
-          />
-          <span>Remember me on this Mac <span className="opacity-60">(stored in Keychain)</span></span>
-        </label>
-        {err && (
-          <div className="text-xs text-[--danger] bg-[--danger]/10 border border-[--danger]/30 rounded-md px-2 py-1.5">
-            {err}
-          </div>
-        )}
-        <button
-          onClick={submit}
-          disabled={busy || !username || !password}
-          className="w-full pressable bg-[color:var(--accent)] text-[--accent-text] rounded-md py-2 text-sm font-medium hover:brightness-110 disabled:opacity-50 flex items-center justify-center gap-2 shadow-sm"
-          data-testid="mp-login-submit"
-        >
-          {busy && <span className="mp-spinner" aria-hidden />}
-          <span>{busy ? 'Signing in…' : 'Sign in'}</span>
-        </button>
-        <button
-          onClick={forget}
-          className="block mx-auto text-[10px] text-[--text-muted] hover:text-[--text]"
-          type="button"
-        >
-          Forget saved password
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Slack-style message list.
- *
- *  - Groups consecutive messages from the same author when < 5 min apart:
- *    the follow-up rows drop the avatar / name / timestamp so the eye
- *    tracks a single voice.
- *  - Inserts a sticky-ish date divider ("Today", "Yesterday", dd MMM)
- *    whenever the local calendar day changes.
- *  - Chooses a stable HSL colour per user_id so avatars visually cluster
- *    without needing avatar URLs (which the API may not return).
- */
 function MessageList({ messages, myUserId, channelId, projectIdForAttachments }: { messages: Msg[]; myUserId: number | null; channelId: number | null; projectIdForAttachments: number | null }) {
   const rows: React.ReactNode[] = [];
   let prev: Msg | null = null;
@@ -1005,6 +592,7 @@ function userColor(id: number): string {
 }
 
 function MessageRow({ m, grouped, mine, channelId, projectIdForAttachments }: { m: Msg; grouped: boolean; mine: boolean; channelId: number | null; projectIdForAttachments: number | null }) {
+  const { epoch, isCurrent } = useCurrentChat();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(m.message);
   useEffect(() => { setDraft(m.message); }, [m.message]);
@@ -1015,23 +603,23 @@ function MessageRow({ m, grouped, mine, channelId, projectIdForAttachments }: { 
 
   async function saveEdit() {
     const next = draft.trim();
-    if (!next || next === m.message || channelId == null) { setEditing(false); return; }
+    if (!next || next === m.message || channelId == null || !isCurrent()) { setEditing(false); return; }
     try {
-      await api.invoke('metaproject:edit-message', { channelId, messageId: m.id, message: next });
-      setEditing(false);
+      await api.invoke('metaproject:edit-message', { epoch, channelId, messageId: m.id, message: next });
+      if (isCurrent()) setEditing(false);
       // Server broadcasts channel_message_edited; the parent state updates
       // via that path, so no optimistic write here.
-    } catch (e) {
-      toast('Edit failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+    } catch {
+      if (isCurrent()) toast('Could not edit the message.', { kind: 'error' });
     }
   }
   async function del() {
     if (channelId == null) return;
-    if (!window.confirm('Delete this message?')) return;
+    if (!window.confirm('Delete this message?') || !isCurrent()) return;
     try {
-      await api.invoke('metaproject:delete-message', { channelId, messageId: m.id });
-    } catch (e) {
-      toast('Delete failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+      await api.invoke('metaproject:delete-message', { epoch, channelId, messageId: m.id });
+    } catch {
+      if (isCurrent()) toast('Could not delete the message.', { kind: 'error' });
     }
   }
 
@@ -1141,9 +729,11 @@ function formatBytes(n: number): string {
  * (MessageList) computes a fallback from any accessible project.
  */
 function AttachmentRow({ attachment, projectId }: { attachment: Attachment; projectId: number | null }) {
+  const { epoch, isCurrent } = useCurrentChat();
   const [busy, setBusy] = useState(false);
   const [savedPath, setSavedPath] = useState<string | null>(null);
   async function download() {
+    if (!isCurrent()) return;
     if (projectId == null) {
       toast('No project context — cannot download', { kind: 'warning' });
       return;
@@ -1151,18 +741,19 @@ function AttachmentRow({ attachment, projectId }: { attachment: Attachment; proj
     setBusy(true);
     try {
       const { path } = await api.invoke('metaproject:download-attachment', {
-        projectId, attachmentId: attachment.id, filename: attachment.filename,
+        epoch, projectId, attachmentId: attachment.id, filename: attachment.filename,
       });
+      if (!isCurrent()) return;
       setSavedPath(path);
-      toast(`Downloaded ${attachment.filename}`, { kind: 'success', detail: path });
-    } catch (e) {
-      toast('Download failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
-    } finally { setBusy(false); }
+      toast('Attachment downloaded', { kind: 'success' });
+    } catch {
+      if (isCurrent()) toast('Could not download the attachment.', { kind: 'error' });
+    } finally { if (isCurrent()) setBusy(false); }
   }
   async function reveal() {
-    if (!savedPath) return;
+    if (!savedPath || !isCurrent()) return;
     try { await api.invoke('app:reveal-in-folder', { path: savedPath }); }
-    catch (e) { toast('Could not open folder', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
+    catch { if (isCurrent()) toast('Could not open the downloads folder.', { kind: 'error' }); }
   }
   return (
     <div className="inline-flex max-w-full items-center gap-2 bg-[--panel-strong] border border-[--border] rounded-md px-2.5 py-1.5">
@@ -1207,12 +798,12 @@ function renderMessage(text: string): React.ReactNode {
 }
 
 function maybeNotify(m: Msg, me: string | null) {
-  const mentioned = me && new RegExp(`@${me}\\b`, 'i').test(m.message);
+  const mentioned = me && m.message.match(/@[A-Za-z0-9._-]+/g)?.some((token) => token.slice(1).toLowerCase() === me.toLowerCase());
   const unfocused = !document.hasFocus();
   if (!mentioned && !unfocused) return;
   try {
     if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-      new Notification(mentioned ? `@${me}` : (m.user_name ?? 'metaproject'), { body: m.message });
+      return new Notification(mentioned ? `@${me}` : (m.user_name ?? 'metaproject'), { body: m.message });
     } else if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
       void Notification.requestPermission();
     }

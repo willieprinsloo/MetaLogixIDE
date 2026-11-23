@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { openDb } from '@main/db/connection';
 import { runMigrations } from '@main/db/migrator';
 import { SettingsRepo, DEFAULT_SETTINGS } from '@main/repos/settings-repo';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -17,6 +17,52 @@ function seed() {
 }
 
 describe('SettingsRepo', () => {
+  describe('Metaproject private state', () => {
+    it('commits an origin and restore tombstone together and keeps private rows out of public settings', () => {
+      const directory = mkdtempSync(join(tmpdir(), 'metaproject-st-'));
+      const filename = join(directory, 'db');
+      const db = openDb(filename);
+      try {
+        runMigrations(db, migrationsDir);
+        const settings = new SettingsRepo(db);
+        const key = 'metaproject_restore_grant_v1';
+        expect(settings.readMetaprojectPrivate(key)).toBeUndefined();
+        settings.writeMetaprojectPrivate({ [key]: { grantId: 'fixture' } });
+        expect(settings.readMetaprojectPrivate(key)).toEqual({ grantId: 'fixture' });
+        expect(settings.getAll()).not.toHaveProperty(key);
+        settings.writeMetaprojectPrivate({ [key]: null, metaproject_base_url: 'https://other.example' });
+        expect(db.pragma('synchronous', { simple: true })).toBe(1);
+        db.close();
+        const reopened = openDb(filename);
+        try {
+          const repo = new SettingsRepo(reopened);
+          expect(repo.get('metaproject_base_url')).toBe('https://other.example');
+          expect(repo.readMetaprojectPrivate(key)).toBeNull();
+        } finally { reopened.close(); }
+      } finally {
+        if (db.open) db.close();
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
+
+    it('fails closed on a corrupt nonsecret grant without reseeding it', () => {
+      const directory = mkdtempSync(join(tmpdir(), 'metaproject-st-'));
+      const db = openDb(join(directory, 'db'));
+      try {
+        runMigrations(db, migrationsDir);
+        const repo = new SettingsRepo(db);
+        const key = 'metaproject_restore_grant_v1';
+        db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(key, 'invalid json');
+        repo.seedDefaults();
+        expect(repo.readMetaprojectPrivate(key)).toBeNull();
+        expect(repo.getAll()).not.toHaveProperty(key);
+      } finally {
+        db.close();
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('seeds all defaults', () => {
     const repo = seed();
     expect(repo.get('keep_alive_cap')).toBe(DEFAULT_SETTINGS.keep_alive_cap);

@@ -27,6 +27,10 @@ vi.mock('@renderer/api', () => ({
     },
     invoke: async (channel: string, payload: { id?: number; key?: string } | undefined) => {
       bridge.calls.push({ channel, payload });
+      if (channel === 'metaproject:session-status') return { phase: 'signed-in', epoch: 4, origin: 'https://fixture.invalid', configuredOrigin: 'https://fixture.invalid', actor: { id: 1, username: 'fixture' }, connected: true, remembered: false };
+      if (channel === 'metaproject:assignment-get') return { ok: true, value: { kind: 'linked', projectId: 1, revision: 'a'.repeat(64), remoteId: 42, origin: 'https://fixture.invalid', localName: 'Project 1', localPath: '/work/1' } };
+      if (channel === 'metaproject:board-open') return new Promise(() => {});
+      if (channel === 'metaproject:board-layout' || channel === 'metaproject:board-close') return { ok: true };
       if (channel === 'projects:open') return { project: project(payload?.id ?? 1) };
       if (channel === 'shells:alive-list') return { shells: [{ projectId: 1, shellIndex: 0 }] };
       if (channel === 'settings:get') return { value: payload?.key === 'activity_log_enabled' ? bridge.activity : undefined };
@@ -80,7 +84,7 @@ vi.mock('@renderer/components/CommandPalette', () => ({ CommandPalette: ({ reque
 }) => request ? <div role="dialog" aria-label="Commands">{commands.filter((item) => item.id === 'shell.unload')
   .map((item) => <button key={item.id} onClick={() => { onClose(); void item.run(); }}>Unload current session</button>)}</div> : null }));
 vi.mock('@renderer/components/ShellTab', () => ({ ShellTab: () => null }));
-vi.mock('@renderer/components/FilesTab', () => ({ FilesTab: () => <div data-testid="files-view" /> }));
+vi.mock('@renderer/components/FilesTab', () => ({ FilesTab: () => <div data-testid="files-view"><textarea aria-label="Workspace draft" /></div> }));
 vi.mock('@renderer/components/ActivityTab', () => ({ ActivityTab: () => <div data-testid="activity-tab" /> }));
 vi.mock('@renderer/components/ChatTab', () => ({ ChatTab: () => null }));
 vi.mock('@renderer/components/Settings', () => ({ Settings: () => null }));
@@ -132,6 +136,7 @@ beforeEach(() => {
   bridge.listeners.clear();
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => window.setTimeout(() => callback(0), 0));
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  vi.stubGlobal('crypto', { randomUUID: () => '0856d88e-bbed-4f3e-8157-b9d3a4b34eea' });
 });
 afterEach(async () => {
   const mountedRoot = root;
@@ -205,4 +210,24 @@ describe('App activity-log switch', () => {
     await emitFollow();
     expect(peeks()).toHaveLength(0);
   });
+});
+
+
+it('keeps the same unsaved Files surface behind Board and restores focus on return', async () => {
+  await mount({ activity: true, tab: 'files' });
+  const opener = document.querySelector<HTMLButtonElement>('[data-testid="metaproject-board"]');
+  const draft = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Workspace draft"]');
+  if (!opener || !draft) throw new Error('Missing workspace controls');
+  draft.value = 'unsaved draft';
+  await act(async () => { opener.focus(); opener.click(); });
+  expect(bridge.calls).toContainEqual({ channel: 'metaproject:board-open', payload: expect.objectContaining({ projectId: 1, epoch: 4 }) });
+  expect(draft.closest('[inert]')).not.toBeNull();
+  expect(stored('metaide.mainTab')).toBe('files');
+  const back = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Return to workspace');
+  await act(async () => back?.click());
+  expect(bridge.calls).toContainEqual({ channel: 'metaproject:board-close', payload: { viewId: '0856d88e-bbed-4f3e-8157-b9d3a4b34eea' } });
+  expect(document.querySelector('textarea[aria-label="Workspace draft"]')).toBe(draft);
+  expect(draft.value).toBe('unsaved draft');
+  expect(draft.closest('[inert]')).toBeNull();
+  expect(document.activeElement).toBe(opener);
 });

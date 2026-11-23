@@ -12,6 +12,9 @@ import { FilesTab } from './components/FilesTab';
 import { ActivityTab } from './components/ActivityTab';
 import { FleetView } from './components/FleetView';
 import { ChatTab } from './components/ChatTab';
+import { BoardPanel, type BoardLeaseControl } from './metaproject/BoardPanel';
+import { MetaprojectSessionProvider, useMetaprojectSession } from './metaproject/session';
+import { useAssignment } from './metaproject/useAssignment';
 import { GitPanel } from './components/GitPanel';
 import { Settings } from './components/Settings';
 import { ProjectSettingsTab } from './components/ProjectSettingsTab';
@@ -146,7 +149,7 @@ export function App() {
   // a blank window. See components/ErrorBoundary.tsx for the fallback UI.
   return (
     <ErrorBoundary>
-      {popout ? <PopoutShell {...popout} /> : <MainApp />}
+      {popout ? <PopoutShell {...popout} /> : <MetaprojectSessionProvider><MainApp /></MetaprojectSessionProvider>}
     </ErrorBoundary>
   );
 }
@@ -154,42 +157,20 @@ export function App() {
 function MainApp() {
   const platform = useShortcutPlatform();
   useFrostedGlassAttributes();
-  // App-boot auto-login: if the user opted into "Remember me" in a previous
-  // session, the OS keychain has their password. Try the silent auto-login
-  // once at startup so the chat unread badge, event stream, and rail state
-  // reflect reality without waiting for the user to open the chat panel.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const { username, hasPassword } = await api.invoke('metaproject:credentials-load', undefined as never);
-        if (cancelled) return;
-        if (!username) return;
-        if (!hasPassword) {
-          console.warn('[metaproject] saved username but no keychain password — you were signed out; sign in again to persist');
-          return;
-        }
-        const res = await api.invoke('metaproject:auto-login', undefined as never);
-        if (cancelled) return;
-        if (res.ok && res.userName) {
-          toast(`Signed in to metaproject as ${res.userName}`, { kind: 'success' });
-        } else if (!res.ok) {
-          console.warn('[metaproject] auto-login failed:', res.reason);
-          toast('Metaproject auto-login failed — sign in again from the Chat tab', {
-            kind: 'error',
-            detail: res.reason ?? 'unknown reason',
-          });
-        }
-      } catch (e) {
-        console.warn('[metaproject] auto-login threw:', e);
-      }
-    })();
-    return () => { cancelled = true; };
+  const { snapshot: account, current: currentAccount, promptOpen } = useMetaprojectSession();
+  const [boardProject, setBoardProject] = useState<number | null>(null);
+  const boardControls = useRef<BoardLeaseControl | null>(null);
+  const boardOpener = useRef<HTMLButtonElement>(null);
+  const beforeOverlay = useCallback((show: () => void) => {
+    const lease = boardControls.current;
+    if (lease) void lease.hide().then(show); else show();
   }, []);
+  const closeBoard = useCallback(() => { boardControls.current?.close(); setBoardProject(null); }, []);
+  const returnToWorkspace = useCallback(() => { closeBoard(); boardOpener.current?.focus(); }, [closeBoard]);
   const [selected, setSelected] = useState<Project | null>(null);
   // A project on a paired machine, shown in place of the local main body until a local project is picked.
   const [remotePane, setRemotePane] = useState<OpenPaneRequest | null>(null);
-  const openPane = useCallback((req: OpenPaneRequest) => setRemotePane(req), []);
+  const openPane = useCallback((req: OpenPaneRequest) => { closeBoard(); setRemotePane(req); }, [closeBoard]);
   // -1 never matches a real project id, so this reads idle when nothing is selected.
   const selectedAgentState = useProjectAgentState(selected?.id ?? -1);
   // Keep a live ref of `selected` so the shortcut handler (bound once in a
@@ -202,42 +183,33 @@ function MainApp() {
   useEffect(() => { toggleFullscreenRef.current = toggleFullscreen; }, [toggleFullscreen]);
   const [aliveCount, setAliveCount] = useState(0);
   const [localAliveShells, setLocalAliveShells] = useState<Array<{ projectId: number; projectName: string; projectPath: string; shellIndex: number; launchArgv: string[] }>>([]);
-  const [mainTab, setMainTab] = usePersistedState<MainTab>('metaide.mainTab', 'shell', isMainTab);
+  const [mainTab, persistMainTab] = usePersistedState<MainTab>('metaide.mainTab', 'shell', isMainTab);
+  const setMainTab = useCallback((tab: MainTab) => { closeBoard(); persistMainTab(tab); }, [closeBoard, persistMainTab]);
+  const assignment = useAssignment(selected?.id ?? null);
+  const boardVisible = boardProject !== null && boardProject === selected?.id && !remotePane;
   const mainTabRef = useRef(mainTab);
   mainTabRef.current = mainTab;
   const activityEnabled = useActivityLogEnabled();
   useEffect(() => {
     if (visibleMainTab(mainTab, activityEnabled) !== mainTab) setMainTab('shell');
   }, [mainTab, activityEnabled, setMainTab]);
-  // Unread chat count for the sidebar badge. Increments on every incoming
-  // metaproject `channel_message` that arrives while the user isn't looking
-  // at the chat pane. Clears the moment they switch to chat. Persists in
-  // localStorage so a badge that hasn't been acknowledged survives an app
-  // restart — you won't lose track of unread pings between sessions.
-  const [chatUnread, setChatUnread] = usePersistedState<number>(
-    'metaide.chatUnread',
-    0,
-    (v): v is number => typeof v === 'number' && Number.isFinite(v),
-  );
-  const [activeView, setActiveView] = usePersistedState<ActivityView>(
+  const accountEpoch = account?.phase === 'signed-in' ? account.epoch : null;
+  const [unread, setUnread] = useState<{ epoch: number; count: number } | null>(null);
+  const chatUnread = unread && unread.epoch === accountEpoch ? unread.count : 0;
+  const [activeView, persistActiveView] = usePersistedState<ActivityView>(
     'metaide.activeView',
     'projects',
     (v): v is ActivityView => v === 'projects' || v === 'chat' || v === 'git' || v === 'tasks' || v === 'fleet',
   );
-  // Live-ref of the active view so the metaproject subscriber can decide
-  // whether to bump the badge without re-subscribing on every switch.
+  const setActiveView = useCallback((view: ActivityView) => { closeBoard(); persistActiveView(view); }, [closeBoard, persistActiveView]);
   const activeViewRef = useRef<ActivityView>('projects');
-  useEffect(() => { activeViewRef.current = activeView; }, [activeView]);
-  useEffect(() => {
-    const off = api.on('metaproject:event', ({ event }) => {
-      if (event === 'channel_message' && activeViewRef.current !== 'chat') {
-        setChatUnread((n) => n + 1);
-      }
-    });
-    return () => { off(); };
-  }, []);
-  // Clear unread the instant the chat panel opens.
-  useEffect(() => { if (activeView === 'chat') setChatUnread(0); }, [activeView]);
+  activeViewRef.current = activeView;
+  useEffect(() => api.on('metaproject:chat-event', ({ epoch, event }) => {
+    const now = currentAccount();
+    if (now?.phase !== 'signed-in' || now.epoch !== epoch || event !== 'channel_message' || activeViewRef.current === 'chat') return;
+    setUnread((previous) => ({ epoch, count: previous?.epoch === epoch ? previous.count + 1 : 1 }));
+  }), [currentAccount]);
+  useEffect(() => { if (activeView === 'chat' || accountEpoch === null) setUnread(null); }, [activeView, accountEpoch]);
   // Clear any pending "open this file" request when the project changes —
   // otherwise a relPath captured from project A would fire in project B's
   // FilesTab and either open the wrong file or 404. The one exception is a
@@ -290,12 +262,12 @@ function MainApp() {
   const [unloadTarget, setUnloadTarget] = useState<Pick<Project, 'id' | 'name'> | null>(null);
   const unloadTargetRef = useRef<Pick<Project, 'id' | 'name'> | null>(null);
   const unloadOpenerRef = useRef<HTMLElement | null>(null);
-  const openUnloadSession = useCallback((project: Project, opener: HTMLElement | null) => {
+  const openUnloadSession = useCallback((project: Project, opener: HTMLElement | null) => beforeOverlay(() => {
     if (unloadTargetRef.current) return;
     unloadTargetRef.current = { id: project.id, name: project.name };
     unloadOpenerRef.current = opener;
     setUnloadTarget(unloadTargetRef.current);
-  }, []);
+  }), [beforeOverlay]);
   const closeUnloadSession = useCallback(() => {
     unloadTargetRef.current = null;
     setUnloadTarget(null);
@@ -345,28 +317,37 @@ function MainApp() {
   // Chat panel gets its own persisted width so the wider chat view doesn't
   // resize the projects list back to a tiny column when the user flips modes.
   const [chatPanelWidth, setChatPanelWidth] = usePersistedNumber('metaide.chatPanelWidth', 400, 300, 640);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsOpen, updateSettingsOpen] = useState(false);
+  const setSettingsOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updateSettingsOpen(open)); else updateSettingsOpen(false); }, [beforeOverlay]);
   const [projectSettingsTarget, setProjectSettingsTarget] = useState<ProjectSettingsTarget | null>(null);
   const settingsTarget = projectSettingsTarget ?? selected;
   // Bumped by "Environment variables…" so the Settings tab scrolls its env section into view.
   const [envFocusRequest, setEnvFocusRequest] = useState(0);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
-  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [newProjectOpen, updateNewProjectOpen] = useState(false);
+  const setNewProjectOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updateNewProjectOpen(open)); else updateNewProjectOpen(false); }, [beforeOverlay]);
   const [openInFiles, setOpenInFiles] = useState<{ relPath: string; line: number | null } | null>(null);
   const [paletteRequest, setPaletteRequest] = useState<PaletteRequest | null>(null);
   const paletteOpenRef = useRef(false);
   paletteOpenRef.current = paletteRequest != null;
   const paletteSeqRef = useRef(0);
-  const openPalette = useCallback((seed: PaletteSeed) => {
+  const openPalette = useCallback((seed: PaletteSeed) => beforeOverlay(() => {
     paletteSeqRef.current += 1;
     setPaletteRequest({ seq: paletteSeqRef.current, seed });
-  }, []);
-  const [helpOpen, setHelpOpen] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [promptsOpen, setPromptsOpen] = useState(false);
-  const [scrollbackOpen, setScrollbackOpen] = useState(false);
+  }), [beforeOverlay]);
+  const [helpOpen, updateHelpOpen] = useState(false);
+  const setHelpOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updateHelpOpen(true)); else updateHelpOpen(false); }, [beforeOverlay]);
+  const helpOpenRef = useRef(helpOpen);
+  helpOpenRef.current = helpOpen;
+  const [searchOpen, updateSearchOpen] = useState(false);
+  const setSearchOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updateSearchOpen(open)); else updateSearchOpen(false); }, [beforeOverlay]);
+  const [promptsOpen, updatePromptsOpen] = useState(false);
+  const setPromptsOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updatePromptsOpen(open)); else updatePromptsOpen(false); }, [beforeOverlay]);
+  const [scrollbackOpen, updateScrollbackOpen] = useState(false);
+  const setScrollbackOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updateScrollbackOpen(open)); else updateScrollbackOpen(false); }, [beforeOverlay]);
   const keepAwake = useKeepAwake();
-  const [keepAwakeUntilOpen, setKeepAwakeUntilOpen] = useState(false);
+  const [keepAwakeUntilOpen, updateKeepAwakeUntilOpen] = useState(false);
+  const setKeepAwakeUntilOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updateKeepAwakeUntilOpen(open)); else updateKeepAwakeUntilOpen(false); }, [beforeOverlay]);
   const keepAwakeActive = keepAwake?.state.active ?? false;
   const keepAwakeStart = keepAwake?.start;
   const keepAwakeStop = keepAwake?.stop;
@@ -381,17 +362,17 @@ function MainApp() {
           darkenNow: () => { void keepAwakeDarken(); },
         }
       : null
-  ), [keepAwakeActive, keepAwakeStart, keepAwakeStop, keepAwakeDarken]);
+  ), [keepAwakeActive, keepAwakeStart, keepAwakeStop, keepAwakeDarken, setKeepAwakeUntilOpen]);
   const envDrafts = useEnvDrafts();
   const envDirty = selected != null && envDrafts.isDirty(selected.id);
   const { mode: themeMode, effective: effectiveTheme, cycle: cycleTheme, setMode: setThemeMode, setPalette: setThemePalette } = useTheme();
   const permissionMode = useClaudePermissionMode();
   const shortcutsBlockedRef = useRef(true);
-  shortcutsBlockedRef.current = permissionMode.status !== 'chosen' || unloadTarget !== null;
+  shortcutsBlockedRef.current = permissionMode.status !== 'chosen' || unloadTarget !== null || promptOpen;
   const overlayOpen = paletteRequest != null || settingsOpen || newProjectOpen
     || helpOpen || (searchOpen && selected != null) || promptsOpen || scrollbackOpen
-    || permissionMode.status === 'unchosen' || unloadTarget !== null;
-  useWindowTerminalFocus(overlayOpen);
+    || permissionMode.status === 'unchosen' || unloadTarget !== null || promptOpen || keepAwakeUntilOpen;
+  useWindowTerminalFocus(overlayOpen || boardVisible);
   // A request issued while the palette is still open is refused by the overlay rule, so it waits for the close to commit.
   const focusAfterPaletteRef = useRef<number | null>(null);
   useEffect(() => {
@@ -400,7 +381,7 @@ function MainApp() {
     focusAfterPaletteRef.current = null;
     terminalFocus.requestProjectFocus(projectId);
   }, [paletteRequest]);
-  useReportViewedShells({ selectedProjectId: selected?.id ?? null, mainTab, activeShellIndex, rightShellIndex });
+  useReportViewedShells({ selectedProjectId: boardVisible ? null : selected?.id ?? null, mainTab, activeShellIndex, rightShellIndex });
   const { roots } = useRoots();
   const { isPopped } = usePoppedShells();
   const split = useSplitLifecycle({
@@ -482,7 +463,7 @@ function MainApp() {
     },
     keepAwake: paletteKeepAwake,
     platform,
-  }), [selected, remotePane, primaryAlive, openUnloadSession, sidebarOpen, openPalette, setActiveView, toggleSidebar, showStatusBar, setMainTab, openNewTerminal, setThemeMode, setThemePalette, paletteKeepAwake, platform]);
+  }), [selected, remotePane, primaryAlive, openUnloadSession, sidebarOpen, openPalette, setActiveView, toggleSidebar, showStatusBar, setMainTab, openNewTerminal, setThemeMode, setThemePalette, paletteKeepAwake, platform, setSearchOpen, setScrollbackOpen, setPromptsOpen, setHelpOpen, setNewProjectOpen, setSettingsOpen]);
 
   const refreshAlive = useCallback(async () => {
     const { shells } = await api.invoke('shells:alive-list', undefined as never);
@@ -527,13 +508,10 @@ function MainApp() {
         const cur   = selectedRef.current!;
         const fresh = projects.find((p) => p.id === idAtStart);
         if (!fresh) return;
-        const linkedNow    = fresh.config.linkedMetaprojectProjectId ?? fresh.metaprojectProjectId ?? null;
-        const linkedBefore = cur.config.linkedMetaprojectProjectId   ?? cur.metaprojectProjectId   ?? null;
         const defaultCliNow    = fresh.config.defaultCliName ?? null;
         const defaultCliBefore = cur.config.defaultCliName   ?? null;
         const materialChange =
-          linkedNow !== linkedBefore
-          || defaultCliNow !== defaultCliBefore
+          defaultCliNow !== defaultCliBefore
           || fresh.name !== cur.name
           || fresh.path !== cur.path;
         if (materialChange) setSelected(fresh);              // (2)
@@ -559,6 +537,7 @@ function MainApp() {
 
   useEffect(() => {
     const off = api.on('app:open-file-request', async ({ path }) => {
+      closeBoard();
       const requestId = ++selectionRequestRef.current;
       try {
         const { projects } = await api.invoke('projects:list', undefined as never);
@@ -588,7 +567,7 @@ function MainApp() {
       }
     });
     return () => { off(); };
-  }, []);
+  }, [closeBoard, setActiveView, setMainTab]);
 
   // A clicked fleet notice: open that shell on the paired machine it came from.
   useEffect(() => {
@@ -605,6 +584,7 @@ function MainApp() {
   // switch to that shell tab.
   useEffect(() => {
     const off = api.on('shell:focus-request', async ({ projectId, shellIndex }) => {
+      closeBoard();
       const requestId = ++selectionRequestRef.current;
       setRemotePane(null);
       terminalFocus.requestFocus({ projectId, shellIndex });
@@ -623,7 +603,7 @@ function MainApp() {
       }
     });
     return () => { off(); };
-  }, [setActiveShellIndexFor, setMainTab]);
+  }, [closeBoard, setActiveShellIndexFor, setMainTab]);
 
   useEffect(() => {
     const runAppShortcut: Readonly<Record<AppShortcutAction, () => void>> = {
@@ -633,7 +613,7 @@ function MainApp() {
       'project-search': () => setSearchOpen(true),
       prompts: () => setPromptsOpen(true),
       'scrollback-search': () => setScrollbackOpen(true),
-      'toggle-help': () => setHelpOpen((v) => !v),
+      'toggle-help': () => setHelpOpen(!helpOpenRef.current),
       'new-terminal': () => openNewTerminalRef.current(false),
       'new-terminal-window': () => openNewTerminalRef.current(true),
     };
@@ -674,7 +654,7 @@ function MainApp() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [openPalette, toggleSidebar, platform]);
+  }, [openPalette, toggleSidebar, platform, setSettingsOpen, setNewProjectOpen, setHelpOpen, setSearchOpen, setPromptsOpen, setScrollbackOpen]);
 
   // Keep the OS window title in sync with the current project so it reads
   // "lawreader — MetaLogix IDE" in Mission Control, Dock previews, and every
@@ -689,6 +669,7 @@ function MainApp() {
   const selectionRequestRef = useRef(0);
   /** Selects `p` as the sidebar does and launches its shell; resolves true when it selected `p`, false when the open failed or a newer pick superseded it. */
   async function pick(p: Pick<Project, 'id'>): Promise<boolean> {
+    closeBoard();
     setProjectSettingsTarget(null);
     setRemotePane(null);
     const requestId = ++selectionRequestRef.current;
@@ -741,13 +722,17 @@ function MainApp() {
   }
 
   /** Opens an explicit sidebar target without selecting its project or launching a shell. */
-  function openProjectSettings(target: ProjectSettingsTarget): void {
+  const openProjectSettings = useCallback((target: ProjectSettingsTarget): void => {
     setEnvFocusRequest(0);
     setRemotePane(null);
     setProjectSettingsTarget(target);
     mainTabRef.current = 'settings';
     setMainTab('settings');
-  }
+  }, [setMainTab]);
+
+  useLayoutEffect(() => {
+    if (boardVisible && selected && assignment.state.kind === 'loaded' && assignment.state.value.kind !== 'linked') openProjectSettings(selected);
+  }, [assignment.state, boardVisible, selected, openProjectSettings]);
 
   /** The main tab always targets the selected project rather than a previous sidebar override. */
   function openSelectedProjectSettings(): void {
@@ -938,7 +923,7 @@ function MainApp() {
     if (selected && primaryAlive) openUnloadSession(selected, event.currentTarget);
   }
 
-  const mainSheetContent: SheetContent = mainTab === 'shell' ? 'shell' : 'other';
+  const mainSheetContent: SheetContent = !boardVisible && mainTab === 'shell' ? 'shell' : 'other';
 
   return (
     <div className="h-screen w-screen overflow-hidden flex flex-col bg-[--surface-chrome]" data-chrome-root>
@@ -996,7 +981,7 @@ function MainApp() {
                       {activeView === 'chat' && (
                         <ChatTab
                           projectId={selected?.id ?? 0}
-                          metaprojectProjectId={selected ? (selected.config.linkedMetaprojectProjectId ?? selected.metaprojectProjectId ?? null) : null}
+                          assignment={assignment.state}
                           compact
                           onDismiss={() => setActiveView('projects')}
                         />
@@ -1049,10 +1034,10 @@ function MainApp() {
             data-status-bar={showStatusBar ? 'shown' : 'hidden'}
           >
             <div className={`drag flex-wrap items-center gap-1.5 px-3 pt-2.5 pb-1.5 text-xs shrink-0 ${remotePane ? 'hidden' : 'flex'}`} data-testid={DIFF_TESTIDS.tabBar}>
-              <TabButton active={mainTab === 'shell'} onClick={() => setMainTab('shell')}>Shell</TabButton>
-              <TabButton active={mainTab === 'files'} onClick={() => setMainTab('files')}>Files</TabButton>
+              <TabButton active={!boardVisible && mainTab === 'shell'} onClick={() => setMainTab('shell')}>Shell</TabButton>
+              <TabButton active={!boardVisible && mainTab === 'files'} onClick={() => setMainTab('files')}>Files</TabButton>
               <TabButton
-                active={mainTab === 'diff'}
+                active={!boardVisible && mainTab === 'diff'}
                 onClick={() => setMainTab('diff')}
                 testId={DIFF_TESTIDS.tab}
                 ariaLabel={diffCount !== null ? DIFF_COPY.tabCountLabel(diffCount) : undefined}
@@ -1065,7 +1050,7 @@ function MainApp() {
                 )}
               </TabButton>
               <TabButton
-                active={mainTab === 'settings'}
+                active={!boardVisible && mainTab === 'settings'}
                 onClick={openSelectedProjectSettings}
                 testId={PROJECT_SETTINGS_TESTIDS.tab}
                 ariaLabel={envDirty ? ENV_COPY.tabUnsavedLabel : undefined}
@@ -1078,7 +1063,7 @@ function MainApp() {
                 )}
               </TabButton>
               {activityEnabled && (
-                <TabButton active={mainTab === 'activity'} onClick={() => setMainTab('activity')} testId={ACTIVITY_LOG_TESTIDS.tabButton}>Activity</TabButton>
+                <TabButton active={!boardVisible && mainTab === 'activity'} onClick={() => setMainTab('activity')} testId={ACTIVITY_LOG_TESTIDS.tabButton}>Activity</TabButton>
               )}
               <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 pr-2">
                 {selected && (
@@ -1096,7 +1081,15 @@ function MainApp() {
                         <XIcon />
                       </button>}
                     </span>
-                    <MetaprojectBoardButton project={selected} onRequestLink={() => setActiveView('chat')} />
+                    <button ref={boardOpener} type="button" className="no-drag flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-[--text] hover:bg-[--panel-strong] focus-visible:ring-2 focus-visible:ring-[--accent]"
+                      data-testid="metaproject-board" aria-pressed={boardVisible} onClick={() => {
+                        if (boardVisible) returnToWorkspace();
+                        else if (assignment.state.kind === 'loaded' && assignment.state.value.kind !== 'linked') openProjectSettings(selected);
+                        else {
+                          if (activeView === 'fleet') setActiveView('projects');
+                          terminalFocus.cancelRequest(); setBoardProject(selected.id);
+                        }
+                      }}><span className="text-[--hue-purple]" aria-hidden="true"><BoardIcon /></span>Board</button>
                     <Tooltip label="Prompt library" shortcut={SHORTCUT_COPY.promptsShortcut(platform)}>
                       <button
                         onClick={() => setPromptsOpen(true)}
@@ -1146,6 +1139,7 @@ function MainApp() {
               </div>
             </div>
             <div className="flex-1 relative min-h-0 flex flex-col">
+              <div {...(boardVisible ? { inert: '' } : {})} aria-hidden={boardVisible || undefined} className={`flex flex-1 min-h-0 min-w-0 flex-col ${boardVisible ? 'invisible pointer-events-none' : ''}`}>
               {!remotePane && selected && mainTab === 'shell' && (
                 <ShellTabsBar
                   projectId={selected.id}
@@ -1196,6 +1190,10 @@ function MainApp() {
                       {PROJECT_SETTINGS_COPY.noProject}
                     </section>
                 : selected ? mainBody(selected) : <EmptyState />}
+              </div>
+              {boardVisible && selected && <BoardPanel key={selected.id} projectId={selected.id} name={selected.name}
+                assignment={assignment.state} covered={overlayOpen} controls={boardControls} onReload={assignment.reload}
+                onClose={returnToWorkspace} onSettings={() => openProjectSettings(selected)} />}
             </div>
           </main>
           {/* Status bar under the main sheet only (not the sidebar); it folds away (height) when hidden. */}
@@ -1228,7 +1226,7 @@ function MainApp() {
       </div>
 
       {unloadTarget && <UnloadSessionDialog key={unloadTarget.id} project={unloadTarget}
-        visible={isPrimaryVisible(unloadTarget.id, { selectedProjectId: selected?.id ?? null, mainTab, activeShellIndex, rightShellIndex })}
+        visible={!boardVisible && isPrimaryVisible(unloadTarget.id, { selectedProjectId: selected?.id ?? null, mainTab, activeShellIndex, rightShellIndex })}
         onClose={closeUnloadSession}
         onStopped={() => { toast('Session unloaded', { kind: 'success' }); }}
       />}
@@ -1280,6 +1278,7 @@ function MainApp() {
         open={scrollbackOpen}
         onClose={() => setScrollbackOpen(false)}
         onFocus={async (projectId, shellIndex) => {
+          closeBoard();
           const requestId = ++selectionRequestRef.current;
           setRemotePane(null);
           terminalFocus.cancelRequest();
@@ -1512,62 +1511,6 @@ function PopoutIcon() {
       <path d="M10 14L21 3" />
       <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
     </svg>
-  );
-}
-
-function MetaprojectBoardButton({ project, onRequestLink }: { project: Project; onRequestLink: () => void }) {
-  // Seed with the default so a click during the settings-fetch race doesn't
-  // dead-end on a "not configured" toast — the vast majority of users will
-  // hit the default anyway, and settings:get overwrites it when it resolves.
-  const DEFAULT_BASE = 'https://projects.metalogix.solutions';
-  const [baseUrl, setBaseUrl] = useState<string>(DEFAULT_BASE);
-  useEffect(() => {
-    (async () => {
-      try {
-        const { value } = await api.invoke('settings:get', { key: 'metaproject_base_url' });
-        if (typeof value === 'string' && value) setBaseUrl(value);
-      } catch { /* keep default */ }
-    })();
-  }, []);
-  const linked = project.config.linkedMetaprojectProjectId ?? project.metaprojectProjectId;
-  // Strip any leading identifier prefix ("PROJ-42" → "42"). The public URL
-  // is `/projects/<int_id>` which auto-redirects to the kanban board.
-  const numericId = linked ? Number(String(linked).replace(/^[A-Za-z]+-/, '')) : null;
-  const isLinked = !!(linked && numericId && Number.isFinite(numericId));
-  // Normalize baseUrl: users often save a bare host like
-  // `projects.metalogix.solutions` without a scheme, which then fails the
-  // main-process URL-scheme allowlist. Prepend `https://` when missing and
-  // strip a trailing slash so the join is clean.
-  const normalizedBase = /^https?:\/\//i.test(baseUrl)
-    ? baseUrl.replace(/\/$/, '')
-    : `https://${baseUrl.replace(/^\/+/, '').replace(/\/$/, '')}`;
-  const url = isLinked ? `${normalizedBase}/projects/${numericId}` : '';
-  return (
-    <button
-      onClick={async () => {
-        // Unlinked → surface the link/create banner in the chat rail so the
-        // user can wire this local project to a metaproject board in one
-        // click; the banner already has both "Link existing" and "Create new".
-        if (!isLinked) {
-          toast('Not linked yet — pick or create a metaproject board', { kind: 'info' });
-          onRequestLink();
-          return;
-        }
-        try {
-          await api.invoke('app:open-external', { url });
-        } catch (e) {
-          toast('Could not open the board', { kind: 'error', detail: `${String(e).replace(/^Error:\s*/, '')} — URL: ${url}` });
-        }
-      }}
-      className={`text-[11px] px-2 py-0.5 rounded-md flex items-center gap-1.5 ${
-        isLinked ? 'hover:bg-[--panel-strong] text-[--text]' : 'text-[--text-muted] hover:bg-[--panel-strong] hover:text-[--text]'
-      }`}
-      title={isLinked ? `Open ${linked} on the metaproject board` : 'Not linked to a metaproject board — click to link or create one'}
-      data-testid="metaproject-board"
-    >
-      <span className="text-[--hue-purple]"><BoardIcon /></span>
-      <span>{isLinked ? 'Board' : 'Board · link'}</span>
-    </button>
   );
 }
 

@@ -89,6 +89,12 @@ export class ProjectsRepo {
     this.db.prepare('INSERT OR REPLACE INTO recent_projects (project_id, opened_at) VALUES (?, ?)').run(id, ts);
   }
 
+  /** Clear obsolete project hints after an authoritative local file replacement. */
+  clearLegacyMetaprojectLink(id: number): void {
+    this.db.prepare(`UPDATE projects SET metaproject_project_id = NULL,
+      config_json = json_remove(config_json, '$.linkedMetaprojectProjectId') WHERE id = ?`).run(id);
+  }
+
   setFirstLaunched(id: number, when: Date): void {
     this.db.prepare('UPDATE projects SET first_launched_at = ? WHERE id = ?').run(iso(when), id);
   }

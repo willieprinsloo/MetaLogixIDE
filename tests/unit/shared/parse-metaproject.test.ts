@@ -1,5 +1,24 @@
 import { describe, it, expect } from 'vitest';
-import { parseMetaproject } from '@shared/parse-metaproject';
+import { editMetaprojectAssignment, parseAssignmentDocument, parseMetaproject, parseRemoteProjectId } from '@shared/parse-metaproject';
+import { remoteProjectId } from '@shared/metaproject-contract';
+
+it('canonicalizes decimal and legacy prefixed IDs only', () => {
+  expect(['42', 'PROJ-42'].map(parseRemoteProjectId)).toEqual([42, 42]);
+  expect(['0', '1e3', '0x1f', '5.5', '-1', 'ABC-9007199254740992'].map(parseRemoteProjectId)).toEqual(Array(6).fill(null));
+});
+
+it('edits root assignment values while preserving comments, CRLF and nested data', () => {
+  const original = 'name: Folder\r\nproject_id: "PROJ-42"  # stable\r\nnested:\r\n  project_id: 99\r\nboard_url: https://else.test/a\r\n';
+  const doc = parseAssignmentDocument(original);
+  if (!doc) throw new Error('unsupported fixture');
+  expect(editMetaprojectAssignment(doc, { id: remoteProjectId.parse(71), origin: 'https://example.test' }))
+    .toBe('name: Folder\r\nproject_id: "71"  # stable\r\nnested:\r\n  project_id: 99\r\nboard_url: https://else.test/a\r\nmetaproject_origin: https://example.test\r\n');
+  expect(editMetaprojectAssignment(doc, null)).toBe('name: Folder\r\n# stable\r\nnested:\r\n  project_id: 99\r\nboard_url: https://else.test/a\r\n');
+});
+
+it.each(['project_id: 1\nProject_Id: 2', '"project_id": 12', 'project_id: &anchor 12', '<<: *mapping'])('rejects ambiguous YAML: %s', text => {
+  expect(parseAssignmentDocument(text)).toBeNull();
+});
 
 describe('parseMetaproject', () => {
   it('reads project_id and board_url', () => {

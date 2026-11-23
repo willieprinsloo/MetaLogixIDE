@@ -1,434 +1,183 @@
-/**
- * Metaproject HTTP + Socket.IO client, main-process.
- *
- * Auth model (verified against the metaproject codebase at
- * ~/Documents/Projects/markdown-editor):
- *   • POST /login with JSON { username, password } → Flask-Login session
- *     cookie in Set-Cookie. Same endpoint the browser hits.
- *   • The Socket.IO gate checks current_user.is_authenticated, so the
- *     same session cookie authenticates the socket. We forward it as
- *     `Cookie:` in the WS handshake extraHeaders.
- *   • REST channels/messages live under /api/web-chat/... with the same
- *     cookie auth.
- *
- * We keep everything in the main process — the renderer never sees the
- * cookie, and we forward socket events over IPC.
- */
-import { io, type Socket } from 'socket.io-client';
+/** Protected Metaproject REST and identity-verified direct Chat WebSocket. */
+import { io, NodeWebSocket, type Socket } from 'socket.io-client';
+import type { Session } from 'electron';
+import { z } from 'zod';
+import { accountId, metaprojectRemoteProject, type MetaprojectOrigin, type RemoteProjectId } from '@shared/metaproject-contract';
+import { projectList, projectListCap, requireWebBody, webJson, WebFailure, type WebRequest } from './web-session';
 
-export interface MetaprojectConfig {
-  baseUrl: string;     // e.g. https://projects.metalogix.solutions
-  username: string;
-  password: string;
+const id = z.number().int().positive();
+const channel = z.object({ id, project_id: id.nullable(), name: z.string().max(1024), is_private: z.boolean() });
+const user = z.object({ id, username: z.string().max(254), display_name: z.string().nullish().transform(value => value ?? undefined), avatar_url: z.string().max(4096).nullish().transform(value => value ?? null) });
+const message = z.object({ id, channel_id: id, project_id: id.nullish(), user_id: id, user_name: z.string().optional(), user: user.nullable().optional().transform(value => value ?? undefined), message: z.string().max(64 * 1024), created_at: z.string().max(128), parent_message_id: id.nullable(), attachments: z.array(z.object({ id, filename: z.string().max(1024), file_size: z.number().int().nonnegative(), mime_type: z.string().max(256).nullish() })).optional() });
+const channels = z.object({ success: z.literal(true), channels: z.array(channel) });
+const messages = z.object({ success: z.literal(true), messages: z.array(message) });
+const users = z.object({ success: z.literal(true), users: z.array(user.extend({ email: z.string().max(254).optional() })) });
+const project = z.object({ success: z.literal(true), project: metaprojectRemoteProject });
+const identity = z.object({ status: z.literal('success'), user_id: accountId });
+const socketMessage = z.object({ channel_id: id, message });
+const socketDeleted = z.object({ channel_id: id, message_id: id });
+export interface CreateRemote { name: string; description?: string; projectType?: 'kanban' | 'sprint' | 'dcad' }
+interface ClientOptions {
+  origin: MetaprojectOrigin;
+  jar: Session;
+  request: WebRequest;
+  signal: AbortSignal;
+  userId: number;
+  changed(connected: boolean): void;
+  rejected(): void;
+  forward(event: string, payload: unknown): void;
 }
 
-export interface Channel {
-  id: number;
-  project_id: number;
-  name: string;
-  is_private: boolean;
-}
-
-export interface ChatMessageUser {
-  id: number;
-  username: string;
-  display_name?: string;
-  avatar_url?: string | null;
-}
-
-export interface ChatMessage {
-  id: number;
-  channel_id: number;
-  project_id: number | null;
-  user_id: number;
-  user_name?: string;
-  user?: ChatMessageUser;
-  message: string;
-  created_at: string;
-  parent_message_id: number | null;
-}
-
-type EventHandler = (payload: unknown) => void;
-
+/** Connects only while its lease is alive and samples the current jar on every handshake. */
 export class MetaprojectClient {
-  private cookie: string | null = null;
   private socket: Socket | null = null;
-  private base = '';
-  private handlers = new Map<string, Set<EventHandler>>();
-  private userName: string | null = null;
-  private userId: number | null = null;
+  private retry: ReturnType<typeof setTimeout> | undefined;
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private backoff = 1500;
+  private probeAt = 0;
+  private verified = false;
 
-  isConnected(): boolean { return !!this.cookie && !!this.socket && this.socket.connected; }
-  isLoggedIn(): boolean { return this.cookie != null; }
-  currentUserName(): string | null { return this.userName; }
-  currentUserId(): number | null { return this.userId; }
-
-  async login(cfg: MetaprojectConfig): Promise<{ userId: number; userName: string }> {
-    // Normalise: strip trailing slash and prepend https:// when the user
-    // saved a bare host. fetch() only accepts fully qualified URLs.
-    const trimmed = cfg.baseUrl.trim().replace(/\/+$/, '');
-    this.base = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-
-    // Step 1: GET the login page to obtain the Flask-WTF CSRF token +
-    // an anonymous session cookie. Flask-WTF's CSRFProtect rejects any
-    // POST that lacks a matching X-CSRFToken. The token is in a
-    // <meta name="csrf-token" content="…"> tag in base.html.
-    const g = await fetch(`${this.base}/auth/login`, { redirect: 'manual' });
-    const preCookies = readSetCookies(g);
-    const csrf = readCsrfToken(await g.text());
-    if (!csrf) throw new Error('no CSRF token on /auth/login (server layout changed?)');
-
-    // Step 2: POST with the token in the header, both anon cookies in
-    // the Cookie jar, and a Referer that satisfies Flask-WTF's HTTPS
-    // referrer check.
-    const res = await fetch(`${this.base}/auth/login`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'X-CSRFToken': csrf,
-        'Cookie': serializeCookies(preCookies),
-        'Referer': `${this.base}/auth/login`,
-        'Origin': this.base,
-      },
-      body: JSON.stringify({ username: cfg.username, password: cfg.password }),
-      redirect: 'manual',
-    });
-    if (res.status === 401 || res.status === 400) {
-      let msg = 'invalid credentials';
-      try {
-        const body = await res.json() as { message?: string };
-        if (body?.message) msg = body.message;
-      } catch { /* leave default */ }
-      throw new Error(msg);
-    }
-    const postCookies = readSetCookies(res);
-    // On successful login Flask rotates the session cookie. Prefer the
-    // fresh one; fall back to the anon session if the server didn't
-    // issue a new one (unlikely).
-    const merged = new Map([...preCookies, ...postCookies]);
-    const session = merged.get('session');
-    if (!session) throw new Error(`login failed (${res.status})`);
-    // We'll send BOTH csrf_token and session on subsequent requests. The
-    // csrf_token cookie is only needed for POSTs that CSRFProtect gates,
-    // but including it is harmless on GETs.
-    this.cookie = serializeCookies(merged);
-    // Parse the login response to capture the real user id + canonical
-    // username. Users may sign in with an email; the messages coming back
-    // over chat use the canonical username / display_name, and we need the
-    // id to match "my messages" reliably (username comparison is fragile).
-    let userId = 0;
-    let userName = cfg.username;
-    try {
-      const body = await res.json() as { user?: { id?: number; username?: string; display_name?: string } };
-      if (body?.user?.id) userId = body.user.id;
-      if (body?.user?.username) userName = body.user.display_name || body.user.username;
-    } catch { /* server didn't return JSON; keep defaults */ }
-    this.userId = userId || null;
-    this.userName = userName;
-    return { userId, userName };
+  constructor(private readonly options: ClientOptions) {
+    options.signal.addEventListener('abort', () => this.stop(), { once: true });
   }
 
-  disconnect(): void {
-    this.socket?.disconnect();
+  /** Start the single owned direct Chat connection. */
+  start(): void { void this.connect(); }
+
+  private stop(): void {
+    clearTimeout(this.retry);
+    clearTimeout(this.timer);
+    this.verified = false;
+    const socket = this.socket;
     this.socket = null;
-    this.cookie = null;
-    this.userName = null;
-    this.userId = null;
-    this.handlers.clear();
+    socket?.disconnect();
   }
 
-  // ────────────────────────── HTTP helpers ──────────────────────────
-
-  /** Read one cookie's value from the serialized `key=v; key=v` jar we hold. */
-  private getCookieValue(name: string): string | null {
-    if (!this.cookie) return null;
-    const parts = this.cookie.split(/;\s*/);
-    for (const p of parts) {
-      const eq = p.indexOf('=');
-      if (eq < 0) continue;
-      if (p.slice(0, eq) === name) return p.slice(eq + 1);
-    }
-    return null;
+  private async connect(): Promise<void> {
+    const { jar, signal, origin } = this.options;
+    if (signal.aborted) return;
+    try {
+      const cookies = await jar.cookies.get({ url: `${origin}/socket.io/?EIO=4&transport=websocket`, name: 'session' });
+      if (signal.aborted) return;
+      const [cookie] = cookies;
+      if (cookies.length !== 1 || !cookie?.httpOnly || !/^[\x21-\x3a\x3c-\x7e]+$/.test(cookie.value)) throw new WebFailure('protocol');
+      this.bind(io(origin, {
+        autoConnect: false, forceNew: true, transports: [NodeWebSocket], upgrade: false, reconnection: false, timeout: 10_000,
+        extraHeaders: { Cookie: `session=${cookie.value}`, Origin: origin, 'User-Agent': jar.getUserAgent() },
+      }));
+    } catch { this.reconnect(); }
   }
 
-  private async get<T>(path: string): Promise<T> {
-    return this.request<T>('GET', path);
-  }
-  private async post<T>(path: string, body?: unknown): Promise<T> {
-    return this.request<T>('POST', path, body);
-  }
-
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    if (!this.cookie) throw new Error('not authenticated');
-    // Session-cookie blueprints on metaproject validate `X-CSRFToken` on
-    // every unsafe method (POST/PUT/PATCH/DELETE) — the token itself is
-    // the value of the `csrf_token` cookie we already hold. Add it here so
-    // callers don't each have to remember. Only `/auth/login` used to send
-    // it (2-step CSRF handshake); the /api/projects create + /api/chat/*
-    // send/edit paths returned 400 without it.
-    const unsafe = /^(POST|PUT|PATCH|DELETE)$/i.test(method);
-    const csrfToken = unsafe ? this.getCookieValue('csrf_token') : null;
-    // `redirect: 'manual'` so a session-expired 302 to /auth/login turns
-    // into a status of 0 / "opaqueredirect" instead of silently landing on
-    // the HTML login page — otherwise the caller's `res.json()` blows up
-    // with the misleading "Unexpected token '<'" and we can't tell the user
-    // what actually happened.
-    const res = await fetch(`${this.base}${path}`, {
-      method,
-      headers: {
-        'Cookie': this.cookie,
-        'Accept': 'application/json',
-        ...(body ? { 'Content-Type': 'application/json' } : {}),
-        ...(csrfToken ? { 'X-CSRFToken': csrfToken, 'Referer': `${this.base}${path}`, 'Origin': this.base } : {}),
-      },
-      body: body ? JSON.stringify(body) : undefined,
-      redirect: 'manual',
-    });
-    // Auth-required routes redirect (302) when the session cookie is stale.
-    // Wipe local session state so the LoginCard reappears on next status
-    // fetch and surface a clean error to the caller.
-    if (res.status === 0 || res.type === 'opaqueredirect' || res.status === 302 || res.status === 401) {
-      this.cookie = null;
-      this.userId = null;
-      this.userName = null;
-      throw new Error(`session expired — please sign in again`);
-    }
-    if (!res.ok) throw new Error(`${method} ${path} → ${res.status}`);
-    const ctype = res.headers.get('content-type') || '';
-    if (!/json/i.test(ctype)) {
-      // Belt-and-braces: some proxies rewrite the redirect to a 200 HTML
-      // page. Detect the mismatch before we throw the incomprehensible
-      // JSON parse error.
-      throw new Error(`${method} ${path} returned ${ctype || 'no content-type'} — expected JSON`);
-    }
-    return await res.json() as T;
-  }
-
-  // ────────────────────────── REST surface ──────────────────────────
-
-  async listChannels(projectId: number): Promise<Channel[]> {
-    // Per app/routes/web_chat.py: the per-project blueprint is mounted at
-    // /api/projects/<int:project_id>/chat and its GET /channels/ returns
-    // the channel list. Responses use the standard {success, data} envelope.
-    const raw = await this.get<{ success?: boolean; data?: { channels?: Channel[] } | Channel[] } | Channel[]>(
-      `/api/projects/${projectId}/chat/channels/`,
-    );
-    const list = Array.isArray(raw) ? raw
-      : Array.isArray(raw?.data) ? raw.data
-      : raw?.data?.channels
-      ?? (raw as { channels?: Channel[] })?.channels
-      ?? [];
-    return list;
-  }
-
-  /**
-   * Workspace-scoped channel list — the endpoint that lets one client show
-   * every room the user is in without walking projects one at a time.
-   *   scope='all'      → global (org-wide) + every project the user can see
-   *   scope='global'   → only org-wide channels
-   *   scope=<number>   → global + that specific project
-   * Endpoint: GET /api/chat/channels/?scope=<scope>
-   * (app/routes/web_chat.py:748, app/services/chat_service.py:1426)
-   */
-  async listAllChannels(scope: 'all' | 'global' | number = 'all'): Promise<Channel[]> {
-    const s = typeof scope === 'number' ? String(scope) : scope;
-    const raw = await this.get<{ success?: boolean; channels?: Channel[] } | Channel[]>(
-      `/api/chat/channels/?scope=${encodeURIComponent(s)}`,
-    );
-    return Array.isArray(raw) ? raw : (raw?.channels ?? []);
-  }
-
-  /**
-   * Fetches an attachment's raw bytes via the metaproject `send_file`
-   * download route. Returns an ArrayBuffer so the main process can write
-   * it to disk. The endpoint is per-project because `chat.get_attachment`
-   * validates project access.
-   */
-  async fetchAttachment(projectId: number, attachmentId: number): Promise<ArrayBuffer> {
-    if (!this.cookie) throw new Error('not authenticated');
-    const res = await fetch(`${this.base}/api/projects/${projectId}/chat/attachments/${attachmentId}/download`, {
-      headers: { 'Cookie': this.cookie },
-      redirect: 'manual',
-    });
-    if (res.status === 0 || res.type === 'opaqueredirect' || res.status === 302 || res.status === 401) {
-      throw new Error('session expired — please sign in again');
-    }
-    if (!res.ok) throw new Error(`download → ${res.status}`);
-    return await res.arrayBuffer();
-  }
-
-  /** GET /api/users — every active, non-archived user. Used to power @-autocomplete. */
-  async listUsers(): Promise<Array<{ id: number; username: string; email?: string; avatar_url?: string | null }>> {
-    const raw = await this.get<{ success?: boolean; users?: Array<{ id: number; username: string; email?: string; avatar_url?: string | null }> }>(
-      `/api/users`,
-    );
-    return raw?.users ?? [];
-  }
-
-  /** GET /api/projects — every project the current user can access. */
-  async listMetaprojectProjects(): Promise<Array<{ id: number; name: string; identifier?: string | null }>> {
-    const raw = await this.get<{ success?: boolean; projects?: Array<{ id: number; name: string; identifier?: string | null }> }>(
-      `/api/projects`,
-    );
-    return raw?.projects ?? [];
-  }
-
-  /** POST /api/projects — create a new metaproject project for the current org. */
-  async createMetaprojectProject(input: { name: string; description?: string; projectType?: 'kanban' | 'sprint' | 'dcad' }): Promise<{ id: number; name: string; identifier?: string | null }> {
-    const raw = await this.post<{ success?: boolean; project?: { id: number; name: string; identifier?: string | null } }>(
-      `/api/projects`,
-      { name: input.name, description: input.description ?? '', project_type: input.projectType ?? 'kanban' },
-    );
-    if (!raw?.project) throw new Error('create project: unexpected response shape');
-    return raw.project;
-  }
-
-  async listMessages(channelId: number, limit = 50, projectId?: number): Promise<ChatMessage[]> {
-    // Messages ALWAYS live under a per-project route on the server —
-    // `/api/projects/<pid>/chat/channels/<cid>/messages/`. `resolve_channel`
-    // (services/chat_service.py:161) accepts any project_id in the same org
-    // for a global channel, so the caller can pass any project id they can
-    // access when the channel itself has no project_id. There is no
-    // workspace `/api/chat/channels/<cid>/messages/` endpoint — a fallback
-    // there 404s. Required argument therefore, but kept optional in the
-    // signature to preserve the callsite shape; we throw a helpful error
-    // instead of hitting a URL that doesn't exist.
-    if (projectId == null) {
-      throw new Error(`listMessages needs a projectId (channel ${channelId}) — the server has no workspace-scoped messages endpoint`);
-    }
-    const path = `/api/projects/${projectId}/chat/channels/${channelId}/messages/?limit=${limit}`;
-    const raw = await this.get<{ success?: boolean; data?: { messages?: ChatMessage[] } | ChatMessage[] } | ChatMessage[]>(path);
-    const list = Array.isArray(raw) ? raw
-      : Array.isArray(raw?.data) ? raw.data
-      : raw?.data?.messages
-      ?? (raw as { messages?: ChatMessage[] })?.messages
-      ?? [];
-    return list;
-  }
-
-  // ────────────────────────── Socket surface ─────────────────────────
-
-  connectSocket(): void {
-    if (!this.cookie) throw new Error('not authenticated');
-    if (this.socket && this.socket.connected) return;
-    // The Flask-SocketIO backend enforces a same-origin check on the
-    // handshake Origin header. socket.io-client on Node doesn't send one
-    // by default, but engine.io-client's polling transport does — and
-    // it uses the request URL host, which is what the backend rejects.
-    // We give it an Origin that matches this.base so the CORS allowlist
-    // has something explicit to match on.
-    const originHost = new URL(this.base).origin;
-    // Polling first, then upgrade to websocket: this is the default and it
-    // matters for Flask-Login. The polling GET carries our Cookie header,
-    // Flask attaches the session, and the subsequent WS upgrade inherits
-    // the already-authenticated engine.io session. Forcing websocket first
-    // means the auth cookie has to survive the upgrade handshake, which
-    // engine.io-client on Node does inconsistently and leaves current_user
-    // unauthenticated on the server → immediate `io server disconnect`.
-    this.socket = io(this.base, {
-      transports: ['polling', 'websocket'],
-      extraHeaders: {
-        Cookie: this.cookie,
-        Origin: originHost,
-      },
-      withCredentials: true,
-      reconnection: true,
-      reconnectionDelay: 1500,
-      reconnectionDelayMax: 15_000,
-    });
-    // Re-fire every server event as a generic "*" that we translate to
-    // our IPC 'metaproject:event' channel. We keep the raw event name.
-    const forward = (event: string) => (payload: unknown) => {
-      for (const h of this.handlers.get(event) ?? []) h(payload);
-      for (const h of this.handlers.get('*')       ?? []) h({ event, payload });
+  private bind(socket: Socket): void {
+    this.socket = socket;
+    const disconnect = (): void => {
+      if (this.socket !== socket) return;
+      const wasVerified = this.verified;
+      this.stop();
+      this.options.changed(false);
+      if (wasVerified) this.options.forward('disconnect', undefined);
+      this.reconnect();
     };
-    for (const ev of [
-      'connect', 'disconnect', 'connect_error',
-      'channel_message', 'chat_error',
-      'channel_message_edited', 'channel_message_deleted',
-      'channel_message_reaction', 'channel_read',
-      'presence_update', 'user_joined_channel', 'user_left_channel',
-    ]) {
-      this.socket.on(ev, forward(ev));
+    const ready = (): void => this.verify(socket);
+    socket.on('connected', (raw: unknown) => {
+      const result = identity.safeParse(raw);
+      if (this.socket !== socket || !result.success) return;
+      if (result.data.user_id !== this.options.userId) { this.options.rejected(); return; }
+      if (socket.connected) ready();
+      else socket.once('connect', ready);
+    });
+    socket.on('disconnect', disconnect);
+    socket.on('connect_error', disconnect);
+    this.forwardSocket(socket);
+    this.timer = setTimeout(disconnect, 10_000);
+    socket.connect();
+  }
+
+  private verify(socket: Socket): void {
+    if (this.socket !== socket || this.verified) return;
+    clearTimeout(this.timer);
+    this.verified = true;
+    this.backoff = 1500;
+    this.options.changed(true);
+    this.options.forward('connect', undefined);
+  }
+
+  private forwardSocket(socket: Socket): void {
+    const events = { channel_message: socketMessage, channel_message_edited: socketMessage, channel_message_deleted: socketDeleted };
+    for (const [event, schema] of Object.entries(events)) {
+      socket.on(event, (payload: unknown) => {
+        if (this.socket !== socket || !this.verified) return;
+        const valid = schema.safeParse(payload);
+        if (valid.success) this.options.forward(event, valid.data);
+      });
     }
-    // Lifecycle logging so failed handshakes are visible in the main
-    // console instead of silently reconnecting forever.
-    this.socket.on('connect', () => {
-      console.log('[metaproject] socket connected', this.socket?.id);
-    });
-    this.socket.on('connect_error', (err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn('[metaproject] socket connect_error:', msg);
-    });
-    this.socket.on('disconnect', (reason: string) => {
-      console.log('[metaproject] socket disconnected:', reason);
+    socket.on('chat_error', () => {
+      if (this.socket === socket && this.verified) this.options.forward('chat_error', { error: 'Chat operation failed' });
     });
   }
 
-  onEvent(event: string, handler: EventHandler): () => void {
-    if (!this.handlers.has(event)) this.handlers.set(event, new Set());
-    this.handlers.get(event)!.add(handler);
-    return () => { this.handlers.get(event)?.delete(handler); };
+  private reconnect(): void {
+    if (this.options.signal.aborted) return;
+    if (Date.now() >= this.probeAt) {
+      this.probeAt = Date.now() + 20_000;
+      void this.listProjects().catch(() => undefined);
+    }
+    const delay = Math.min(15_000, this.backoff + Math.random() * 500);
+    this.backoff = Math.min(15_000, this.backoff * 2);
+    this.retry = setTimeout(() => this.start(), delay);
   }
 
-  joinChannel(channelId: number): void {
-    this.socket?.emit('join_channel', { channel_id: channelId });
+  /** Enforce a verified socket and never queue mutations for replay. */
+  emit(event: string, payload: object): void {
+    if (!this.verified || !this.socket?.connected) throw new WebFailure('network');
+    this.socket.volatile.emit(event, payload);
   }
-  leaveChannel(channelId: number): void {
-    this.socket?.emit('leave_channel', { channel_id: channelId });
-  }
-  sendChannelMessage(channelId: number, message: string, parentMessageId?: number | null): void {
-    this.socket?.emit('send_channel_message', {
-      channel_id: channelId,
-      message,
-      parent_message_id: parentMessageId ?? null,
-    });
-  }
-  markRead(channelId: number, lastMessageId: number): void {
-    this.socket?.emit('mark_channel_read', { channel_id: channelId, last_message_id: lastMessageId });
-  }
-  editChannelMessage(channelId: number, messageId: number, message: string): void {
-    this.socket?.emit('edit_channel_message', {
-      channel_id: channelId,
-      message_id: messageId,
-      message,
-    });
-  }
-  deleteChannelMessage(channelId: number, messageId: number): void {
-    this.socket?.emit('delete_channel_message', {
-      channel_id: channelId,
-      message_id: messageId,
-    });
-  }
-}
 
-// ────────────────────────── Cookie / CSRF helpers ──────────────────────────
-// Node 20+ / undici exposes getSetCookie() which returns each Set-Cookie
-// header as its own string. Fall back to a manual split of the joined
-// header in case we ever run on a runtime without it.
-function readSetCookies(res: Response): Map<string, string> {
-  const jar = new Map<string, string>();
-  const list: string[] =
-    'getSetCookie' in res.headers && typeof (res.headers as { getSetCookie?: () => string[] }).getSetCookie === 'function'
-      ? (res.headers as { getSetCookie: () => string[] }).getSetCookie()
-      : (res.headers.get('set-cookie') ?? '').split(/,(?=[^ ;]+=)/);
-  for (const c of list) {
-    const m = /^\s*([^=;\s]+)=([^;]*)/.exec(c);
-    if (m && m[1]) jar.set(m[1], m[2] ?? '');
+  private async read<T>(path: string, schema: z.ZodType<T>, json?: object): Promise<T> {
+    const { jar, origin, request, signal } = this.options;
+    try {
+      let csrf: string | undefined;
+      if (json) {
+        const values = await jar.cookies.get({ url: new URL(path, origin).href, name: 'csrf_token' });
+        csrf = values.length === 1 ? values[0]?.value : undefined;
+        if (!csrf || !/^[a-zA-Z0-9._-]{1,2048}$/.test(csrf)) throw new WebFailure('protocol');
+      }
+      return webJson(await request({ path, signal, ...(json ? { json, csrf } : {}), limit: projectListCap }), origin, schema);
+    } catch (error) {
+      if (error instanceof WebFailure && error.reason === 'expired') this.options.rejected();
+      throw error;
+    }
   }
-  return jar;
-}
 
-// Flask-WTF renders the CSRF token in a <meta> tag in base.html; some
-// pages also carry it as a hidden form input. Try both.
-function readCsrfToken(html: string): string | null {
-  const meta = /<meta\s+name=["']csrf-token["']\s+content=["']([^"']+)["']/i.exec(html);
-  if (meta && meta[1]) return meta[1];
-  const input = /<input[^>]*name=["']csrf_token["'][^>]*value=["']([^"']+)["']/i.exec(html);
-  return input && input[1] ? input[1] : null;
-}
-
-function serializeCookies(jar: Map<string, string>): string {
-  return [...jar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
+  /** Read the current account's accessible project list. */
+  async listProjects(): Promise<z.output<typeof projectList>['projects']> { return (await this.read('/api/projects', projectList)).projects; }
+  /** Check current access and verify the project returned by the fixed route. */
+  async checkProject(remoteId: RemoteProjectId): Promise<void> {
+    if ((await this.read(`/api/projects/${remoteId}`, project)).project.id !== remoteId) throw new WebFailure('protocol');
+  }
+  /** Create one remote project; never retry automatically. */
+  async createProject(input: CreateRemote): Promise<z.output<typeof project>['project']> {
+    return (await this.read('/api/projects', project, { name: input.name, description: input.description ?? '', project_type: input.projectType ?? 'kanban' })).project;
+  }
+  /** Read workspace or scoped Chat channels. */
+  async listAllChannels(scope: 'all' | 'global' | number): Promise<z.output<typeof channels>['channels']> { return (await this.read(`/api/chat/channels/?scope=${scope}`, channels)).channels; }
+  /** Read Chat channels belonging to a remote project. */
+  async listChannels(projectId: number): Promise<Array<z.output<typeof channel> & { project_id: number }>> {
+    return (await this.read(`/api/projects/${projectId}/chat/channels/`, channels)).channels.map(item => ({ ...item, project_id: item.project_id ?? projectId }));
+  }
+  /** Read Chat history with the required per-project route. */
+  async listMessages(projectId: number, channelId: number, limit: number): Promise<z.output<typeof messages>['messages']> { return (await this.read(`/api/projects/${projectId}/chat/channels/${channelId}/messages/?limit=${limit}`, messages)).messages; }
+  /** Read user summaries for Chat mentions. */
+  async listUsers(): Promise<z.output<typeof users>['users']> { return (await this.read('/api/users', users)).users; }
+  /** Download bounded binary data without following redirects. */
+  async fetchAttachment(projectId: number, attachmentId: number): Promise<Buffer> {
+    const { origin, request, signal } = this.options;
+    try {
+      const reply = await request({ path: `/api/projects/${projectId}/chat/attachments/${attachmentId}/download`, signal, limit: 25 * 1024 * 1024 });
+      return requireWebBody(reply, origin, true);
+    } catch (error) {
+      if (error instanceof WebFailure && error.reason === 'expired') this.options.rejected();
+      throw error;
+    }
+  }
 }

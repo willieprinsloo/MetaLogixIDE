@@ -1,6 +1,6 @@
 import { app, BrowserWindow, crashReporter, ipcMain, Menu, Notification, powerMonitor, powerSaveBlocker, screen, shell } from 'electron';
 import { execFile } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -11,6 +11,11 @@ import { buildServices, type Services } from './services';
 import { DROP_MAX_AGE_MS, testModeDropDir } from './drops/staging';
 import { installKeepAwake } from './keep-awake/install';
 import { registerIpc, rememberResumableHarness } from './ipc/register';
+import { registerMetaprojectIpc, type MetaprojectLifecycle } from './metaproject/ipc-handlers';
+import { isMetaprojectRendererEntry, metaprojectOwner } from './metaproject/owner';
+import { metaprojectPlatform } from './metaproject/platform';
+import type { IpcEventName, IpcEvents } from '@shared/ipc-contract';
+import { localProjectId } from '@shared/metaproject-contract';
 import { buildAppMenu } from './menu';
 import { installClaudeNotifications } from './notifications/install';
 import { installFleetNotices } from './notifications/fleet-notices';
@@ -43,15 +48,23 @@ import {
 // file so both sides land in one place — no more "was that a main or a
 // renderer error?" hunt when a user reports a blank screen. transports.file
 // rotates at 10 MB by default which is fine for a dev-tool desktop app.
-log.initialize({ preload: true });
+// electron-log's runtime uses the singular option (its declaration spells it in the plural).
+// Keep its IPC preload in the IDE default session, not in the isolated hosted Board session.
+const rendererLogging = { preload: true, includeFutureSession: false };
+log.initialize(rendererLogging);
 log.transports.file.level = 'info';
 log.transports.console.level = 'debug';
 Object.assign(console, log.functions);
 installCrashObservability({ log, app, crashReporter, pid: process.pid });
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const rendererEntryPath = join(__dirname, '../renderer/index.html');
+const rendererDevEntry = process.env.ELECTRON_RENDERER_URL;
+const mainRendererEntry = rendererDevEntry ?? pathToFileURL(rendererEntryPath).href;
 
 let mainWindow: BrowserWindow | null = null;
+let metaprojectLifecycle: MetaprojectLifecycle | undefined;
+let lastMetaprojectProjectId: number | null = null;
 const popoutWindows = new Map<string, BrowserWindow>(); // key = `${projectId}:${shellIndex}`
 
 // ─── File-association / "open with metaIDE" plumbing ───────────────────
@@ -198,6 +211,17 @@ async function createMainWindow(): Promise<BrowserWindow> {
     ...(process.platform === 'darwin' ? { trafficLightPosition: MAIN_TRAFFIC_LIGHTS } : {}),
     webPreferences: baseWebPreferences(),
   });
+  // The preload/renderer can ask for the shared session before loadURL resolves.
+  mainWindow = win;
+  win.once('closed', () => {
+    if (mainWindow !== win) return;
+    metaprojectLifecycle?.detachBoard();
+    lastMetaprojectProjectId = null;
+    mainWindow = null;
+  });
+  win.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace && mainWindow === win) metaprojectLifecycle?.detachBoard();
+  });
   win.once('ready-to-show', () => win.show());
   wireExternalLinks(win);
   applyPersistedOpacity(win);
@@ -206,6 +230,7 @@ async function createMainWindow(): Promise<BrowserWindow> {
   // reloading the window. Without this, an OOM / WebGL context loss / stray
   // exception leaves the user with a blank webview and nothing else to do.
   win.webContents.on('render-process-gone', (_evt, details) => {
+    if (mainWindow === win) metaprojectLifecycle?.detachBoard();
     console.error('[metaide] renderer gone:', details.reason, details.exitCode);
     if (details.reason !== 'clean-exit' && !win.isDestroyed()) {
       try { win.reload(); } catch (e) { console.error('[metaide] reload failed', e); }
@@ -214,8 +239,8 @@ async function createMainWindow(): Promise<BrowserWindow> {
   win.webContents.on('unresponsive', () => console.warn('[metaide] renderer unresponsive'));
   win.webContents.on('responsive', () => console.log('[metaide] renderer responsive again'));
   const query = rendererQuery({ ...readFrostedGlass(), platform: process.platform });
-  if (process.env.ELECTRON_RENDERER_URL) await win.loadURL(`${process.env.ELECTRON_RENDERER_URL}?${query}`);
-  else await win.loadFile(join(__dirname, '../renderer/index.html'), { search: `?${query}` });
+  if (rendererDevEntry) await win.loadURL(`${rendererDevEntry}?${query}`);
+  else await win.loadFile(rendererEntryPath, { search: `?${query}` });
   return win;
 }
 
@@ -414,6 +439,40 @@ function registerMainIpc(services: Services): void {
     listPopped: () => listPopped(),
     tileAll: () => tileAllOurWindows(),
     setVibrancy: (material) => applyVibrancy(BrowserWindow.getAllWindows(), material, process.platform),
+    onProjectOpen(event, request) {
+      if (!metaprojectOwner(event, mainWindow, mainRendererEntry)) return;
+      if (typeof request !== 'object' || request === null || !('id' in request)) return;
+      const id = localProjectId.safeParse(request.id);
+      if (!id.success || lastMetaprojectProjectId === id.data || !services.projects.get(id.data)) return;
+      lastMetaprojectProjectId = id.data;
+      metaprojectLifecycle?.projectContextChanged();
+    },
+  });
+}
+
+function sendMetaprojectEvent<E extends IpcEventName>(channel: E, payload: IpcEvents[E]): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const contents = mainWindow.webContents;
+  if (contents.isDestroyed() || contents.isCrashed()) return;
+  try {
+    const frame = contents.mainFrame;
+    if (isMetaprojectRendererEntry(frame.url, mainRendererEntry)) frame.send(channel, payload);
+  } catch { /* Frame changed while routing the event. */ }
+}
+
+/** Owns capability seams for Electron, Keychain and the unpackaged local E2E profile. */
+function wireMetaproject(services: Services): MetaprojectLifecycle {
+  const profile = app.getPath('userData');
+  const fixture = !app.isPackaged && process.env.METAIDE_TEST_MODE === '1' &&
+    process.env.METAIDE_METAPROJECT_FIXTURE === '1' && app.commandLine.getSwitchValue('user-data-dir') === profile;
+  const platform = metaprojectPlatform(fixture ? profile : null, (url) => shell.openExternal(url));
+  return registerMetaprojectIpc({
+    ipcMain, settings: services.settings, projects: services.projects, roots: services.roots,
+    allowLoopbackHttp: fixture || (!app.isPackaged && process.env.METAIDE_METAPROJECT_LOOPBACK === '1'),
+    owner: () => mainWindow,
+    authorize: (event) => metaprojectOwner(event, mainWindow, mainRendererEntry),
+    send: sendMetaprojectEvent,
+    ...platform,
   });
 }
 
@@ -508,6 +567,7 @@ function forwardPortChanges(services: Services): void {
 function stopOnQuit(services: Services, donePoll: NodeJS.Timeout, agentStatus: ReturnType<typeof installAgentStatus>): void {
   app.on('before-quit', () => {
     clearInterval(donePoll);
+    metaprojectLifecycle?.dispose();
     agentStatus.stop();
     services.keepAwake?.dispose();
     void services.hookRuntime.stop();
@@ -526,12 +586,14 @@ async function startApp(): Promise<void> {
   scanArgvForFiles(process.argv);
   registerWindowsAppId();
   const services = createServices();
+  metaprojectLifecycle = wireMetaproject(services);
   await startReceivers(services);
   const agentStatus = attachAgentStatus(services);
   await rescanRootsAtBoot(services);
   bindWindowSettings(services);
   attachKeepAwake(services);
   registerMainIpc(services);
+  metaprojectLifecycle.start();
   // metafile:// serves project files to the renderer's sandboxed HTML
   // preview iframe; bridge to the live projects repo so renamed/removed
   // projects stop serving immediately.

@@ -1,4 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { AssignmentChoices } from '@renderer/metaproject/AssignmentPanel';
+import { failureCopy } from '@renderer/metaproject/messages';
+import { AccountStatus, useMetaprojectSession, useSignInIntent } from '@renderer/metaproject/session';
+import { applyAssignment, useAssignmentChoices, type AssignmentChoice } from '@renderer/metaproject/useAssignment';
 import type { Project, Root } from '@shared/types';
 import { api } from '@renderer/api';
 import { ModalFrame } from '@renderer/components/ModalFrame';
@@ -17,7 +21,6 @@ function isValidName(n: string): boolean { return NAME_RE.test(n) && n !== '.' &
 
 type Mode = 'empty' | 'clone';
 type MpMode = 'none' | 'link' | 'create';
-interface MpProject { id: number; name: string; identifier?: string | null }
 
 /** Best-effort folder name from a git URL: strips `.git`, takes last path segment. */
 function folderFromUrl(url: string): string {
@@ -26,127 +29,86 @@ function folderFromUrl(url: string): string {
   return last;
 }
 
-export function NewProjectDialog({ open, roots, defaultRootId, onClose, onCreated }: Props) {
-  // Kind of project being created + folder / url inputs.
+/** Creates a local folder first, with optional assignment via the shared account. */
+export function NewProjectDialog({ open, ...props }: Props) {
+  return open ? <NewProjectForm {...props} /> : null;
+}
+
+function NewProjectForm({ roots, defaultRootId, onClose, onCreated }: Omit<Props, 'open'>) {
+  const { snapshot, current } = useMetaprojectSession();
   const [mode, setMode] = useState<Mode>('empty');
   const [name, setName] = useState('');
   const [gitUrl, setGitUrl] = useState('');
-  const [rootId, setRootId] = useState<number | null>(null);
+  const [rootId, setRootId] = useState<number | null>(() => roots.find((r) => r.id === defaultRootId)?.id ?? roots[0]?.id ?? null);
   const [initGit, setInitGit] = useState(true);
-  // Metaproject wiring — none / pick existing / create new (with picker).
-  const [mpMode, setMpMode] = useState<MpMode>('none');
-  const [mpProjects, setMpProjects] = useState<MpProject[]>([]);
-  const [mpSelectedId, setMpSelectedId] = useState<number | null>(null);
-  const [mpNewName, setMpNewName] = useState('');
-  const [mpLoggedIn, setMpLoggedIn] = useState(false);
-  // General dialog state.
+  const signedIn = snapshot?.phase === 'signed-in';
+  const signIn = useSignInIntent(rootId);
+  const [wiring, setWiring] = useState<{ epoch: number; mode: MpMode; remoteId: number | null; name: string }>();
+  const draft = signedIn && wiring?.epoch === snapshot.epoch ? wiring : undefined;
+  const mpMode = draft?.mode ?? 'none';
+  const selected = draft?.remoteId ?? null;
+  const mpNewName = draft?.name ?? '';
+  const { state: choices, reload: retryList } = useAssignmentChoices(mpMode === 'link');
   const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [savingStep, setSavingStep] = useState<string>('');
+  const [created, setCreated] = useState<Project | null>(null);
+  const [savingStep, setSavingStep] = useState('');
+  const saving = !!savingStep;
+  const live = useRef(false);
+  useLayoutEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
 
-  useEffect(() => {
-    if (!open) return;
-    setMode('empty');
-    setName('');
-    setGitUrl('');
-    setInitGit(true);
-    setMpMode('none');
-    setMpProjects([]);
-    setMpSelectedId(null);
-    setMpNewName('');
-    setError(null);
-    setSaving(false);
-    setSavingStep('');
-    if (defaultRootId != null && roots.some((r) => r.id === defaultRootId)) setRootId(defaultRootId);
-    else setRootId(roots[0]?.id ?? null);
-    // Check whether we can offer metaproject link/create at all.
-    (async () => {
-      try {
-        const s = await api.invoke('metaproject:status', undefined as never);
-        setMpLoggedIn(!!s.loggedIn);
-      } catch { setMpLoggedIn(false); }
-    })();
-  }, [open, defaultRootId, roots]);
+  const effectiveName = useMemo(() => mode === 'empty' ? name.trim() : (name.trim() || folderFromUrl(gitUrl)).trim(), [mode, name, gitUrl]);
+  const nameOk = isValidName(effectiveName);
+  const gitOk = mode === 'empty' || /^(https?:\/\/|git@|ssh:\/\/|git:\/\/)/i.test(gitUrl.trim());
+  const mpOk = mpMode !== 'create' || !!mpNewName.trim();
+  const mpLinkOk = mpMode !== 'link' || (choices.kind === 'loaded' && choices.value.some((p) => p.id === selected));
+  const canSubmit = !saving && (created !== null || (nameOk && rootId !== null && gitOk && mpOk && mpLinkOk));
 
-  // When mpMode flips to 'link', lazily load the project list once.
-  useEffect(() => {
-    if (mpMode !== 'link' || mpProjects.length > 0) return;
-    (async () => {
-      try {
-        const { projects } = await api.invoke('metaproject:list-projects', undefined as never);
-        setMpProjects(projects);
-      } catch (e) {
-        setError(`Failed to load metaproject projects: ${String(e).replace(/^Error:\s*/, '')}`);
-      }
-    })();
-  }, [mpMode, mpProjects.length]);
-
-  // Effective folder name: for clone mode, prefer explicit name, else derive.
-  const effectiveName = useMemo(() => {
-    if (mode === 'empty') return name.trim();
-    return (name.trim() || folderFromUrl(gitUrl)).trim();
-  }, [mode, name, gitUrl]);
-
-  const nameOk = useMemo(() => !!effectiveName && isValidName(effectiveName), [effectiveName]);
-  const gitOk = mode === 'empty' || (gitUrl.trim().length > 0 && /^(https?:\/\/|git@|ssh:\/\/|git:\/\/)/i.test(gitUrl.trim()));
-  const mpOk = mpMode !== 'create' || mpNewName.trim().length > 0;
-  const mpLinkOk = mpMode !== 'link' || mpSelectedId != null;
-  const canSubmit = nameOk && rootId != null && gitOk && mpOk && mpLinkOk && !saving;
-
-  async function submit() {
-    if (!canSubmit || rootId == null) return;
-    setSaving(true);
-    setError(null);
-    let project: Project | null = null;
-    try {
-      // Step 1 — create the local project (either empty init or git clone).
-      if (mode === 'empty') {
-        setSavingStep('Creating project…');
-        const res = await api.invoke('projects:create', { rootId, name: effectiveName, initGit });
-        project = res.project;
-      } else {
-        setSavingStep(`Cloning ${gitUrl.trim()}…`);
-        const res = await api.invoke('projects:clone-git', { rootId, url: gitUrl.trim(), name: effectiveName });
-        project = res.project;
-      }
-      // Step 2 — optional metaproject wiring.
-      if (project && mpMode === 'link' && mpSelectedId != null) {
-        setSavingStep('Linking to metaproject…');
-        await api.invoke('metaproject:link-local-project', { projectId: project.id, metaprojectProjectId: mpSelectedId });
-      } else if (project && mpMode === 'create') {
-        setSavingStep('Creating metaproject board…');
-        const { project: mp } = await api.invoke('metaproject:create-project', { name: mpNewName.trim() });
-        await api.invoke('metaproject:link-local-project', { projectId: project.id, metaprojectProjectId: mp.id });
-      }
-      if (project) {
-        onCreated(project);
-        onClose();
-      }
-    } catch (e) {
-      setError(String(e).replace(/^Error:\s*/, ''));
-      setSaving(false);
-      setSavingStep('');
-    }
+  function updateWiring(next: Partial<NonNullable<typeof wiring>>) {
+    if (signedIn) setWiring({ epoch: snapshot.epoch, mode: 'none', remoteId: null, name: '', ...draft, ...next });
   }
 
-  if (!open) return null;
+  async function submit() {
+    if (!canSubmit) return;
+    if (created) { onCreated(created); return; }
+    if (rootId === null) return;
+    const epoch = draft?.epoch;
+    let choice: AssignmentChoice | null = null;
+    if (mpMode === 'link' && selected !== null) choice = { kind: 'link', remoteId: selected };
+    if (mpMode === 'create') choice = { kind: 'create', name: mpNewName.trim() };
+    setError(null);
+    setSavingStep(mode === 'empty' ? 'Creating project…' : 'Cloning project…');
+    try {
+      const { project } = mode === 'empty' ? await api.invoke('projects:create', { rootId, name: effectiveName, initGit })
+        : await api.invoke('projects:clone-git', { rootId, url: gitUrl.trim(), name: effectiveName });
+      if (!live.current) return;
+      setCreated(project);
+      if (!choice || epoch === undefined) { onCreated(project); return; }
+      setSavingStep('Assigning Metaproject…');
+      const error = await assignNewFolder(project.id, epoch, choice, () => live.current && current()?.epoch === epoch && current()?.phase === 'signed-in');
+      if (!live.current) return;
+      if (error) setError(error); else onCreated(project);
+    } catch (e) {
+      if (live.current) setError(String(e).replace(/^Error:\s*/, ''));
+    } finally { if (live.current) setSavingStep(''); }
+  }
+
   return (
     <ModalFrame
       testId="new-project-dialog"
       tier="modal"
       motion="fade"
       layerClassName="flex items-center justify-center"
-      onDismiss={onClose}
+      onDismiss={saving ? undefined : onClose}
     >
-      <div className="modal-panel modal-sheet w-[560px] max-w-[92vw] overflow-hidden">
+      <div className="modal-panel modal-sheet w-[560px] max-w-[92vw] max-h-[95vh] overflow-auto">
         <div className="px-5 py-4 border-b border-[--border] flex items-center justify-between">
           <div className="font-semibold">New project</div>
-          <button onClick={onClose} className="text-[--modal-text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel]" aria-label="Close">
+          <button onClick={onClose} disabled={saving} className="text-[--modal-text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel]" aria-label="Close">
             <XCloseIcon />
           </button>
         </div>
 
-        {/* Mode segmented control */}
+        <fieldset disabled={saving || !!created}>
         <div className="px-5 pt-4">
           <div className="inline-flex rounded-md border border-[--border] p-0.5 bg-[--panel]/50 text-xs">
             <button
@@ -233,36 +195,22 @@ export function NewProjectDialog({ open, roots, defaultRootId, onClose, onCreate
             </label>
           )}
 
-          {/* Metaproject board wiring — only when the user is signed in;
-              otherwise we hide the whole section rather than lie about it. */}
-          {mpLoggedIn && (
+          {!created && (
             <div className="space-y-2 pt-2 border-t border-[--border]">
               <div className="text-[10px] uppercase tracking-wider font-semibold text-[--modal-text-muted]">Metaproject board</div>
-              <div className="flex items-center gap-3 text-xs">
-                <RadioPill checked={mpMode === 'none'}   onSelect={() => setMpMode('none')}>None</RadioPill>
-                <RadioPill checked={mpMode === 'link'}   onSelect={() => setMpMode('link')}>Link existing</RadioPill>
-                <RadioPill checked={mpMode === 'create'} onSelect={() => { setMpMode('create'); if (!mpNewName) setMpNewName(effectiveName); }}>Create new</RadioPill>
-              </div>
-              {mpMode === 'link' && (
-                <div>
-                  <select
-                    value={mpSelectedId ?? ''}
-                    onChange={(e) => setMpSelectedId(Number(e.target.value) || null)}
-                    className="w-full bg-[--panel] text-[--text] border border-[--border] rounded-md px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-[--accent]/60"
-                    data-testid="mp-link-select"
-                  >
-                    <option value="">— Choose a project —</option>
-                    {mpProjects.map((p) => (
-                      <option key={p.id} value={p.id}>{p.name}{p.identifier ? `  (${p.identifier})` : ''}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
+              {!signedIn ? <AccountStatus onSignIn={() => signIn('Assign a new local project', (account) => setWiring({ epoch: account.epoch, mode: 'link', remoteId: null, name: '' }))} /> : <div className="flex flex-wrap items-center gap-3 text-xs">
+                <RadioPill checked={mpMode === 'none'}   onSelect={() => updateWiring({ mode: 'none' })}>None</RadioPill>
+                <RadioPill checked={mpMode === 'link'}   onSelect={() => updateWiring({ mode: 'link' })}>Link existing</RadioPill>
+                <RadioPill checked={mpMode === 'create'} onSelect={() => updateWiring({ mode: 'create', name: mpNewName || effectiveName })}>Create new</RadioPill>
+              </div>}
+              {mpMode === 'link' && <AssignmentChoices choices={choices} onRetry={retryList} selected={selected} disabled={saving}
+                onSelect={(remoteId) => updateWiring({ remoteId })} />}
               {mpMode === 'create' && (
                 <div>
                   <input
+                    aria-label="New Metaproject project name" maxLength={255}
                     value={mpNewName}
-                    onChange={(e) => setMpNewName(e.target.value)}
+                    onChange={(e) => updateWiring({ name: e.target.value })}
                     placeholder="Metaproject name (defaults to folder name)"
                     className="w-full bg-[--panel] text-[--text] border border-[--border] rounded-md px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-[--accent]/60"
                     data-testid="mp-create-name"
@@ -271,16 +219,17 @@ export function NewProjectDialog({ open, roots, defaultRootId, onClose, onCreate
               )}
               {mpMode !== 'none' && (
                 <div className="text-[10px] text-[--modal-text-muted]">
-                  Writes <code className="font-mono">project_id</code> to <code className="font-mono">.metaproject.yaml</code> so the sidebar Board button and Chat pane light up automatically.
+                  Saves the assignment for this folder in <code className="font-mono">.metaproject.yaml</code>.
                 </div>
               )}
             </div>
           )}
 
-          {error && (
-            <div className="text-sm text-[--danger] bg-[--danger]/10 border border-[--danger]/30 rounded-md px-2 py-1.5">{error}</div>
-          )}
         </div>
+        </fieldset>
+        {error && (
+          <div role="alert" className="text-sm text-[--danger] bg-[--danger]/10 border border-[--danger]/30 rounded-md mx-5 mb-4 px-2 py-1.5">{error}</div>
+        )}
 
         <div className="px-5 py-3 border-t border-[--border] bg-[--panel]/50 flex items-center justify-end gap-2">
           {saving && savingStep && (
@@ -298,12 +247,27 @@ export function NewProjectDialog({ open, roots, defaultRootId, onClose, onCreate
             }`}
             data-testid="new-project-create"
           >
-            {saving ? 'Working…' : (mode === 'clone' ? 'Clone' : 'Create')}
+            {saving ? 'Working…' : created ? 'Open local project' : mode === 'clone' ? 'Clone' : 'Create'}
           </button>
         </div>
       </div>
     </ModalFrame>
   );
+}
+
+async function assignNewFolder(projectId: number, epoch: number, choice: AssignmentChoice, current: () => boolean) {
+  const stale = 'Local project created without a confirmed assignment. The account or dialog changed.';
+  if (!current()) return stale;
+  try {
+    const context = await api.invoke('metaproject:assignment-get', { projectId });
+    if (!current() || (context.ok && context.value.projectId !== projectId)) return stale;
+    if (!context.ok) return `Local project created without an assignment. ${failureCopy[context.reason]}`;
+    const result = await applyAssignment(context.value, epoch, choice);
+    if (!current()) return stale;
+    if (!result.ok) return `Local project created without a new assignment. ${failureCopy[result.reason]} Review Project Settings.`;
+    if (result.value.kind === 'created-not-assigned') return `Created Metaproject project ${result.value.project.name} (#${result.value.project.id}), but it was not assigned to the local folder. ${failureCopy[result.value.reason]} Link the existing project from Project Settings.`;
+    return null;
+  } catch { return 'Local project created, but its assignment could not be confirmed. Review Project Settings.'; }
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {

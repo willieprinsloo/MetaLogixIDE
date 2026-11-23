@@ -4,6 +4,7 @@ import type { Project } from '@shared/types';
 import { useProjectDefaultAgent } from '@renderer/hooks/useProjectDefaultAgent';
 import { PROJECT_SETTINGS_COPY as COPY, PROJECT_SETTINGS_TESTIDS as TESTIDS, type ProjectSettingsTarget } from '@renderer/project-settings-contract';
 import { ProjectSettingsPanel } from './ProjectSettingsPanel';
+import { AssignmentPanel } from '@renderer/metaproject/AssignmentPanel';
 
 interface Props {
   readonly target: ProjectSettingsTarget;
@@ -21,6 +22,7 @@ export function ProjectSettingsTab({ target, onSaved, children }: Props): ReactE
       <h2 className="text-lg font-semibold">{COPY.title}</h2>
       <ProjectSettingsPanel snapshot={snapshot} onChoose={choose}
         onReplaceCustomCommands={replaceCustomCommands} onRetry={retry} />
+      <AssignmentPanel projectId={target.id} />
       {children && <div className="border-t border-[--border] pt-6">{children}</div>}
     </div>
   </section>;

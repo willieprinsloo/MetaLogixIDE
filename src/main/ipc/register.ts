@@ -3,12 +3,10 @@ import { app, dialog, nativeImage, nativeTheme, shell, BrowserWindow } from 'ele
 import log from 'electron-log/main';
 import type { Services } from '@main/services';
 import type { GitDiffKind, IpcChannelName, IpcRequest, IpcResponse, IpcEventName, IpcEvents } from '@shared/ipc-contract';
-import type { MetaprojectChannel } from '@shared/metaproject-contract';
 import { discoverProjects } from '@main/domain/discovery';
 import { pruneMissingProjects } from '@main/domain/prune-missing';
 import { discoverAllTasks } from '@main/domain/tasks';
 import { randomUUID } from 'node:crypto';
-import { parseMetaproject } from '@shared/parse-metaproject';
 import type { VibrancyMaterial } from '@shared/frosted-glass';
 import { isChromeFrostLevel, isTerminalFrostLevel, isVibrancyMaterial } from '@shared/frosted-glass';
 import { profileLaunchArgv, resolveLaunch } from '@main/domain/launch';
@@ -47,6 +45,7 @@ import { readDiffSides } from '@main/git/diff-sides';
 import { dropHandlers } from '@main/drops/handlers';
 import { keepAwakeHandlers } from '@main/keep-awake/handlers';
 import { UsageService, usageDepsFor } from '@main/usage/service';
+import { isManagedMetaprojectSetting } from '@main/repos/settings-repo';
 
 /** `<userData>/usage-debug/` holds the last usage response per provider; undefined outside Electron (unit tests). */
 function usageDebugDir(): string | undefined {
@@ -58,7 +57,6 @@ function usageDebugDir(): string | undefined {
 }
 import { isInsideRoot, resolveInsideRoot } from '@main/domain/path-containment';
 import { MIME_BY_EXT } from '@shared/mime';
-import { decodeStoredSecret, encodeStoredSecret } from '@main/credential-encoding';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { StopPrimarySessionRequest } from '@shared/unload-session-contract';
 import { readRecentActivity } from '@main/activity/log';
@@ -98,6 +96,7 @@ async function discoverProjectTasks(s: Services, project: Project): Promise<Task
 function validatedConfigPatch(config: unknown): Partial<ProjectConfig> {
   if (typeof config !== 'object' || config === null || Array.isArray(config))
     throw new Error('config must be an object');
+  if ('linkedMetaprojectProjectId' in config) throw new Error('Use Project Settings to change the Metaproject assignment');
   const patch = config as Partial<ProjectConfig>;
   if (patch.env === undefined) return patch;
   const parsed = parseProjectEnv(patch.env);
@@ -167,39 +166,6 @@ function stopPrimaryRequest(request: unknown): StopPrimarySessionRequest {
 export type Handler<C extends IpcChannelName> = (services: Services, req: IpcRequest<C>, event?: Electron.IpcMainInvokeEvent) => Promise<IpcResponse<C>>;
 type SendEvent = <E extends IpcEventName>(channel: E, payload: IpcEvents[E]) => void;
 
-// Keychain service name for the metaproject credential. One row per (service,
-// account) pair, keyed by username so a user could theoretically sign into
-// multiple accounts by switching the last-used username in settings.
-const KEYTAR_SERVICE = 'metaIDE.metaproject';
-
-/**
- * Resolve keytar's function bag across the CJS/ESM interop gap. Rollup +
- * electron-vite's synthetic ESM namespace wraps CJS `module.exports` under
- * `.default`, so `(await import('keytar')).setPassword` is undefined in the
- * bundled main process. Some builds expose the functions at the top level;
- * others only via `.default`. This helper prefers whichever is present so we
- * never call `undefined` and blow up the login/remember-me path.
- */
-async function loadKeytar(): Promise<{
-  getPassword: (service: string, account: string) => Promise<string | null>;
-  setPassword: (service: string, account: string, password: string) => Promise<void>;
-  deletePassword: (service: string, account: string) => Promise<boolean>;
-}> {
-  const mod = await import('keytar');
-  const m = mod as unknown as {
-    default?: typeof mod;
-    getPassword?: typeof mod.getPassword;
-    setPassword?: typeof mod.setPassword;
-    deletePassword?: typeof mod.deletePassword;
-  };
-  const flat = m.getPassword ? m : (m.default ?? m);
-  return flat as unknown as {
-    getPassword: (service: string, account: string) => Promise<string | null>;
-    setPassword: (service: string, account: string, password: string) => Promise<void>;
-    deletePassword: (service: string, account: string) => Promise<boolean>;
-  };
-}
-
 /**
  * Merges project-scoped CLI profiles with the global defaults, deduping by
  * name (project entries win). Empty project arrays fall all the way through
@@ -239,6 +205,7 @@ export interface WindowHooks {
   tileAll: () => number;
   /** Applies the vibrancy material to every open window (no-op off darwin). */
   setVibrancy: (material: VibrancyMaterial) => void;
+  onProjectOpen?: (event: Electron.IpcMainInvokeEvent, request: unknown) => void;
 }
 
 /** A file files:peek may read: its absolute path, the root it is displayed relative to, and that root's project (null when outside every project). */
@@ -283,7 +250,7 @@ function p2pApi(s: Services): P2PApi {
 }
 
 /** Exported so the P2P hub can call the same implementations directly (no ipcMain round-trip). */
-type CoreChannel = Exclude<IpcChannelName, MetaprojectChannel>;
+type CoreChannel = Exclude<IpcChannelName, `metaproject:${string}`>;
 
 export const handlers: { [C in CoreChannel]: Handler<C> } = {
   'dialogs:pick-directory': async (_s, _req, event) => {
@@ -310,18 +277,7 @@ export const handlers: { [C in CoreChannel]: Handler<C> } = {
     const root = s.roots.add(path);
     s.watcher.watch(path);
     for (const disc of discoverProjects(path, s.settings.get('scan_depth'))) {
-      const p = s.projects.upsert(root.id, disc.path, disc.name);
-      if (disc.metaprojectProjectId || disc.metaprojectBoardUrl) {
-        s.projects.updateConfig(p.id, {
-          linkedMetaprojectProjectId: disc.metaprojectProjectId ?? p.config.linkedMetaprojectProjectId ?? null,
-          // Store board_url alongside — used by the Board button.
-          notes: p.config.notes,
-        });
-        // Persist metaproject_project_id on the row too.
-        if (disc.metaprojectProjectId) {
-          s.projects.updateConfig(p.id, { linkedMetaprojectProjectId: disc.metaprojectProjectId });
-        }
-      }
+      s.projects.upsert(root.id, disc.path, disc.name);
     }
     return { root };
   },
@@ -331,10 +287,7 @@ export const handlers: { [C in CoreChannel]: Handler<C> } = {
     if (!root) return { discovered: 0 };
     let n = 0;
     for (const disc of discoverProjects(root.path, s.settings.get('scan_depth'))) {
-      const p = s.projects.upsert(root.id, disc.path, disc.name); n++;
-      if (disc.metaprojectProjectId) {
-        s.projects.updateConfig(p.id, { linkedMetaprojectProjectId: disc.metaprojectProjectId });
-      }
+      s.projects.upsert(root.id, disc.path, disc.name); n++;
     }
     pruneMissingProjects({ projects: s.projects, hasLiveShell: (id) => hasLiveShell(s, id) }, root);
     return { discovered: n };
@@ -344,17 +297,6 @@ export const handlers: { [C in CoreChannel]: Handler<C> } = {
   'projects:open':    async (s, { id }) => {
     const p = s.projects.get(id);
     if (!p) throw new Error(`no project ${id}`);
-    // Re-read .metaproject.yaml on open so edits to project_id take effect
-    // without requiring the user to trigger a full root rescan.
-    const yamlPath = join(p.path, '.metaproject.yaml');
-    if (existsSync(yamlPath)) {
-      try {
-        const link = parseMetaproject(readFileSync(yamlPath, 'utf8'));
-        if (link.projectId && link.projectId !== p.config.linkedMetaprojectProjectId) {
-          s.projects.updateConfig(id, { linkedMetaprojectProjectId: link.projectId });
-        }
-      } catch { /* leave existing link untouched */ }
-    }
     s.projects.markLastOpened(id, new Date());
     return { project: s.projects.get(id)! };
   },
@@ -433,10 +375,7 @@ export const handlers: { [C in CoreChannel]: Handler<C> } = {
         root = s.roots.add(parent);
         s.watcher.watch(parent);
         for (const disc of discoverProjects(parent, s.settings.get('scan_depth'))) {
-          const p = s.projects.upsert(root.id, disc.path, disc.name);
-          if (disc.metaprojectProjectId) {
-            s.projects.updateConfig(p.id, { linkedMetaprojectProjectId: disc.metaprojectProjectId });
-          }
+          s.projects.upsert(root.id, disc.path, disc.name);
         }
       }
       match = s.projects.upsert(root.id, parent, basename(parent));
@@ -854,8 +793,12 @@ export const handlers: { [C in CoreChannel]: Handler<C> } = {
     return { output, alive };
   },
 
-  'settings:get': async (s, { key }) => ({ value: s.settings.get(key) }),
+  'settings:get': async (s, { key }) => {
+    if (isManagedMetaprojectSetting(key) && key !== 'metaproject_base_url') throw new Error('Private Metaproject setting');
+    return { value: s.settings.get(key) };
+  },
   'settings:set': async (s, { key, value }) => {
+    if (isManagedMetaprojectSetting(key)) throw new Error('Use Metaproject Settings to change the service');
     // Permission mode and font preferences have dedicated validated setters.
     if (key === 'claude_permission_mode') throw new Error('claude_permission_mode can only be changed via settings:set-claude-permission-mode');
     if (isFontSettingKey(key)) throw new Error(`${key} can only be changed via settings:set-font`);
@@ -1019,168 +962,6 @@ export const handlers: { [C in CoreChannel]: Handler<C> } = {
     if (!isVibrancyMaterial(material)) return { ok: false, error: 'invalid' } as const;
     s.settings.set('vibrancy_material', material);
     return { ok: true } as const;
-  },
-
-  /* ─── metaproject chat ─── */
-  'metaproject:login': async (s, { username, password, remember }) => {
-    const baseUrl = s.settings.get('metaproject_base_url') || 'https://projects.metalogix.solutions';
-    const info = await s.metaproject.login({ baseUrl, username, password });
-    // Remember the username (never the password in settings) so the sign-in
-    // card can pre-fill it next time.
-    try { s.settings.set('metaproject_last_username', username); } catch { /* non-fatal */ }
-    // When the user opted in, store the password in the OS keychain. Keytar
-    // uses macOS Keychain / libsecret / Windows Credential Vault under the
-    // hood — the plaintext never touches disk in userland.
-    if (remember) {
-      try {
-        const keytar = await loadKeytar();
-        await keytar.setPassword(KEYTAR_SERVICE, username, encodeStoredSecret(password));
-      } catch (err) {
-        console.warn('[metaproject] failed to persist credential', err);
-      }
-    }
-    s.metaproject.connectSocket();
-    return info;
-  },
-  'metaproject:credentials-load': async (s) => {
-    const username = s.settings.get('metaproject_last_username') || null;
-    if (!username) return { username: null, hasPassword: false };
-    try {
-      const keytar = await loadKeytar();
-      const stored = await keytar.getPassword(KEYTAR_SERVICE, username);
-      return { username, hasPassword: stored !== null && decodeStoredSecret(stored).text !== '' };
-    } catch {
-      return { username, hasPassword: false };
-    }
-  },
-  'metaproject:credentials-clear': async (s) => {
-    const username = s.settings.get('metaproject_last_username') || null;
-    if (username) {
-      try {
-        const keytar = await loadKeytar();
-        await keytar.deletePassword(KEYTAR_SERVICE, username);
-      } catch { /* non-fatal */ }
-    }
-    return { ok: true } as const;
-  },
-  'metaproject:auto-login': async (s) => {
-    if (s.metaproject.isLoggedIn()) return { ok: true, userName: s.metaproject.currentUserName() ?? undefined };
-    const username = s.settings.get('metaproject_last_username') || null;
-    if (!username) {
-      log.info('[metaproject] auto-login skipped: no saved username');
-      return { ok: false, reason: 'no-saved-username' };
-    }
-    let password: string | null = null;
-    try {
-      const keytar = await loadKeytar();
-      const stored = await keytar.getPassword(KEYTAR_SERVICE, username);
-      password = stored === null ? null : decodeStoredSecret(stored).text;
-    } catch (err) {
-      log.warn('[metaproject] auto-login: keychain read failed', err);
-      return { ok: false, reason: `keychain-error: ${err instanceof Error ? err.message : String(err)}` };
-    }
-    if (!password) {
-      // Common on dev builds: the packaged app wrote the item as
-      // `com.metalogix.metaide`, but dev-Electron runs as
-      // `com.github.Electron` so keytar returns null silently. Fall back to
-      // making the user re-enter the password once.
-      log.info(`[metaproject] auto-login skipped: no keychain password for user "${username}" (fresh login required)`);
-      return { ok: false, reason: 'no-saved-password' };
-    }
-    const baseUrl = s.settings.get('metaproject_base_url') || 'https://projects.metalogix.solutions';
-    try {
-      const info = await s.metaproject.login({ baseUrl, username, password });
-      s.metaproject.connectSocket();
-      log.info(`[metaproject] auto-login ok as ${info.userName}`);
-      return { ok: true, userName: info.userName };
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      log.warn(`[metaproject] auto-login failed for "${username}": ${reason}`);
-      return { ok: false, reason };
-    }
-  },
-  'metaproject:status': async (s) => ({
-    loggedIn: s.metaproject.isLoggedIn(),
-    connected: s.metaproject.isConnected(),
-    userName: s.metaproject.currentUserName(),
-    userId: s.metaproject.currentUserId(),
-  }),
-  'metaproject:logout': async (s) => { s.metaproject.disconnect(); return { ok: true } as const; },
-  'metaproject:list-channels': async (s, { projectId }) => ({
-    channels: await s.metaproject.listChannels(projectId),
-  }),
-  'metaproject:list-all-channels': async (s, { scope }) => ({
-    channels: await s.metaproject.listAllChannels(scope),
-  }),
-  'metaproject:list-projects': async (s) => ({
-    projects: await s.metaproject.listMetaprojectProjects(),
-  }),
-  'metaproject:list-users': async (s) => ({
-    users: await s.metaproject.listUsers(),
-  }),
-  'metaproject:create-project': async (s, { name, description, projectType }) => ({
-    project: await s.metaproject.createMetaprojectProject({ name, description, projectType }),
-  }),
-  'metaproject:link-local-project': async (s, { projectId, metaprojectProjectId }) => {
-    const project = s.projects.get(projectId);
-    if (!project) throw new Error(`no project ${projectId}`);
-    const yamlPath = join(project.path, '.metaproject.yaml');
-    // Upsert `project_id:` in the yaml. Preserves any other keys the user
-    // added (identifier, epics, spec_dir, branch_pattern, …).
-    let current = '';
-    try { current = readFileSync(yamlPath, 'utf8'); } catch { /* fresh file */ }
-    const idLine = `project_id: ${metaprojectProjectId}`;
-    let next: string;
-    if (/^project_id:.*$/m.test(current)) {
-      next = current.replace(/^project_id:.*$/m, idLine);
-    } else if (current.trim()) {
-      next = `${idLine}\n${current}`.replace(/\n{3,}/g, '\n\n');
-    } else {
-      // Sensible starter yaml so the user has something to edit later.
-      next = `${idLine}\nname: ${project.name}\n`;
-    }
-    writeFileSync(yamlPath, next);
-    // Reflect the change immediately in the projects repo (mirrors what
-    // `projects:open` does when it re-reads the yaml on next open).
-    s.projects.updateConfig(projectId, { linkedMetaprojectProjectId: String(metaprojectProjectId) });
-    return { ok: true } as const;
-  },
-  'metaproject:list-messages': async (s, { channelId, limit, projectId }) => ({
-    messages: await s.metaproject.listMessages(channelId, limit, projectId),
-  }),
-  'metaproject:join-channel':  async (s, { channelId }) => { s.metaproject.joinChannel(channelId);  return { ok: true } as const; },
-  'metaproject:send-message':  async (s, { channelId, message, parentMessageId }) => {
-    s.metaproject.sendChannelMessage(channelId, message, parentMessageId ?? null);
-    return { ok: true } as const;
-  },
-  'metaproject:mark-read':     async (s, { channelId, lastMessageId }) => {
-    s.metaproject.markRead(channelId, lastMessageId);
-    return { ok: true } as const;
-  },
-  'metaproject:edit-message':  async (s, { channelId, messageId, message }) => {
-    s.metaproject.editChannelMessage(channelId, messageId, message);
-    return { ok: true } as const;
-  },
-  'metaproject:delete-message': async (s, { channelId, messageId }) => {
-    s.metaproject.deleteChannelMessage(channelId, messageId);
-    return { ok: true } as const;
-  },
-  'metaproject:download-attachment': async (s, { projectId, attachmentId, filename }) => {
-    const buf = await s.metaproject.fetchAttachment(projectId, attachmentId);
-    const downloads = app.getPath('downloads');
-    // Never silently overwrite an existing file — append ` (2)`, ` (3)`, …
-    // before the extension the way Chromium does.
-    let target = join(downloads, filename);
-    if (existsSync(target)) {
-      const dot = filename.lastIndexOf('.');
-      const stem = dot > 0 ? filename.slice(0, dot) : filename;
-      const ext  = dot > 0 ? filename.slice(dot) : '';
-      let n = 2;
-      while (existsSync(join(downloads, `${stem} (${n})${ext}`))) n++;
-      target = join(downloads, `${stem} (${n})${ext}`);
-    }
-    writeFileSync(target, Buffer.from(buf));
-    return { path: target };
   },
 
   'files:tree':   async (s, { projectId, relPath }) => {
@@ -1625,7 +1406,6 @@ export const CHANNEL_EMITS: Partial<Record<IpcChannelName, IpcEventName[]>> = {
   'projects:ensure-for-file': ['projects:changed'],
   'projects:clone-git':['projects:changed'],
   'projects:rename': ['projects:changed', 'alive-shells:changed'],
-  'metaproject:link-local-project': ['projects:changed'],
   'shells:launch':  ['alive-shells:changed', 'projects:changed'],
   'shells:launch-plain': ['alive-shells:changed'],
   'tasks:run':           ['alive-shells:changed'],
@@ -1663,15 +1443,6 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
     });
   }
 
-  // Forward every metaproject socket event to renderer as a single generic
-  // channel; the chat pane fans them out by name.
-  if (services.metaproject) {
-    services.metaproject.onEvent('*', (raw: unknown) => {
-      const { event, payload } = raw as { event: string; payload: unknown };
-      sendEvent('metaproject:event', { event, payload });
-    });
-  }
-
   const WINDOW_CHANNELS = new Set<IpcChannelName>(['windows:popout-shell', 'windows:return-shell', 'windows:list-popped', 'windows:tile-all', 'files:start-drag', 'app:renderer-ready-for-files']);
   // Wired separately below: these channels emit keyed `settings:changed`
   // events that the fixed per-channel payload cannot express.
@@ -1692,6 +1463,7 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
   for (const channel of Object.keys(handlers) as CoreChannel[]) {
     if (WINDOW_CHANNELS.has(channel) || CUSTOM_EMIT_CHANNELS[channel]) continue; // wired below
     ipcMain.handle(channel, async (event, req) => {
+      if (channel === 'projects:open') windowHooks?.onProjectOpen?.(event, req);
       const fn = handlers[channel] as (s: Services, req: unknown, e?: Electron.IpcMainInvokeEvent) => Promise<unknown>;
       const result = await fn(services, req, event);
       for (const evt of CHANNEL_EMITS[channel] ?? []) sendEvent(evt, eventPayload(evt));
