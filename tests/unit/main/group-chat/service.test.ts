@@ -131,19 +131,29 @@ describe('GroupChatService', () => {
     expect(s.turns).toHaveLength(2);
   });
 
-  it('two groups sharing one Claude tab run its turns one at a time', async () => {
+  it('each group’s Claude member is its own copy of the tab, so two groups answer at the same time', async () => {
     const s = setup();
     const a = twoMembers(s);
     const b = twoMembers(s);
     s.svc.say(a.id, 'first');
     s.svc.say(b.id, 'second');
     await s.flush();
-    const claude = () => s.turns.filter((t) => t.member.kind === 'claude-tab');
-    expect(claude()).toHaveLength(1);
-    claude()[0]!.finish({ text: 'done first' });
+    expect(s.turns.filter((t) => t.member.kind === 'claude-tab')).toHaveLength(2);
+  });
+
+  it('the Claude member forks the tab’s conversation once, then keeps resuming its own copy', async () => {
+    const s = setup();
+    const g = twoMembers(s);
+    s.svc.say(g.id, 'go');
     await s.flush();
-    expect(claude()).toHaveLength(2);
-    expect(claude()[1]!.text).toMatch(/second/);
+    const first = s.turns.find((t) => t.member.kind === 'claude-tab')!;
+    expect(first.member).toMatchObject({ claudeSessionId: 'sess-A', groupSession: null });
+    first.finish({ text: 'hi' }, { ok: true, reply: 'hi', engineSession: 'fork-1' });
+    s.turns.find((t) => t.member.kind === 'headless')!.finish({ text: 'yo' });
+    await s.flush();
+    const second = s.turns.filter((t) => t.member.kind === 'claude-tab')[1]!;
+    expect(second.member).toMatchObject({ groupSession: 'fork-1' });
+    expect([...s.store.values()][0]!.members[second.member.id]).toMatchObject({ groupSession: 'fork-1' });
   });
 
   it('the 30-minute fail-safe fails a silent member and stops its turn', async () => {
@@ -157,14 +167,14 @@ describe('GroupChatService', () => {
     expect(s.svc.list(1)[0]!.log.some((e) => e.kind === 'fail' && /30 minutes/.test(e.text))).toBe(true);
   });
 
-  it("shellGone fails the running Claude turn with 'its Claude tab was closed'", async () => {
+  it('closing the tab doesn’t stop the Claude member: it runs on its own copy', async () => {
     const s = setup();
     const g = twoMembers(s);
     s.svc.say(g.id, 'go');
     await s.flush();
     s.svc.shellGone({ projectId: 1, shellIndex: 0 });
     await s.flush();
-    expect(s.turns.find((t) => t.member.kind === 'claude-tab')!.stopped).toBe('its Claude tab was closed');
+    expect(s.turns.find((t) => t.member.kind === 'claude-tab')!.stopped).toBeNull();
   });
 
   it('addClaudeTab refuses a tab with no Claude session yet, and joinableClaudeTabs says why', () => {
@@ -184,30 +194,33 @@ describe('GroupChatService', () => {
     expect(s.svc.joinableClaudeTabs(1, g.id)[0]).toMatchObject({ joinable: false, why: 'already in this group' });
   });
 
-  it('a member whose session moved (after /clear) is unavailable and fails its round', async () => {
+  it('a Claude member still answers after /clear in its tab, or after a restart (nothing is open)', async () => {
     const s = setup();
     const g = twoMembers(s);
-    s.sessions.set('1:0', 'sess-NEW');
+    s.sessions.clear();
+    s.live.splice(0);
     const claudeId = Object.entries(s.svc.list(1)[0]!.memberInfo).find(([, i]) => i.engine === 'claude')![0];
-    expect(s.svc.list(1)[0]!.memberInfo[claudeId]!.available).toBe(false);
-    s.svc.say(g.id, 'go');
-    await s.flush();
-    expect(s.turns.filter((t) => t.member.kind === 'claude-tab')).toHaveLength(0);
-    expect(s.svc.list(1)[0]!.log.some((e) => e.kind === 'fail' && e.from === claudeId && /isn’t open/.test(e.text))).toBe(true);
-  });
-
-  it('reconnectClaude re-attaches an unavailable Claude member to the project’s Claude tab (after /clear or a restart)', async () => {
-    const s = setup();
-    const g = twoMembers(s);
-    const claudeId = Object.entries(g.memberInfo).find(([, i]) => i.engine === 'claude')![0];
-    s.sessions.set('1:0', 'sess-NEW');
-    s.live.splice(1, 1); // only one Claude tab running
-    expect(s.svc.list(1)[0]!.memberInfo[claudeId]!.available).toBe(false);
-    const v = s.svc.reconnectClaude(g.id, claudeId);
-    expect(v.memberInfo[claudeId]!.available).toBe(true);
+    expect(s.svc.list(1)[0]!.memberInfo[claudeId]!.available).toBe(true);
     s.svc.say(g.id, 'go');
     await s.flush();
     expect(s.turns.filter((t) => t.member.kind === 'claude-tab')).toHaveLength(1);
+  });
+
+  it('reconnectClaude refreshes the member from the tab: its next turn forks the tab’s conversation again', async () => {
+    const s = setup();
+    const g = twoMembers(s);
+    const claudeId = Object.entries(g.memberInfo).find(([, i]) => i.engine === 'claude')![0];
+    s.svc.say(g.id, 'go');
+    await s.flush();
+    s.turns.find((t) => t.member.kind === 'claude-tab')!.finish({ text: 'hi' }, { ok: true, reply: 'hi', engineSession: 'fork-1' });
+    s.svc.stop(g.id);
+    await s.flush();
+    s.sessions.set('1:0', 'sess-NEW');
+    s.live.splice(1, 1); // only one Claude tab running
+    s.svc.reconnectClaude(g.id, claudeId);
+    s.svc.say(g.id, 'again');
+    await s.flush();
+    expect(s.turns.filter((t) => t.member.kind === 'claude-tab').at(-1)!.member).toMatchObject({ claudeSessionId: 'sess-NEW', groupSession: null });
   });
 
   it('reconnectClaude asks you to pick when several Claude tabs could be meant', () => {
@@ -227,13 +240,10 @@ describe('GroupChatService', () => {
     expect(() => s.svc.reconnectClaude(g.id, claudeId)).toThrow(/send it a message first/);
   });
 
-  it('protectedShells lists member tabs only while the group is running', async () => {
+  it('no tab needs protecting: a running group doesn’t use its Claude tab', async () => {
     const s = setup();
     const g = twoMembers(s);
-    expect(s.svc.protectedShells()).toEqual([]);
     s.svc.say(g.id, 'go');
-    expect(s.svc.protectedShells()).toEqual([{ projectId: 1, shellIndex: 0 }]);
-    s.svc.stop(g.id);
     expect(s.svc.protectedShells()).toEqual([]);
   });
 

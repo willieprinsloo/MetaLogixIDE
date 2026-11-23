@@ -18,6 +18,13 @@ describe('npmCli', () => {
     expect(npmCli('@openai/codex', 'codex', { platform: 'win32', npmDir })).toEqual(['codex.exe']);
   });
 
+  it('a package whose bin is an .exe (Claude Code) runs that .exe directly, not through node', () => {
+    const dir = join(npmDir, 'node_modules', '@anthropic-ai', 'claude-code');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ bin: { claude: 'bin/claude.exe' } }));
+    expect(npmCli('@anthropic-ai/claude-code', 'claude', { platform: 'win32', npmDir })).toEqual([join(dir, 'bin/claude.exe')]);
+  });
+
   it('elsewhere the command name is used as is', () => {
     expect(npmCli('@openai/codex', 'codex', { platform: 'linux', npmDir })).toEqual(['codex']);
   });

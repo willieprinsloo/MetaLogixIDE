@@ -653,30 +653,34 @@ BotOffice. Spec: `docs/superpowers/specs/2026-11-19-group-chats-design.md`.
 | Layer | File | Role |
 |-------|------|------|
 | Logic | `src/main/group-chat/groups.ts` | Pure round state machine. `say` (the user) is the only call that starts a conversation. Every call returns deliveries `{ member, round, text }`. Ends after `maxRounds` (default 4, 1–10), when everyone answers `PASS`, or with fewer than two members. |
-| Logic | `src/main/group-chat/members.ts` | One turn per member. A Claude tab waits for idle, a quiet input period and an empty input box, pastes the round message (bracketed paste + Enter via `PtyManager.writeFromApp`), then answers on the tab's next Stop hook. A headless turn runs one engine call. |
-| Logic | `src/main/group-chat/transcript.ts` | Finds the Claude answer to a round message in `~/.claude/projects/**/<session>.jsonl`: text after the last user message starting with the round header, up to the next user prompt. |
-| Logic | `src/main/group-chat/engines/` | Codex / Gemini CLI adapters (`run-cli.ts` spawns without a shell, message on stdin), Ollama HTTP, and engine readiness checks. |
-| Service | `src/main/group-chat/service.ts` | One FIFO queue per member (a Claude tab is keyed by its Claude session, so two groups share one queue), the 30-minute fail-safe, persistence, and `protectedShells()` for keep-alive. |
-| Wiring | `src/main/group-chat/install.ts` | Tracks each shell's Claude `session_id` from hooks, routes Stop hooks (only with a transcript path under `~/.claude/projects`), builds turns, broadcasts `groups:changed`. |
+| Logic | `src/main/group-chat/members.ts` | One turn per member: one headless engine run; Stop aborts it. |
+| Logic | `src/main/group-chat/engines/` | Claude (`claude.ts`: `claude -p --output-format json`), Codex / Gemini CLI adapters (`run-cli.ts` spawns without a shell, message on stdin), Ollama HTTP, and engine readiness checks. |
+| Service | `src/main/group-chat/service.ts` | One FIFO queue per member, the 30-minute fail-safe, and persistence. A Claude member's own conversation id (`groupSession`) is saved after its first turn. |
+| Wiring | `src/main/group-chat/install.ts` | Tracks each shell's Claude `session_id` from hooks (only used to know which conversation a tab holds when it is added or refreshed), builds turns, broadcasts `groups:changed`. |
 | Storage | `src/main/repos/groups-repo.ts`, `migrations/0005_group_chats.sql` | One JSON row per group (state + member records, incl. Codex/Gemini session ids and Ollama history). |
 | UI | `src/renderer/components/GroupChatPanel.tsx`, `GroupChatView.tsx`, `src/renderer/group-chat/` | The **Group** activity view. Replies render through `renderMarkdown` (raw HTML off). |
 
 Rules the code keeps:
 
 - **Every way a turn ends answers its round**: a reply, an engine failure,
-  Stop, removal, the tab closing (`shellGone` on PTY exit), or the fail-safe.
-  A round can't hang.
-- A Claude member is its **Claude conversation** (`session_id`), not a tab
-  slot. After `/clear` or a restart that resumes another conversation, the
-  member is "unavailable" and fails its rounds until a tab holds that
-  session again.
-- The app never edits the user's input. A half-typed draft holds the turn
-  ("waiting for you to send or clear your draft").
-- Stop sends Escape to a Claude tab only while it is answering the group's
-  message.
-- While a group runs, its Claude tabs are never evicted by the keep-alive cap
-  (`chooseEvictee` reason `all-protected` lets the new shell spawn above the
-  cap).
+  Stop, removal, or the fail-safe. A round can't hang.
+- **A Claude member runs headless on its own copy of the tab's
+  conversation.** Its first turn forks the conversation of the tab it was
+  added from (`claude -p --resume <tab session> --fork-session`); later
+  turns resume that copy. Nothing is ever typed into the user's tab, so
+  `/clear`, a closed tab, a restart, a half-typed prompt or a busy tab can't
+  break a round. The copy doesn't see what the user says in the tab after it
+  joined: ↻ on the member's chip (`reconnectClaude`) makes its next turn fork
+  the tab's current conversation again.
+  (An earlier version typed round messages into the live tab and read the
+  answer from its transcript on the Stop hook. It failed in practice: the
+  Enter after a paste was sometimes swallowed, the tab's session was guessed
+  from the latest hook and the app sent Escape mid-answer when the guess
+  changed, and Stop hooks were rejected by the transcript-path check.)
+- Claude members use the app's Claude permission choice (`auto` →
+  `--permission-mode auto`, `bypass` → `--dangerously-skip-permissions`);
+  headless Claude can't ask, so in `auto` what needs approval is refused and
+  Claude says so in its reply.
 - A restart never resumes a conversation: running groups load as "Stopped:
   the app restarted". App quit kills headless engine processes.
 - Headless permissions: Codex `sandbox_mode="workspace-write"` (plus

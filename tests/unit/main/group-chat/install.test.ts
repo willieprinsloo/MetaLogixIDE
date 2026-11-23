@@ -13,6 +13,8 @@ import type { ReceivedHook, HookListener } from '@main/claude-hooks/receiver';
 import type { AgentShellStateEntry } from '@shared/agent-state';
 
 const migrationsDir = resolve(__dirname, '../../../../migrations');
+const FAKE_CLAUDE = [process.execPath, resolve(__dirname, 'engines', 'fake-claude.cjs')];
+const TAB_SID = '11111111-2222-4333-8444-555555555555';
 
 class FakePty extends EventEmitter {
   writes: Array<{ projectId: number; shellIndex: number; data: string }> = [];
@@ -29,6 +31,7 @@ function setup() {
   const root = new RootsRepo(db).add(join(home, 'root'));
   const projects = new ProjectsRepo(db);
   const project = projects.upsert(root.id, join(home, 'root', 'shop'), 'shop');
+  mkdirSync(project.path, { recursive: true }); // members run in the project folder
   const pty = new FakePty();
   const states: AgentShellStateEntry[] = [{ projectId: project.id, shellIndex: 0, agent: 'claude', state: 'idle' }];
   const listeners: HookListener[] = [];
@@ -37,9 +40,11 @@ function setup() {
     db, projects, ptyManager: pty, homeDir: home,
     agentStatus: { list: () => states },
     metaproject: { currentUserName: () => 'Martin' },
+    settings: { get: (k: string) => (k === 'claude_permission_mode' ? 'auto' : null) },
   } as unknown as Services;
   const installed = installGroupChat({
     services,
+    claudeCmd: FAKE_CLAUDE,
     hooks: { onHook: (l) => { listeners.push(l); } },
     broadcast: (ch, payload) => { events.push({ ch, payload }); },
   });
@@ -76,49 +81,40 @@ describe('installGroupChat', () => {
     expect(s.svc.joinableClaudeTabs(s.project.id)[0]).toMatchObject({ joinable: true, title: 'Claude tab 1' });
   });
 
-  it('a Claude member answers from a Stop hook with a valid transcript; a bad path is ignored', async () => {
+  const replies = (s: ReturnType<typeof setup>) => s.svc.list(s.project.id)[0]!.log.filter((e) => e.kind === 'reply');
+
+  it('a Claude member answers through headless claude on a fork of the tab’s conversation; nothing is typed into the tab', async () => {
     const s = setup();
     cleanup.push(() => s.installed.stop());
-    s.hook({ claudeSessionId: 'S1' });
+    s.hook({ claudeSessionId: TAB_SID });
     const g = s.svc.create(s.project.id, { claudeShell: { projectId: s.project.id, shellIndex: 0 } });
     s.svc.say(g.id, 'hello group');
-    await until(() => s.pty.writes.length === 2);
-    const pasted = s.pty.writes[0]!.data;
-    expect(pasted.startsWith('\x1b[200~[Group chat "Group chat 1" in shop')).toBe(true);
-    expect(s.pty.writes[1]!.data).toBe('\r');
-
-    const header = pasted.slice('\x1b[200~'.length).split('\n')[0]!;
-    const transcript = [
-      JSON.stringify({ type: 'user', message: { content: `${header}\nrest` } }),
-      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi from claude' }] } }),
-    ].join('\n');
-    const outside = join(s.home, 'elsewhere.jsonl');
-    writeFileSync(outside, transcript);
-    s.hook({ hookEventName: 'Stop', claudeSessionId: 'S1', transcriptPath: outside });
-    await new Promise((r) => setTimeout(r, 100));
-    expect(s.svc.list(s.project.id)[0]!.log.some((e) => e.kind === 'reply')).toBe(false);
-
-    const dir = join(s.home, '.claude', 'projects', 'shop');
-    mkdirSync(dir, { recursive: true });
-    const inside = join(dir, 'S1.jsonl');
-    writeFileSync(inside, transcript);
-    s.hook({ hookEventName: 'Stop', claudeSessionId: 'OTHER', transcriptPath: inside });
-    await new Promise((r) => setTimeout(r, 100));
-    expect(s.svc.list(s.project.id)[0]!.log.some((e) => e.kind === 'reply')).toBe(false);
-
-    s.hook({ hookEventName: 'Stop', claudeSessionId: 'S1', transcriptPath: inside });
-    await until(() => s.svc.list(s.project.id)[0]!.log.some((e) => e.kind === 'reply' && e.text === 'hi from claude'));
+    await until(() => replies(s).length === 1);
+    const first = replies(s)[0]!.text;
+    expect(first).toContain(`args: -p --output-format json --resume ${TAB_SID} --fork-session --permission-mode auto`);
+    expect(first).toContain('input: [Group chat "Group chat 1" in shop');
+    expect(s.pty.writes).toEqual([]);
   });
 
-  it('PTY exit fails the running Claude turn and forgets the shell’s session', async () => {
+  it('later turns resume the group’s own copy, even after /clear in the tab', async () => {
     const s = setup();
     cleanup.push(() => s.installed.stop());
-    s.hook({ claudeSessionId: 'S1' });
+    s.hook({ claudeSessionId: TAB_SID });
     const g = s.svc.create(s.project.id, { claudeShell: { projectId: s.project.id, shellIndex: 0 } });
-    s.svc.say(g.id, 'go');
-    await until(() => s.pty.writes.length === 2);
+    s.svc.say(g.id, 'one');
+    await until(() => replies(s).length === 1);
+    s.hook({ claudeSessionId: '99999999-0000-4000-8000-000000000000' }); // /clear in the tab
+    s.svc.say(g.id, 'two');
+    await until(() => replies(s).length === 2);
+    expect(replies(s)[1]!.text).toContain('--resume aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee --permission-mode auto');
+    expect(replies(s)[1]!.text).not.toContain('--fork-session');
+  });
+
+  it('PTY exit forgets the shell’s session', () => {
+    const s = setup();
+    cleanup.push(() => s.installed.stop());
+    s.hook({ claudeSessionId: TAB_SID });
     s.pty.emit('exit', { projectId: s.project.id, shellIndex: 0, code: 0 });
-    await until(() => s.svc.list(s.project.id)[0]!.log.some((e) => e.kind === 'fail' && /closed/.test(e.text)));
     expect(s.svc.joinableClaudeTabs(s.project.id)[0]).toMatchObject({ joinable: false });
   });
 
@@ -132,10 +128,10 @@ describe('installGroupChat', () => {
   it('uses the signed-in user’s name in round messages', async () => {
     const s = setup();
     cleanup.push(() => s.installed.stop());
-    s.hook({ claudeSessionId: 'S1' });
+    s.hook({ claudeSessionId: TAB_SID });
     const g = s.svc.create(s.project.id, { claudeShell: { projectId: s.project.id, shellIndex: 0 } });
     s.svc.say(g.id, 'hello');
-    await until(() => s.pty.writes.length === 2);
-    expect(s.pty.writes[0]!.data).toContain('\nMartin: hello\n');
+    await until(() => replies(s).length === 1);
+    expect(replies(s)[0]!.text).toContain('\nMartin: hello\n');
   });
 });

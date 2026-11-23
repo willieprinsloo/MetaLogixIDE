@@ -26,8 +26,12 @@ export interface GroupChatDeps {
   userName: () => string;
   projectName: (projectId: number) => string;
   projectPath: (projectId: number) => string;
-  /** A turn that types into the tab holding this member's Claude session. */
-  claudeTurn: (member: ClaudeRecord) => MemberTurn;
+  /**
+   * A headless Claude turn in `cwd` on the member's own copy of its tab's conversation (forked from
+   * the tab on the first turn). Nothing is typed into the tab, so /clear, a closed tab or a restart
+   * don't matter.
+   */
+  claudeTurn: (member: ClaudeRecord, cwd: string) => HeadlessTurn;
   /** A turn that runs this member's engine in `cwd`. */
   headlessTurn: (member: HeadlessRecord, cwd: string) => HeadlessTurn;
   /** The latest Claude session id seen in this shell's hooks, or null. */
@@ -44,10 +48,9 @@ export interface GroupChatDeps {
 
 export const GROUP_TURN_MS = 30 * 60 * 1000;
 const OLLAMA_HISTORY = 40;
-const NOT_OPEN = 'its Claude tab isn’t open';
 
 interface QueueItem { groupId: string; member: string; round: number; text: string }
-interface Running { item: QueueItem; turn: MemberTurn; shell: Shell | null; cancelFailSafe: () => void }
+interface Running { item: QueueItem; turn: MemberTurn; cancelFailSafe: () => void }
 
 export class GroupChatService {
   private readonly groups: Groups;
@@ -97,18 +100,9 @@ export class GroupChatService {
     return this.deps.engines?.() ?? Promise.resolve({ codex: { ready: false, why }, gemini: { ready: false, why }, ollama: { ready: false, why } });
   }
 
-  /** Claude tabs of members of running groups: never evicted by the keep-alive cap. */
+  /** Tabs the keep-alive cap must not evict: none, as group members run on their own copies. */
   protectedShells(): Shell[] {
-    const out: Shell[] = [];
-    for (const g of this.groups.view()) {
-      if (g.status !== 'running') continue;
-      for (const m of g.members) {
-        const r = this.record(m);
-        const sh = r?.kind === 'claude-tab' ? this.shellOf(r) : null;
-        if (sh && !out.some((o) => o.projectId === sh.projectId && o.shellIndex === sh.shellIndex)) out.push(sh);
-      }
-    }
-    return out;
+    return [];
   }
 
   // ---------- changes ----------
@@ -136,9 +130,9 @@ export class GroupChatService {
   }
 
   /**
-   * Re-attaches a Claude member whose conversation is no longer in any tab (after `/clear`, a
-   * restart, or a new tab) to the project's Claude tab. Only when exactly one tab can take over,
-   * so a group message never lands in a conversation the user didn't mean.
+   * Refreshes a Claude member from the project's Claude tab: its next turn forks that tab's current
+   * conversation, so it catches up on what was said there since it joined. Only when exactly one
+   * tab can be meant.
    */
   reconnectClaude(id: string, member: string): GroupView {
     const g = this.must(id);
@@ -153,6 +147,7 @@ export class GroupChatService {
     if (tabs.length > 1) throw new Error('There is more than one Claude tab: remove this member and use + Add to pick one');
     rec.claudeSessionId = tabs[0]!.sid;
     rec.title = tabs[0]!.title;
+    rec.groupSession = null;
     return this.changed(g);
   }
 
@@ -198,11 +193,9 @@ export class GroupChatService {
     this.deps.onChange(g.projectId);
   }
 
-  /** A shell exited or was closed: a Claude turn running in it fails now instead of waiting. */
-  shellGone(shell: Shell): void {
-    for (const r of [...this.running.values()]) {
-      if (r.shell && r.shell.projectId === shell.projectId && r.shell.shellIndex === shell.shellIndex) r.turn.stop('its Claude tab was closed');
-    }
+  /** A shell exited or was closed. Group members don't run in tabs, so nothing stops. */
+  shellGone(_shell: Shell): void {
+    /* kept for the install wiring; members run headless on their own copies */
   }
 
   /** App quit: stop every turn without answering (nothing new starts), and save. */
@@ -236,18 +229,11 @@ export class GroupChatService {
       if (!this.stillWanted(item)) continue;
       const rec = this.records.get(item.groupId)?.[item.member];
       if (!rec) continue;
-      let turn: MemberTurn;
-      let shell: Shell | null = null;
-      if (rec.kind === 'claude-tab') {
-        shell = this.shellOf(rec);
-        if (!shell) { this.answer(item, { failed: NOT_OPEN }); continue; }
-        turn = this.deps.claudeTurn(rec);
-      } else {
-        turn = this.deps.headlessTurn(rec, this.deps.projectPath(this.must(item.groupId).projectId));
-      }
+      const cwd = this.deps.projectPath(this.must(item.groupId).projectId);
+      const turn: MemberTurn = rec.kind === 'claude-tab' ? this.deps.claudeTurn(rec, cwd) : this.deps.headlessTurn(rec, cwd);
       const minutes = Math.max(1, Math.round(this.turnMs / 60000));
       const cancelFailSafe = this.setTimer(() => turn.stop(`no answer in ${minutes} minutes`), this.turnMs);
-      this.running.set(key, { item, turn, shell, cancelFailSafe });
+      this.running.set(key, { item, turn, cancelFailSafe });
       turn.start(item.text);
       void turn.done.then((out) => this.finished(key, item, rec, turn, out));
       this.notify(item.groupId);
@@ -259,8 +245,10 @@ export class GroupChatService {
     if (this.disposed) return;
     const r = this.running.get(key);
     if (r?.turn === turn) { r.cancelFailSafe(); this.running.delete(key); }
+    const result = (turn as HeadlessTurn).result?.();
+    // the group's own copy of the tab's conversation: later turns resume it
+    if (rec.kind === 'claude-tab' && result?.engineSession) rec.groupSession = result.engineSession;
     if (rec.kind === 'headless') {
-      const result = (turn as HeadlessTurn).result?.();
       if (result?.engineSession) rec.engineSession = result.engineSession;
       if (rec.engine === 'ollama' && 'text' in out) {
         rec.history.push({ role: 'user', content: item.text }, { role: 'assistant', content: out.text });
@@ -298,18 +286,14 @@ export class GroupChatService {
     const recs = this.records.get(g.id)!;
     if (Object.values(recs).some((r) => r.kind === 'claude-tab' && r.claudeSessionId === sid)) return;
     const live = this.deps.liveClaudeShells(shell.projectId).find((s) => s.shellIndex === shell.shellIndex);
-    const rec: ClaudeRecord = { id: randomUUID(), kind: 'claude-tab', projectId: shell.projectId, claudeSessionId: sid, title: live?.title || 'Claude' };
+    const rec: ClaudeRecord = { id: randomUUID(), kind: 'claude-tab', projectId: shell.projectId, claudeSessionId: sid, title: live?.title || 'Claude', groupSession: null };
     recs[rec.id] = rec;
     this.enqueue(g.id, this.groups.addMember(g.id, rec.id));
   }
 
-  private shellOf(rec: ClaudeRecord): Shell | null {
-    const sh = this.deps.liveClaudeShells(rec.projectId).find((s) => this.deps.claudeSessionOf(s) === rec.claudeSessionId);
-    return sh ? { projectId: sh.projectId, shellIndex: sh.shellIndex } : null;
-  }
-
+  /** One turn at a time per member (each Claude member has its own copy, so no sharing). */
   private keyOf(rec: MemberRecord): string {
-    return rec.kind === 'claude-tab' ? `claude:${rec.claudeSessionId}` : `member:${rec.id}`;
+    return `member:${rec.id}`;
   }
 
   private record(member: string): MemberRecord | null {
@@ -339,7 +323,7 @@ export class GroupChatService {
         kind: r.kind,
         engine: r.kind === 'claude-tab' ? 'claude' : r.engine,
         model: r.kind === 'headless' ? r.model : null,
-        available: r.kind === 'claude-tab' ? this.shellOf(r) !== null : true,
+        available: true, // members run headless: an open tab isn't needed
         phase: this.phaseOf(g.id, m),
       };
     }

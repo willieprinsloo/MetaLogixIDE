@@ -4,7 +4,14 @@ import type { Group } from '@main/group-chat/groups';
 
 /** One group-chat member as stored: a Claude conversation in a tab, or a headless agent the group owns. */
 export type MemberRecord =
-  | { id: string; kind: 'claude-tab'; projectId: number; claudeSessionId: string; title: string }
+  | {
+      id: string; kind: 'claude-tab'; projectId: number;
+      /** The tab's conversation this member was added from; its first turn forks it. */
+      claudeSessionId: string;
+      title: string;
+      /** The group's own copy of that conversation (headless `claude -p --resume`), once made. */
+      groupSession?: string | null;
+    }
   | {
       id: string;
       kind: 'headless';

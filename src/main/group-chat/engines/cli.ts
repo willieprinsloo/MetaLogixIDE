@@ -17,7 +17,8 @@ export function npmCli(
   try {
     const j = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { bin?: string | Record<string, string> };
     const rel = typeof j.bin === 'string' ? j.bin : j.bin?.[bin];
-    if (rel) return ['node', join(dir, rel)];
+    // Claude Code's npm package ships a native claude.exe: run it directly (node can't)
+    if (rel) return /\.exe$/i.test(rel) ? [join(dir, rel)] : ['node', join(dir, rel)];
   } catch { /* not installed through npm here */ }
   return [`${bin}.exe`];
 }

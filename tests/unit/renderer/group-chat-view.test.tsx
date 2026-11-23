@@ -101,14 +101,16 @@ describe('GroupChatView with no project or no group', () => {
   });
 });
 
-describe('reconnecting a Claude member', () => {
-  it('an unavailable Claude member gets a Reconnect button', () => {
-    const g = G({ memberInfo: { boss: info('Main (Claude)', 'claude', { available: false }), gpt: info('Review (GPT)', 'codex') } });
+describe('refreshing a Claude member from its tab', () => {
+  it('every Claude member gets a ↻ Refresh button (GPT doesn’t), and none says its tab isn’t open', () => {
+    const g = G({ memberInfo: { boss: info('Main (Claude)', 'claude'), gpt: info('Review (GPT)', 'codex') } });
     const html = renderToStaticMarkup(
       <GroupChatView groups={[g]} group={g} draft="" error={null}
         onPick={noop} onNew={noop} onRemoveMember={noop} onOpenAdd={noop} onStop={noop} onDelete={noop}
         onRounds={noop} onDraft={noop} onSend={noop} onReconnect={noop} />,
     );
     expect(html.match(/data-testid="group-reconnect"/g)).toHaveLength(1);
+    expect(html).toContain('↻');
+    expect(html).not.toContain('isn’t open');
   });
 });

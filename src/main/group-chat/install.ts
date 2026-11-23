@@ -4,22 +4,22 @@
  * `stop()` (app quit) disposes it.
  *
  * - Which Claude conversation each shell holds comes from its hook events' `session_id`; a spawn
- *   or exit forgets it (the next hook tells us the new one).
- * - Stop hooks reach a Claude member's turn only when they come from that member's session and
- *   their `transcript_path` is a `.jsonl` under `~/.claude/projects`.
- * - Round messages are typed with `writeFromApp`, so they never count as the user's typing.
+ *   or exit forgets it (the next hook tells us the new one). It's only used when a tab is added
+ *   (or refreshed) as a member: that conversation is what the member forks.
+ * - A Claude member runs headless (`claude -p`) on its own fork of that conversation, like GPT
+ *   runs `codex exec`: nothing is typed into the user's tab, so /clear, a closed tab, a restart
+ *   or a half-typed prompt there can't break a round.
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import log from 'electron-log/main';
 import type { Services } from '@main/services';
 import type { HookSource } from '@main/claude-hooks/hook-fanout';
-import { isClaudeTranscriptPath } from '@main/claude-hooks/hook-event';
 import { GroupsRepo, type MemberRecord } from '@main/repos/groups-repo';
+import { isClaudePermissionMode } from '@shared/claude-permission-mode';
 import { GroupChatService } from './service';
-import { claudeTabTurn, headlessTurn } from './members';
-import { readGroupAnswer } from './transcript';
+import { headlessTurn } from './members';
 import { npmCli } from './engines/cli';
+import { claudeArgs, claudeProgress, parseClaude } from './engines/claude';
 import { codexArgs, codexProgress, parseCodex } from './engines/codex';
 import { geminiArgs, geminiProgress, parseGemini } from './engines/gemini';
 import { OLLAMA_BASE, runOllama } from './engines/ollama';
@@ -40,11 +40,13 @@ export function installGroupChat(o: {
   services: Services;
   hooks: HookSource;
   broadcast: (channel: string, payload: unknown) => void;
+  /** How to start Claude Code (tests pass a stand-in); default: the npm-installed `claude`. */
+  claudeCmd?: string[];
 }): InstalledGroupChat {
   const { services } = o;
   const pty = services.ptyManager;
   const sessions = new Map<string, string>();
-  const stopListeners = new Set<{ sid: string; cb: (path: string) => void }>();
+  const claudeCmd = o.claudeCmd ?? npmCli('@anthropic-ai/claude-code', 'claude');
   const codexCmd = npmCli('@openai/codex', 'codex');
   const geminiCmd = npmCli('@google/gemini-cli', 'gemini');
 
@@ -53,20 +55,23 @@ export function installGroupChat(o: {
       .filter((e) => e.agent === 'claude' && e.projectId === projectId)
       .map((e) => ({ projectId: e.projectId, shellIndex: e.shellIndex, title: `Claude tab ${e.shellIndex + 1}` }));
   const claudeSessionOf = (s: Shell) => sessions.get(keyOf(s)) ?? null;
-  const shellFor = (rec: ClaudeRecord): Shell | null => {
-    const sh = liveClaudeShells(rec.projectId).find((s) => claudeSessionOf(s) === rec.claudeSessionId);
-    return sh ? { projectId: sh.projectId, shellIndex: sh.shellIndex } : null;
-  };
 
   o.hooks.onHook((hook) => {
     const sid = hook.event.claudeSessionId;
-    if (!sid) return;
-    sessions.set(keyOf(hook.shell), sid);
-    const path = hook.event.transcriptPath;
-    if (hook.event.hookEventName !== 'Stop' || !path) return;
-    if (!isClaudeTranscriptPath(path, services.homeDir)) { log.warn('[group-chat] ignored a Stop hook with an unexpected transcript path'); return; }
-    for (const l of [...stopListeners]) if (l.sid === sid) l.cb(path);
+    if (sid) sessions.set(keyOf(hook.shell), sid);
   });
+
+  // the same permission choice the app's Claude tabs use (headless Claude can't ask)
+  const permission = () => {
+    const m = services.settings.get('claude_permission_mode');
+    return isClaudePermissionMode(m) ? m : 'auto';
+  };
+  const runClaude = (rec: ClaudeRecord, cwd: string, item: TurnItem, signal: AbortSignal): Promise<TurnResult> =>
+    runCliTurn({
+      cmd: claudeCmd,
+      args: claudeArgs({ forkFrom: rec.claudeSessionId, engineSession: rec.groupSession ?? null, permission: permission() }),
+      cwd, text: item.text, progress: claudeProgress(), parse: parseClaude, signal,
+    });
 
   const runEngine = (rec: HeadlessRecord, cwd: string, item: TurnItem, signal: AbortSignal): Promise<TurnResult> => {
     switch (rec.engine) {
@@ -93,17 +98,7 @@ export function installGroupChat(o: {
     liveClaudeShells,
     onChange: (projectId) => o.broadcast('groups:changed', { projectId }),
     engines: () => detectEngines({ ollamaBase: OLLAMA_BASE, codex: codexCmd, gemini: geminiCmd, fetch, version }),
-    claudeTurn: (rec) => claudeTabTurn({
-      shell: () => shellFor(rec),
-      state: (sh) => services.agentStatus?.list().find((e) => e.projectId === sh.projectId && e.shellIndex === sh.shellIndex)?.state ?? null,
-      screenRows: (sh) => pty.liveStatus(sh.projectId, sh.shellIndex).then((s) => s.rows, () => []),
-      lastUserInputAt: (sh) => pty.lastInputAt(sh.projectId, sh.shellIndex),
-      write: (sh, data) => pty.writeFromApp(sh.projectId, sh.shellIndex, data),
-      onStop: (cb) => { const l = { sid: rec.claudeSessionId, cb }; stopListeners.add(l); return () => { stopListeners.delete(l); }; },
-      readAnswer: readGroupAnswer,
-      now: Date.now,
-      setTimer: (fn, ms) => { const t = setTimeout(fn, ms); return () => clearTimeout(t); },
-    }),
+    claudeTurn: (rec, cwd) => headlessTurn({ run: (item, signal) => runClaude(rec, cwd, item, signal) }, {}),
     headlessTurn: (rec, cwd) => headlessTurn(
       { run: (item, signal) => runEngine(rec, cwd, item, signal) },
       { model: rec.model, engineSession: rec.engineSession, history: [...rec.history] },

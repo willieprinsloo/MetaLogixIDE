@@ -141,15 +141,16 @@ export function GroupChatView(p: Props) {
                   <EngineBadge engine={info.engine} />
                   <span className="truncate max-w-[160px]">{info.name.replace(/ \([^)]*\)$/, '')}</span>
                   {!info.available && <span className="text-[10px] text-[--text-muted]">its Claude tab isn’t open</span>}
-                  {!info.available && info.engine === 'claude' && p.onReconnect && (
+                  {info.engine === 'claude' && p.onReconnect && (
                     <button
                       type="button"
                       data-testid="group-reconnect"
                       onClick={() => p.onReconnect!(m)}
-                      title="Attach this member to the Claude tab running in this project"
-                      className="px-1.5 rounded bg-[--accent] text-white text-[10px]"
+                      title="Catch up on the Claude tab: this member's next turn starts from the tab's conversation as it is now"
+                      aria-label={`Refresh ${info.name} from its Claude tab`}
+                      className="px-1 text-[--text-muted] hover:text-[--text] text-[11px]"
                     >
-                      Reconnect
+                      ↻
                     </button>
                   )}
                   <button
