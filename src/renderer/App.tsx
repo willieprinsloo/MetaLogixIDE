@@ -43,12 +43,10 @@ import { ToastStack } from './components/ToastStack';
 import { PermissionModeDialog } from './components/PermissionModeDialog';
 import { ProjectEnvTab } from './components/ProjectEnvTab';
 import { DiffTab } from './components/DiffTab';
-import { ENV_COPY, ENV_TESTIDS } from './project-env-copy';
-import { DIFF_COPY, DIFF_TESTIDS } from './diff-tab-copy';
+import { DIFF_TESTIDS } from './diff-tab-copy';
 import { diffTabCount } from './diff/diff-selection';
 import { isMainTab, visibleMainTab, type MainTab } from './main-tab';
 import { useActivityLogEnabled } from './hooks/useActivityLogEnabled';
-import { ACTIVITY_LOG_TESTIDS } from './activity-log-contract';
 import { useEnvDrafts } from './hooks/useEnvDrafts';
 import { useClaudePermissionMode } from './hooks/useClaudePermissionMode';
 import { useTaskCount } from './hooks/useTaskCount';
@@ -86,7 +84,7 @@ import { ICON_SIZE } from './components/icon-size';
 import { ShellTabsBar, type ShellLaunched, type ShellTabMotion } from './components/ShellTabsBar';
 import { SplitButton } from './components/SplitButton';
 import { ShellSplit } from './components/ShellSplit';
-import { WorkspaceTabButton } from './components/WorkspaceTabButton';
+import { WorkspaceDestinations } from './components/WorkspaceDestinations';
 import { ShellTabDot } from './components/ShellTabDot';
 import { SPLIT_RATIO_DEFAULT, sanitizeRatio } from './split-ratio';
 import { shellChipLabel, stripShells } from './shell-label';
@@ -952,7 +950,7 @@ function MainApp() {
     } catch (e) { toast('Tile failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
   }
 
-  const mainSheetContent: SheetContent = !boardVisible && mainTab === 'shell' ? 'shell' : 'other';
+  const mainSheetContent: SheetContent = !remotePane && !boardVisible && mainTab === 'shell' ? 'shell' : 'other';
 
   return (
     <div className="h-screen w-screen overflow-hidden flex flex-col bg-[--surface-chrome]" data-chrome-root>
@@ -1055,39 +1053,11 @@ function MainApp() {
           )}
         </AnimatePresence>
         <div className="workspace-header-container flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden" data-testid="main-column">
-            <header className="workspace-header-row drag relative shrink-0 items-center gap-x-1.5 gap-y-1 px-3 py-1.5 text-xs" hidden={!!remotePane} data-testid={DIFF_TESTIDS.tabBar}>
-              <div className="workspace-destinations flex min-w-0 flex-wrap items-center gap-1.5">
-                <WorkspaceTabButton tab="shell" label="Shell" active={!boardVisible && mainTab === 'shell'} onClick={() => setMainTab('shell')} />
-                <WorkspaceTabButton tab="files" label="Files" active={!boardVisible && mainTab === 'files'} onClick={() => setMainTab('files')} />
-                <WorkspaceTabButton tab="diff" label={DIFF_COPY.tabLabel}
-                  active={!boardVisible && mainTab === 'diff'}
-                  onClick={() => setMainTab('diff')}
-                  testId={DIFF_TESTIDS.tab}
-                  ariaLabel={diffCount !== null ? DIFF_COPY.tabCountLabel(diffCount) : undefined}
-                >
-                  {diffCount !== null && (
-                    <span aria-hidden className="ml-1.5 font-mono text-[10px] text-[--hue-orange-text]" data-testid={DIFF_TESTIDS.tabCount}>
-                      {diffCount}
-                    </span>
-                  )}
-                </WorkspaceTabButton>
-                <WorkspaceTabButton tab="settings" label={PROJECT_SETTINGS_COPY.tab}
-                  active={!boardVisible && mainTab === 'settings'}
-                  onClick={openSelectedProjectSettings}
-                  testId={PROJECT_SETTINGS_TESTIDS.tab}
-                  ariaLabel={envDirty ? ENV_COPY.tabUnsavedLabel : undefined}
-                >
-                  {envDirty && (
-                    <span aria-hidden className="ml-1 text-[--accent]" data-testid={ENV_TESTIDS.unsaved}>
-                      {ENV_COPY.tabUnsavedMarker}
-                    </span>
-                  )}
-                </WorkspaceTabButton>
-                {activityEnabled && (
-                  <WorkspaceTabButton tab="activity" label="Activity" active={!boardVisible && mainTab === 'activity'} onClick={() => setMainTab('activity')} testId={ACTIVITY_LOG_TESTIDS.tabButton} />
-                )}
-              </div>
-              {!remotePane && !boardVisible && selected && mainTab === 'shell' && (
+            {!remotePane && <header className="workspace-header-row drag relative shrink-0 items-center gap-x-1.5 gap-y-1 px-3 py-1.5 text-xs" data-testid={DIFF_TESTIDS.tabBar}>
+              <WorkspaceDestinations active={boardVisible ? null : mainTab} activityEnabled={activityEnabled}
+                diffCount={diffCount} envDirty={envDirty}
+                onSelect={(tab) => tab === 'settings' ? openSelectedProjectSettings() : setMainTab(tab)} />
+              {!boardVisible && selected && mainTab === 'shell' && (
                 <ShellTabsBar
                   key={`shell-tabs-${selected.id}`}
                   projectId={selected.id}
@@ -1167,7 +1137,7 @@ function MainApp() {
                   </>
                 )}
               </div>
-            </header>
+            </header>}
           <main
             className={`workspace-sheet mx-2 mt-0.5 flex flex-1 flex-col min-h-0 min-w-0 rounded-[14px] bg-[--surface-sheet] ${showStatusBar ? 'mb-0.5' : 'mb-2'}`}
             data-sheet-content={mainSheetContent}
@@ -1187,7 +1157,8 @@ function MainApp() {
                     onOpenRemote={(req) => { setActiveView('projects'); setRemotePane(req); }}
                   />
                 : remotePane
-                ? <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId} projectName={remotePane.projectName} initialShellIndex={remotePane.shellIndex} onClose={() => setRemotePane(null)} />
+                ? <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId}
+                    projectName={remotePane.projectName} openRequest={remotePane} onClose={() => setRemotePane(null)} />
                 : mainTab === 'settings'
                 ? settingsTarget
                   ? <ProjectSettingsTab key={settingsTarget.id} target={settingsTarget} onSaved={applyDefaultAgentProject} assignmentVisible={!boardVisible}>

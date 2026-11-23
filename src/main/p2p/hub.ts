@@ -8,6 +8,7 @@ import { emitAliveShellsChanged, emitProjectsChanged, handlers } from '../ipc/re
 import { RpcError, type HandlerContext, type RpcPeer } from './rpc';
 import { safeFileName } from '../drops/file-name';
 import { createUploadQuota, createUploadService, type UploadOutcome, type UploadQuota } from './uploads';
+import { registerWorkspace } from './workspace';
 
 /*
  * Server-side RPC hub: one per peer/session. Methods call the same implementations the renderer
@@ -17,6 +18,8 @@ import { createUploadQuota, createUploadService, type UploadOutcome, type Upload
 export interface HubOptions {
   /** Paired device on the other end; recorded in every audit entry. */
   remoteDeviceId: string;
+  /** Host-authenticated desktop peer. Omission never grants workspace access. */
+  desktopWorkspaceAllowed?: boolean;
   /** Defaults to the instance given to `setHubServices`. */
   services?: Services;
   /** Test knobs. Defaults: ~/.metaide/logs/p2p-audit.log, 10 MiB. */
@@ -78,6 +81,9 @@ const PARAM_SCRUBBERS: ReadonlyMap<string, ParamScrubber> = new Map(Object.entri
     const { name, mime } = p as { name: string; mime: string };
     return { ...p, name: safeFileName(name, mime, new Date()) };
   },
+  'workspace.fileWrite': ({ projectId, relPath }) => ({ projectId, relPath }),
+  'workspace.agentSettings': () => ({}),
+  'workspace.setDefaultAgent': () => ({}),
 } satisfies Record<string, ParamScrubber>));
 
 /**
@@ -245,6 +251,7 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
   // Every inbound request (including invalid_params / unknown_method rejections that never reach a
   // handler) is audited through the peer's onCall hook; one entry per call, streams at open.
   peer.setOnCall(record);
+  registerWorkspace(peer, s, opts.desktopWorkspaceAllowed === true, events.projectsChanged);
 
   /** Registers `impl`; auditing happens in the peer's onCall hook. */
   function on<M extends RpcMethodName>(

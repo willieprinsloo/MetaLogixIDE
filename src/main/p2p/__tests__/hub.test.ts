@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, existsSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -17,6 +17,9 @@ import { openDb } from '../../db/connection';
 import { runMigrations } from '../../db/migrator';
 import { RootsRepo } from '../../repos/roots-repo';
 import { ProjectsRepo } from '../../repos/projects-repo';
+import { SettingsRepo } from '../../repos/settings-repo';
+import { appendActivity } from '../../activity/log';
+import * as git from '../../git/run-git';
 import { waitFor } from './_mockRelay';
 import { NoticeRouter } from '../../notifications/notice-router';
 import { Notice, ShellInfo } from '../../../shared/p2p-contract';
@@ -32,11 +35,18 @@ let dir: string;
 let projectRoot: string;
 let auditPath: string;
 let projects: ProjectsRepo;
+let settings: SettingsRepo;
 let pty: PtyManager;
 let projectId: number;
 let dropDir: string;
 
-function setup(extra: { agentStatus?: { list(): unknown[] } | null; noticeRouter?: NoticeRouter; auditMaxBytes?: number; events?: { aliveShellsChanged(): void; projectsChanged(): void } } = {}) {
+function setup(extra: {
+  agentStatus?: { list(): unknown[] } | null;
+  noticeRouter?: NoticeRouter;
+  auditMaxBytes?: number;
+  events?: { aliveShellsChanged(): void; projectsChanged(): void };
+  desktopWorkspaceAllowed?: boolean;
+} = {}) {
   const [ta, tb] = pairedTransports();
   const client = new RpcPeer(ta.asTransport());
   const server = new RpcPeer(tb.asTransport());
@@ -44,7 +54,8 @@ function setup(extra: { agentStatus?: { list(): unknown[] } | null; noticeRouter
   server.on('error', () => {});
   const hub = wireHub(server, {
     remoteDeviceId: 'dev-xyz',
-    services: { projects, ptyManager: pty, dropStaging: staging(), ...('agentStatus' in extra ? { agentStatus: extra.agentStatus } : {}), ...(extra.noticeRouter ? { noticeRouter: extra.noticeRouter } : {}) } as never,
+    desktopWorkspaceAllowed: extra.desktopWorkspaceAllowed,
+    services: { projects, settings, ptyManager: pty, dropStaging: staging(), ...('agentStatus' in extra ? { agentStatus: extra.agentStatus } : {}), ...(extra.noticeRouter ? { noticeRouter: extra.noticeRouter } : {}) } as never,
     auditLogPath: auditPath,
     auditMaxBytes: extra.auditMaxBytes,
     events: extra.events,
@@ -72,6 +83,7 @@ beforeEach(() => {
   runMigrations(db, migrationsDir);
   const root = new RootsRepo(db).add(dir);
   projects = new ProjectsRepo(db);
+  settings = new SettingsRepo(db);
   projectId = projects.upsert(root.id, projectRoot, 'proj').id;
   pty = new PtyManager();
 });
@@ -174,6 +186,277 @@ describe('fs path safety', () => {
     expect(root.map((d) => d.name).sort()).toEqual(['a.txt', 'sub']);
     expect(root.find((d) => d.name === 'sub')?.isDir).toBe(true);
     await expect(client.call('fs.list', { projectId, path: join(projectRoot, 'sub') })).resolves.toEqual([]);
+  });
+});
+
+describe('paired desktop workspace', () => {
+  const allowed = { desktopWorkspaceAllowed: true };
+
+  test('fails closed before project lookup for a viewer-only or unclassified peer; old fs remains available', async () => {
+    const get = vi.spyOn(projects, 'get');
+    for (const { client } of [setup(), setup({ desktopWorkspaceAllowed: false })]) {
+      await expect(client.call('workspace.info', { projectId: 9999 })).rejects.toMatchObject({ code: 'forbidden' });
+      await expect(client.call('workspace.fileWrite', { projectId, relPath: 'a.txt', content: 'denied' }))
+        .rejects.toMatchObject({ code: 'forbidden' });
+      await expect(client.call('workspace.activity', { projectId })).rejects.toMatchObject({ code: 'forbidden' });
+    }
+    expect(get).not.toHaveBeenCalled();
+    expect(readFileSync(join(projectRoot, 'a.txt'), 'utf8')).toBe('hello file');
+    await expect(setup().client.call('fs.read', { projectId, path: 'a.txt' })).resolves.toMatchObject({ content: 'hello file' });
+    await expect(setup(allowed).client.call('workspace.info', { projectId: 9999 }))
+      .rejects.toMatchObject({ code: 'unknown_project' });
+  });
+
+  test('scopes directory, text preview, and ordinary file mutations to the selected project', async () => {
+    const otherPath = join(dir, 'other-project');
+    mkdirSync(otherPath);
+    writeFileSync(join(otherPath, 'a.txt'), 'other');
+    const { client } = setup(allowed);
+    await expect(client.call('workspace.fileTree', { projectId })).resolves.toEqual({ entries: [
+      { name: 'sub', isDir: true, relPath: 'sub' }, { name: 'a.txt', isDir: false, relPath: 'a.txt' },
+    ] });
+    await expect(client.call('workspace.fileMkdir', { projectId, relPath: 'new/nested' })).resolves.toEqual({ ok: true });
+    const content = 'save-AUDIT-CONTENT-é';
+    await expect(client.call('workspace.fileWrite', { projectId, relPath: 'new/nested/save.txt', content }))
+      .resolves.toEqual({ ok: true, sizeBytes: Buffer.byteLength(content) });
+    await expect(client.call('workspace.fileRename', { projectId, from: 'new/nested/save.txt', to: 'a.txt' }))
+      .rejects.toMatchObject({ code: 'already_exists' });
+    await expect(client.call('workspace.fileRename', { projectId, from: 'new/nested/save.txt', to: 'sub/moved.txt' }))
+      .resolves.toEqual({ ok: true });
+    await expect(client.call('workspace.fileRead', { projectId, relPath: 'sub/moved.txt' }))
+      .resolves.toEqual({ content, kind: 'text', sizeBytes: Buffer.byteLength(content) });
+    await expect(client.call('workspace.fileDelete', { projectId, relPath: 'sub' })).resolves.toEqual({ ok: true });
+    expect(existsSync(join(projectRoot, 'sub'))).toBe(false);
+    expect(readFileSync(join(otherPath, 'a.txt'), 'utf8')).toBe('other');
+    expect(readFileSync(auditPath, 'utf8')).not.toContain('AUDIT-CONTENT');
+    expect(auditLines()).toContainEqual(expect.objectContaining({
+      method: 'workspace.fileWrite', params: { projectId, relPath: 'new/nested/save.txt' }, outcome: 'ok',
+    }));
+  });
+
+  test.skipIf(process.platform === 'win32')('rejects external and dangling symlinks, including missing destination ancestors and a root alias', async () => {
+    const outside = join(dir, 'outside');
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'secret'), 'outside');
+    symlinkSync(outside, join(projectRoot, 'escape'));
+    symlinkSync(join(outside, 'missing'), join(projectRoot, 'dangling'));
+    symlinkSync(projectRoot, join(projectRoot, 'root-alias'));
+    const { client } = setup(allowed);
+    await expect(client.call('workspace.fileTree', { projectId })).resolves.toMatchObject({
+      entries: [{ name: 'sub' }, { name: 'a.txt' }],
+    });
+    await expect(client.call('workspace.fileRead', { projectId, relPath: 'escape/secret' }))
+      .rejects.toMatchObject({ code: 'path_outside_project' });
+    await expect(client.call('workspace.fileWrite', { projectId, relPath: 'escape/new', content: 'denied' }))
+      .rejects.toMatchObject({ code: 'path_outside_project' });
+    await expect(client.call('workspace.fileMkdir', { projectId, relPath: 'escape/new/nested' }))
+      .rejects.toMatchObject({ code: 'path_outside_project' });
+    await expect(client.call('workspace.fileRename', { projectId, from: 'a.txt', to: 'escape/new' }))
+      .rejects.toMatchObject({ code: 'path_outside_project' });
+    await expect(client.call('workspace.fileWrite', { projectId, relPath: 'dangling', content: 'denied' }))
+      .rejects.toMatchObject({ code: 'path_outside_project' });
+    await expect(client.call('workspace.fileDelete', { projectId, relPath: 'escape/secret' }))
+      .rejects.toMatchObject({ code: 'path_outside_project' });
+    await expect(client.call('workspace.fileDelete', { projectId, relPath: 'root-alias' }))
+      .rejects.toMatchObject({ code: 'project_root' });
+    expect(readdirSync(outside)).toEqual(['secret']);
+    expect(readFileSync(join(projectRoot, 'a.txt'), 'utf8')).toBe('hello file');
+  });
+
+  test('rejects root mutations, absolute paths and traversal', async () => {
+    const { client } = setup(allowed);
+    await expect(client.call('workspace.fileWrite', { projectId, relPath: '.', content: 'denied' }))
+      .rejects.toMatchObject({ code: 'project_root' });
+    await expect(client.call('workspace.fileMkdir', { projectId, relPath: 'sub/..' }))
+      .rejects.toMatchObject({ code: 'project_root' });
+    await expect(client.call('workspace.fileRename', { projectId, from: '.', to: 'gone' }))
+      .rejects.toMatchObject({ code: 'project_root' });
+    await expect(client.call('workspace.fileRename', { projectId, from: 'a.txt', to: '.' }))
+      .rejects.toMatchObject({ code: 'project_root' });
+    await expect(client.call('workspace.fileDelete', { projectId, relPath: '.' }))
+      .rejects.toMatchObject({ code: 'project_root' });
+    for (const relPath of ['../elsewhere', join(projectRoot, 'a.txt'), 'a.txt\0']) {
+      await expect(client.call('workspace.fileRead', { projectId, relPath }))
+        .rejects.toMatchObject({ code: 'path_outside_project' });
+    }
+    expect(readFileSync(join(projectRoot, 'a.txt'), 'utf8')).toBe('hello file');
+  });
+
+  test('denies direct and differently cased Git metadata writes and protects a linked gitdir', async () => {
+    mkdirSync(join(projectRoot, 'git-data'));
+    writeFileSync(join(projectRoot, '.git'), 'gitdir: git-data\n');
+    writeFileSync(join(projectRoot, 'git-data', 'config'), '[core]\n');
+    const { client } = setup(allowed);
+    await expect(client.call('workspace.fileWrite', { projectId, relPath: '.GIT', content: 'no' }))
+      .rejects.toMatchObject({ code: 'protected_path' });
+    await expect(client.call('workspace.fileMkdir', { projectId, relPath: 'sub/.GiT/objects' }))
+      .rejects.toMatchObject({ code: 'protected_path' });
+    await expect(client.call('workspace.fileWrite', { projectId, relPath: 'git-data/config', content: 'no' }))
+      .rejects.toMatchObject({ code: 'protected_path' });
+    await expect(client.call('workspace.fileDelete', { projectId, relPath: 'git-data' }))
+      .rejects.toMatchObject({ code: 'protected_path' });
+    mkdirSync(join(projectRoot, 'sub', '.git'));
+    await expect(client.call('workspace.fileDelete', { projectId, relPath: 'sub' }))
+      .rejects.toMatchObject({ code: 'protected_path' });
+    await expect(client.call('workspace.fileRename', { projectId, from: 'sub', to: 'elsewhere' }))
+      .rejects.toMatchObject({ code: 'protected_path' });
+    expect(readFileSync(join(projectRoot, '.git'), 'utf8')).toBe('gitdir: git-data\n');
+    expect(readFileSync(join(projectRoot, 'git-data', 'config'), 'utf8')).toBe('[core]\n');
+  });
+
+  test.skipIf(process.platform === 'win32')('denies in-project aliases to Git metadata and the Activity log', async () => {
+    mkdirSync(join(projectRoot, '.git'));
+    mkdirSync(join(projectRoot, '.metaide'));
+    writeFileSync(join(projectRoot, '.metaide', 'activity.jsonl'), 'private-timeline');
+    symlinkSync(join(projectRoot, '.git'), join(projectRoot, 'git-alias'));
+    symlinkSync(join(projectRoot, '.metaide', 'activity.jsonl'), join(projectRoot, 'timeline-alias'));
+    const { client } = setup(allowed);
+    await expect(client.call('workspace.fileWrite', { projectId, relPath: 'git-alias/config', content: 'no' }))
+      .rejects.toMatchObject({ code: 'protected_path' });
+    await expect(client.call('workspace.fileRename', { projectId, from: 'sub', to: 'git-alias/sub' }))
+      .rejects.toMatchObject({ code: 'protected_path' });
+    await expect(client.call('workspace.fileRead', { projectId, relPath: 'timeline-alias' }))
+      .rejects.toMatchObject({ code: 'protected_path' });
+    await expect(client.call('workspace.fileDelete', { projectId, relPath: 'timeline-alias' }))
+      .rejects.toMatchObject({ code: 'protected_path' });
+    expect(existsSync(join(projectRoot, '.git', 'config'))).toBe(false);
+    expect(readFileSync(join(projectRoot, '.metaide', 'activity.jsonl'), 'utf8')).toBe('private-timeline');
+  });
+
+  test('bounds file bytes and encoded response size; binary preview can opt into text', async () => {
+    const { client } = setup(allowed);
+    const relPath = 'a.txt';
+    writeFileSync(join(projectRoot, relPath), Buffer.from([65, 0, 66]));
+    await expect(client.call('workspace.fileRead', { projectId, relPath }))
+      .resolves.toEqual({ content: '', kind: 'binary', sizeBytes: 3 });
+    await expect(client.call('workspace.fileRead', { projectId, relPath, forceText: true }))
+      .resolves.toEqual({ content: 'A\0B', kind: 'text', sizeBytes: 3 });
+    await expect(client.call('workspace.fileWrite', { projectId, relPath, content: 'é'.repeat(256 * 1024 + 1) }))
+      .rejects.toMatchObject({ code: 'file_too_large' });
+    expect(readFileSync(join(projectRoot, relPath))).toEqual(Buffer.from([65, 0, 66]));
+    writeFileSync(join(projectRoot, relPath), 'a'.repeat(512 * 1024 + 1));
+    await expect(client.call('workspace.fileRead', { projectId, relPath })).rejects.toMatchObject({ code: 'file_too_large' });
+    writeFileSync(join(projectRoot, relPath), '\u0001'.repeat(200_000));
+    await expect(client.call('workspace.fileRead', { projectId, relPath })).rejects.toMatchObject({ code: 'result_too_large' });
+    await expect(client.call('workspace.info', { projectId })).resolves.toMatchObject({ activityEnabled: true });
+  });
+
+  test('projects host agent names only, rejects nonexistent choices, and redacts setting parameters', async () => {
+    const name = 'private-agent-name';
+    settings.set('default_cli_profiles', [{ name, argv: ['private-argv'], env: { CLI_TOKEN: 'private-env' } }]);
+    projects.updateConfig(projectId, { env: { PROJECT_TOKEN: 'private-project-env' } });
+    const events = { aliveShellsChanged: vi.fn(), projectsChanged: vi.fn() };
+    const { client } = setup({ ...allowed, events });
+    await expect(client.call('workspace.agentSettings', { projectId })).resolves.toEqual({
+      defaultAgent: null, choices: ['Terminal', name], hasCustomCommand: false,
+    });
+    await expect(client.call('workspace.setDefaultAgent', { projectId, defaultAgent: 'missing-profile' }))
+      .rejects.toMatchObject({ code: 'unknown_agent' });
+    expect(projects.get(projectId)?.config.defaultCliName).toBeUndefined();
+    const request = { projectId, defaultAgent: name, env: { PROJECT_TOKEN: 'malicious-extra' } };
+    await expect(client.call('workspace.setDefaultAgent', request))
+      .resolves.toEqual({ defaultAgent: name, choices: ['Terminal', name], hasCustomCommand: false });
+    expect(projects.get(projectId)?.config).toMatchObject({ defaultCliName: name, env: { PROJECT_TOKEN: 'private-project-env' } });
+    await expect(client.call('workspace.setDefaultAgent', { projectId, defaultAgent: null })).resolves.toMatchObject({ defaultAgent: null });
+    expect(events.projectsChanged).toHaveBeenCalledTimes(2);
+    expect(readFileSync(auditPath, 'utf8')).not.toMatch(/private-agent-name|missing-profile|private-argv|private-env|private-project-env|malicious-extra/);
+    expect(auditLines()).toContainEqual(expect.objectContaining({ method: 'workspace.setDefaultAgent', params: {}, outcome: 'ok' }));
+  });
+
+  test('detects either legacy variant and never clears custom commands remotely', async () => {
+    const { client } = setup(allowed);
+    const command = { argv: ['private-custom-argv'], env: { CUSTOM_VALUE: 'private-custom-env' } };
+    for (const launchCmd of [{ first: command }, { subsequent: command }]) {
+      projects.updateConfig(projectId, { launchCmd });
+      const current = await client.call('workspace.agentSettings', { projectId });
+      expect(current.hasCustomCommand).toBe(true);
+      expect(JSON.stringify(current)).not.toMatch(/private-custom|launchCmd/);
+      await expect(client.call('workspace.setDefaultAgent', { projectId, defaultAgent: null }))
+        .rejects.toMatchObject({ code: 'custom_command' });
+      expect(projects.get(projectId)?.config.launchCmd).toEqual(launchCmd);
+    }
+  });
+
+  test('requires activity logging and resolves only existing in-project file targets', async () => {
+    const { client } = setup(allowed);
+    const entry = { ts: '2026-06-01T00:00:00.000Z', agent: 'claude', shellIndex: 0, kind: 'tool', tool: 'Read' } as const;
+    const external = join(dir, 'other.txt');
+    writeFileSync(external, 'outside');
+    await expect(client.call('workspace.fileWrite', { projectId, relPath: '.METAIDE', content: 'cannot block logging' }))
+      .rejects.toMatchObject({ code: 'protected_path' });
+    appendActivity(projectRoot, { ...entry, id: 'in', target: join(projectRoot, 'a.txt') });
+    appendActivity(projectRoot, { ...entry, id: 'out', target: external });
+    appendActivity(projectRoot, { ...entry, id: 'gone', target: 'missing.txt' });
+    settings.set('activity_log_enabled', false);
+    await expect(client.call('workspace.info', { projectId })).resolves.toEqual({ activityEnabled: false });
+    await expect(client.call('workspace.activity', { projectId })).rejects.toMatchObject({ code: 'activity_disabled' });
+    await expect(client.call('workspace.fileRead', { projectId, relPath: '.metaide/activity.jsonl' }))
+      .rejects.toMatchObject({ code: 'protected_path' });
+    await expect(client.call('workspace.fileRename', { projectId, from: '.metaide', to: 'archive' }))
+      .rejects.toMatchObject({ code: 'protected_path' });
+    settings.set('activity_log_enabled', true);
+    await expect(client.call('workspace.info', { projectId })).resolves.toEqual({ activityEnabled: true });
+    await expect(client.call('workspace.activity', { projectId })).resolves.toEqual({ entries: [
+      { ...entry, id: 'in', target: 'a.txt' }, { ...entry, id: 'out' }, { ...entry, id: 'gone' },
+    ] });
+    appendActivity(projectRoot, { ...entry, id: 'next', target: 'a.txt' });
+    const reloaded = await client.call('workspace.activity', { projectId });
+    expect(reloaded.entries.at(-1)).toEqual({ ...entry, id: 'next', target: 'a.txt' });
+  });
+
+  test('Diff status and sides use fresh host state; safe Git arguments never take guessed paths', async () => {
+    mkdirSync(join(projectRoot, '.git'));
+    const canonical = realpathSync(projectRoot);
+    const success = (stdout: string): git.GitRunResult => ({
+      stdout: Buffer.from(stdout), stderr: '', status: 0, timedOut: false, tooLarge: false,
+    });
+    let changed = 'R  a.txt\0old.txt\0 M changed.txt\0?? untracked.txt\0';
+    const run = vi.spyOn(git, 'runGit').mockImplementation(async (_root, args) => {
+      if (args[0] === 'rev-parse') return success(`${canonical}\n`);
+      if (args[0] === 'config') return success('filter.custom.clean\0filter.custom.required\0');
+      if (args.includes('status')) return success(`## main\0${changed}`);
+      if (args.includes('diff')) return success('a diff');
+      if (args.includes('HEAD:old.txt')) return success('before');
+      if (args.includes(':0:a.txt')) return success('after');
+      throw new Error('unexpected git step');
+    });
+    const { client } = setup(allowed);
+    await expect(client.call('workspace.diffStatus', { projectId })).resolves.toEqual({
+      isRepo: true, branch: 'main', ahead: 0, behind: 0,
+      staged: [{ path: 'a.txt', status: 'R', origPath: 'old.txt' }],
+      unstaged: [{ path: 'changed.txt', status: 'M' }],
+      untracked: ['untracked.txt'],
+    });
+    await expect(client.call('workspace.diffSides', { projectId, kind: 'staged', path: 'a.txt', origPath: 'guessed.txt' }))
+      .rejects.toMatchObject({ code: 'unknown_change' });
+    await expect(client.call('workspace.diffSides', { projectId, kind: 'unstaged', path: 'a.txt' }))
+      .rejects.toMatchObject({ code: 'unknown_change' });
+    expect(run.mock.calls.some(([, args]) => args.includes('diff'))).toBe(false);
+    const req = { projectId, kind: 'staged', path: 'a.txt', origPath: 'old.txt' } as const;
+    const result = await client.call('workspace.diffSides', req);
+    expect(result).toMatchObject({ status: 'ok', diff: 'a diff', oldSide: { text: 'before' }, newSide: { text: 'after' } });
+    expect(run.mock.calls).toContainEqual([
+      canonical, expect.arrayContaining(['filter.custom.clean=', 'filter.custom.required=false', '--no-textconv', '--no-ext-diff']),
+      expect.anything(),
+    ]);
+    if (result.status !== 'ok') throw new Error('expected diff content');
+    await expect(client.call('workspace.diffSides', { ...req, ifDiffHashNot: result.diffHash }))
+      .resolves.toEqual({ status: 'unchanged' });
+    changed = '';
+    await expect(client.call('workspace.diffSides', req)).rejects.toMatchObject({ code: 'unknown_change' });
+  });
+
+  test.skipIf(process.platform === 'win32')('rejects a listed Git change through an external symlink before reading its sides', async () => {
+    mkdirSync(join(projectRoot, '.git'));
+    symlinkSync(dir, join(projectRoot, 'escape'));
+    const run = vi.spyOn(git, 'runGit').mockImplementation(async (_root, [command]) => ({
+      stdout: Buffer.from(command === 'rev-parse' ? `${realpathSync(projectRoot)}\n` : command === 'status' ? '## main\0 M escape/a.txt\0' : ''),
+      status: 0, timedOut: false, tooLarge: false, stderr: '',
+    }));
+    const { client } = setup(allowed);
+    await expect(client.call('workspace.diffSides', { projectId, kind: 'unstaged', path: 'escape/a.txt' }))
+      .rejects.toMatchObject({ code: 'path_outside_project' });
+    expect(run.mock.calls.map(([, args]) => args[0])).toEqual(['rev-parse', 'config', 'status']);
   });
 });
 

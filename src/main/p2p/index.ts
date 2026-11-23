@@ -617,7 +617,8 @@ class P2PRuntime {
       setTimeout(() => this.finishLink(link, 'paired'), 3000).unref?.();
       return;
     }
-    if (!isTrustedDevice(remote, this.knownPath)) {
+    const pairedDevice = loadKnownDevices(this.knownPath).find((device) => device.pub === remote);
+    if (!pairedDevice) {
       secure.close();
       throw new Error('untrusted_device');
     }
@@ -625,6 +626,7 @@ class P2PRuntime {
     rpc.on('error', () => { /* audited in the hub; channel stays up */ });
     link.hub = wireHub(rpc, {
       remoteDeviceId: remote,
+      desktopWorkspaceAllowed: !isViewerOnly(pairedDevice),
       services: this.services,
       auditLogPath: this.opts.auditLogPath ?? join(this.home, '.metaide', 'logs', 'p2p-audit.log'),
       events: { aliveShellsChanged: emitAliveShellsChanged, projectsChanged: emitProjectsChanged },
