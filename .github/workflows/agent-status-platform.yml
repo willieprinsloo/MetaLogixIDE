@@ -47,13 +47,24 @@ jobs:
           METAIDE_PACKAGED_APP: ${{ matrix.executable }}
         run: test -f "$METAIDE_PACKAGED_APP"
       - name: Exercise packaged agent status
+        id: packaged-status
         shell: bash
         env:
           METAIDE_PACKAGED_APP: ${{ matrix.executable }}
           NODE_OPTIONS: --max-old-space-size=4096
+          PLAYWRIGHT_LIST_PRINT_STEPS: '1'
         run: |
           if [[ "$RUNNER_OS" == Linux ]]; then
             xvfb-run -a pnpm exec playwright test tests/e2e/agent-status.spec.ts
           else
             pnpm exec playwright test tests/e2e/agent-status.spec.ts
           fi
+      - name: Upload failed Windows agent-status traces
+        if: failure() && runner.os == 'Windows' && steps.packaged-status.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agent-status-windows-failure
+          path: |
+            test-results/agent-status-*/trace.zip
+            test-results/agent-status-*/error-context.md
+          retention-days: 5
