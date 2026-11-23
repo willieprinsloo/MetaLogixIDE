@@ -39,7 +39,7 @@ function recognize(id: string): 'vt' | 'callbacks' | undefined {
 
 /** Emit verified WASM as JavaScript inside the caller's lazy chunk. Vite need not fetch a .wasm URL. */
 export function desktopGhosttyAssets() {
-  const stylesheet = realpathSync(resolvePackage(assets.stylesheet[0]));
+  const stylesheet = realpathSync(resolvePackage(assets.stylesheet[0])).replaceAll('\\', '/');
   return {
     name: 'metaide:desktop-ghostty-assets',
     enforce: 'pre' as const,

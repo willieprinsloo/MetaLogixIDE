@@ -15,15 +15,15 @@ const assets = ['ghostty-vt.wasm', 'ghostty-callbacks.wasm'].map(file =>
 /** Prevent the pinned wrapper's unused default asset paths from emitting a second WASM or worker. */
 export function ghosttyCorePolicy() {
   const paths = new Map([
-    [realpathSync(join(wrapperDirectory, 'dist/index.js')), {
+    [realpathSync(join(wrapperDirectory, 'dist/index.js')).replaceAll('\\', '/'), {
       digest: 'd4e3cc6d01e5366fbda95275cd0c320531d5402def385fd892dc6a18c7fc3dfd',
       replacements: [],
     }],
-    [realpathSync(join(packageDirectory, 'dist/index.js')), {
+    [realpathSync(join(packageDirectory, 'dist/index.js')).replaceAll('\\', '/'), {
       digest: 'd8324eed1637589a663a7dad207d8a23f7cbd1b5e7355891a07616f9c8bdb9e1',
       replacements: [[worker, workerDisabled] as const],
     }],
-    [realpathSync(join(packageDirectory, 'dist/chunks/core-DxIkt0Aw.js')), {
+    [realpathSync(join(packageDirectory, 'dist/chunks/core-DxIkt0Aw.js')).replaceAll('\\', '/'), {
       digest: 'a6d88f21242a7ab6bad572cd41ccb60d47f2bfe84792acfb84159db69a914691',
       replacements: assets,
     }],

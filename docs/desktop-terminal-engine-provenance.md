@@ -8,7 +8,7 @@ The desktop app defaults to xterm.js. If a view selects Ghostty (WASM), it loads
 
 - The VT module matches Ghostty's commit-addressed tip asset and detached Minisign signature. It is not the stable `libghostty-vt` 1.0.1 binary.
 - The callback module matches the attested Gespenst archive and reviewed release source. It is not signed by Ghostty.
-- The build verifies the WASM, scoped stylesheet input and selected vendor JavaScript inputs before bundling. The core loader transform disables the vendor worker and removes the unused default WASM paths.
+- The build verifies the WASM, scoped stylesheet input and selected vendor JavaScript inputs before bundling. The build uses Vite's forward-slash file IDs on all platforms. The core loader transform disables the vendor worker and removes the unused default WASM paths.
 - The local core patch preserves the primary button state during drag motion. The patch changes JavaScript only and does not change the WASM modules.
 - The core patch uses Ghostty's tracked anchor to extend a selection on Shift-click. A plain selection click clears the old range and sets a new anchor.
 - The local keyboard patch supplies the unshifted ASCII letter for Ctrl+letter events. Ghostty's encoder retains control of the legacy and Kitty keyboard formats.
