@@ -70,16 +70,24 @@ the host's staged, unstaged and untracked changes without changing Git state.
 Settings displays and changes the default agent only; it does not display
 environment values or replace legacy custom commands. Activity shows the
 host timeline when the host enables logging. Its file links open in the same
-remote workspace. Older hosts keep their existing Shell support, but may not
-support the other destinations.
+remote workspace. Older hosts keep their existing Shell support and report
+that the workspace is unavailable.
 
 The `workspace.*` catalog (`src/shared/p2p-workspace-contract.ts`) is separate
-from local IPC and available only to authenticated, paired desktop peers.
-`src/main/p2p/workspace.ts` resolves project IDs on the host, confines file
-access to the selected project, protects Git and Activity metadata from
-mutation, and enforces bounded responses. Settings responses include only
-agent names and a flag for legacy commands. The host checks its Activity switch
-on each workspace timeline request.
+from local IPC. On the host, enable **Allow workspace access** for the paired
+desktop under Settings → P2P. Pairing alone does not grant workspace access,
+and the viewing desktop does not need to accept incoming connections.
+Turning the grant off blocks subsequent workspace requests without closing
+Shell. Viewer-only clients such as the mobile app are not eligible.
+
+`src/main/p2p/workspace.ts` resolves project IDs on the host, validates paths
+against the project root, protects Git metadata, the Activity log, and launch
+configuration from remote mutations, and bounds responses. New File refuses
+an existing name; ordinary saves preserve POSIX permission bits and refuse
+to replace symlinks. Path checks are not an OS sandbox against concurrent
+host-side changes. Settings responses include only agent names and a flag
+for legacy commands. The host checks its Activity switch on each workspace
+timeline request.
 
 The fleet list
 (`p2p:fleet-list`) holds paired machines only and never sets
