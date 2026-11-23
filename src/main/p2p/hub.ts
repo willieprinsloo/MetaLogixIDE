@@ -24,6 +24,8 @@ export interface HubOptions {
   desktopWorkspaceAllowed?: boolean | (() => boolean);
   /** Runtime identity storage, which can live under a different home than the services. */
   workspaceIdentityPaths?: readonly string[];
+  /** Actual Electron diagnostics, which can live outside userData. */
+  workspaceDiagnosticPaths?: () => { readonly logFile: string; readonly crashDumps: string };
   /** Defaults to the instance given to `setHubServices`. */
   services?: Services;
   /** Test knobs. Defaults: ~/.metaide/logs/p2p-audit.log, 10 MiB. */
@@ -59,7 +61,9 @@ const SECRET_KEY = /token|secret|password/i;
 const RegisteredRoots = z.array(z.object({ id: z.number(), path: z.string().min(1) }));
 const DatabaseFiles = z.array(z.object({ file: z.string() }));
 
-function hostWorkspacePolicy(s: Services, auditPath: string, identityPaths: readonly string[]): WorkspaceRootPolicy {
+function hostWorkspacePolicy(
+  s: Services, auditPath: string, opts: Pick<HubOptions, 'workspaceIdentityPaths' | 'workspaceDiagnosticPaths'>,
+): WorkspaceRootPolicy {
   return {
     fs: nodeWorkspaceRootFs,
     protectedPaths() {
@@ -67,8 +71,11 @@ function hostWorkspacePolicy(s: Services, auditPath: string, identityPaths: read
       const databasePaths = DatabaseFiles.parse(s.db.pragma('database_list')).flatMap(({ file }) => file ? [file] : []);
       // Include both SQLite's actual filename and the supplied spelling (which may be an alias).
       if (!s.db.memory) databasePaths.push(s.db.name);
+      const diagnostics = opts.workspaceDiagnosticPaths?.();
       return [
-        ...identityPaths,
+        ...(opts.workspaceIdentityPaths ?? []),
+        // The file can itself be an alias; the containing directory protects sibling rotations.
+        ...(diagnostics ? [diagnostics.logFile, dirname(diagnostics.logFile), diagnostics.crashDumps] : []),
         join(s.homeDir, '.metaide'),
         app.getPath('userData'),
         s.dropStaging.dir,
@@ -287,7 +294,7 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
   const workspaceAllowed = opts.desktopWorkspaceAllowed;
   registerWorkspace(
     peer, s, () => typeof workspaceAllowed === 'function' ? workspaceAllowed() : workspaceAllowed === true,
-    events.projectsChanged, hostWorkspacePolicy(s, auditPath, opts.workspaceIdentityPaths ?? []),
+    events.projectsChanged, hostWorkspacePolicy(s, auditPath, opts),
   );
 
   /** Registers `impl`; auditing happens in the peer's onCall hook. */

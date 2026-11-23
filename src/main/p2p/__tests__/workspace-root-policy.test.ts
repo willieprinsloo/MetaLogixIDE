@@ -41,6 +41,58 @@ describe('remote workspace root policy', () => {
     expect(workspaceRootFor({ id: 2, path: path('project/child') }, fixture())).toBe(path('project/child'));
   });
 
+  test.each(['activity.jsonl', 'env', 'cli-profiles.json'])(
+    'isolates the %s alias of a disjoint project and keeps unrelated roots eligible',
+    (file) => {
+      const other = { id: 2, path: path('other') };
+      const target = path('project/fixture');
+      const ordinary = { id: 3, path: path('ordinary') };
+      const entries = new Map([[join(other.path, '.metaide', file), symlink(target)], [target, missing]]);
+      const policy = fixture({ registeredRoots: () => [project, other, ordinary] }, entries);
+      expect(workspaceRootFor(project, policy)).toBeUndefined();
+      expect(workspaceRootFor(other, policy)).toBe(other.path);
+      expect(workspaceRootFor(ordinary, policy)).toBe(ordinary.path);
+    },
+  );
+
+  test('keeps a normal nested child eligible unless it overlaps the parent’s protected locations', () => {
+    const child = { id: 2, path: path('project/child') };
+    const configChild = { id: 3, path: path('project/.metaide') };
+    const entries = new Map<string, Entry>();
+    const policy = fixture({ registeredRoots: () => [project, child] }, entries);
+    expect(workspaceRootFor(child, policy)).toBe(child.path);
+    expect(workspaceRootFor(configChild, fixture({ registeredRoots: () => [project, configChild] }))).toBeUndefined();
+
+    entries.set(path('project/.metaide'), symlink(child.path));
+    expect(workspaceRootFor(child, policy)).toBeUndefined();
+    entries.delete(path('project/.metaide'));
+    expect(workspaceRootFor(child, policy)).toBe(child.path);
+  });
+
+  test('checks intermediate resource dependencies, not only final locations', () => {
+    const other = { id: 2, path: path('other') };
+    const bridge = path('project/bridge');
+    const policy = fixture({ registeredRoots: () => [project, other] }, new Map([
+      [join(other.path, '.metaide'), symlink(bridge)],
+      [bridge, symlink(path('outside/config'))],
+    ]));
+    expect(workspaceRootFor(project, policy)).toBeUndefined();
+  });
+
+  test('fails closed when another project’s protected paths cannot be inspected', () => {
+    const other = { id: 2, path: path('other') };
+    const config = join(other.path, '.metaide');
+    const policy = fixture({ registeredRoots: () => [project, other] });
+    const fs = {
+      ...policy.fs,
+      entry(name: string): Entry {
+        if (name === config) throw new Error('unavailable inventory');
+        return policy.fs.entry(name);
+      },
+    };
+    expect(workspaceRootFor(project, { ...policy, fs })).toBeUndefined();
+  });
+
   test('rejects missing and symlinked nested roots, including aliases to the same directory', () => {
     const child = path('project/not-mounted');
     const alias = path('project-alias');

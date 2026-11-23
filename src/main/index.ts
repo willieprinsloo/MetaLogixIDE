@@ -610,6 +610,10 @@ async function startApp(): Promise<void> {
   trackActivity(services);
   void startP2P(services, {
     emit: broadcast,
+    workspaceDiagnosticPaths: () => ({
+      logFile: log.transports.file.getFile().path,
+      crashDumps: app.getPath('crashDumps'),
+    }),
     localIdleMs: () => services.activity!.idleMs(Date.now()),
     onNotice: (notice) => fleetNotices.handle(notice),
   }).catch((err: unknown) => log.warn('[p2p] start failed', err));

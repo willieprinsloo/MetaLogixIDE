@@ -642,6 +642,32 @@ describe('paired sessions', () => {
     await expect(viewer.p2p.api.rpcCall(idOf(host), 'shells.list', { projectId: runtimeId })).resolves.toEqual([]);
   });
 
+  test('protects injected diagnostic directories outside userData on an authorized runtime link', async () => {
+    const external = mkdtempSync(join(tmpdir(), 'p2p-diagnostics-'));
+    tmps.push(external);
+    const logDir = join(external, 'diagnostic-logs');
+    const crashDumps = join(external, 'crash-dumps');
+    const dumpChild = join(crashDumps, 'completed');
+    mkdirSync(logDir);
+    mkdirSync(dumpChild, { recursive: true });
+    const logFile = join(logDir, 'main.log');
+    writeFileSync(logFile, 'diagnostic fixture');
+    writeFileSync(join(logDir, 'main.old.log'), 'rotation fixture');
+
+    const { host, viewer } = await pairedFleet(false, { workspaceDiagnosticPaths: () => ({ logFile, crashDumps }) });
+    await host.p2p.api.setWorkspaceAccess(idOf(viewer), true);
+    const safeId = workspaceProject(host);
+    const root = host.services.roots.add(external);
+    const logId = host.services.projects.upsert(root.id, logDir, 'Diagnostic logs').id;
+    const dumpId = host.services.projects.upsert(root.id, dumpChild, 'Crash dump child').id;
+    const info = (projectId: number) => viewer.p2p.api.rpcCall(idOf(host), 'workspace.info', { projectId });
+    const denied = { code: 'forbidden', message: 'this project is not available through remote workspace' };
+    await expect(info(logId)).rejects.toMatchObject(denied);
+    await expect(info(dumpId)).rejects.toMatchObject(denied);
+    await expect(viewer.p2p.api.rpcCall(idOf(host), 'workspace.fileRead', { projectId: safeId, relPath: 'fixture.txt' }))
+      .resolves.toMatchObject({ content: 'host file' });
+  });
+
   test('pairing metadata cannot grant workspace access and explicit mobile viewers are ineligible', async () => {
     const relay = new FakeRelay();
     const reg = new TransportRegistry();

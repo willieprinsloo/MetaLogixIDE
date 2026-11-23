@@ -1,5 +1,6 @@
 import { lstatSync, readlinkSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join, parse, resolve, sep } from 'node:path';
+import { activityPath } from '../activity/log';
 import { isInsideRoot } from '../domain/path-containment';
 
 interface RegisteredRoot {
@@ -96,6 +97,11 @@ function containsRegisteredRoot(root: string, candidate: PathAliases): boolean {
   return [...candidate.locations, ...candidate.dependencies].some((path) => contains(root, path));
 }
 
+function projectProtectedPaths(projectPath: string): readonly string[] {
+  // Match the local launch readers in domain/metaide-conf.ts and the Activity log producer.
+  return [activityPath(projectPath), join(projectPath, '.metaide/env'), join(projectPath, '.metaide/cli-profiles.json')];
+}
+
 /** Returns the verified root for this call. An ambiguous/unreadable boundary never grants access. */
 export function workspaceRootFor(project: RegisteredRoot, policy: WorkspaceRootPolicy): string | undefined {
   try {
@@ -120,6 +126,12 @@ export function workspaceRootFor(project: RegisteredRoot, policy: WorkspaceRootP
       if (other.id === project.id) continue;
       const candidate = aliases(other.path);
       if (roots.some((root) => containsRegisteredRoot(root, candidate))) return undefined;
+      // A child can be eligible even when its parent is registered. Only overlap with
+      // the parent's protected resources (not the parent's root) rules it out here.
+      for (const path of projectProtectedPaths(other.path)) {
+        const resource = aliases(path);
+        if (roots.some((root) => overlaps(root, resource))) return undefined;
+      }
     }
     return canonical;
   } catch {

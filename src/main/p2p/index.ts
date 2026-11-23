@@ -16,7 +16,7 @@ import { Secret, SignalingTypes, type Envelope } from '../../shared/signaling-wi
 import { runMigrations } from '../db/migrator';
 import { emitAliveShellsChanged, emitProjectsChanged } from '../ipc/register';
 import type { Services } from '../services';
-import { wireHub, setHubServices, type HubHandle } from './hub';
+import { wireHub, setHubServices, type HubHandle, type HubOptions } from './hub';
 import { createUploadClient, uploadClientDeps, type UploadClient } from './upload-client';
 import {
   addKnownDevice,
@@ -135,6 +135,8 @@ export interface StartP2POpts {
   /** Pushes main -> renderer events (`p2p:rpc-event`). */
   emit?: EmitFn;
   auditLogPath?: string;
+  /** Reads the running app's diagnostic paths when the host authorizes a workspace call. */
+  workspaceDiagnosticPaths?: HubOptions['workspaceDiagnosticPaths'];
   appVersion?: string;
   pairingMaxAttempts?: number;
   handshakeTimeoutMs?: number;
@@ -637,6 +639,7 @@ class P2PRuntime {
       services: this.services,
       auditLogPath: this.opts.auditLogPath ?? join(this.home, '.metaide', 'logs', 'p2p-audit.log'),
       workspaceIdentityPaths: [join(this.home, '.metaide'), this.knownPath, this.identityPath, this.deviceKeyPath],
+      workspaceDiagnosticPaths: this.opts.workspaceDiagnosticPaths,
       events: { aliveShellsChanged: emitAliveShellsChanged, projectsChanged: emitProjectsChanged },
     });
     link.rpc = rpc;

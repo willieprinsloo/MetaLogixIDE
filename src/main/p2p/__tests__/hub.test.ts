@@ -10,7 +10,7 @@ vi.mock('electron', async (importOriginal) => ({
 
 import { RpcPeer } from '../rpc';
 import { pairedTransports } from './_pairedTransports';
-import { wireHub, scrubParams } from '../hub';
+import { wireHub, scrubParams, type HubOptions } from '../hub';
 import { handlers } from '../../ipc/register';
 import { PtyManager } from '../../pty/manager';
 import { openDb } from '../../db/connection';
@@ -48,6 +48,7 @@ function setup(extra: {
   auditMaxBytes?: number;
   events?: { aliveShellsChanged(): void; projectsChanged(): void };
   desktopWorkspaceAllowed?: boolean;
+  workspaceDiagnosticPaths?: HubOptions['workspaceDiagnosticPaths'];
 } = {}) {
   const [ta, tb] = pairedTransports();
   const client = new RpcPeer(ta.asTransport());
@@ -57,6 +58,7 @@ function setup(extra: {
   const hub = wireHub(server, {
     remoteDeviceId: 'dev-xyz',
     desktopWorkspaceAllowed: extra.desktopWorkspaceAllowed,
+    workspaceDiagnosticPaths: extra.workspaceDiagnosticPaths,
     services: {
       db, projects, settings, ptyManager: pty, dropStaging: staging(),
       homeDir: join(dir, 'service-home'), hookRuntime: { settingsPath: () => null },
@@ -251,6 +253,21 @@ describe('paired desktop workspace', () => {
       await expect(client.call('workspace.info', { projectId })).resolves.toEqual({ activityEnabled: true });
     },
   );
+
+  test('fails closed for unavailable runtime diagnostics and rechecks the running provider on the same link', async () => {
+    const external = { logFile: join(dir, 'diagnostic-logs', 'main.log'), crashDumps: join(dir, 'dump-storage') };
+    const workspaceDiagnosticPaths = vi.fn(() => external);
+    const { client } = setup({ ...allowed, workspaceDiagnosticPaths });
+    const info = () => client.call('workspace.info', { projectId });
+    const denied = { code: 'forbidden', message: 'this project is not available through remote workspace' };
+
+    await expect(info()).resolves.toEqual({ activityEnabled: true });
+    workspaceDiagnosticPaths.mockImplementationOnce(() => { throw new Error('diagnostic provider unavailable'); });
+    await expect(info()).rejects.toMatchObject(denied);
+    workspaceDiagnosticPaths.mockReturnValueOnce({ ...external, logFile: join(projectRoot, 'diagnostic-logs', 'main.log') });
+    await expect(info()).rejects.toMatchObject(denied);
+    await expect(info()).resolves.toEqual({ activityEnabled: true });
+  });
 
   test.skipIf(process.platform === 'win32')('checks configured audit backup aliases on each request', async () => {
     const { client } = setup(allowed);
