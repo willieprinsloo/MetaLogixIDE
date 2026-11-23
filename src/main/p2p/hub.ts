@@ -2,6 +2,7 @@ import { app } from 'electron';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, lstatSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
+import { z } from 'zod';
 import { RpcMethods, type Params, type Result, type RpcMethodName } from '../../shared/p2p-contract';
 import type { Services } from '../services';
 import { emitAliveShellsChanged, emitProjectsChanged, handlers } from '../ipc/register';
@@ -9,6 +10,7 @@ import { RpcError, type HandlerContext, type RpcPeer } from './rpc';
 import { safeFileName } from '../drops/file-name';
 import { createUploadQuota, createUploadService, type UploadOutcome, type UploadQuota } from './uploads';
 import { registerWorkspace } from './workspace';
+import { nodeWorkspaceRootFs, type WorkspaceRootPolicy } from './workspace-root-policy';
 
 /*
  * Server-side RPC hub: one per peer/session. Methods call the same implementations the renderer
@@ -20,6 +22,8 @@ export interface HubOptions {
   remoteDeviceId: string;
   /** Host-authenticated desktop peer. Omission never grants workspace access. */
   desktopWorkspaceAllowed?: boolean | (() => boolean);
+  /** Runtime identity storage, which can live under a different home than the services. */
+  workspaceIdentityPaths?: readonly string[];
   /** Defaults to the instance given to `setHubServices`. */
   services?: Services;
   /** Test knobs. Defaults: ~/.metaide/logs/p2p-audit.log, 10 MiB. */
@@ -52,6 +56,34 @@ const FS_READ_MAX_BYTES = 512 * 1024; // keeps the JSON result under the 1 MiB R
 /** Replay/live output is chunked so no single `evt` can approach the 1 MiB frame cap (JSON escaping can expand 6x). */
 const OUT_CHUNK_CHARS = 64 * 1024;
 const SECRET_KEY = /token|secret|password/i;
+const RegisteredRoots = z.array(z.object({ id: z.number(), path: z.string().min(1) }));
+const DatabaseFiles = z.array(z.object({ file: z.string() }));
+
+function hostWorkspacePolicy(s: Services, auditPath: string, identityPaths: readonly string[]): WorkspaceRootPolicy {
+  return {
+    fs: nodeWorkspaceRootFs,
+    protectedPaths() {
+      const settingsPath = s.hookRuntime.settingsPath();
+      const databasePaths = DatabaseFiles.parse(s.db.pragma('database_list')).flatMap(({ file }) => file ? [file] : []);
+      // Include both SQLite's actual filename and the supplied spelling (which may be an alias).
+      if (!s.db.memory) databasePaths.push(s.db.name);
+      return [
+        ...identityPaths,
+        join(s.homeDir, '.metaide'),
+        app.getPath('userData'),
+        s.dropStaging.dir,
+        ...(settingsPath === null ? [] : [settingsPath]),
+        ...databasePaths.flatMap((path) => [path, `${path}-wal`, `${path}-shm`, `${path}-journal`]),
+        auditPath,
+        ...Array.from({ length: AUDIT_BACKUPS }, (_, i) => `${auditPath}.${i + 1}`),
+      ];
+    },
+    registeredRoots() {
+      // ProjectsRepo.list() is a UI list and excludes hidden projects.
+      return RegisteredRoots.parse(s.db.prepare('SELECT id, path FROM projects').all());
+    },
+  };
+}
 
 // ---- audit log ----
 
@@ -242,7 +274,8 @@ function attachStream(
 export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
   const s = opts.services ?? defaultServices;
   if (!s) throw new Error('wireHub: no services (pass opts.services or call setHubServices)');
-  const audit = new AuditLog(opts.auditLogPath ?? defaultAuditLogPath(), opts.auditMaxBytes ?? AUDIT_MAX_BYTES);
+  const auditPath = opts.auditLogPath ?? defaultAuditLogPath();
+  const audit = new AuditLog(auditPath, opts.auditMaxBytes ?? AUDIT_MAX_BYTES);
 
   const record = (method: string, params: unknown, outcome: 'ok' | { error: string }) =>
     audit.write({ ts: Date.now(), remoteDeviceId: opts.remoteDeviceId, method, params: scrubParams(method, params), outcome });
@@ -252,7 +285,10 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
   // handler) is audited through the peer's onCall hook; one entry per call, streams at open.
   peer.setOnCall(record);
   const workspaceAllowed = opts.desktopWorkspaceAllowed;
-  registerWorkspace(peer, s, () => typeof workspaceAllowed === 'function' ? workspaceAllowed() : workspaceAllowed === true, events.projectsChanged);
+  registerWorkspace(
+    peer, s, () => typeof workspaceAllowed === 'function' ? workspaceAllowed() : workspaceAllowed === true,
+    events.projectsChanged, hostWorkspacePolicy(s, auditPath, opts.workspaceIdentityPaths ?? []),
+  );
 
   /** Registers `impl`; auditing happens in the peer's onCall hook. */
   function on<M extends RpcMethodName>(

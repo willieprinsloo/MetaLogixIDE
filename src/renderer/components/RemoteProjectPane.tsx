@@ -39,9 +39,9 @@ function useRemoteWorkspaceStatus(remote: RemoteWorkspace, projectId: number): W
         const info = await remote.call('workspace.info', { projectId });
         if (!disposed) setStatus(info.activityEnabled ? 'activity-enabled' : 'activity-disabled');
       } catch {
-        // Back off on older or disconnected peers. Preserve the last host setting on a transient failure.
+        // Do not present a previously enabled workspace as authorized after the host stops confirming it.
         delay = 30_000;
-        if (!disposed) setStatus((previous) => previous === 'checking' ? 'unavailable' : previous);
+        if (!disposed) setStatus('unavailable');
       } finally {
         if (!disposed) timer = setTimeout(() => void refresh(), delay);
       }

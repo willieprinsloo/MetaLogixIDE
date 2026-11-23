@@ -175,7 +175,11 @@ function MainApp() {
   const remotePaneRef = useRef(remotePane);
   remotePaneRef.current = remotePane;
   const localWorkspaceProject = remotePane ? null : selected;
-  const openPane = useCallback((req: OpenPaneRequest) => { closeBoard(); setRemotePane(req); }, [closeBoard]);
+  function openLocalWorkspaceFile(relPath: string, line: number | null): void {
+    if (remotePaneRef.current) return;
+    setMainTab('files');
+    setOpenInFiles({ relPath, line });
+  }
   // -1 never matches a real project id, so this reads idle when nothing is selected.
   // Keep a live ref of `selected` so the shortcut handler (bound once in a
   // useEffect with an empty dep list) always reads the current project.
@@ -206,6 +210,13 @@ function MainApp() {
     (v): v is ActivityView => v === 'projects' || v === 'chat' || v === 'git' || v === 'tasks' || v === 'fleet',
   );
   const setActiveView = useCallback((view: ActivityView) => { closeBoard(); persistActiveView(view); }, [closeBoard, persistActiveView]);
+  const openPane = useCallback((request: OpenPaneRequest) => {
+    ++selectionRequestRef.current;
+    remotePaneRef.current = request;
+    terminalFocus.cancelRequest();
+    setActiveView('projects');
+    setRemotePane(request);
+  }, [setActiveView]);
   const activeViewRef = useRef<ActivityView>('projects');
   activeViewRef.current = activeView;
   useEffect(() => api.on('metaproject:chat-event', ({ epoch, event }) => {
@@ -579,6 +590,7 @@ function MainApp() {
       const requestId = ++selectionRequestRef.current;
       try {
         const { projects } = await api.invoke('projects:list', undefined as never);
+        if (selectionRequestRef.current !== requestId) return;
         // Longest-prefix wins — a project nested inside a parent project
         // (rare, but possible with multiple roots) still routes correctly.
         const match = projects
@@ -598,9 +610,13 @@ function MainApp() {
         setActiveView('projects');
         setSelected(project);
         try { await api.invoke('shells:launch', { projectId: project.id }); } catch { /* fine */ }
+        if (selectionRequestRef.current !== requestId) return;
         setMainTab('files');
-        if (relPath) requestAnimationFrame(() => setOpenInFiles({ relPath, line: null }));
+        if (relPath) requestAnimationFrame(() => {
+          if (selectionRequestRef.current === requestId) setOpenInFiles({ relPath, line: null });
+        });
       } catch (e) {
+        if (selectionRequestRef.current !== requestId) return;
         toast('Could not open file', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
       }
     });
@@ -610,11 +626,10 @@ function MainApp() {
   // A clicked fleet notice: open that shell on the paired machine it came from.
   useEffect(() => {
     const off = api.on('p2p:focus-remote-shell', ({ deviceId, deviceName, projectId, projectName, shellIndex }) => {
-      setActiveView('projects');
-      setRemotePane({ source: { kind: 'remote', deviceId }, deviceName, projectId, projectName, shellIndex });
+      openPane({ source: { kind: 'remote', deviceId }, deviceName, projectId, projectName, shellIndex });
     });
     return () => { off(); };
-  }, [setActiveView]);
+  }, [openPane]);
 
   // Click-to-focus for "command done" OS notifications: the main process
   // fires `shell:focus-request` with a (projectId, shellIndex). We look up
@@ -1160,7 +1175,7 @@ function MainApp() {
                         setActiveShellIndexFor(projectId, shellIndex);
                       });
                     }}
-                    onOpenRemote={(req) => { setActiveView('projects'); setRemotePane(req); }}
+                    onOpenRemote={openPane}
                   />
                 : remotePane
                 ? <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId}
@@ -1248,11 +1263,7 @@ function MainApp() {
         currentProject={localWorkspaceProject}
         onPickProject={(p) => { void pick(p); }}
         onPickCurrent={(p) => { if (mainTabRef.current === 'shell') focusAfterPaletteRef.current = p.id; }}
-        onPickFile={(relPath) => {
-          if (remotePaneRef.current) return;
-          setMainTab('files');
-          setOpenInFiles({ relPath, line: null });
-        }}
+        onPickFile={(relPath) => openLocalWorkspaceFile(relPath, null)}
         onClose={() => setPaletteRequest(null)}
       />
       <ToastStack />
@@ -1261,11 +1272,7 @@ function MainApp() {
         open={searchOpen && localWorkspaceProject !== null}
         projectId={localWorkspaceProject?.id ?? null}
         onClose={() => setSearchOpen(false)}
-        onOpenMatch={(relPath, line) => {
-          if (remotePaneRef.current) return;
-          setMainTab('files');
-          setOpenInFiles({ relPath, line });
-        }}
+        onOpenMatch={openLocalWorkspaceFile}
       />
       <PromptLibrary
         open={promptsOpen}

@@ -16,6 +16,7 @@ import { defaultDiffSidesDeps, nodeWorktreeFs, readDiffSides } from '../git/diff
 import { runGit, type GitRunner } from '../git/run-git';
 import type { Services } from '../services';
 import { MAX_RPC_FRAME_BYTES, RpcError, type RpcPeer } from './rpc';
+import { workspaceRootFor, type WorkspaceRootPolicy } from './workspace-root-policy';
 
 const FILE_MAX_BYTES = 512 * 1024;
 const RESULT_MAX_BYTES = MAX_RPC_FRAME_BYTES - 256; // Allow room for the envelope and request ID.
@@ -76,7 +77,7 @@ function checkedPath(root: string, requested: string): WorkspacePath {
     // A dangling symlink is not a nonexistent destination: fail closed on its target.
     let canonical: string;
     try {
-      canonical = realpathSync(entry);
+      canonical = realpathSync.native(entry);
     } catch (error) {
       if (errno(error) === 'ENOENT' || errno(error) === 'ELOOP') throw outsideProject();
       throw error;
@@ -383,7 +384,7 @@ async function readGitStatus(root: string): Promise<{ status: Result<'workspace.
   const empty = { branch: null, ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [] };
   if (!checkedPath(root, '.git').exists) return { status: { isRepo: false, ...empty }, run: runGit };
   const top = await runGit(root, ['rev-parse', '--show-toplevel'], { maxBuffer: 16 * 1024, timeout: 5000 });
-  if (top.status !== 0 || realpathSync(top.stdout.toString('utf8').replace(/\r?\n$/, '')) !== root) {
+  if (top.status !== 0 || realpathSync.native(top.stdout.toString('utf8').replace(/\r?\n$/, '')) !== root) {
     throw new RpcError('git_unavailable', 'project repository could not be verified');
   }
   const run = await workspaceGit(root);
@@ -429,8 +430,7 @@ async function diffSides(root: string, request: Params<'workspace.diffSides'>): 
   return fitsResponse(result) ? result : { status: 'too-large' };
 }
 
-function agentSettings(s: WorkspaceServices, project: Project): Result<'workspace.agentSettings'> {
-  const root = realpathSync(project.path);
+function agentSettings(s: WorkspaceServices, project: Project, root: string): Result<'workspace.agentSettings'> {
   const file = checkedPath(root, PROFILE_FILE);
   if (file.exists && regularFile(file).size > FILE_MAX_BYTES) {
     throw new RpcError('file_too_large', 'project agent catalog exceeds the workspace size limit');
@@ -500,36 +500,37 @@ function readActivity(project: Project, root: string): Result<'workspace.activit
   return { entries };
 }
 
-/** Registers only the workspace contract, with desktop authorization before any project access. */
+/** Registers only the workspace contract; both the device and root must be eligible. */
 export function registerWorkspace(
-  peer: RpcPeer, s: WorkspaceServices, desktopAllowed: () => boolean, projectsChanged: () => void,
+  peer: RpcPeer, s: WorkspaceServices, desktopAllowed: () => boolean, projectsChanged: () => void, policy: WorkspaceRootPolicy,
 ): void {
   function on<M extends WorkspaceMethod>(
-    method: M, run: (project: Project, params: Params<M>) => Result<M> | Promise<Result<M>>,
+    method: M, run: (root: string, params: Params<M>, project: Project) => Result<M> | Promise<Result<M>>,
   ): void {
     peer.handle(method, async (params, ctx) => {
       if (!desktopAllowed()) throw new RpcError('forbidden', 'workspace access requires a grant from the host');
       if (ctx.stream !== undefined) throw new RpcError('not_a_stream', 'workspace methods are not streams');
       const project = s.projects.get(params.projectId);
       if (!project) throw new RpcError('unknown_project', 'no such project');
-      const result = await run(project, params);
+      const root = workspaceRootFor(project, policy);
+      if (root === undefined) throw new RpcError('forbidden', 'this project is not available through remote workspace');
+      const result = await run(root, params, project);
       if (!fitsResponse(result)) throw oversizedResult();
       return result;
     });
   }
 
   on('workspace.info', () => ({ activityEnabled: s.settings.get('activity_log_enabled') === true }));
-  on('workspace.fileTree', ({ path }, { relPath }) => fileTree(realpathSync(path), relPath ?? ''));
-  on('workspace.fileRead', ({ path }, { relPath, forceText }) => fileRead(realpathSync(path), relPath, forceText));
-  on('workspace.fileWrite', ({ path }, params) => fileWrite(realpathSync(path), params));
-  on('workspace.fileMkdir', ({ path }, { relPath }) => {
-    const target = fileAccessPath(realpathSync(path), relPath, 'mkdir');
+  on('workspace.fileTree', (root, { relPath }) => fileTree(root, relPath ?? ''));
+  on('workspace.fileRead', (root, { relPath, forceText }) => fileRead(root, relPath, forceText));
+  on('workspace.fileWrite', fileWrite);
+  on('workspace.fileMkdir', (root, { relPath }) => {
+    const target = fileAccessPath(root, relPath, 'mkdir');
     if (target.exists) throw new RpcError('already_exists', 'destination already exists');
     mkdirSync(target.entry, { recursive: true });
     return { ok: true };
   });
-  on('workspace.fileRename', ({ path }, { from, to }) => {
-    const root = realpathSync(path);
+  on('workspace.fileRename', (root, { from, to }) => {
     const src = fileAccessPath(root, from, 'move');
     const dst = fileAccessPath(root, to, 'move');
     if (dst.exists) throw new RpcError('already_exists', 'destination already exists');
@@ -537,17 +538,17 @@ export function registerWorkspace(
     renameSync(src.entry, dst.entry);
     return { ok: true };
   });
-  on('workspace.fileDelete', ({ path }, { relPath }) => {
-    const target = fileAccessPath(realpathSync(path), relPath, 'move');
+  on('workspace.fileDelete', (root, { relPath }) => {
+    const target = fileAccessPath(root, relPath, 'move');
     rejectNestedGitMetadata(target);
     rmSync(target.entry, { recursive: true, force: true });
     return { ok: true };
   });
-  on('workspace.diffStatus', async ({ path }) => (await readGitStatus(realpathSync(path))).status);
-  on('workspace.diffSides', ({ path }, params) => diffSides(realpathSync(path), params));
-  on('workspace.agentSettings', (project) => agentSettings(s, project));
-  on('workspace.setDefaultAgent', (project, { projectId, defaultAgent }) => {
-    const current = agentSettings(s, project);
+  on('workspace.diffStatus', async (root) => (await readGitStatus(root)).status);
+  on('workspace.diffSides', diffSides);
+  on('workspace.agentSettings', (root, _params, project) => agentSettings(s, project, root));
+  on('workspace.setDefaultAgent', (root, { projectId, defaultAgent }, project) => {
+    const current = agentSettings(s, project, root);
     if (current.hasCustomCommand) throw new RpcError('custom_command', 'change custom launch commands on the host');
     if (defaultAgent !== null && !current.choices.includes(defaultAgent)) {
       throw new RpcError('unknown_agent', 'selected agent is not available on the host');
@@ -558,10 +559,10 @@ export function registerWorkspace(
     projectsChanged();
     return { ...current, defaultAgent: saved.project.config.defaultCliName ?? null };
   });
-  on('workspace.activity', (project) => {
+  on('workspace.activity', (root, _params, project) => {
     if (s.settings.get('activity_log_enabled') !== true) {
       throw new RpcError('activity_disabled', 'activity logging is not enabled on the host');
     }
-    return readActivity(project, realpathSync(project.path));
+    return readActivity(project, root);
   });
 }

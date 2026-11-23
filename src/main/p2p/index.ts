@@ -227,6 +227,7 @@ class P2PRuntime {
   readonly knownPath: string;
   readonly home: string;
   readonly identityPath: string;
+  readonly deviceKeyPath: string;
   /** The persistent host connection. */
   client: SignalingClient | null = null;
   hostIdentity: HostIdentity | null = null;
@@ -252,8 +253,9 @@ class P2PRuntime {
     this.home = opts.homeDir ?? services.homeDir;
     this.knownPath = join(this.home, '.metaide', 'known_devices.json');
     this.identityPath = join(this.home, '.metaide', 'host-identity.json');
+    this.deviceKeyPath = join(this.home, '.metaide', 'device.key');
     this.hostIdentity = loadHostIdentity(this.identityPath);
-    this.deviceKey = loadOrCreateDeviceKey(join(this.home, '.metaide', 'device.key'));
+    this.deviceKey = loadOrCreateDeviceKey(this.deviceKeyPath);
     this.pairing = new PairingSession({ maxAttempts: opts.pairingMaxAttempts, now: opts.now });
     this.uploads = createUploadClient(uploadClientDeps(
       services,
@@ -634,6 +636,7 @@ class P2PRuntime {
       desktopWorkspaceAllowed: () => this.workspaceAllowed(remote),
       services: this.services,
       auditLogPath: this.opts.auditLogPath ?? join(this.home, '.metaide', 'logs', 'p2p-audit.log'),
+      workspaceIdentityPaths: [join(this.home, '.metaide'), this.knownPath, this.identityPath, this.deviceKeyPath],
       events: { aliveShellsChanged: emitAliveShellsChanged, projectsChanged: emitProjectsChanged },
     });
     link.rpc = rpc;

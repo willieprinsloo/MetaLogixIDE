@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 
 vi.mock('electron', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  app: { getVersion: () => '0.0.0-test' },
+  app: { getVersion: () => '0.0.0-test', getPath: (name: string) => join(dir, `electron-${name}`) },
 }));
 
 import { RpcPeer } from '../rpc';
@@ -34,10 +34,12 @@ const migrationsDir = resolve(__dirname, '../../../../migrations');
 let dir: string;
 let projectRoot: string;
 let auditPath: string;
+let db: ReturnType<typeof openDb>;
 let projects: ProjectsRepo;
 let settings: SettingsRepo;
 let pty: PtyManager;
 let projectId: number;
+let rootId: number;
 let dropDir: string;
 
 function setup(extra: {
@@ -55,7 +57,12 @@ function setup(extra: {
   const hub = wireHub(server, {
     remoteDeviceId: 'dev-xyz',
     desktopWorkspaceAllowed: extra.desktopWorkspaceAllowed,
-    services: { projects, settings, ptyManager: pty, dropStaging: staging(), ...('agentStatus' in extra ? { agentStatus: extra.agentStatus } : {}), ...(extra.noticeRouter ? { noticeRouter: extra.noticeRouter } : {}) } as never,
+    services: {
+      db, projects, settings, ptyManager: pty, dropStaging: staging(),
+      homeDir: join(dir, 'service-home'), hookRuntime: { settingsPath: () => null },
+      ...('agentStatus' in extra ? { agentStatus: extra.agentStatus } : {}),
+      ...(extra.noticeRouter ? { noticeRouter: extra.noticeRouter } : {}),
+    } as never,
     auditLogPath: auditPath,
     auditMaxBytes: extra.auditMaxBytes,
     events: extra.events,
@@ -79,17 +86,18 @@ beforeEach(() => {
   mkdirSync(join(projectRoot, 'sub'));
   auditPath = join(dir, 'logs', 'p2p-audit.log');
   dropDir = join(dir, 'drops');
-  const db = openDb(join(dir, 'db'));
+  db = openDb(join(dir, 'database', 'not-the-default-name.sqlite'));
   runMigrations(db, migrationsDir);
-  const root = new RootsRepo(db).add(dir);
+  rootId = new RootsRepo(db).add(dir).id;
   projects = new ProjectsRepo(db);
   settings = new SettingsRepo(db);
-  projectId = projects.upsert(root.id, projectRoot, 'proj').id;
+  projectId = projects.upsert(rootId, projectRoot, 'proj').id;
   pty = new PtyManager();
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  db.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -205,6 +213,66 @@ describe('paired desktop workspace', () => {
     await expect(setup().client.call('fs.read', { projectId, path: 'a.txt' })).resolves.toMatchObject({ content: 'hello file' });
     await expect(setup(allowed).client.call('workspace.info', { projectId: 9999 }))
       .rejects.toMatchObject({ code: 'unknown_project' });
+  });
+
+  test('refuses a parent when a hidden child is registered on the same link but allows direct child access', async () => {
+    const { client } = setup(allowed);
+    await expect(client.call('workspace.info', { projectId })).resolves.toEqual({ activityEnabled: true });
+
+    const childPath = join(projectRoot, 'sub');
+    const childId = projects.upsert(rootId, childPath, 'Hidden child').id;
+    projects.setHidden(childId, true);
+    settings.set('activity_log_enabled', false);
+    writeFileSync(join(childPath, 'ordinary.txt'), 'child fixture');
+    const denied = { code: 'forbidden', message: 'this project is not available through remote workspace' };
+    await expect(client.call('workspace.info', { projectId })).rejects.toMatchObject(denied);
+    await expect(client.call('workspace.fileTree', { projectId })).rejects.toMatchObject(denied);
+    await expect(client.call('workspace.diffStatus', { projectId })).rejects.toMatchObject(denied);
+    await expect(client.call('workspace.agentSettings', { projectId })).rejects.toMatchObject(denied);
+    await expect(client.call('workspace.activity', { projectId })).rejects.toMatchObject(denied);
+    await expect(client.call('workspace.activity', { projectId: childId })).rejects.toMatchObject({ code: 'activity_disabled' });
+    await expect(client.call('workspace.fileRead', { projectId: childId, relPath: 'ordinary.txt' }))
+      .resolves.toMatchObject({ content: 'child fixture' });
+    await expect(client.call('fs.read', { projectId, path: 'a.txt' })).resolves.toMatchObject({ content: 'hello file' });
+
+    projects.remove(childId);
+    await expect(client.call('workspace.info', { projectId })).resolves.toEqual({ activityEnabled: false });
+  });
+
+  test.each(['database', 'electron-userData', 'service-home', 'logs'])(
+    'refuses roots overlapping configured host state (%s) without disabling independent roots',
+    async (location) => {
+      const candidate = join(dir, location);
+      mkdirSync(candidate, { recursive: true });
+      const candidateId = projects.upsert(rootId, candidate, 'Overlap').id;
+      const { client } = setup(allowed);
+      await expect(client.call('workspace.info', { projectId: candidateId }))
+        .rejects.toMatchObject({ code: 'forbidden', message: 'this project is not available through remote workspace' });
+      await expect(client.call('workspace.info', { projectId })).resolves.toEqual({ activityEnabled: true });
+    },
+  );
+
+  test.skipIf(process.platform === 'win32')('checks configured audit backup aliases on each request', async () => {
+    const { client } = setup(allowed);
+    await expect(client.call('workspace.info', { projectId })).resolves.toEqual({ activityEnabled: true });
+    const alias = `${auditPath}.2`;
+    symlinkSync(join(projectRoot, 'uncreated-audit-fixture'), alias);
+    await expect(client.call('workspace.info', { projectId }))
+      .rejects.toMatchObject({ code: 'forbidden', message: 'this project is not available through remote workspace' });
+    rmSync(alias);
+    await expect(client.call('workspace.info', { projectId })).resolves.toEqual({ activityEnabled: true });
+  });
+
+  test.skipIf(process.platform === 'win32')('does not navigate outward links toward host storage in an otherwise safe project', async () => {
+    const profile = join(dir, 'electron-userData');
+    mkdirSync(profile);
+    symlinkSync(profile, join(projectRoot, 'profile'));
+    const { client } = setup(allowed);
+    await expect(client.call('workspace.fileTree', { projectId })).resolves.toMatchObject({
+      entries: [{ name: 'sub' }, { name: 'a.txt' }],
+    });
+    await expect(client.call('workspace.fileTree', { projectId, relPath: 'profile' }))
+      .rejects.toMatchObject({ code: 'path_outside_project' });
   });
 
   test('scopes directory, text preview, and ordinary file mutations to the selected project', async () => {

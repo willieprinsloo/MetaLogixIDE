@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 
 vi.mock('electron', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  app: { getVersion: () => '9.9.9-test' },
+  app: { getVersion: () => '9.9.9-test', getPath: (name: string) => join(tmps.at(-1) ?? '', `electron-${name}`) },
   clipboard: { readImage: () => ({ isEmpty: () => true }) },
 }));
 
@@ -158,7 +158,7 @@ function makeNode(relay: FakeRelay, reg: TransportRegistry, name: string, extra:
     appVersion: '9.9.9-test',
     ...extra,
   });
-  const node = { name, home, services, p2p, client: () => clients.find((c) => c.cfg.role === 'host'), clients, events };
+  const node = { name, home: extra.homeDir ?? home, services, p2p, client: () => clients.find((c) => c.cfg.role === 'host'), clients, events };
   nodes.push(node);
   return node;
 }
@@ -575,10 +575,10 @@ describe('auto-dial', () => {
 });
 
 describe('paired sessions', () => {
-  async function pairedFleet(serveEnabled = false) {
+  async function pairedFleet(serveEnabled = false, hostOpts: Parameters<typeof createP2P>[1] = {}) {
     const relay = new FakeRelay();
     const reg = new TransportRegistry();
-    const host = makeNode(relay, reg, 'host', { auditLogPath: undefined });
+    const host = makeNode(relay, reg, 'host', hostOpts);
     const viewer = makeNode(relay, reg, 'viewer');
     await host.p2p.start();
     await viewer.p2p.start();
@@ -618,6 +618,28 @@ describe('paired sessions', () => {
     await expect(read()).rejects.toMatchObject({ code: 'forbidden' });
     await expect(viewer.p2p.api.rpcCall(idOf(host), 'shells.list', { projectId })).resolves.toEqual([]);
     expect(dialCount()).toBe(dials);
+  });
+
+  test('wires an overridden runtime identity location through the established workspace boundary', async () => {
+    const homeDir = mkdtempSync(join(tmpdir(), 'p2p-runtime-'));
+    const logDir = mkdtempSync(join(tmpdir(), 'p2p-configured-audit-'));
+    tmps.push(homeDir, logDir);
+    const { host, viewer } = await pairedFleet(false, { homeDir, auditLogPath: join(logDir, 'custom-audit.log') });
+    expect(host.services.homeDir).not.toBe(homeDir);
+    expect(known(host)).toContainEqual(expect.objectContaining({ pub: idOf(viewer) }));
+    await expect(handlers['p2p:set-workspace-access'](host.services, { deviceId: idOf(viewer), allowed: true }))
+      .resolves.toEqual({ ok: true });
+
+    const safeId = workspaceProject(host);
+    const root = host.services.roots.add(host.services.homeDir);
+    const runtimeId = host.services.projects.upsert(root.id, join(homeDir, '.metaide'), 'Runtime storage').id;
+    const auditId = host.services.projects.upsert(root.id, logDir, 'Audit home').id;
+    const info = (projectId: number) => viewer.p2p.api.rpcCall(idOf(host), 'workspace.info', { projectId });
+    const denied = { code: 'forbidden', message: 'this project is not available through remote workspace' };
+    await expect(info(runtimeId)).rejects.toMatchObject(denied);
+    await expect(info(auditId)).rejects.toMatchObject(denied);
+    await expect(info(safeId)).resolves.toEqual({ activityEnabled: true });
+    await expect(viewer.p2p.api.rpcCall(idOf(host), 'shells.list', { projectId: runtimeId })).resolves.toEqual([]);
   });
 
   test('pairing metadata cannot grant workspace access and explicit mobile viewers are ineligible', async () => {

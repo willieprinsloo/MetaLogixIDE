@@ -137,6 +137,30 @@ describe('RemoteProjectPane', () => {
     expect(screen.queryByRole('button', { name: 'Activity' })).toBeNull();
   });
 
+  test('a lost workspace grant removes Activity but keeps the selected Shell usable', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let granted = true;
+    try {
+      invoke.mockImplementation(async (_ch: string, input: { method?: string }) => {
+        if (input?.method === 'workspace.info') {
+          if (!granted) throw new Error('workspace access requires a grant from the host');
+          return { result: { activityEnabled: true } };
+        }
+        if (input?.method === 'shells.launch') return { result: { shellIndex: 2 } };
+        return { result: [] };
+      });
+      render(<RemoteProjectPane deviceId="tower" deviceName="Tower" projectId={7} projectName="alpha" />);
+      expect(await screen.findByRole('button', { name: 'Activity' })).toBeTruthy();
+      granted = false;
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      expect(screen.getByText(/Workspace access unavailable/)).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Activity' })).toBeNull();
+      expect(screen.getByTestId('shell-tab').getAttribute('data-shell')).toBe('2');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('header shows Project @ Machine with a P2P badge and a remote ShellTab', async () => {
     render(<RemoteProjectPane deviceId="tower" deviceName="Tower" projectId={7} projectName="alpha" />);
     expect(screen.getByText('alpha @ Tower')).toBeTruthy();

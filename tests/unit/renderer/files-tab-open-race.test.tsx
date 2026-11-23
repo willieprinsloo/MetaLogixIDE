@@ -6,12 +6,20 @@
  * e2e suite catches at peek-click-routing.spec.ts:239.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 interface WorkspaceRequest {
   deviceId?: string;
   method?: string;
   params?: { projectId?: number; relPath?: string };
+}
+
+interface LocalFileRequest {
+  relPath?: string;
+  from?: string;
+  to?: string;
+  content?: string;
+  forceText?: boolean;
 }
 
 const reads = vi.hoisted(() => ({
@@ -20,14 +28,18 @@ const reads = vi.hoisted(() => ({
   gate: [] as Array<() => void>,
   count: 0,
   remote: vi.fn<(request: WorkspaceRequest) => Promise<unknown>>(),
+  localFiles: vi.fn<(channel: string, payload: LocalFileRequest) => Promise<unknown>>(),
 }));
 
 vi.mock('@renderer/api', () => ({
   api: {
-    invoke: vi.fn(async (channel: string, payload: WorkspaceRequest & { relPath?: string }) => {
+    invoke: vi.fn(async (channel: string, payload: WorkspaceRequest & LocalFileRequest) => {
       if (channel === 'p2p:rpc-call') return { result: await reads.remote(payload) };
+      if (channel.startsWith('files:') && reads.localFiles.getMockImplementation()) {
+        return reads.localFiles(channel, payload);
+      }
       if (channel === 'files:tree') return { entries: [] };
-      if (channel === 'git:status') return { staged: [], unstaged: [], untracked: [] };
+      if (channel === 'git:status') return { isRepo: false, branch: null, ahead: 0, behind: 0, files: {}, dirty: false };
       if (channel === 'files:read') {
         reads.count += 1;
         await new Promise<void>((resolve) => { reads.gate.push(resolve); });
@@ -43,14 +55,17 @@ import { DiffTab } from '@renderer/components/DiffTab';
 import { api } from '@renderer/api';
 import { remoteWorkspace } from '@renderer/p2p/remote-workspace';
 import * as toasts from '@renderer/hooks/useToasts';
+import { APP_FILE_DRAG_TYPE } from '@shared/terminal-drop-contract';
 
 const release = () => { for (const r of reads.gate.splice(0)) r(); };
 
 afterEach(() => {
   cleanup();
   reads.remote.mockReset();
+  reads.localFiles.mockReset();
   vi.clearAllMocks();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 
@@ -86,6 +101,148 @@ describe('FilesTab open-request consumption', () => {
 function scopedRequest(method: string, params: object, deviceId = 'host-a') {
   return { deviceId, method: `workspace.${method}`, params: { projectId: 1, ...params } };
 }
+
+function chooseFileMenu(target: HTMLElement, name: string): void {
+  fireEvent.contextMenu(target);
+  fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitem', { name }));
+}
+
+describe('local FilesTab', () => {
+  it('reflects local create, rename and delete in the refreshed tree, and offers local reveal', async () => {
+    const entries = new Map<string, boolean>();
+    reads.localFiles.mockImplementation(async (channel, { relPath, from, to }) => {
+      if (channel === 'files:tree') {
+        return { entries: [...entries].map(([name, isDir]) => ({ name, relPath: name, isDir })) };
+      }
+      if (channel === 'files:write' && relPath) entries.set(relPath, false);
+      else if (channel === 'files:mkdir' && relPath) entries.set(relPath, true);
+      else if (channel === 'files:rename' && from && to) {
+        const isDir = entries.get(from);
+        if (isDir === undefined) throw new Error('Source missing');
+        entries.delete(from);
+        entries.set(to, isDir);
+      } else if (channel === 'files:delete' && relPath) entries.delete(relPath);
+      else if (channel === 'files:reveal') throw new Error('Finder unavailable');
+      else throw new Error(`Unexpected file request: ${channel}`);
+      return { ok: true };
+    });
+    vi.spyOn(window, 'prompt').mockReturnValueOnce('new.txt').mockReturnValueOnce('docs').mockReturnValueOnce('renamed.txt');
+    vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const notify = vi.spyOn(toasts, 'toast').mockReturnValue(1);
+    render(<FilesTab projectId={9} />);
+    const root = screen.getByTitle('/');
+
+    chooseFileMenu(root, 'New File…');
+    const file = await screen.findByRole('button', { name: 'new.txt' });
+    chooseFileMenu(root, 'New Folder…');
+    expect((await screen.findByRole('button', { name: 'docs' })).getAttribute('draggable')).toBe('false');
+    chooseFileMenu(file, 'Rename…');
+    const renamed = await screen.findByRole('button', { name: 'renamed.txt' });
+    expect(screen.queryByRole('button', { name: 'new.txt' })).toBeNull();
+
+    chooseFileMenu(renamed, 'Reveal in Finder');
+    await waitFor(() => expect(notify).toHaveBeenCalledWith('Reveal failed', { kind: 'error', detail: 'Finder unavailable' }));
+    chooseFileMenu(renamed, 'Delete');
+    expect(screen.getByRole('button', { name: 'renamed.txt' })).toBe(renamed);
+    expect(api.invoke).not.toHaveBeenCalledWith('files:delete', expect.anything());
+    chooseFileMenu(renamed, 'Delete');
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'renamed.txt' })).toBeNull());
+    expect(screen.getByRole('button', { name: 'docs' })).toBeTruthy();
+    expect(vi.mocked(api.invoke).mock.calls.filter(([channel]) => channel !== 'git:status' && channel !== 'files:tree')).toEqual([
+      ['files:write', { projectId: 9, relPath: 'new.txt', content: '' }],
+      ['files:mkdir', { projectId: 9, relPath: 'docs' }],
+      ['files:rename', { projectId: 9, from: 'new.txt', to: 'renamed.txt' }],
+      ['files:reveal', { projectId: 9, relPath: 'renamed.txt' }],
+      ['files:delete', { projectId: 9, relPath: 'renamed.txt' }],
+    ]);
+  });
+
+  it('starts a local file drag and saves the submitted snapshot without marking newer typing clean', async () => {
+    const pending = Promise.withResolvers<{ ok: boolean }>();
+    vi.spyOn(toasts, 'toast').mockReturnValue(1);
+    reads.localFiles.mockImplementation(async (channel, { forceText, content }) => {
+      if (channel === 'files:tree') return { entries: [{ name: 'data.dat', relPath: 'data.dat', isDir: false }] };
+      if (channel === 'files:read') return { content: forceText ? 'original text' : '', kind: forceText ? 'text' : 'binary' };
+      if (channel === 'files:start-drag') return { ok: true };
+      if (channel === 'files:write') return content === 'first edit' ? pending.promise : { ok: true };
+      throw new Error(`Unexpected file request: ${channel}`);
+    });
+    const fullscreen = vi.fn();
+    render(<FilesTab projectId={9} isFullscreen onFullscreenToggle={fullscreen} />);
+    const entry = await screen.findByRole('button', { name: 'data.dat' });
+    expect(entry.getAttribute('draggable')).toBe('true');
+    const setData = vi.fn();
+    fireEvent.dragStart(entry, { dataTransfer: { setData } });
+    expect(setData).toHaveBeenCalledWith(APP_FILE_DRAG_TYPE, JSON.stringify({ projectId: 9, relPath: 'data.dat' }));
+    expect(api.invoke).toHaveBeenCalledWith('files:start-drag', { projectId: 9, paths: ['data.dat'] });
+
+    fireEvent.click(entry);
+    fireEvent.click(await screen.findByTestId('force-text-edit'));
+    const editor = await screen.findByRole('textbox');
+    expect(editor).toHaveProperty('value', 'original text');
+    expect(api.invoke).toHaveBeenCalledWith('files:read', { projectId: 9, relPath: 'data.dat', forceText: true });
+    expect(screen.getByTitle(/^Exit fullscreen/)).toBeTruthy();
+    fireEvent.keyDown(editor, { metaKey: true, shiftKey: true, key: 'Enter' });
+    expect(fullscreen).toHaveBeenCalledTimes(1);
+
+    const save = screen.getByTestId('file-save');
+    fireEvent.change(editor, { target: { value: 'first edit' } });
+    fireEvent.click(save);
+    fireEvent.change(editor, { target: { value: 'newer edit' } });
+    await act(async () => { pending.resolve({ ok: true }); });
+    expect(editor).toHaveProperty('value', 'newer edit');
+    expect(save).toHaveProperty('disabled', false);
+    fireEvent.click(save);
+    await waitFor(() => expect(save).toHaveProperty('disabled', true));
+    expect(vi.mocked(api.invoke).mock.calls.filter(([channel]) => channel === 'files:write')).toEqual([
+      ['files:write', { projectId: 9, relPath: 'data.dat', content: 'first edit' }],
+      ['files:write', { projectId: 9, relPath: 'data.dat', content: 'newer edit' }],
+    ]);
+    expect(api.invoke).not.toHaveBeenCalledWith('p2p:rpc-call', expect.anything());
+  });
+
+  it('keeps rendered Markdown for local files and opens editable SVG source on a peer', async () => {
+    vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+    reads.localFiles.mockImplementation(async (channel) => {
+      if (channel === 'files:tree') return { entries: [{ name: 'guide.md', relPath: 'guide.md', isDir: false }] };
+      if (channel === 'files:read') return { content: '# Local guide', kind: 'text' };
+      throw new Error(`Unexpected file request: ${channel}`);
+    });
+    reads.remote.mockImplementation(async ({ method }) => {
+      if (method === 'workspace.fileTree') return { entries: [{ name: 'logo.svg', relPath: 'logo.svg', isDir: false }] };
+      if (method === 'workspace.fileRead') return { content: '<svg></svg>', kind: 'text', sizeBytes: 11 };
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    const view = render(<FilesTab projectId={1} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'guide.md' }));
+    expect(await screen.findByRole('heading', { name: 'Local guide' })).toBeTruthy();
+
+    view.rerender(<FilesTab projectId={1} remote={remoteWorkspace('host-a')} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'logo.svg' }));
+    fireEvent.click(await screen.findByTestId('file-edit-toggle'));
+    expect(screen.getByRole('textbox')).toHaveProperty('value', '<svg></svg>');
+    expect(screen.queryByRole('heading', { name: 'Local guide' })).toBeNull();
+    expect(reads.remote).toHaveBeenCalledWith(scopedRequest('fileRead', { relPath: 'logo.svg' }));
+  });
+
+  it.each([
+    { path: 'photo.jpg', viewer: 'image-viewer' },
+    { path: 'manual.pdf', viewer: 'pdf-viewer' },
+  ])('routes local $path to its byte-backed viewer and shows read failure there', async ({ path, viewer }) => {
+    reads.localFiles.mockImplementation(async (channel) => {
+      if (channel === 'files:tree') return { entries: [{ name: path, relPath: path, isDir: false }] };
+      if (channel === 'files:read') return { content: '', kind: 'binary', sizeBytes: 8 };
+      if (channel === 'files:read-bytes') throw new Error('Local bytes unavailable');
+      throw new Error(`Unexpected file request: ${channel}`);
+    });
+    render(<FilesTab projectId={9} />);
+    fireEvent.click(await screen.findByRole('button', { name: path }));
+    const preview = await screen.findByTestId(viewer);
+    expect(await within(preview).findByText('Local bytes unavailable')).toBeTruthy();
+    expect(api.invoke).toHaveBeenCalledWith('files:read-bytes', { projectId: 9, relPath: path });
+    expect(api.invoke).not.toHaveBeenCalledWith('p2p:rpc-call', expect.anything());
+  });
+});
 
 describe('remote FilesTab', () => {
   it('shows binary unavailability and only previews, edits and saves remote HTML as text', async () => {
@@ -296,6 +453,108 @@ describe('remote FilesTab', () => {
     expect(reads.remote).toHaveBeenCalledWith(scopedRequest('fileRead', { relPath: 'same.txt' }, 'host-b'));
     expect(consumedOld).not.toHaveBeenCalled();
     expect(consumedNew).toHaveBeenCalled();
+  });
+
+  it('waits for a remote create to finish, then refreshes the directory navigated to in the meantime', async () => {
+    const create = Promise.withResolvers<{ ok: true; sizeBytes: number }>();
+    let committed = false;
+    vi.spyOn(window, 'prompt').mockReturnValue('new.txt');
+    reads.remote.mockImplementation(async ({ method, params }) => {
+      if (method === 'workspace.fileWrite') {
+        const result = await create.promise;
+        committed = true;
+        return result;
+      }
+      if (method !== 'workspace.fileTree') throw new Error(`Unexpected request: ${method}`);
+      if (params?.relPath === 'docs') {
+        return { entries: committed ? [{ name: 'new.txt', relPath: 'docs/new.txt', isDir: false }] : [] };
+      }
+      return { entries: [{ name: 'docs', relPath: 'docs', isDir: true }] };
+    });
+    render(<FilesTab projectId={1} remote={remoteWorkspace('host-a')} />);
+    const docs = await screen.findByRole('button', { name: 'docs' });
+    chooseFileMenu(docs, 'New File…');
+    expect(reads.remote.mock.calls).toEqual([
+      [scopedRequest('fileTree', {})],
+      [scopedRequest('fileWrite', { relPath: 'docs/new.txt', content: '', createOnly: true })],
+    ]);
+    fireEvent.click(docs);
+    await screen.findByRole('button', { name: '← root' });
+    expect(screen.queryByRole('button', { name: 'new.txt' })).toBeNull();
+    await act(async () => { create.resolve({ ok: true, sizeBytes: 0 }); });
+    expect(screen.getByTitle('docs')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'new.txt' })).toBeTruthy();
+    expect(reads.remote.mock.calls.slice(2)).toEqual([
+      [scopedRequest('fileTree', { relPath: 'docs' })],
+      [scopedRequest('fileTree', { relPath: 'docs' })],
+    ]);
+  });
+
+  it.each(['success', 'failure'])('ignores an older folder request after newer navigation (%s)', async (outcome) => {
+    const earlier = Promise.withResolvers<unknown>();
+    reads.remote.mockImplementation(async ({ method, params }) => {
+      if (method !== 'workspace.fileTree') throw new Error(`Unexpected request: ${method}`);
+      if (params?.relPath === 'slow') return earlier.promise;
+      if (params?.relPath === 'fast') {
+        return { entries: [{ name: 'current.txt', relPath: 'fast/current.txt', isDir: false }] };
+      }
+      return { entries: [
+        { name: 'slow', relPath: 'slow', isDir: true },
+        { name: 'fast', relPath: 'fast', isDir: true },
+      ] };
+    });
+    render(<FilesTab projectId={1} remote={remoteWorkspace('host-a')} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'slow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'fast' }));
+    await screen.findByRole('button', { name: 'current.txt' });
+    expect(reads.remote).toHaveBeenCalledWith(scopedRequest('fileTree', { relPath: 'slow' }));
+    await act(async () => {
+      if (outcome === 'success') {
+        earlier.resolve({ entries: [{ name: 'old.txt', relPath: 'slow/old.txt', isDir: false }] });
+      } else {
+        earlier.reject(new Error('Slow folder unavailable'));
+      }
+    });
+    expect(screen.getByTitle('fast')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'current.txt' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'old.txt' })).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('does not refresh or announce writes completed for a peer the panel has left', async () => {
+    const save = Promise.withResolvers<unknown>();
+    const create = Promise.withResolvers<unknown>();
+    const notify = vi.spyOn(toasts, 'toast').mockReturnValue(1);
+    vi.spyOn(window, 'prompt').mockReturnValue('new.txt');
+    reads.remote.mockImplementation(async ({ deviceId, method, params }) => {
+      if (method === 'workspace.fileTree') return { entries: [{ name: 'draft.txt', relPath: 'draft.txt', isDir: false }] };
+      if (method === 'workspace.fileRead') return { content: `from ${deviceId}`, kind: 'text', sizeBytes: 11 };
+      if (method === 'workspace.fileWrite' && params?.relPath === 'draft.txt') return save.promise;
+      if (method === 'workspace.fileWrite' && params?.relPath === 'new.txt') return create.promise;
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    const view = render(<FilesTab projectId={1} remote={remoteWorkspace('host-a')} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'draft.txt' }));
+    fireEvent.click(await screen.findByTestId('file-edit-toggle'));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'unsaved text' } });
+    fireEvent.click(screen.getByTestId('file-save'));
+    chooseFileMenu(screen.getByTitle('/'), 'New File…');
+    expect(reads.remote).toHaveBeenCalledWith(scopedRequest('fileWrite', { relPath: 'draft.txt', content: 'unsaved text' }));
+    expect(reads.remote).toHaveBeenCalledWith(scopedRequest('fileWrite', { relPath: 'new.txt', content: '', createOnly: true }));
+
+    view.rerender(<FilesTab projectId={1} remote={remoteWorkspace('host-b')} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'draft.txt' }));
+    await within(await screen.findByTestId('file-preview')).findByText('from host-b');
+    const requestCount = reads.remote.mock.calls.length;
+    await act(async () => {
+      save.resolve({ ok: true, sizeBytes: 12 });
+      create.resolve({ ok: true, sizeBytes: 0 });
+    });
+    expect(reads.remote).toHaveBeenCalledTimes(requestCount);
+    expect(notify).not.toHaveBeenCalled();
+    expect(screen.getByText('from host-b')).toBeTruthy();
+    expect(screen.queryByText('unsaved text')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'new.txt' })).toBeNull();
   });
 });
 
