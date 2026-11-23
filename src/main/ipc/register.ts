@@ -3,6 +3,7 @@ import { app, dialog, nativeImage, nativeTheme, shell, BrowserWindow } from 'ele
 import log from 'electron-log/main';
 import type { Services } from '@main/services';
 import type { GitDiffKind, IpcChannelName, IpcRequest, IpcResponse, IpcEventName, IpcEvents } from '@shared/ipc-contract';
+import type { MetaprojectChannel } from '@shared/metaproject-contract';
 import { discoverProjects } from '@main/domain/discovery';
 import { pruneMissingProjects } from '@main/domain/prune-missing';
 import { discoverAllTasks } from '@main/domain/tasks';
@@ -282,7 +283,9 @@ function p2pApi(s: Services): P2PApi {
 }
 
 /** Exported so the P2P hub can call the same implementations directly (no ipcMain round-trip). */
-export const handlers: { [C in IpcChannelName]: Handler<C> } = {
+type CoreChannel = Exclude<IpcChannelName, MetaprojectChannel>;
+
+export const handlers: { [C in CoreChannel]: Handler<C> } = {
   'dialogs:pick-directory': async (_s, _req, event) => {
     if (process.env.METAIDE_TEST_MODE === '1') {
       return { path: null };
@@ -1686,7 +1689,7 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
     'settings:set-vibrancy-material': true,
   };
 
-  for (const channel of Object.keys(handlers) as IpcChannelName[]) {
+  for (const channel of Object.keys(handlers) as CoreChannel[]) {
     if (WINDOW_CHANNELS.has(channel) || CUSTOM_EMIT_CHANNELS[channel]) continue; // wired below
     ipcMain.handle(channel, async (event, req) => {
       const fn = handlers[channel] as (s: Services, req: unknown, e?: Electron.IpcMainInvokeEvent) => Promise<unknown>;
