@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { DIFF_TESTIDS } from '../../src/renderer/diff-tab-copy';
 import { ENV_TESTIDS } from '../../src/renderer/project-env-copy';
 import { MACHINE_TESTIDS } from '../../src/renderer/sidebar-copy';
+import type { FleetEntry } from '../../src/shared/p2p-contract';
 import { createFrameDecoder, encodeFrame, SignalingTypes as Signal } from '../../src/shared/signaling-wire';
 import { baseEnv, closeApp, guardedLaunch, waitForShell, type LaunchScope } from './helpers/claude-harness';
 import { commitAll, git, porcelain } from './helpers/git-repo';
@@ -241,7 +242,18 @@ function diffRow(panel: Locator, file: string, group: 'staged' | 'unstaged' | 'u
   return panel.getByTestId(DIFF_TESTIDS.row).and(panel.locator(`[data-group="${group}"][data-path="${file}"]`));
 }
 
-test('a paired Electron workspace keeps Shell, Files, Diff, Settings and Activity on the host', async () => {
+async function pairedPeer(win: Page, name: string): Promise<FleetEntry> {
+  async function lookup(): Promise<FleetEntry | undefined> {
+    const { fleet } = await ipc(win, 'p2p:fleet-list', undefined);
+    return fleet.find((entry) => entry.name === name);
+  }
+  await expect.poll(lookup, { message: `paired Fleet entry for ${name}` }).toBeDefined();
+  const peer = await lookup();
+  if (!peer) throw new Error(`Paired Fleet entry disappeared: ${name}`);
+  return peer;
+}
+
+test('paired Electron Shell works without a grant; other workspace tabs require host permission', async () => {
   test.skip(process.platform === 'win32', 'Fixture shell markers use /bin/bash, like the POSIX Electron harness');
   test.setTimeout(120_000);
   const relay = await startLoopbackRelay();
@@ -259,6 +271,12 @@ test('a paired Electron workspace keeps Shell, Files, Diff, Settings and Activit
     }, 65_000);
     try {
       const win = viewer.win;
+      const viewerOnHost = await pairedPeer(host.win, VIEWER_NAME);
+      const hostOnViewer = await pairedPeer(win, HOST_NAME);
+      expect(viewerOnHost.workspaceAccess, 'pairing does not grant workspace access on the host').toBe(false);
+      const readHostNotes = () => ipc(win, 'p2p:rpc-call', {
+        deviceId: hostOnViewer.deviceId, method: 'workspace.fileRead', params: { projectId: host.id, relPath: NOTES },
+      });
       const localHeader = win.getByTestId(DIFF_TESTIDS.tabBar);
       const localRow = win.getByTestId('project-row').getByText(VIEWER_PROJECT, { exact: true }).first();
       await localRow.click();
@@ -291,9 +309,23 @@ test('a paired Electron workspace keeps Shell, Files, Diff, Settings and Activit
       await hostRow.click();
       const pane = win.getByTestId('remote-project-pane');
       await expect(pane.getByText(`${HOST_PROJECT} @ ${HOST_NAME}`, { exact: true })).toBeVisible();
-      await expect(destination(pane, 'Activity')).toBeVisible({ timeout: 10_000 });
+      const unavailable = pane.getByRole('status').filter({ hasText: 'Workspace access unavailable' });
+      const closePane = pane.getByRole('button', { name: 'Close remote project', exact: true });
+      await expect(unavailable).toBeVisible({ timeout: 10_000 });
+      await expect(destination(pane, 'Activity')).toBeHidden();
       await expect(destination(pane, 'Shell')).toHaveAttribute('aria-current', 'page');
       await expectShellOutput(win, 'HOST_PRIMARY_SHELL');
+      await expect(readHostNotes()).rejects.toThrow(/workspace access requires a grant from the host/i);
+
+      expect(await ipc(host.win, 'p2p:set-workspace-access', { deviceId: viewerOnHost.deviceId, allowed: true }))
+        .toEqual({ ok: true });
+      expect((await pairedPeer(host.win, VIEWER_NAME)).workspaceAccess).toBe(true);
+      // Reopening requests capabilities now rather than waiting for the denial backoff.
+      await closePane.click();
+      await expect(pane).toBeHidden();
+      await hostRow.click();
+      await expect(destination(pane, 'Activity')).toBeVisible({ timeout: 10_000 });
+      await expect(unavailable).toBeHidden();
       const alternateTab = pane.getByTestId('remote-shell-tabs').locator(`[role="tab"][data-shell-index="${alternate.shellIndex}"]`);
       await alternateTab.click();
       await expect(alternateTab).toHaveAttribute('aria-selected', 'true');
@@ -357,7 +389,15 @@ test('a paired Electron workspace keeps Shell, Files, Diff, Settings and Activit
 
       await ipc(host.win, 'settings:set', { key: 'activity_log_enabled', value: false });
       await expect(destination(pane, 'Activity')).toBeHidden({ timeout: 10_000 });
-      await pane.getByRole('button', { name: 'Close remote project', exact: true }).click();
+
+      expect(await ipc(host.win, 'p2p:set-workspace-access', { deviceId: viewerOnHost.deviceId, allowed: false }))
+        .toEqual({ ok: true });
+      expect((await pairedPeer(host.win, VIEWER_NAME)).workspaceAccess).toBe(false);
+      await expect(readHostNotes()).rejects.toThrow(/workspace access requires a grant from the host/i);
+      await selectDestination(pane, 'Shell');
+      await expectShellOutput(win, 'HOST_ALTERNATE_SHELL');
+
+      await closePane.click();
       await expect(pane).toBeHidden();
       await expect(destination(localHeader, 'Files')).toHaveAttribute('aria-current', 'page');
       await expect(destination(localHeader, 'Activity')).toBeVisible();
