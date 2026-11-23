@@ -65,17 +65,28 @@ function fakeTerminal(delayMount: boolean) {
     input: channel<NativeEvents['input']>(), viewportChange: channel<undefined>(),
   };
   const bufferChanges = channel<undefined>();
+  const renders = channel<{ start: number; end: number }>();
   const lines: string[] = [];
+  const backdrop: { index?: number } = {};
   const active = {
     type: 'normal', viewportY: 0,
     get length() { return lines.length; },
-    getLine(row: number) { const text = lines[row]; return text === undefined ? undefined : textRow(text); },
+    getLine(row: number) {
+      const index = backdrop.index;
+      if (index !== undefined) return {
+        ...textRow(''),
+        getCell: () => ({ isInverse: () => 0, isBgRGB: () => false, isBgPalette: () => true, getBgColor: () => index }),
+      };
+      const text = lines[row];
+      return text === undefined ? undefined : textRow(text);
+    },
   };
   const native = {
     element,
     renderer: { backend: 'webgl2' },
     geometry: { cols: 80, rows: 24, cellWidthPx: 8, cellHeightPx: 16, widthPx: 640, heightPx: 384 },
     writeAsync: vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined),
+    readViewport: vi.fn<() => Promise<{ colors: { palette: Readonly<Record<number, { r: number; g: number; b: number }>> } }>>(),
     fit: vi.fn(), paste: vi.fn(), focus: vi.fn(), sendPointer: vi.fn(),
     on<T extends keyof NativeEvents>(type: T, listener: (value: NativeEvents[T]) => void) {
       return events[type].subscribe(listener);
@@ -84,6 +95,7 @@ function fakeTerminal(delayMount: boolean) {
   const linkRegistration = { dispose: vi.fn() };
   const terminal = {
     buffer: { active, onBufferChange: bufferChanges.subscribe },
+    cols: 80, rows: 24, onRender: renders.subscribe,
     ready: Promise.resolve(),
     native: Promise.resolve(native),
     textarea,
@@ -103,7 +115,7 @@ function fakeTerminal(delayMount: boolean) {
     attachCustomKeyEventHandler: vi.fn<(handler: (event: KeyboardEvent) => boolean) => void>(),
     registerLinkProvider: vi.fn<(provider: ILinkProvider) => typeof linkRegistration>(() => linkRegistration),
   };
-  return { terminal, native, textarea, lines, active, events, bufferChanges, linkRegistration };
+  return { terminal, native, textarea, lines, active, events, bufferChanges, linkRegistration, renders, backdrop };
 }
 
 const cleanup: Array<() => void> = [];
@@ -136,7 +148,7 @@ function observeFrame() {
 }
 
 function interaction(platform: 'mac' | 'other' = 'other') {
-  return { platform, keys: vi.fn(() => false), openWebLink: vi.fn(), focused: vi.fn() };
+  return { platform, keys: vi.fn(() => false), openWebLink: vi.fn(), focused: vi.fn(), paintBackdrop: vi.fn() };
 }
 
 beforeEach(() => {
@@ -148,6 +160,7 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const dispose of cleanup.splice(0)) dispose();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -244,6 +257,46 @@ describe('Ghostty view startup and shutdown', () => {
 });
 
 describe('Ghostty view adapter', () => {
+  it('coalesces Ghostty renders and resolves the edge color from its native palette', async () => {
+    const { native, renders, active, backdrop, open } = setup();
+    const view = await open();
+    const interactionHandlers = interaction();
+    view.reveal(interactionHandlers);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    native.readViewport.mockResolvedValue({ colors: { palette: { 232: { r: 13, g: 13, b: 14 } } } });
+    active.type = 'alternate';
+    backdrop.index = 232;
+    renders.emit({ start: 0, end: 23 });
+    renders.emit({ start: 0, end: 23 });
+    expect(native.readViewport).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(125);
+    expect(native.readViewport).toHaveBeenCalledOnce();
+    expect(interactionHandlers.paintBackdrop.mock.calls).toEqual([['#0d0d0e']]);
+
+    backdrop.index = 233;
+    native.readViewport.mockRejectedValueOnce(new Error('viewport no longer available'));
+    renders.emit({ start: 0, end: 23 });
+    await vi.advanceTimersByTimeAsync(125);
+    expect(interactionHandlers.paintBackdrop.mock.calls).toEqual([['#0d0d0e'], [undefined]]);
+  });
+
+  it('does not apply a Ghostty palette read after the view has been disposed', async () => {
+    const { native, active, backdrop, open } = setup();
+    const view = await open();
+    const interactionHandlers = interaction();
+    const palette = Promise.withResolvers<Awaited<ReturnType<typeof native.readViewport>>>();
+    native.readViewport.mockReturnValue(palette.promise);
+    active.type = 'alternate';
+    backdrop.index = 232;
+    view.reveal(interactionHandlers);
+    expect(native.readViewport).toHaveBeenCalledOnce();
+    view.dispose();
+    palette.resolve({ colors: { palette: { 232: { r: 13, g: 13, b: 14 } } } });
+    await palette.promise;
+    await Promise.resolve();
+    expect(interactionHandlers.paintBackdrop.mock.calls).toEqual([[undefined]]);
+  });
+
   it('preserves input provenance and parser completion, and normalizes paste without reading a clipboard', async () => {
     const { terminal, native, events, bufferChanges, handlers, open } = setup();
     const view = await open();

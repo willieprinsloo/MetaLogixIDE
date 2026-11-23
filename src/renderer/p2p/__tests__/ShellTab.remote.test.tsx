@@ -13,6 +13,7 @@ vi.mock('@xterm/xterm', () => ({
     loadAddon() {} open() {} write() {} reset() {} dispose() {} focus() {} paste() {} refresh() {}
     attachCustomKeyEventHandler() {} registerLinkProvider = vi.fn(() => ({ dispose() {} }));
     onData() { return { dispose() {} }; } onResize() { return { dispose() {} }; } onSelectionChange() { return { dispose() {} }; }
+    onRender() { return { dispose() {} }; }
     hasSelection() { return false; } getSelection() { return ''; } element = document.createElement('div');
   },
 }));

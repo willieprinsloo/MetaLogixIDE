@@ -10,6 +10,7 @@ import { createTerminalFind, type TerminalFind } from './terminal-view-find';
 import { createGhosttyFindPaint } from './ghostty-find-paint';
 import { enableGhosttyOptionSelection } from './ghostty-option-selection';
 import { terminalWebLinks, type TerminalFileLink, fileLinksInRow } from './terminal-view-links';
+import { watchTerminalBackdrop } from './terminal-backdrop';
 
 export type TerminalViewSurface = Pick<StockTerminal, 'focus' | 'paste' | 'hasSelection' | 'getSelection' | 'clearSelection'> & {
   readonly buffer: { readonly active: Pick<IBuffer, 'length' | 'getLine'> };
@@ -31,6 +32,7 @@ interface GhosttyInteraction {
   readonly pathLinks?: (text: string) => readonly TerminalFileLink[];
   readonly openWebLink: (url: string) => void;
   readonly focused: () => void;
+  readonly paintBackdrop: (color: string | undefined) => void;
 }
 
 interface GhosttyHandlers {
@@ -177,6 +179,15 @@ export async function openGhosttyView(
     },
     reveal(interaction) {
       if (disposed || faulted) return;
+      disposables.push(watchTerminalBackdrop(terminal, interaction.paintBackdrop, {
+        // Reading even one edge cell can unpack a block of Ghostty's grid.
+        intervalMs: 125,
+        async resolvePalette(index) {
+          const { colors } = await native.readViewport();
+          const rgb = colors.palette[index];
+          return rgb && ((rgb.r << 16) | (rgb.g << 8) | rgb.b);
+        },
+      }));
       if (interaction.platform === 'mac') disposables.push(enableGhosttyOptionSelection(native, fault));
       terminal.attachCustomKeyEventHandler(interaction.keys);
       disposables.push(terminal.registerLinkProvider({

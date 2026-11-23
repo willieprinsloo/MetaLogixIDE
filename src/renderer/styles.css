@@ -679,8 +679,10 @@ input::placeholder, textarea::placeholder {
 
 .workspace-header-container { container: workspace-header / inline-size; }
 .workspace-header-row:not([hidden]) + .workspace-sheet { margin-top: 0; }
+[data-sheet-content="shell"] { --terminal-pane-radius: 12px; }
 .workspace-sheet[data-sheet-content="shell"] {
   border: 1px solid color-mix(in oklab, var(--text) 12%, transparent);
+  --terminal-pane-radius: 13px;
 }
 .workspace-sheet:has(> div > [data-split-layout]) {
   background-color: transparent;
@@ -688,6 +690,12 @@ input::placeholder, textarea::placeholder {
 }
 [data-split-layout] [data-pane-focused] {
   border: 1px solid light-dark(rgb(0 0 0 / 0.18), rgb(255 255 255 / 0.18));
+  --terminal-pane-radius: 0 0 13px 13px;
+}
+[data-testid="remote-project-pane"] { --terminal-pane-radius: 0 0 13px 13px; }
+.terminal-pane[data-terminal-backdrop] {
+  border-radius: var(--terminal-pane-radius, 0);
+  overflow: clip;
 }
 .workspace-header-row:not([hidden]) {
   display: grid;
