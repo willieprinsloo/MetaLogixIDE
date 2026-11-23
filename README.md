@@ -62,10 +62,16 @@ A React Native app in [`mobile/`](mobile/README.md) pairs with your machines as 
 viewer by scanning a QR code. Swipe between machines, see each one's active
 projects, tap a project to open its terminal, and dictate into it by voice.
 
-### metaproject integration
-First-class bridge to the MetaLogix metaproject board: project linking,
-chat pane fed by the metaproject socket, status-bar badges for the active
-project.
+### Metaproject integration
+
+1. Open **Project Settings** for the local folder. Under **Metaproject assignment**, select a project and save the link.
+2. Select **Board** to open the Metaproject web Board in the IDE. Use **Open in Browser** for the same project in your default browser. The browser has its own sign-in.
+
+Board, Chat, and the assignment picker use one IDE sign-in. Select **Remember me** to restore it on restart through the OS credential store. Without it, access ends when you quit the IDE. Old saved passwords require re-entry. **Sign out and forget** in Metaproject settings clears local access even when the service is offline.
+
+If startup cannot reach the service, choose **Retry remembered sign-in** once you are back online. If the IDE cannot remove the saved sign-in, it still signs you out locally and reports the storage problem. Retry forgetting before relying on the next restart to stay signed out.
+
+You can replace or remove the assignment in Project Settings. Removal changes only the local `.metaproject.yaml`; it does not delete the remote project. A link belongs to the service where you saved it. Changing the service signs you out and does not transfer the link to the new service.
 
 ### `.metaide/` project convention
 Check into git to make the project "just work" on every teammate's machine:
@@ -113,7 +119,7 @@ src/
 │   ├── drops/             # Drag-and-drop staging
 │   ├── git/               # Git integration
 │   ├── ipc/register.ts    # IPC channel wiring
-│   ├── metaproject/       # metaproject client
+│   ├── metaproject/       # Shared web session, assignment, Chat and hosted Board
 │   ├── notifications/     # OS notifications for Claude needs-input / finished
 │   ├── p2p/               # Relay client + RPC + WebRTC worker
 │   ├── pty/               # node-pty management, keep-alive, scrollback

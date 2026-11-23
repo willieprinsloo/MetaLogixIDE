@@ -8,7 +8,6 @@ import { SettingsRepo } from './repos/settings-repo';
 import { PromptsRepo } from './repos/prompts-repo';
 import { PtyManager } from './pty/manager';
 import { RootWatcher } from './domain/watcher';
-import { MetaprojectClient } from './metaproject/client';
 import { applyClaudePermissionMode } from './domain/claude-permission-mode';
 import { CLAUDE_PERMISSION_MODE_ENV, isClaudePermissionMode } from '@shared/claude-permission-mode';
 import { SessionRegistry, type ShellKey } from './claude-hooks/session-registry';
@@ -38,7 +37,6 @@ export interface Services {
   prompts: PromptsRepo;
   ptyManager: PtyManager;
   watcher: RootWatcher;
-  metaproject: MetaprojectClient;
   /** Hook sessions remain separate from status, for Claude OS notifications. */
   hookSessions: SessionRegistry;
   hookReceiver: ClaudeHookReceiver;
@@ -122,7 +120,6 @@ export function buildServices(opts: { dbPath?: string; migrationsDir?: string; h
       claudeDecorator(projectId, shellIndex, launch),
   });
   const watcher = new RootWatcher({ cap: settings.get('max_watched_paths') });
-  const metaproject = new MetaprojectClient();
   const hookHistory = new ClaudeHookHistory({
     sessions: hookSessions,
     lastOutputAt: (shell) => lastOutputAt(ptyManager, shell),
@@ -136,7 +133,7 @@ export function buildServices(opts: { dbPath?: string; migrationsDir?: string; h
     uid,
   });
   return {
-    db, roots, projects, shells, settings, prompts, ptyManager, watcher, metaproject,
+    db, roots, projects, shells, settings, prompts, ptyManager, watcher,
     hookSessions, hookReceiver, hookRuntime, hookHistory, agentStatus: null,
     viewedShells: new ViewedShells(), remoteViewing: new RemoteViewing(), activity, noticeRouter: new NoticeRouter({ localIdleMs: () => activity.idleMs(Date.now()), now: () => Date.now() }), dropStaging, clipboardImage: createClipboardImage(), listMise: listMiseTasks, keepAwake: null, homeDir: home, migrationsDir,
   };
