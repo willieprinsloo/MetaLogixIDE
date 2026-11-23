@@ -11,26 +11,26 @@ const POLL_MS = 5000;
  * `machines` are the fleet: paired machines this one can open. `devices` is every paired device, including
  * viewer-only ones such as the mobile app, which Settings lists so they can be revoked.
  */
-export function useFleet(): { machines: FleetEntry[]; devices: FleetEntry[]; loading: boolean; error?: string; refresh: () => void } {
+export function useFleet(): { machines: FleetEntry[]; devices: FleetEntry[]; loading: boolean; error?: string; refresh: () => Promise<void> } {
   const [devices, setDevices] = useState<FleetEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
   const alive = useRef(true);
+  const latest = useRef(0);
 
-  const load = useCallback(() => {
-    api.invoke('p2p:fleet-list', undefined).then(
-      (res) => {
-        if (!alive.current) return;
-        setDevices((prev) => (sameMachines(prev, res.fleet) && prev.every((d, i) => !d.viewer === !res.fleet[i]!.viewer) ? prev : res.fleet));
-        setError(undefined);
-        setLoading(false);
-      },
-      (e: unknown) => {
-        if (!alive.current) return;
-        setError(e instanceof Error ? e.message : String(e));
-        setLoading(false);
-      },
-    );
+  const load = useCallback(async () => {
+    const request = ++latest.current;
+    const isCurrent = () => alive.current && request === latest.current;
+    try {
+      const { fleet } = await api.invoke('p2p:fleet-list', undefined);
+      if (!isCurrent()) return;
+      setDevices((prev) => sameDevices(prev, fleet) ? prev : fleet);
+      setError(undefined);
+    } catch (e) {
+      if (isCurrent()) setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (isCurrent()) setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -43,4 +43,12 @@ export function useFleet(): { machines: FleetEntry[]; devices: FleetEntry[]; loa
   const machines = useMemo(() => devices.filter((d) => !d.viewer), [devices]);
 
   return { machines, devices, loading, error, refresh: load };
+}
+
+function sameDevices(prior: FleetEntry[], next: FleetEntry[]): boolean {
+  return sameMachines(prior, next) && prior.every((device, i) => {
+    const update = next[i];
+    return update !== undefined && Boolean(device.viewer) === Boolean(update.viewer)
+      && device.workspaceAccess === update.workspaceAccess;
+  });
 }

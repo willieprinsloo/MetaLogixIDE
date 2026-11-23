@@ -42,6 +42,7 @@ import { FilesTab } from '@renderer/components/FilesTab';
 import { DiffTab } from '@renderer/components/DiffTab';
 import { api } from '@renderer/api';
 import { remoteWorkspace } from '@renderer/p2p/remote-workspace';
+import * as toasts from '@renderer/hooks/useToasts';
 
 const release = () => { for (const r of reads.gate.splice(0)) r(); };
 
@@ -120,6 +121,7 @@ describe('remote FilesTab', () => {
     await screen.findByRole('tab', { name: /index.html/ });
     expect(screen.getByTestId('file-preview').textContent).toContain('<img src="./local-secret.png">');
     expect(view.container.querySelector('iframe, img')).toBeNull();
+    expect(screen.queryByTitle(/fullscreen/i)).toBeNull();
     fireEvent.click(screen.getByTestId('file-edit-toggle'));
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'edited html' } });
     fireEvent.click(screen.getByTestId('file-save'));
@@ -152,7 +154,9 @@ describe('remote FilesTab', () => {
     }
     prompt.mockReturnValueOnce('new.txt');
     chooseMenuItem('New File…');
-    await waitFor(() => expect(reads.remote).toHaveBeenCalledWith(scopedRequest('fileWrite', { relPath: 'src/new.txt', content: '' })));
+    await waitFor(() => expect(reads.remote).toHaveBeenCalledWith(scopedRequest('fileWrite', {
+      relPath: 'src/new.txt', content: '', createOnly: true,
+    })));
     prompt.mockReturnValueOnce('nested');
     chooseMenuItem('New Folder…');
     await waitFor(() => expect(reads.remote).toHaveBeenCalledWith(scopedRequest('fileMkdir', { relPath: 'src/nested' })));
@@ -163,6 +167,113 @@ describe('remote FilesTab', () => {
     expect(confirm).toHaveBeenCalledWith('Delete folder src? This cannot be undone.');
     await waitFor(() => expect(reads.remote).toHaveBeenCalledWith(scopedRequest('fileDelete', { relPath: 'src' })));
     expect(vi.mocked(api.invoke).mock.calls.every(([channel]) => channel === 'p2p:rpc-call')).toBe(true);
+  });
+
+  it('reports an exclusive-create conflict without refreshing or trying a normal or local write', async () => {
+    const notify = vi.spyOn(toasts, 'toast').mockReturnValue(1);
+    const ask = vi.spyOn(window, 'prompt').mockReturnValueOnce(null).mockReturnValueOnce('untitled.md');
+    reads.remote.mockImplementation(async ({ method }) => {
+      if (method === 'workspace.fileTree') return { entries: [{ name: 'untitled.md', isDir: false, relPath: 'untitled.md' }] };
+      if (method === 'workspace.fileWrite') throw new Error('destination already exists');
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    render(<FilesTab projectId={1} remote={remoteWorkspace('host-a')} />);
+    const entry = await screen.findByRole('button', { name: 'untitled.md' });
+    function newFile() {
+      fireEvent.contextMenu(screen.getByTitle('/'));
+      fireEvent.click(screen.getByRole('menuitem', { name: 'New File…' }));
+    }
+    newFile();
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(reads.remote).toHaveBeenCalledTimes(1);
+    newFile();
+    await waitFor(() => expect(notify).toHaveBeenCalledWith('Failed to create file', {
+      kind: 'error', detail: 'destination already exists',
+    }));
+    expect(reads.remote.mock.calls).toEqual([
+      [scopedRequest('fileTree', {})],
+      [scopedRequest('fileWrite', { relPath: 'untitled.md', content: '', createOnly: true })],
+    ]);
+    expect(screen.getByRole('button', { name: 'untitled.md' })).toBe(entry);
+    expect(vi.mocked(api.invoke).mock.calls.map(([channel]) => channel)).toEqual(['p2p:rpc-call', 'p2p:rpc-call']);
+  });
+
+  it('keeps a rejected save dirty and retries with the same text', async () => {
+    const notify = vi.spyOn(toasts, 'toast').mockReturnValue(1);
+    let fail = true;
+    reads.remote.mockImplementation(async ({ method }) => {
+      if (method === 'workspace.fileTree') return { entries: [{ name: 'draft.txt', isDir: false, relPath: 'draft.txt' }] };
+      if (method === 'workspace.fileRead') return { content: 'on host', kind: 'text', sizeBytes: 7 };
+      if (method === 'workspace.fileWrite' && fail) throw new Error('host rejected save');
+      if (method === 'workspace.fileWrite') return { ok: true, sizeBytes: 5 };
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    render(<FilesTab projectId={1} remote={remoteWorkspace('host-a')} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'draft.txt' }));
+    fireEvent.click(await screen.findByTestId('file-edit-toggle'));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'draft' } });
+    fireEvent.click(screen.getByTestId('file-save'));
+    await waitFor(() => expect(notify).toHaveBeenCalledWith('Save failed', {
+      kind: 'error', detail: 'host rejected save',
+    }));
+    expect(screen.getByRole('textbox')).toHaveProperty('value', 'draft');
+    expect(screen.getByTestId('file-save').hasAttribute('disabled')).toBe(false);
+    fail = false;
+    fireEvent.click(screen.getByTestId('file-save'));
+    await waitFor(() => expect(screen.getByTestId('file-save').hasAttribute('disabled')).toBe(true));
+    expect(reads.remote.mock.calls.filter(([request]) => request.method === 'workspace.fileWrite')).toEqual([
+      [scopedRequest('fileWrite', { relPath: 'draft.txt', content: 'draft' })],
+      [scopedRequest('fileWrite', { relPath: 'draft.txt', content: 'draft' })],
+    ]);
+  });
+
+  it('shows remote tree and file read errors without falling back locally', async () => {
+    reads.remote.mockRejectedValueOnce(new Error('host is offline'));
+    reads.remote.mockRejectedValueOnce(new Error('file unavailable'));
+    const remote = remoteWorkspace('host-a');
+    const view = render(<FilesTab projectId={1} remote={remote} />);
+    expect((await screen.findByRole('alert')).textContent).toContain('host is offline');
+    view.rerender(<FilesTab projectId={1} remote={remote} openRelPath="missing.txt" />);
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('file unavailable'));
+    expect(screen.queryByRole('tab')).toBeNull();
+    expect(vi.mocked(api.invoke).mock.calls.map(([channel]) => channel)).toEqual(['p2p:rpc-call', 'p2p:rpc-call']);
+  });
+
+  it('preserves a draft and defers opens and refreshes while the retained panel is inactive', async () => {
+    const remote = remoteWorkspace('host-a');
+    const consumed = vi.fn();
+    reads.remote.mockImplementation(async ({ method, params }) => {
+      if (method === 'workspace.fileTree' && params?.relPath === undefined) {
+        return { entries: [{ name: 'sub', relPath: 'sub', isDir: true }] };
+      }
+      if (method === 'workspace.fileTree') return { entries: [{ name: 'draft.txt', relPath: 'sub/draft.txt', isDir: false }] };
+      if (method === 'workspace.fileRead') return { content: 'on host', kind: 'text', sizeBytes: 7 };
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    const view = render(<FilesTab projectId={1} remote={remote} active={false} />);
+    expect(reads.remote).not.toHaveBeenCalled();
+    view.rerender(<FilesTab projectId={1} remote={remote} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'sub' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'draft.txt' }));
+    fireEvent.click(await screen.findByTestId('file-edit-toggle'));
+    const editor = screen.getByRole('textbox');
+    fireEvent.change(editor, { target: { value: 'draft' } });
+    reads.remote.mockClear();
+    view.rerender(<FilesTab projectId={1} remote={remote} active={false}
+      openRelPath="other.txt" onOpenRelPathConsumed={consumed} />);
+    fireEvent.keyDown(editor, { ctrlKey: true, metaKey: true, key: 's' });
+    expect(reads.remote).not.toHaveBeenCalled();
+    expect(consumed).not.toHaveBeenCalled();
+    view.rerender(<FilesTab projectId={1} remote={remote} openRelPath="other.txt" onOpenRelPathConsumed={consumed} />);
+    await screen.findByRole('tab', { name: /other.txt/ });
+    expect(reads.remote).toHaveBeenCalledWith(scopedRequest('fileTree', { relPath: 'sub' }));
+    expect(reads.remote).toHaveBeenCalledWith(scopedRequest('fileRead', { relPath: 'other.txt' }));
+    await waitFor(() => expect(consumed).toHaveBeenCalled());
+    view.rerender(<FilesTab projectId={1} remote={remote} />);
+    fireEvent.click(screen.getByRole('tab', { name: /draft.txt/ }));
+    expect(screen.getByRole('textbox')).toHaveProperty('value', 'draft');
+    expect(screen.getByTestId('file-save').hasAttribute('disabled')).toBe(false);
+    expect(reads.remote.mock.calls.every(([request]) => request.method !== 'workspace.fileWrite')).toBe(true);
   });
 
   it('does not display or consume an old peer’s in-flight open request', async () => {

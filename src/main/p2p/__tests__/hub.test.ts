@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, existsSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, realpathSync, existsSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -18,14 +18,14 @@ import { runMigrations } from '../../db/migrator';
 import { RootsRepo } from '../../repos/roots-repo';
 import { ProjectsRepo } from '../../repos/projects-repo';
 import { SettingsRepo } from '../../repos/settings-repo';
-import { appendActivity } from '../../activity/log';
+import { activityPath, appendActivity } from '../../activity/log';
 import * as git from '../../git/run-git';
 import { waitFor } from './_mockRelay';
 import { NoticeRouter } from '../../notifications/notice-router';
 import { Notice, ShellInfo } from '../../../shared/p2p-contract';
 import { createDropStaging } from '../../drops/staging';
 import { createUploadQuota } from '../uploads';
-import { RpcError } from '../rpc';
+import { MAX_RPC_FRAME_BYTES, RpcError } from '../rpc';
 import { UPLOAD_CHUNK_MAX_B64_CHARS } from '../../../shared/remote-upload-contract';
 
 const MOCK = resolve(__dirname, '../../../../scripts/mock-claude.mjs');
@@ -234,6 +234,64 @@ describe('paired desktop workspace', () => {
     }));
   });
 
+  test('publishes new files exclusively and leaves existing bytes and directories alone', async () => {
+    const { client } = setup(allowed);
+    const request = { projectId, createOnly: true, relPath: 'fresh.txt', content: '' };
+    await expect(client.call('workspace.fileWrite', request)).resolves.toEqual({ ok: true, sizeBytes: 0 });
+    await expect(client.call('workspace.fileRead', { projectId, relPath: 'fresh.txt' }))
+      .resolves.toEqual({ content: '', kind: 'text', sizeBytes: 0 });
+    await expect(client.call('workspace.fileWrite', { ...request, createOnly: false, content: 'now filled' }))
+      .resolves.toEqual({ ok: true, sizeBytes: 10 });
+    await expect(client.call('workspace.fileWrite', request)).rejects.toMatchObject({ code: 'already_exists' });
+    await expect(client.call('workspace.fileWrite', { ...request, relPath: 'sub' }))
+      .rejects.toMatchObject({ code: 'already_exists' });
+    expect(readFileSync(join(projectRoot, 'fresh.txt'), 'utf8')).toBe('now filled');
+    expect(readdirSync(projectRoot).sort()).toEqual(['a.txt', 'fresh.txt', 'sub']);
+  });
+
+  test.skipIf(process.platform === 'win32')('replaces regular text while preserving POSIX permissions', async () => {
+    const file = join(projectRoot, 'a.txt');
+    chmodSync(file, 0o751);
+    const { client } = setup(allowed);
+    await expect(client.call('workspace.fileWrite', { projectId, relPath: 'a.txt', content: 'preserved mode' }))
+      .resolves.toEqual({ ok: true, sizeBytes: 14 });
+    expect(readFileSync(file, 'utf8')).toBe('preserved mode');
+    expect(statSync(file).mode & 0o7777).toBe(0o751);
+  });
+
+  test.skipIf(process.platform === 'win32')('allows an in-project alias preview but never replaces the leaf link on save or create', async () => {
+    const link = join(projectRoot, 'alias.txt');
+    symlinkSync('a.txt', link);
+    const { client } = setup(allowed);
+    const request = { projectId, relPath: 'alias.txt' };
+    await expect(client.call('workspace.fileTree', { projectId })).resolves.toEqual({ entries: [
+      { name: 'sub', isDir: true, relPath: 'sub' },
+      { name: 'a.txt', isDir: false, relPath: 'a.txt' },
+      { name: 'alias.txt', isDir: false, relPath: 'alias.txt' },
+    ] });
+    await expect(client.call('workspace.fileRead', request)).resolves.toMatchObject({ content: 'hello file' });
+    await expect(client.call('workspace.fileWrite', { ...request, content: 'discarded' }))
+      .rejects.toMatchObject({ code: 'symlink_not_writable' });
+    await expect(client.call('workspace.fileWrite', { ...request, content: '', createOnly: true }))
+      .rejects.toMatchObject({ code: 'already_exists' });
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(link)).toBe('a.txt');
+    expect(readFileSync(link, 'utf8')).toBe('hello file');
+  });
+
+  test('rejects directories where file bytes are required and keeps directory operations distinct', async () => {
+    const { client } = setup(allowed);
+    await expect(client.call('workspace.fileTree', { projectId, relPath: 'sub' })).resolves.toEqual({ entries: [] });
+    await expect(client.call('workspace.fileRead', { projectId, relPath: 'sub' }))
+      .rejects.toMatchObject({ code: 'is_directory' });
+    await expect(client.call('workspace.fileWrite', { projectId, relPath: 'sub', content: 'no' }))
+      .rejects.toMatchObject({ code: 'is_directory' });
+    await expect(client.call('workspace.fileMkdir', { projectId, relPath: 'sub' }))
+      .rejects.toMatchObject({ code: 'already_exists' });
+    await expect(client.call('workspace.fileDelete', { projectId, relPath: 'missing.txt' })).resolves.toEqual({ ok: true });
+    expect(readdirSync(join(projectRoot, 'sub'))).toEqual([]);
+  });
+
   test.skipIf(process.platform === 'win32')('rejects external and dangling symlinks, including missing destination ancestors and a root alias', async () => {
     const outside = join(dir, 'outside');
     mkdirSync(outside);
@@ -363,6 +421,82 @@ describe('paired desktop workspace', () => {
     expect(auditLines()).toContainEqual(expect.objectContaining({ method: 'workspace.setDefaultAgent', params: {}, outcome: 'ok' }));
   });
 
+  test('keeps workspace launch definitions host-owned while Settings selects an installed profile by name', async () => {
+    settings.set('default_cli_profiles', []);
+    const meta = join(projectRoot, '.metaide');
+    const catalog = JSON.stringify([{ name: 'Repo agent', argv: ['host-only-command'], env: { TOKEN: 'host-only-token' } }]);
+    mkdirSync(meta);
+    writeFileSync(join(meta, 'cli-profiles.json'), catalog);
+    writeFileSync(join(meta, 'env'), 'TITLE=host-env');
+    const { client } = setup(allowed);
+    for (const relPath of ['.metaide/cli-profiles.json', '.metaide/env', '.METAIDE/CLI-PROFILES.JSON']) {
+      await expect(client.call('workspace.fileWrite', { projectId, relPath, content: 'denied' }))
+        .rejects.toMatchObject({ code: 'protected_path' });
+      await expect(client.call('workspace.fileDelete', { projectId, relPath }))
+        .rejects.toMatchObject({ code: 'protected_path' });
+    }
+    await expect(client.call('workspace.fileMkdir', { projectId, relPath: '.metaide/cli-profiles.json' }))
+      .rejects.toMatchObject({ code: 'protected_path' });
+    await expect(client.call('workspace.fileRename', { projectId, from: 'sub', to: '.metaide' }))
+      .rejects.toMatchObject({ code: 'protected_path' });
+    await expect(client.call('workspace.fileWrite', { projectId, relPath: '.metaide/notes', content: 'ordinary text' }))
+      .resolves.toMatchObject({ ok: true });
+    await expect(client.call('workspace.setDefaultAgent', { projectId, defaultAgent: 'Repo agent' })).resolves.toEqual({
+      defaultAgent: 'Repo agent', choices: ['Terminal', 'Repo agent'], hasCustomCommand: false,
+    });
+    await expect(client.call('workspace.agentSettings', { projectId })).resolves.toEqual({
+      defaultAgent: 'Repo agent', choices: ['Terminal', 'Repo agent'], hasCustomCommand: false,
+    });
+    expect(readFileSync(join(meta, 'cli-profiles.json'), 'utf8')).toBe(catalog);
+    expect(readFileSync(join(meta, 'env'), 'utf8')).toBe('TITLE=host-env');
+    expect(readFileSync(join(meta, 'notes'), 'utf8')).toBe('ordinary text');
+    expect(readFileSync(auditPath, 'utf8')).not.toMatch(/Repo agent|host-only-command|host-only-token|host-env/);
+  });
+
+  test.skipIf(process.platform === 'win32')('protects launch symlink aliases, dangling targets and the directories carrying them', async () => {
+    const path = (relPath: string) => join(projectRoot, relPath);
+    mkdirSync(path('launch-meta'));
+    mkdirSync(path('launch-data'));
+    writeFileSync(path('launch-data/catalog'), '[]');
+    symlinkSync('launch-meta', path('.metaide'));
+    symlinkSync('../launch-data/catalog', path('launch-meta/cli-profiles.json'));
+    symlinkSync('../launch-data/future-env', path('launch-meta/env'));
+    symlinkSync('launch-data', path('alias'));
+    const { client } = setup(allowed);
+    for (const relPath of ['launch-meta/cli-profiles.json', 'launch-data/catalog', 'alias/catalog', 'alias/future-env']) {
+      await expect(client.call('workspace.fileWrite', { projectId, relPath, content: 'denied', createOnly: true }))
+        .rejects.toMatchObject({ code: 'protected_path' });
+    }
+    for (const from of ['launch-meta', 'launch-data']) {
+      await expect(client.call('workspace.fileRename', { projectId, from, to: 'archive' }))
+        .rejects.toMatchObject({ code: 'protected_path' });
+      await expect(client.call('workspace.fileDelete', { projectId, relPath: from }))
+        .rejects.toMatchObject({ code: 'protected_path' });
+    }
+    await expect(client.call('workspace.fileRename', { projectId, from: 'a.txt', to: 'launch-data/future-env' }))
+      .rejects.toMatchObject({ code: 'protected_path' });
+    await expect(client.call('workspace.fileMkdir', { projectId, relPath: 'launch-data/future-env' }))
+      .rejects.toMatchObject({ code: 'protected_path' });
+    await expect(client.call('workspace.fileWrite', { projectId, relPath: '.metaide/notes', content: 'ok' }))
+      .resolves.toMatchObject({ ok: true });
+    expect(readFileSync(path('launch-data/catalog'), 'utf8')).toBe('[]');
+    expect(readFileSync(path('a.txt'), 'utf8')).toBe('hello file');
+    expect(readFileSync(path('launch-meta/notes'), 'utf8')).toBe('ok');
+    expect(existsSync(path('launch-data/future-env'))).toBe(false);
+    expect(readlinkSync(path('.metaide'))).toBe('launch-meta');
+  });
+
+  test('rejects an oversized catalog during both Settings operations without persisting a selection', async () => {
+    const meta = join(projectRoot, '.metaide');
+    mkdirSync(meta);
+    writeFileSync(join(meta, 'cli-profiles.json'), ' '.repeat(512 * 1024 + 1));
+    const { client } = setup(allowed);
+    await expect(client.call('workspace.agentSettings', { projectId })).rejects.toMatchObject({ code: 'file_too_large' });
+    await expect(client.call('workspace.setDefaultAgent', { projectId, defaultAgent: 'Terminal' }))
+      .rejects.toMatchObject({ code: 'file_too_large' });
+    expect(projects.get(projectId)?.config.defaultCliName).toBeUndefined();
+  });
+
   test('detects either legacy variant and never clears custom commands remotely', async () => {
     const { client } = setup(allowed);
     const command = { argv: ['private-custom-argv'], env: { CUSTOM_VALUE: 'private-custom-env' } };
@@ -402,6 +536,54 @@ describe('paired desktop workspace', () => {
     appendActivity(projectRoot, { ...entry, id: 'next', target: 'a.txt' });
     const reloaded = await client.call('workspace.activity', { projectId });
     expect(reloaded.entries.at(-1)).toEqual({ ...entry, id: 'next', target: 'a.txt' });
+  });
+
+  test('reports an empty timeline, skips invalid entries, and rejects an oversized partial timeline', async () => {
+    const path = activityPath(projectRoot);
+    const { client } = setup(allowed);
+    await expect(client.call('workspace.activity', { projectId })).resolves.toEqual({ entries: [] });
+    mkdirSync(join(projectRoot, '.metaide'), { recursive: true });
+    writeFileSync(path, 'not JSON\n{"kind":"tool"}\n');
+    const entry = { id: 'plain', ts: '2026-06-01T00:00:00.000Z', agent: 'claude', shellIndex: 0, kind: 'tool', tool: 'Other' } as const;
+    appendActivity(projectRoot, entry);
+    await expect(client.call('workspace.activity', { projectId })).resolves.toEqual({ entries: [entry] });
+    writeFileSync(path, ' '.repeat(MAX_RPC_FRAME_BYTES + 1));
+    await expect(client.call('workspace.activity', { projectId })).rejects.toMatchObject({ code: 'result_too_large' });
+  });
+
+  test('reports no Diff repository and refuses reads of specific sides', async () => {
+    const run = vi.spyOn(git, 'runGit');
+    const { client } = setup(allowed);
+    await expect(client.call('workspace.diffStatus', { projectId })).resolves.toEqual({
+      isRepo: false, branch: null, ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [],
+    });
+    await expect(client.call('workspace.diffSides', { projectId, kind: 'untracked', path: 'a.txt' }))
+      .rejects.toMatchObject({ code: 'git_unavailable' });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  test('returns bounded Diff errors for failed commands and an oversized status without exposing stderr', async () => {
+    mkdirSync(join(projectRoot, '.git'));
+    const repo = realpathSync(projectRoot);
+    const { client } = setup(allowed);
+    const result = (stdout: string, overrides: Partial<git.GitRunResult> = {}): git.GitRunResult => ({
+      stdout: Buffer.from(stdout), stderr: 'private Git diagnostic', status: 0, timedOut: false, tooLarge: false,
+      ...overrides,
+    });
+    const run = vi.spyOn(git, 'runGit');
+    const status = () => client.call('workspace.diffStatus', { projectId });
+    run.mockResolvedValueOnce(result('', { status: 128 }));
+    await expect(status()).rejects.toMatchObject({ code: 'git_unavailable', message: 'project repository could not be verified' });
+    run.mockResolvedValueOnce(result(`${repo}\n`)).mockResolvedValueOnce(result('', { status: 2 }));
+    await expect(status()).rejects.toMatchObject({ code: 'git_unavailable', message: 'project Git config could not be verified' });
+    run.mockResolvedValueOnce(result(`${repo}\n`)).mockResolvedValueOnce(result('', { status: 1 }))
+      .mockResolvedValueOnce(result('', { timedOut: true }));
+    await expect(status()).rejects.toMatchObject({ code: 'git_unavailable', message: 'project Git status could not be read' });
+    run.mockResolvedValueOnce(result(`${repo}\n`)).mockResolvedValueOnce(result('', { status: 1 }))
+      .mockResolvedValueOnce(result('', { tooLarge: true }));
+    await expect(status()).rejects.toMatchObject({ code: 'result_too_large' });
+    expect(run).toHaveBeenCalledTimes(9);
+    expect(readFileSync(auditPath, 'utf8')).not.toContain('private Git diagnostic');
   });
 
   test('Diff status and sides use fresh host state; safe Git arguments never take guessed paths', async () => {

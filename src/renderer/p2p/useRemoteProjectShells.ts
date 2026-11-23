@@ -31,7 +31,10 @@ export function useRemoteProjectShells(deviceId: string, projectId: number, acti
   useEffect(() => {
     if (!active) return;
     let cancelled = false;
+    let pending = false;
     const tick = () => {
+      if (pending) return;
+      pending = true;
       api.invoke('p2p:rpc-call', { deviceId, method: 'shells.alive', params: {} }).then(
         (res) => {
           if (cancelled) return;
@@ -46,7 +49,7 @@ export function useRemoteProjectShells(deviceId: string, projectId: number, acti
           setState((prev) => (prev.key === key && sameShells(prev.shells, shells) ? prev : { key, shells }));
         },
         () => { /* keep the last list; the next tick retries */ },
-      );
+      ).finally(() => { pending = false; });
     };
     tick();
     const id = window.setInterval(tick, POLL_MS);

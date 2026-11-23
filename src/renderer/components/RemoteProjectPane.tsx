@@ -7,7 +7,7 @@ import { visibleMainTab, type MainTab } from '@renderer/main-tab';
 import { remoteWorkspace, type RemoteWorkspace } from '@renderer/p2p/remote-workspace';
 import { PROJECT_SETTINGS_COPY, PROJECT_SETTINGS_TESTIDS } from '@renderer/project-settings-contract';
 import { shellChipLabel } from '@renderer/shell-label';
-import { useRemoteProjectShells } from '@renderer/p2p/useRemoteProjectShells';
+import { useRemoteProjectShells, type RemoteProjectShell } from '@renderer/p2p/useRemoteProjectShells';
 import { ActivityTab } from './ActivityTab';
 import { DiffTab } from './DiffTab';
 import { FilesTab } from './FilesTab';
@@ -26,8 +26,10 @@ interface Props {
   onClose?: () => void;
 }
 
-function useRemoteActivityEnabled(remote: RemoteWorkspace, projectId: number): boolean {
-  const [enabled, setEnabled] = useState(false);
+type WorkspaceStatus = 'checking' | 'unavailable' | 'activity-disabled' | 'activity-enabled';
+
+function useRemoteWorkspaceStatus(remote: RemoteWorkspace, projectId: number): WorkspaceStatus {
+  const [status, setStatus] = useState<WorkspaceStatus>('checking');
   useEffect(() => {
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
@@ -35,10 +37,11 @@ function useRemoteActivityEnabled(remote: RemoteWorkspace, projectId: number): b
       let delay = 5000;
       try {
         const info = await remote.call('workspace.info', { projectId });
-        if (!disposed) setEnabled(info.activityEnabled);
+        if (!disposed) setStatus(info.activityEnabled ? 'activity-enabled' : 'activity-disabled');
       } catch {
         // Back off on older or disconnected peers. Preserve the last host setting on a transient failure.
         delay = 30_000;
+        if (!disposed) setStatus((previous) => previous === 'checking' ? 'unavailable' : previous);
       } finally {
         if (!disposed) timer = setTimeout(() => void refresh(), delay);
       }
@@ -46,7 +49,7 @@ function useRemoteActivityEnabled(remote: RemoteWorkspace, projectId: number): b
     void refresh();
     return () => { disposed = true; clearTimeout(timer); };
   }, [remote, projectId]);
-  return enabled;
+  return status;
 }
 
 /** Keep tab state and pending reads scoped to a device/project pair, not just its numeric ID. */
@@ -56,11 +59,17 @@ export function RemoteProjectPane(props: Props): ReactElement {
 
 function RemoteWorkspacePane({ deviceId, deviceName, projectId, projectName, initialShellIndex, openRequest, onClose }: Props): ReactElement {
   const [tab, setTab] = useState<MainTab>('shell');
+  const [filesVisited, setFilesVisited] = useState(false);
   const [fileTarget, setFileTarget] = useState<string | null>(null);
   const consumeFileTarget = useCallback(() => setFileTarget(null), []);
   const remote = useMemo(() => remoteWorkspace(deviceId), [deviceId]);
-  const activityEnabled = useRemoteActivityEnabled(remote, projectId);
+  const status = useRemoteWorkspaceStatus(remote, projectId);
+  const activityEnabled = status === 'activity-enabled';
   const visibleTab = visibleMainTab(tab, activityEnabled);
+  const selectTab = (next: MainTab) => {
+    if (next === 'files') setFilesVisited(true);
+    setTab(next);
+  };
   const requestedShellIndex = openRequest?.shellIndex ?? initialShellIndex;
   useEffect(() => {
     if (requestedShellIndex !== undefined) setTab('shell');
@@ -72,18 +81,23 @@ function RemoteWorkspacePane({ deviceId, deviceName, projectId, projectName, ini
   return (
     <div className="flex-1 min-h-0 min-w-0 flex flex-col" data-testid="remote-project-pane">
       <div className="flex shrink-0 flex-wrap items-center gap-2 px-3 py-1.5 text-xs text-[--text]">
-        <WorkspaceDestinations active={visibleTab} activityEnabled={activityEnabled} onSelect={setTab} />
+        <WorkspaceDestinations active={visibleTab} activityEnabled={activityEnabled} onSelect={selectTab} />
         <RemoteProjectIdentity projectName={projectName} deviceName={deviceName} onClose={onClose} />
       </div>
+      {status === 'unavailable' && <p role="status" className="px-3 pb-1 text-xs text-[--text-muted]">
+        Workspace access unavailable. Check the host’s P2P permissions and app version.
+      </p>}
       <div className="flex flex-1 min-h-0 min-w-0 flex-col">
         <RemoteProjectShells active={visibleTab === 'shell'} deviceId={deviceId} deviceName={deviceName} projectId={projectId}
           projectName={projectName} initialShellIndex={requestedShellIndex} openRequest={openRequest} />
-        {visibleTab === 'files' && <FilesTab projectId={projectId} remote={remote} openRelPath={fileTarget}
-          onOpenRelPathConsumed={consumeFileTarget} />}
+        {filesVisited && <div className="h-full min-h-0" hidden={visibleTab !== 'files'}>
+          <FilesTab projectId={projectId} remote={remote} active={visibleTab === 'files'}
+            openRelPath={fileTarget} onOpenRelPathConsumed={consumeFileTarget} />
+        </div>}
         {visibleTab === 'diff' && <DiffTab projectId={projectId} remote={remote} />}
         {visibleTab === 'settings' && <RemoteSettingsView projectId={projectId} projectName={projectName} remote={remote} />}
         {visibleTab === 'activity' && <ActivityTab projectId={projectId} remote={remote} followFiles={false}
-          onFollowFilesChange={() => {}} onOpenTarget={(path) => { setFileTarget(path); setTab('files'); }} />}
+          onFollowFilesChange={() => {}} onOpenTarget={(path) => { setFileTarget(path); selectTab('files'); }} />}
       </div>
     </div>
   );
@@ -113,18 +127,15 @@ function RemoteProjectIdentity({ projectName, deviceName, onClose }: Pick<Props,
 type ShellProps = Omit<Props, 'onClose'> & { readonly active: boolean };
 
 function RemoteProjectShells({ active, deviceId, deviceName, projectId, projectName, initialShellIndex, openRequest }: ShellProps): ReactElement | null {
-  const [launched, setLaunched] = useState<{ key: string; index: number } | null>(null);
+  const [launched, setLaunched] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const key = `${deviceId}:${projectId}`;
   const shells = useRemoteProjectShells(deviceId, projectId, active);
-  // The tab the user picked, for this (device, project) only.
-  const [picked, setPicked] = useState<{ key: string; index: number } | null>(
-    initialShellIndex === undefined ? null : { key, index: initialShellIndex },
-  );
+  // The owning workspace is keyed by device and project, so a switch resets both shell indices.
+  const [picked, setPicked] = useState<number | null>(initialShellIndex ?? null);
   // A later request for another tab of the same project (a second notice) selects it too.
   useEffect(() => {
-    if (initialShellIndex !== undefined) setPicked({ key: `${deviceId}:${projectId}`, index: initialShellIndex });
-  }, [deviceId, projectId, initialShellIndex, openRequest]);
+    if (initialShellIndex !== undefined) setPicked(initialShellIndex);
+  }, [initialShellIndex, openRequest]);
 
   // shells.launch is idempotent per project on the host (it reuses the live shell), so StrictMode's
   // double-mount just launches twice and the `cancelled` flag drops the stale result. Deliberately no
@@ -133,21 +144,17 @@ function RemoteProjectShells({ active, deviceId, deviceName, projectId, projectN
     let cancelled = false;
     setError(null);
     api.invoke('p2p:rpc-call', { deviceId, method: 'shells.launch', params: { projectId } }).then(
-      (res) => {
+      ({ result }) => {
         if (cancelled) return;
-        const r = res.result as { shellIndex?: number } | undefined;
-        setLaunched({ key, index: typeof r?.shellIndex === 'number' ? r.shellIndex : 0 });
+        const index = result && typeof result === 'object' && 'shellIndex' in result ? result.shellIndex : undefined;
+        setLaunched(typeof index === 'number' ? index : 0);
       },
       (e: unknown) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); },
     );
     return () => { cancelled = true; };
-  }, [deviceId, projectId, key]);
-  // A result for a previous (device, project) never renders against the new one.
-  const launchedIndex = launched && launched.key === key ? launched.index : null;
-  const pickedIndex = picked && picked.key === key ? picked.index : null;
+  }, [deviceId, projectId]);
   // A picked tab whose shell has since gone falls back to the launched one, so the pane never sits on a dead tab.
-  const shellIndex = launchedIndex === null ? null
-    : pickedIndex !== null && shells.some((s) => s.shellIndex === pickedIndex) ? pickedIndex : launchedIndex;
+  const shellIndex = launched === null ? null : shells.some((s) => s.shellIndex === picked) ? picked : launched;
 
   // Tell main which remote shell is on screen, so a fleet notice for it is held back while it is in view.
   useEffect(() => {
@@ -159,28 +166,8 @@ function RemoteProjectShells({ active, deviceId, deviceName, projectId, projectN
   if (!active) return null;
   return (
     <div className="flex-1 min-h-0 flex flex-col bg-[--surface-sheet]" data-sheet-content="shell">
-      {!error && shellIndex !== null && shells.length > 0 && (
-        <div className="flex items-center gap-1 pl-2 pr-[14px] py-1 text-xs shrink-0 overflow-x-auto" role="tablist" aria-label={`Shells of ${projectName} on ${deviceName}`} data-testid="remote-shell-tabs">
-          {shells.map((s) => {
-            const isActive = s.shellIndex === shellIndex;
-            return (
-              <button
-                key={s.shellIndex}
-                type="button"
-                role="tab"
-                aria-selected={isActive}
-                data-testid={SHELL_TAB_TEST_ID}
-                data-shell-index={s.shellIndex}
-                onClick={() => setPicked({ key, index: s.shellIndex })}
-                className={`flex items-center gap-1 px-2 py-0.5 rounded-md whitespace-nowrap ${isActive ? 'bg-[--surface-active]' : 'hover:bg-[--surface-hover]'}`}
-              >
-                {s.agentState ? <StatusDot agent={s.agent} state={s.agentState} inactiveWhenIdle={!isActive} /> : null}
-                <span className={isActive ? 'text-[--text] font-medium' : 'text-[--text-muted]'}>{shellChipLabel(shells, s.shellIndex)}</span>
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {!error && shellIndex !== null && <RemoteShellStrip shells={shells} shellIndex={shellIndex}
+        label={`Shells of ${projectName} on ${deviceName}`} onPick={setPicked} />}
       <div className="flex-1 min-h-0 relative">
         {error && <div className="p-4 text-[12px] text-[--danger]">Could not open remote shell: {error}</div>}
         {!error && shellIndex !== null && (
@@ -193,6 +180,31 @@ function RemoteProjectShells({ active, deviceId, deviceName, projectId, projectN
           />
         )}
       </div>
+    </div>
+  );
+}
+
+function RemoteShellStrip({ shells, shellIndex, label, onPick }: {
+  readonly shells: RemoteProjectShell[];
+  readonly shellIndex: number;
+  readonly label: string;
+  readonly onPick: (index: number) => void;
+}): ReactElement | null {
+  if (shells.length === 0) return null;
+  return (
+    <div className="flex items-center gap-1 pl-2 pr-[14px] py-1 text-xs shrink-0 overflow-x-auto"
+      role="tablist" aria-label={label} data-testid="remote-shell-tabs">
+      {shells.map((shell) => {
+        const isActive = shell.shellIndex === shellIndex;
+        return <button key={shell.shellIndex} type="button" role="tab" aria-selected={isActive}
+          data-testid={SHELL_TAB_TEST_ID} data-shell-index={shell.shellIndex} onClick={() => onPick(shell.shellIndex)}
+          className={`flex items-center gap-1 px-2 py-0.5 rounded-md whitespace-nowrap ${isActive ? 'bg-[--surface-active]' : 'hover:bg-[--surface-hover]'}`}>
+          {shell.agentState && <StatusDot agent={shell.agent} state={shell.agentState} inactiveWhenIdle={!isActive} />}
+          <span className={isActive ? 'text-[--text] font-medium' : 'text-[--text-muted]'}>
+            {shellChipLabel(shells, shell.shellIndex)}
+          </span>
+        </button>;
+      })}
     </div>
   );
 }

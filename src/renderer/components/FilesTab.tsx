@@ -42,6 +42,8 @@ function extOf(name: string): string {
 interface FilesTabProps {
   projectId: number;
   remote?: RemoteWorkspace;
+  /** A mounted but hidden workspace keeps its drafts without opening files or refreshing. */
+  active?: boolean;
   openRelPath?: string | null;
   openLine?: number | null;
   onOpenRelPathConsumed?: () => void;
@@ -51,6 +53,7 @@ interface FilesTabProps {
   onFullscreenToggle?: () => void;
 }
 
+/** File browser and editor; open tabs and drafts belong to the current project and peer. */
 export function FilesTab(props: FilesTabProps): JSX.Element {
   const { projectId, remote } = props;
   const [scope, setScope] = useState({ projectId, remote, version: 0 });
@@ -64,6 +67,7 @@ export function FilesTab(props: FilesTabProps): JSX.Element {
 function ScopedFilesTab({
   projectId,
   remote,
+  active = true,
   openRelPath,
   openLine,
   onOpenRelPathConsumed,
@@ -80,6 +84,7 @@ function ScopedFilesTab({
   const [treeWidth, setTreeWidth] = usePersistedNumber('metaide.filesTreeWidth', 256, 160, 500);
   const { status: gitStatus } = useGitStatus(remote ? null : projectId);
   const lifetime = useRef<AbortSignal | null>(null);
+  const visible = useRef(active);
   const dirRequest = useRef(0);
   const requestedDir = useRef<string | undefined>(undefined);
   useEffect(() => {
@@ -87,6 +92,7 @@ function ScopedFilesTab({
     lifetime.current = controller.signal;
     return () => controller.abort();
   }, []);
+  useEffect(() => { visible.current = active; }, [active]);
 
   const activeFile = useMemo(
     () => openFiles.find((f) => f.relPath === activePath) ?? null,
@@ -95,7 +101,7 @@ function ScopedFilesTab({
 
   const loadDir = useCallback(async (relPath?: string) => {
     const signal = lifetime.current;
-    if (!signal || signal.aborted) return;
+    if (!visible.current || !signal || signal.aborted) return;
     const request = ++dirRequest.current;
     requestedDir.current = relPath;
     setError(null);
@@ -219,12 +225,14 @@ function ScopedFilesTab({
     });
   }, []);
 
-  useEffect(() => { void loadDir(); }, [loadDir]);
+  useEffect(() => {
+    if (active) void loadDir(requestedDir.current);
+  }, [active, loadDir]);
 
   const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = rootRef.current;
-    if (!el) return;
+    if (!active || !el) return;
     const onKey = (e: KeyboardEvent) => {
       if (activePath && isSaveShortcut(e, platform)) {
         e.preventDefault();
@@ -233,19 +241,19 @@ function ScopedFilesTab({
     };
     el.addEventListener('keydown', onKey);
     return () => el.removeEventListener('keydown', onKey);
-  }, [activePath, saveFile, platform]);
+  }, [active, activePath, saveFile, platform]);
 
   // React to a Cmd+P / Cmd+Shift+F / hover-preview pick — open the relative
   // path directly and, if a line was passed, note it so the preview can
   // scroll there once the file loads.
   useEffect(() => {
-    if (!openRelPath) return;
+    if (!active || !openRelPath) return;
     const signal = lifetime.current;
     setPendingLine(openLine ?? null);
     void openPath(openRelPath).finally(() => {
-      if (signal && !signal.aborted) onOpenRelPathConsumed?.();
+      if (visible.current && signal && !signal.aborted) onOpenRelPathConsumed?.();
     });
-  }, [openRelPath, openLine, openPath, onOpenRelPathConsumed]);
+  }, [active, openRelPath, openLine, openPath, onOpenRelPathConsumed]);
 
   return (
     <div ref={rootRef} tabIndex={-1} className="h-full flex min-h-0 focus:outline-none">
@@ -302,7 +310,7 @@ function ScopedFilesTab({
               dirty={activeFile.buffer !== activeFile.content}
               onForceText={() => void forceTextOn(activeFile.relPath)}
               isFullscreen={isFullscreen}
-              onFullscreenToggle={() => onFullscreenToggle?.()}
+              {...(onFullscreenToggle ? { onFullscreenToggle } : {})}
             />
           )}
         </div>
@@ -478,7 +486,7 @@ function FileTreePane({
     if (!name) return;
     const params = { projectId, relPath: parent ? `${parent}/${name}` : name, content: '' };
     void mutate('Failed to create file', () => remote
-      ? remote.call('workspace.fileWrite', params) : api.invoke('files:write', params));
+      ? remote.call('workspace.fileWrite', { ...params, createOnly: true }) : api.invoke('files:write', params));
   }
   function newFolder(parent = dir) {
     const name = window.prompt('New folder name:');
@@ -606,6 +614,7 @@ function FileTreePane({
   );
 }
 
+/** View a file or edit its text; remote previews never load viewer-side resources. */
 export function FilePreview({
   projectId, file, scrollToLine, onScrolled, onChange, onToggleEdit, onSave, dirty, onForceText,
   isFullscreen, onFullscreenToggle, remotePreview = false,
@@ -621,7 +630,7 @@ export function FilePreview({
   /** Escape hatch: user overrode the binary heuristic and wants to edit as text anyway. */
   onForceText?: () => void;
   isFullscreen: boolean;
-  onFullscreenToggle: () => void;
+  onFullscreenToggle?: () => void;
   remotePreview?: boolean;
 }): JSX.Element {
   const ext = extOf(file.relPath);
@@ -644,7 +653,7 @@ export function FilePreview({
     if (!el) return;
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.shiftKey && (e.key === 'Enter' || e.key === 'Return')) {
+      if (onFullscreenToggle && mod && e.shiftKey && (e.key === 'Enter' || e.key === 'Return')) {
         e.preventDefault();
         onFullscreenToggle();
         return;
@@ -660,10 +669,10 @@ export function FilePreview({
 
   // Image / PDF viewers handle their own toolbars + routing.
   if (!remotePreview && IMG_EXT.has(ext)) {
-    return <ImageViewer projectId={projectId} relPath={file.relPath} fullscreen={isFullscreen} onFullscreenToggle={onFullscreenToggle} />;
+    return <ImageViewer projectId={projectId} relPath={file.relPath} fullscreen={isFullscreen} onFullscreenToggle={() => onFullscreenToggle?.()} />;
   }
   if (!remotePreview && PDF_EXT.has(ext)) {
-    return <PdfViewer projectId={projectId} relPath={file.relPath} fullscreen={isFullscreen} onFullscreenToggle={onFullscreenToggle} />;
+    return <PdfViewer projectId={projectId} relPath={file.relPath} fullscreen={isFullscreen} onFullscreenToggle={() => onFullscreenToggle?.()} />;
   }
 
   return (
@@ -680,13 +689,15 @@ export function FilePreview({
             <button onClick={mdZoomIn} className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]" title="Zoom in (⌘=)">+</button>
           </>
         )}
-        <button
-          onClick={onFullscreenToggle}
-          className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]"
-          title={isFullscreen ? 'Exit fullscreen (⌘⇧Enter)' : 'Fullscreen (⌘⇧Enter)'}
-        >
-          {isFullscreen ? '⤡' : '⤢'}
-        </button>
+        {onFullscreenToggle && (
+          <button
+            onClick={onFullscreenToggle}
+            className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]"
+            title={isFullscreen ? 'Exit fullscreen (⌘⇧Enter)' : 'Fullscreen (⌘⇧Enter)'}
+          >
+            {isFullscreen ? '⤡' : '⤢'}
+          </button>
+        )}
         {editable && (
           <>
             <button

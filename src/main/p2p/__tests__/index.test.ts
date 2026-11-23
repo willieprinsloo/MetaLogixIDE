@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -12,6 +12,7 @@ vi.mock('electron', async (importOriginal) => ({
 
 import { createP2P, parseSessionToken, ONLINE_GRACE_MS, type ClientCfg, type P2PHandle, type SignalingClient } from '../index';
 import { buildServices, type Services } from '../../services';
+import { handlers } from '../../ipc/register';
 import { loadKnownDevices, addKnownDevice, canonicalPubHex } from '../identity';
 import { doNoiseXxHandshake, pairingPrologue } from '../pairing';
 import { loadHostIdentity } from '../host-identity';
@@ -166,13 +167,40 @@ const idOf = (n: Node) => canonicalPubHex(n.services.p2p!.deviceKey.pub);
 const identityFile = (n: Node) => join(n.home, '.metaide', 'host-identity.json');
 /** Resolves once the node's host connection has been minted a code and persisted it. */
 const hostCode = async (n: Node) => { await waitFor(() => existsSync(identityFile(n))); return loadHostIdentity(identityFile(n))!.code; };
-const known = (n: Node) => loadKnownDevices(join(n.home, '.metaide', 'known_devices.json'));
+const knownFile = (n: Node) => join(n.home, '.metaide', 'known_devices.json');
+const known = (n: Node) => loadKnownDevices(knownFile(n));
 
 /** Pairs viewer -> host (host trusts viewer, viewer trusts host). */
 async function pair(host: Node, viewer: Node) {
   await hostCode(host);
   const { code } = host.p2p.api.generatePairCode();
   return { code, result: await viewer.p2p.api.redeemPairCode(code) };
+}
+
+/** Change only the first pairing metadata frame; the relay, Noise identities and hub stay real to this fixture. */
+async function pairWithMetadata(host: Node, viewer: Node, metadata: { viewer?: true; workspaceAccess?: true }): ReturnType<typeof pair> {
+  const hello = viewer.p2p.api.getSettings().deviceName;
+  const send = SecureTransport.prototype.send;
+  const hook = vi.spyOn(SecureTransport.prototype, 'send').mockImplementation(function (this: SecureTransport, bytes) {
+    const frame = new TextDecoder().decode(bytes);
+    if (frame.startsWith(`{"hello":${JSON.stringify(hello)}`)) {
+      send.call(this, new TextEncoder().encode(JSON.stringify({ hello, ...metadata })));
+    } else {
+      send.call(this, bytes);
+    }
+  });
+  try {
+    return await pair(host, viewer);
+  } finally {
+    hook.mockRestore();
+  }
+}
+
+function workspaceProject(host: Node): number {
+  const path = join(host.home, 'workspace-project');
+  mkdirSync(path);
+  writeFileSync(join(path, 'fixture.txt'), 'host file');
+  return host.services.projects.upsert(host.services.roots.add(host.home).id, path, 'Workspace').id;
 }
 
 beforeEach(() => { tmps = []; nodes = []; });
@@ -396,7 +424,9 @@ describe('pairing over the full stack', () => {
     await waitFor(() => known(host).length === 1);
     expect(known(host)[0]!.code).toBeUndefined();
     // Nothing can dial it, so it is listed as a viewer (revocable) rather than a fleet machine.
-    expect(await host.p2p.api.fleetList()).toEqual([expect.objectContaining({ deviceId: idOf(viewer), name: 'Laptop', viewer: true })]);
+    expect(await host.p2p.api.fleetList()).toEqual([
+      expect.objectContaining({ deviceId: idOf(viewer), name: 'Laptop', viewer: true, workspaceAccess: false }),
+    ]);
     // The machine it joined is dialable, so on its side that one is an ordinary fleet machine.
     expect((await viewer.p2p.api.fleetList())[0]!.viewer).toBeUndefined();
   });
@@ -545,14 +575,14 @@ describe('auto-dial', () => {
 });
 
 describe('paired sessions', () => {
-  async function pairedFleet() {
+  async function pairedFleet(serveEnabled = false) {
     const relay = new FakeRelay();
     const reg = new TransportRegistry();
     const host = makeNode(relay, reg, 'host', { auditLogPath: undefined });
     const viewer = makeNode(relay, reg, 'viewer');
     await host.p2p.start();
     await viewer.p2p.start();
-    await viewer.p2p.api.setSettings({ serveEnabled: false });
+    await viewer.p2p.api.setSettings({ serveEnabled });
     const { result } = await pair(host, viewer);
     expect(result).toEqual({ ok: true });
     await waitFor(() => known(host).length === 1);
@@ -564,6 +594,115 @@ describe('paired sessions', () => {
     await expect(viewer.p2p.api.rpcCall(idOf(host), 'shells.list', { projectId: 1 })).resolves.toEqual([]);
     await expect(viewer.p2p.api.rpcCall(idOf(host), 'device.info', {})).resolves.toMatchObject({ platform: process.platform });
     expect((await viewer.p2p.api.fleetList())[0]!.online).toBe(true);
+  });
+
+  test.each([true, false])('workspace permission is independent of peer serving (%s) and tracked on the live hub', async (serving) => {
+    const { host, viewer, relay } = await pairedFleet(serving);
+    const deviceId = idOf(viewer);
+    const projectId = workspaceProject(host);
+    const read = () => viewer.p2p.api.rpcCall(idOf(host), 'workspace.fileRead', { projectId, relPath: 'fixture.txt' });
+    const set = (allowed: boolean) => handlers['p2p:set-workspace-access'](host.services, { deviceId, allowed });
+    const dialCount = () => relay.sent.filter(({ env }) => env.type === 'session_request').length;
+
+    expect((await host.p2p.api.fleetList())[0]?.workspaceAccess).toBe(false);
+    expect(Boolean(known(host)[0]?.code)).toBe(serving);
+    await expect(read()).rejects.toMatchObject({ code: 'forbidden' });
+    const dials = dialCount();
+    await expect(set(true)).resolves.toEqual({ ok: true });
+    expect((await host.p2p.api.fleetList())[0]?.workspaceAccess).toBe(true);
+    expect(known(host)[0]?.workspaceAccess).toBe(true);
+    await expect(read()).resolves.toMatchObject({ content: 'host file' });
+
+    await expect(set(false)).resolves.toEqual({ ok: true });
+    expect((await host.p2p.api.fleetList())[0]?.workspaceAccess).toBe(false);
+    await expect(read()).rejects.toMatchObject({ code: 'forbidden' });
+    await expect(viewer.p2p.api.rpcCall(idOf(host), 'shells.list', { projectId })).resolves.toEqual([]);
+    expect(dialCount()).toBe(dials);
+  });
+
+  test('pairing metadata cannot grant workspace access and explicit mobile viewers are ineligible', async () => {
+    const relay = new FakeRelay();
+    const reg = new TransportRegistry();
+    const host = makeNode(relay, reg, 'host');
+    const phone = makeNode(relay, reg, 'phone');
+    await host.p2p.start();
+    await phone.p2p.start();
+    await host.p2p.api.setSettings({ deviceName: 'Tower' });
+    await phone.p2p.api.setSettings({ deviceName: 'Mobile', serveEnabled: false });
+    const projectId = workspaceProject(host);
+    const deviceId = idOf(phone);
+
+    expect((await pairWithMetadata(host, phone, { viewer: true, workspaceAccess: true })).result).toEqual({ ok: true });
+    await waitFor(() => known(host).length === 1);
+    expect((await host.p2p.api.fleetList())[0]).toMatchObject({ deviceId, viewer: true });
+    expect((await host.p2p.api.fleetList())[0]).not.toHaveProperty('workspaceAccess');
+    await expect(host.p2p.api.setWorkspaceAccess(deviceId, true)).rejects.toThrow('Viewer-only');
+    await expect(phone.p2p.api.rpcCall(idOf(host), 'workspace.info', { projectId })).rejects.toMatchObject({ code: 'forbidden' });
+    await expect(phone.p2p.api.rpcCall(idOf(host), 'shells.list', { projectId })).resolves.toEqual([]);
+
+    await phone.p2p.api.setSettings({ deviceName: 'Mobile renamed' });
+    expect((await pair(host, phone)).result).toEqual({ ok: true });
+    await waitFor(() => known(host)[0]?.name === 'Mobile renamed');
+    expect((await host.p2p.api.fleetList())[0]).not.toHaveProperty('workspaceAccess');
+    expect(known(host)[0]?.viewer).toBe(true);
+  });
+
+  test('re-pairing keeps host grants, and unpairing removes them', async () => {
+    const { host, viewer } = await pairedFleet();
+    const deviceId = idOf(viewer);
+    await host.p2p.api.setSettings({ deviceName: 'Tower' });
+    await viewer.p2p.api.setSettings({ deviceName: 'Peer' });
+    expect((await pairWithMetadata(host, viewer, { workspaceAccess: true })).result).toEqual({ ok: true });
+    await waitFor(() => known(host)[0]?.name === 'Peer');
+    expect((await host.p2p.api.fleetList())[0]?.workspaceAccess).toBe(false);
+
+    await host.p2p.api.setWorkspaceAccess(deviceId, true);
+    await viewer.p2p.api.setSettings({ deviceName: 'Peer renamed' });
+    expect((await pair(host, viewer)).result).toEqual({ ok: true });
+    await waitFor(() => known(host)[0]?.name === 'Peer renamed');
+    expect(known(host)[0]?.workspaceAccess).toBe(true);
+
+    await host.p2p.api.revokeDevice(deviceId);
+    expect(known(host)).toEqual([]);
+    expect((await pair(host, viewer)).result).toEqual({ ok: true });
+    await waitFor(() => known(host).length === 1);
+    expect((await host.p2p.api.fleetList())[0]?.workspaceAccess).toBe(false);
+  });
+
+  test('an explicit viewer-only classification removes a prior grant on an open connection', async () => {
+    const { host, viewer } = await pairedFleet();
+    await host.p2p.api.setSettings({ deviceName: 'Tower' });
+    await viewer.p2p.api.setSettings({ deviceName: 'Viewer' });
+    await host.p2p.api.setWorkspaceAccess(idOf(viewer), true);
+    const projectId = workspaceProject(host);
+    const info = () => viewer.p2p.api.rpcCall(idOf(host), 'workspace.info', { projectId });
+    await expect(info()).resolves.toMatchObject({ activityEnabled: expect.any(Boolean) });
+    expect((await pairWithMetadata(host, viewer, { viewer: true })).result).toEqual({ ok: true });
+    await waitFor(() => known(host)[0]?.viewer === true);
+    expect(known(host)[0]).not.toHaveProperty('workspaceAccess');
+    await expect(info()).rejects.toMatchObject({ code: 'forbidden' });
+  });
+
+  test('a live session fails closed if its persisted grant cannot be read', async () => {
+    const { host, viewer } = await pairedFleet();
+    await host.p2p.api.setWorkspaceAccess(idOf(viewer), true);
+    const projectId = workspaceProject(host);
+    const info = () => viewer.p2p.api.rpcCall(idOf(host), 'workspace.info', { projectId });
+    await expect(info()).resolves.toMatchObject({ activityEnabled: expect.any(Boolean) });
+    writeFileSync(knownFile(host), '{');
+    await expect(info()).rejects.toMatchObject({ code: 'forbidden' });
+  });
+
+  test('the local permission API rejects invalid and unknown devices without changing grants', async () => {
+    const { host, viewer } = await pairedFleet();
+    const deviceId = idOf(viewer);
+    const set = host.p2p.api.setWorkspaceAccess;
+    for (const args of [[undefined, true], ['invalid', true], [deviceId, 'true'], [deviceId, undefined]]) {
+      const result: unknown = Reflect.apply(set, undefined, args);
+      await expect(result).rejects.toThrow('Invalid workspace access request');
+    }
+    await expect(set(idOf(host), true)).rejects.toThrow('Unknown paired device');
+    expect((await host.p2p.api.fleetList())[0]?.workspaceAccess).toBe(false);
   });
 
   test('audit log records invalid_params rejections (onCall hook)', async () => {

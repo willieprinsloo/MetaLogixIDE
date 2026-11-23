@@ -2,6 +2,7 @@ import { app } from 'electron';
 import { EventEmitter } from 'node:events';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
+import { z } from 'zod';
 import {
   Notice,
   RpcMethods,
@@ -24,6 +25,7 @@ import {
   loadKnownDevices,
   loadOrCreateDeviceKey,
   removeKnownDevice,
+  setKnownDeviceWorkspaceAccess,
   CONNECT_CODE_RE,
   isViewerOnly,
   type DeviceKey,
@@ -94,6 +96,10 @@ const AUTO_DIAL_MAX_BACKOFF_MS = 5 * 60_000;
 const DC_LABEL = 'metaide';
 /** Must match the message peerEngine emits when it rejects a data channel. */
 const CHANNEL_NOT_RELIABLE_MSG = 'data channel must be ordered and reliable';
+const WorkspaceAccessPatch = z.object({
+  deviceId: z.string().length(64).regex(/^[0-9a-f]+$/i),
+  allowed: z.boolean(),
+});
 
 type EmitFn = <E extends 'p2p:rpc-event' | 'p2p:upload-progress'>(channel: E, payload: IpcEvents[E]) => void;
 
@@ -617,8 +623,7 @@ class P2PRuntime {
       setTimeout(() => this.finishLink(link, 'paired'), 3000).unref?.();
       return;
     }
-    const pairedDevice = loadKnownDevices(this.knownPath).find((device) => device.pub === remote);
-    if (!pairedDevice) {
+    if (!isTrustedDevice(remote, this.knownPath)) {
       secure.close();
       throw new Error('untrusted_device');
     }
@@ -626,7 +631,7 @@ class P2PRuntime {
     rpc.on('error', () => { /* audited in the hub; channel stays up */ });
     link.hub = wireHub(rpc, {
       remoteDeviceId: remote,
-      desktopWorkspaceAllowed: !isViewerOnly(pairedDevice),
+      desktopWorkspaceAllowed: () => this.workspaceAllowed(remote),
       services: this.services,
       auditLogPath: this.opts.auditLogPath ?? join(this.home, '.metaide', 'logs', 'p2p-audit.log'),
       events: { aliveShellsChanged: emitAliveShellsChanged, projectsChanged: emitProjectsChanged },
@@ -713,7 +718,7 @@ class P2PRuntime {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('pairing_exchange_timeout')), PAIR_EXCHANGE_TIMEOUT_MS);
       secure.on('close', () => { clearTimeout(timer); reject(new Error('transport_closed')); });
-      secure.on('message', (m: Uint8Array) => {
+      secure.once('message', (m: Uint8Array) => {
         clearTimeout(timer);
         let name = '';
         let code: string | undefined;
@@ -900,6 +905,22 @@ class P2PRuntime {
     return this.pairing.generate(code);
   }
 
+  workspaceAllowed(deviceId: string): boolean {
+    // Read the host grant at call time so established links cannot retain revoked access.
+    try {
+      const device = loadKnownDevices(this.knownPath).find((d) => d.pub === deviceId);
+      return device?.workspaceAccess === true && device.viewer !== true;
+    } catch {
+      return false; // An unreadable grant store cannot authorize a workspace request.
+    }
+  }
+
+  async setWorkspaceAccess(deviceId: unknown, allowed: unknown): Promise<void> {
+    const patch = WorkspaceAccessPatch.safeParse({ deviceId, allowed });
+    if (!patch.success) throw new Error('Invalid workspace access request');
+    setKnownDeviceWorkspaceAccess(patch.data.deviceId, patch.data.allowed, this.knownPath);
+  }
+
   async revokeDevice(deviceId: string): Promise<void> {
     const id = canonicalPubHex(deviceId);
     removeKnownDevice(id, this.knownPath);
@@ -964,6 +985,7 @@ class P2PRuntime {
       online: this.isOnline(d.pub),
       lastSeenAt: seen.get(d.pub) ?? null,
       ...(isViewerOnly(d) ? { viewer: true } : {}),
+      ...(d.viewer !== true ? { workspaceAccess: d.workspaceAccess === true } : {}),
     }));
   }
 
@@ -1001,7 +1023,7 @@ export function createP2P(services: Services, opts: StartP2POpts = {}): P2PHandl
     generatePairCode: () => need().generatePairCode(),
     redeemPairCode: (code) => need().redeemPairCode(code),
     revokeDevice: (id) => need().revokeDevice(id),
-    setWorkspaceAccess: async () => { throw new Error('Workspace permissions are unavailable'); },
+    setWorkspaceAccess: (id, allowed) => need().setWorkspaceAccess(id, allowed),
     reconnectDevice: (id) => need().reconnectDevice(id),
     rpcCall: (id, m, p) => need().rpcCall(id, m, p),
     rpcCloseStream: (streamId) => {

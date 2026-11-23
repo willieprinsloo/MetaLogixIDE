@@ -179,6 +179,7 @@ export function P2PSettings() {
   const [pairing, setPairing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [workspaceAccessPending, setWorkspaceAccessPending] = useState(false);
   const { devices, error: fleetError, refresh } = useFleet();
 
   useEffect(() => {
@@ -248,6 +249,19 @@ export function P2PSettings() {
       setRevokingId(null);
     }
   };
+
+  async function changeWorkspaceAccess(deviceId: string, allowed: boolean): Promise<void> {
+    setWorkspaceAccessPending(true);
+    setError(null);
+    try {
+      await api.invoke('p2p:set-workspace-access', { deviceId, allowed });
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setWorkspaceAccessPending(false);
+    }
+  }
 
   const members = devices.filter((m) => !m.self);
 
@@ -326,19 +340,39 @@ export function P2PSettings() {
         ) : members.length === 0 ? (
           <div className="text-sm text-[--text-muted]">No paired machines yet.</div>
         ) : (
-          <ul className="space-y-2">
-            {members.map((m) => (
-              <li key={m.deviceId} className="flex items-center justify-between gap-3 rounded-lg bg-[--panel] px-3 py-2">
-                <div className="min-w-0">
-                  <div className="truncate text-sm">{m.name}</div>
-                  <div className="font-mono text-xs text-[--text-muted]" title={m.deviceId}>{truncateId(m.deviceId)}{m.viewer ? ' · viewer only' : ''}</div>
-                </div>
-                <button type="button" className={BUTTON_CLASS} aria-label={`Revoke ${m.name}`} disabled={revokingId === m.deviceId} onClick={() => void revoke(m.deviceId, m.name)}>
-                  Revoke
-                </button>
-              </li>
-            ))}
-          </ul>
+          <>
+            <p className="text-sm text-[--text-muted]">
+              Allow workspace access to let a paired device use Files, Diff, Project Settings, and Activity on this machine.
+              This does not change terminal access or whether either device serves.
+            </p>
+            <ul className="space-y-2">
+              {members.map((m) => (
+                <li key={m.deviceId} className="space-y-2 rounded-lg bg-[--panel] px-3 py-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm">{m.name}</div>
+                      <div className="font-mono text-xs text-[--text-muted]" title={m.deviceId}>
+                        {truncateId(m.deviceId)}{m.viewer ? (m.workspaceAccess === undefined ? ' · viewer only' : ' · not dialable') : ''}
+                      </div>
+                    </div>
+                    <button type="button" className={BUTTON_CLASS} aria-label={`Revoke ${m.name}`} disabled={revokingId === m.deviceId} onClick={() => void revoke(m.deviceId, m.name)}>
+                      Revoke
+                    </button>
+                  </div>
+                  {typeof m.workspaceAccess === 'boolean' && (
+                    <Switch
+                      label="Allow workspace access"
+                      ariaLabel={`Allow workspace access for ${m.name}`}
+                      testId={`p2p-workspace-access-${m.deviceId}`}
+                      checked={m.workspaceAccess}
+                      disabled={workspaceAccessPending || revokingId === m.deviceId}
+                      onChange={(allowed) => void changeWorkspaceAccess(m.deviceId, allowed)}
+                    />
+                  )}
+                </li>
+              ))}
+            </ul>
+          </>
         )}
       </SettingsSection>
 

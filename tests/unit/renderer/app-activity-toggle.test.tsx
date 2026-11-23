@@ -81,9 +81,9 @@ vi.mock('@renderer/components/Sidebar', () => ({
 vi.mock('@renderer/components/StatusBar', () => ({ StatusBar: ({ onOpenPalette }: { onOpenPalette: () => void }) =>
   <button data-testid="status-bar-palette-hint" onClick={onOpenPalette}>Commands</button> }));
 vi.mock('@renderer/components/CommandPalette', () => ({ CommandPalette: ({ request, commands, onClose }: {
-  request: unknown; commands: Array<{ id: string; run: () => Promise<void> }>; onClose: () => void;
-}) => request ? <div role="dialog" aria-label="Commands">{commands.filter((item) => item.id === 'shell.unload')
-  .map((item) => <button key={item.id} onClick={() => { onClose(); void item.run(); }}>Unload current session</button>)}</div> : null }));
+  request: unknown; commands: Array<{ id: string; title: string; run: () => Promise<void> }>; onClose: () => void;
+}) => request ? <div role="dialog" aria-label="Commands">{commands.filter((item) => ['shell.unload', 'view.shell', 'term.new'].includes(item.id))
+  .map((item) => <button key={item.id} onClick={() => { onClose(); void item.run(); }}>{item.title}</button>)}</div> : null }));
 vi.mock('@renderer/components/ShellTab', () => ({ ShellTab: () => null }));
 vi.mock('@renderer/components/FilesTab', () => ({ FilesTab: () => <div data-testid="files-view"><textarea aria-label="Workspace draft" /></div> }));
 vi.mock('@renderer/components/ActivityTab', () => ({ ActivityTab: () => <div data-testid="activity-tab" /> }));
@@ -147,6 +147,31 @@ afterEach(async () => {
   container = null;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+it('does not expose hidden local workspace actions after a remote Fleet notice', async () => {
+  await mount({ activity: true, tab: 'files' });
+  const paletteContent = () => document.querySelector('[aria-label="Commands"]')?.textContent;
+  await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="status-bar-palette-hint"]')?.click(); });
+  expect(paletteContent()).toContain('Switch to Shell tab');
+  await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+
+  await act(async () => {
+    for (const listener of bridge.listeners.get('p2p:focus-remote-shell') ?? []) {
+      listener({ deviceId: 'tower', deviceName: 'Tower', projectId: 1, projectName: 'Remote', shellIndex: 0 });
+    }
+  });
+  expect(document.querySelector('[data-testid="remote-project-pane"]')?.textContent).toContain('Remote @ Tower');
+  await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="status-bar-palette-hint"]')?.click(); });
+  expect(paletteContent()).toBe('');
+  await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+  const before = bridge.calls.length;
+  await act(async () => {
+    for (const key of ['t', 'w']) window.dispatchEvent(new KeyboardEvent('keydown', { key, metaKey: true, bubbles: true, cancelable: true }));
+  });
+  expect(bridge.calls.slice(before).map(({ channel }) => channel)).not.toContain('shells:launch-plain');
+  expect(bridge.calls.slice(before).map(({ channel }) => channel)).not.toContain('shells:kill');
+  expect(stored('metaide.mainTab')).toBe('files');
 });
 
 describe('App activity-log switch', () => {

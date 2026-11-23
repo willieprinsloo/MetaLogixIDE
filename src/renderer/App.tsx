@@ -174,6 +174,7 @@ function MainApp() {
   const [remotePane, setRemotePane] = useState<OpenPaneRequest | null>(null);
   const remotePaneRef = useRef(remotePane);
   remotePaneRef.current = remotePane;
+  const localWorkspaceProject = remotePane ? null : selected;
   const openPane = useCallback((req: OpenPaneRequest) => { closeBoard(); setRemotePane(req); }, [closeBoard]);
   // -1 never matches a real project id, so this reads idle when nothing is selected.
   // Keep a live ref of `selected` so the shortcut handler (bound once in a
@@ -448,7 +449,7 @@ function MainApp() {
   /** Launches a plain shell in the selected project: a new tab (⌘T) or, with `newWindow`, a new window (⌘⇧T). */
   const openNewTerminal = useCallback((newWindow: boolean, onLaunched?: ShellLaunched) => {
     const p = selectedRef.current;
-    if (!p) return;
+    if (!p || remotePaneRef.current) return;
     const activate = newWindow ? null : beginTerminalTabLaunch(p.id, onLaunched);
     void (async () => {
       try {
@@ -466,7 +467,7 @@ function MainApp() {
   openNewTerminalRef.current = openNewTerminal;
 
   const commands = useMemo(() => buildPaletteCommands({
-    hasProject: selected != null,
+    hasProject: localWorkspaceProject !== null,
     hasPrimary: primaryAlive && remotePane === null,
     sidebarOpen,
     openPalette,
@@ -477,16 +478,18 @@ function MainApp() {
     toggleSidebar: () => toggleSidebar(false),
     statusBarVisible: showStatusBar,
     toggleStatusBar: () => { void api.invoke('settings:set', { key: 'show_status_bar', value: !showStatusBar }); },
-    showTab: setMainTab,
+    showTab: (tab) => { if (!remotePaneRef.current) setMainTab(tab); },
     openHelp: () => setHelpOpen(true),
     openNewProject: () => setNewProjectOpen(true),
     unloadSession: async () => {
-      if (selected && !remotePane && primaryAlive) {
+      if (selected && !remotePaneRef.current && primaryAlive) {
         openUnloadSession(selected, document.querySelector<HTMLElement>('[data-testid="status-bar-palette-hint"]'));
       }
     },
     popOutShell: async () => {
-      if (selected) await api.invoke('windows:popout-shell', { projectId: selected.id, shellIndex: 0 });
+      if (localWorkspaceProject && !remotePaneRef.current) {
+        await api.invoke('windows:popout-shell', { projectId: localWorkspaceProject.id, shellIndex: 0 });
+      }
     },
     findInTerminal: () => toast(SHORTCUT_COPY.findInTerminalToast(platform), { kind: 'info' }),
     openNewTerminal,
@@ -498,7 +501,7 @@ function MainApp() {
     },
     keepAwake: paletteKeepAwake,
     platform,
-  }), [selected, remotePane, primaryAlive, openUnloadSession, sidebarOpen, openPalette, setActiveView, toggleSidebar, showStatusBar, setMainTab, openNewTerminal, setThemeMode, setThemePalette, paletteKeepAwake, platform, setSearchOpen, setScrollbackOpen, setPromptsOpen, setHelpOpen, setNewProjectOpen, setSettingsOpen]);
+  }), [selected, remotePane, localWorkspaceProject, primaryAlive, openUnloadSession, sidebarOpen, openPalette, setActiveView, toggleSidebar, showStatusBar, setMainTab, openNewTerminal, setThemeMode, setThemePalette, paletteKeepAwake, platform, setSearchOpen, setScrollbackOpen, setPromptsOpen, setHelpOpen, setNewProjectOpen, setSettingsOpen]);
 
   const refreshAlive = useCallback(async () => {
     const { shells } = await api.invoke('shells:alive-list', undefined as never);
@@ -645,7 +648,7 @@ function MainApp() {
       'toggle-sidebar': () => toggleSidebar(false),
       'open-settings': () => setSettingsOpen(true),
       'new-project': () => setNewProjectOpen(true),
-      'project-search': () => setSearchOpen(true),
+      'project-search': () => { if (!remotePaneRef.current) setSearchOpen(true); },
       prompts: () => setPromptsOpen(true),
       'scrollback-search': () => setScrollbackOpen(true),
       'toggle-help': () => setHelpOpen(!helpOpenRef.current),
@@ -658,7 +661,9 @@ function MainApp() {
       if (palette.kind === 'swallow') return;
       if (palette.kind === 'toggle' || palette.kind === 'open') {
         e.preventDefault();
-        if (palette.kind === 'open') openPalette(palette.seed);
+        if (palette.kind === 'open') {
+          if (!remotePaneRef.current || palette.seed !== '@') openPalette(palette.seed);
+        }
         else if (paletteOpenRef.current) setPaletteRequest(null);
         else openPalette('');
         return;
@@ -672,6 +677,7 @@ function MainApp() {
       if (mod && e.key.toLowerCase() === 'w' && !e.shiftKey && !e.altKey) {
         // ⌘W → close the active shell tab in the current project.
         const p = selectedRef.current;
+        if (remotePaneRef.current) { e.preventDefault(); return; }
         if (!p) return;
         e.preventDefault();
         const idx = activeShellIndexRef.current;
@@ -1239,19 +1245,24 @@ function MainApp() {
       <CommandPalette
         request={paletteRequest}
         commands={commands}
-        currentProject={selected}
+        currentProject={localWorkspaceProject}
         onPickProject={(p) => { void pick(p); }}
         onPickCurrent={(p) => { if (mainTabRef.current === 'shell') focusAfterPaletteRef.current = p.id; }}
-        onPickFile={(relPath) => { setMainTab('files'); setOpenInFiles({ relPath, line: null }); }}
+        onPickFile={(relPath) => {
+          if (remotePaneRef.current) return;
+          setMainTab('files');
+          setOpenInFiles({ relPath, line: null });
+        }}
         onClose={() => setPaletteRequest(null)}
       />
       <ToastStack />
       <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
       <ProjectSearch
-        open={searchOpen && selected != null}
-        projectId={selected?.id ?? null}
+        open={searchOpen && localWorkspaceProject !== null}
+        projectId={localWorkspaceProject?.id ?? null}
         onClose={() => setSearchOpen(false)}
         onOpenMatch={(relPath, line) => {
+          if (remotePaneRef.current) return;
           setMainTab('files');
           setOpenInFiles({ relPath, line });
         }}
@@ -1259,9 +1270,9 @@ function MainApp() {
       <PromptLibrary
         open={promptsOpen}
         onClose={() => setPromptsOpen(false)}
-        projectId={selected?.id ?? null}
-        activeShell={selected ? { projectId: selected.id, shellIndex: activeShellIndex } : null}
-        activeShellLabel={selected ? `${selected.name} · shell ${activeShellIndex}` : undefined}
+        projectId={localWorkspaceProject?.id ?? null}
+        activeShell={localWorkspaceProject ? { projectId: localWorkspaceProject.id, shellIndex: activeShellIndex } : null}
+        activeShellLabel={localWorkspaceProject ? `${localWorkspaceProject.name} · shell ${activeShellIndex}` : undefined}
       />
       <ScrollbackSearch
         open={scrollbackOpen}

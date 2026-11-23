@@ -1,6 +1,6 @@
 import {
-  closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, opendirSync,
-  readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, type Stats,
+  closeSync, constants, fchmodSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, opendirSync,
+  readlinkSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, type Stats,
 } from 'node:fs';
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import type { Params, Result } from '../../shared/p2p-contract';
@@ -23,6 +23,7 @@ const ACTIVITY_LIMIT = 200;
 const MAX_MOVE_SCAN_ENTRIES = 50_000;
 const FILE_TOOLS = new Set(['Edit', 'Write', 'Read', 'MultiEdit', 'NotebookEdit']);
 const PROFILE_FILE = '.metaide/cli-profiles.json';
+const LAUNCH_FILES = [PROFILE_FILE, '.metaide/env'];
 
 type WorkspaceMethod = keyof typeof WorkspaceMethods;
 type WorkspaceServices = Pick<Services, 'projects' | 'settings'>;
@@ -109,12 +110,16 @@ function protectedTargets(root: string, path: string): string[] {
   }
 }
 
-function touchesProtected(root: string, candidates: readonly string[], targets: readonly string[], moving: boolean): boolean {
+function touchesProtected(
+  root: string, candidates: readonly string[], targets: readonly string[], moving: boolean, includeDescendants = true,
+): boolean {
   return candidates.some((candidate) => {
     const path = wirePath(root, candidate).toLowerCase();
     return targets.some((target) => {
       const protectedPath = wirePath(root, target).toLowerCase();
-      return path === protectedPath || path.startsWith(`${protectedPath}/`) || (moving && protectedPath.startsWith(`${path}/`));
+      return path === protectedPath ||
+        (includeDescendants && path.startsWith(`${protectedPath}/`)) ||
+        (moving && protectedPath.startsWith(`${path}/`));
     });
   });
 }
@@ -142,6 +147,54 @@ function gitMetadata(root: string): string[] {
   return targets;
 }
 
+/**
+ * Track the launch names, symlink chain, and eventual targets even when dangling.
+ * Realpath alone loses a missing alias target that Files could otherwise create.
+ */
+function launchFileTargets(root: string, relPath: string): { entries: string[]; links: string[] } {
+  const links: string[] = [];
+  const pending = relPath.split('/');
+  let parent = root;
+  let followed = 0;
+  while (pending.length > 0) {
+    const name = pending.shift();
+    if (!name || name === '.') continue;
+    if (name === '..') {
+      links.push(parent); // This directory must exist for the link's path to resolve.
+      parent = dirname(parent);
+      continue;
+    }
+    const entry = join(parent, name);
+    const link = tryReadlink(entry);
+    if (link === undefined) {
+      parent = entry;
+      continue;
+    }
+    links.push(entry);
+    if (++followed > 40) throw new RpcError('protected_path', 'project launch configuration could not be verified');
+    const { root: linkRoot } = parse(link);
+    if (linkRoot) parent = linkRoot;
+    pending.unshift(...link.slice(linkRoot.length).split(sep === '\\' ? /[/\\]/ : '/'));
+  }
+  const inProject = (target: string) => target !== root && isInsideRoot(root, target);
+  return { entries: [join(root, relPath), parent].filter(inProject), links: links.filter(inProject) };
+}
+
+function tryReadlink(entry: string): string | undefined {
+  try {
+    return readlinkSync(entry);
+  } catch (error) {
+    switch (errno(error)) {
+      case 'EINVAL': // An ordinary entry.
+      case 'ENOENT':
+      case 'ENOTDIR':
+        return undefined;
+      default:
+        throw error;
+    }
+  }
+}
+
 function fileAccessPath(root: string, requested: string, operation: 'read' | 'write' | 'mkdir' | 'move' = 'read'): WorkspacePath {
   const path = operation === 'read' ? checkedPath(root, requested) : mutationPath(root, requested);
   const candidates = [resolve(root, requested), path.entry, path.canonical];
@@ -155,7 +208,18 @@ function fileAccessPath(root: string, requested: string, operation: 'read' | 'wr
   )) {
     throw new RpcError('protected_path', 'repository metadata cannot be changed through Files');
   }
+  if (operation !== 'read' && touchesLaunchConfig(root, candidates, altersParents)) {
+    throw new RpcError('protected_path', 'project launch configuration cannot be changed through Files');
+  }
   return path;
+}
+
+function touchesLaunchConfig(root: string, candidates: readonly string[], altersParents: boolean): boolean {
+  return LAUNCH_FILES.some((file) => {
+    const { entries, links } = launchFileTargets(root, file);
+    return touchesProtected(root, candidates, entries, altersParents) ||
+      touchesProtected(root, candidates, links, altersParents, false);
+  });
 }
 
 function rejectNestedGitMetadata(target: WorkspacePath): void {
@@ -183,7 +247,10 @@ function rejectNestedGitMetadata(target: WorkspacePath): void {
 }
 
 function regularFile(target: WorkspacePath): Stats {
-  const stat = statSync(target.canonical);
+  return requireRegularFile(statSync(target.canonical));
+}
+
+function requireRegularFile(stat: Stats): Stats {
   if (stat.isDirectory()) throw new RpcError('is_directory', 'path is a directory');
   if (!stat.isFile()) throw new RpcError('not_a_file', 'path is not a regular file');
   return stat;
@@ -253,20 +320,48 @@ function readBytes(fd: number, length: number, position: number): Buffer {
   return buffer.subarray(0, read);
 }
 
-function fileWrite(root: string, relPath: string, content: string): Result<'workspace.fileWrite'> {
+function fileWrite(root: string, { relPath, content, createOnly }: Params<'workspace.fileWrite'>): Result<'workspace.fileWrite'> {
   const target = fileAccessPath(root, relPath, 'write');
   const sizeBytes = Buffer.byteLength(content);
   if (sizeBytes > FILE_MAX_BYTES) throw new RpcError('file_too_large', 'content exceeds the workspace save limit');
-  if (target.exists) regularFile(target);
+  const mode = !createOnly && target.exists ? saveMode(target.entry) : undefined;
   const tmpDir = mkdtempSync(join(dirname(target.entry), '.metaide-write-'));
   try {
     const tmp = join(tmpDir, 'content');
-    writeFileSync(tmp, content, { encoding: 'utf8', flag: 'wx' });
-    renameSync(tmp, target.entry);
+    writeStagedFile(tmp, content, mode);
+    if (createOnly) publishNewFile(tmp, target.entry);
+    else renameSync(tmp, target.entry);
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });
   }
   return { ok: true, sizeBytes };
+}
+
+function saveMode(entry: string): number | undefined {
+  const stat = lstatSync(entry);
+  if (stat.isSymbolicLink()) throw new RpcError('symlink_not_writable', 'open the target file directly to save changes');
+  requireRegularFile(stat);
+  return process.platform === 'win32' ? undefined : stat.mode & 0o7777;
+}
+
+function writeStagedFile(path: string, content: string, mode: number | undefined): void {
+  const fd = openSync(path, 'wx', mode === undefined ? 0o666 : 0o600);
+  try {
+    writeFileSync(fd, content, 'utf8');
+    if (mode !== undefined) fchmodSync(fd, mode); // Restore the exact mode after writes and independently of umask.
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function publishNewFile(staged: string, destination: string): void {
+  try {
+    // Publish complete bytes, without ever replacing an existing directory entry.
+    linkSync(staged, destination);
+  } catch (error) {
+    if (errno(error) === 'EEXIST') throw new RpcError('already_exists', 'destination already exists');
+    throw error;
+  }
 }
 
 /** The shared runner disables fsmonitor; also suppress executable filters for remote worktree reads. */
@@ -426,7 +521,7 @@ export function registerWorkspace(
   on('workspace.info', () => ({ activityEnabled: s.settings.get('activity_log_enabled') === true }));
   on('workspace.fileTree', ({ path }, { relPath }) => fileTree(realpathSync(path), relPath ?? ''));
   on('workspace.fileRead', ({ path }, { relPath, forceText }) => fileRead(realpathSync(path), relPath, forceText));
-  on('workspace.fileWrite', ({ path }, { relPath, content }) => fileWrite(realpathSync(path), relPath, content));
+  on('workspace.fileWrite', ({ path }, params) => fileWrite(realpathSync(path), params));
   on('workspace.fileMkdir', ({ path }, { relPath }) => {
     const target = fileAccessPath(realpathSync(path), relPath, 'mkdir');
     if (target.exists) throw new RpcError('already_exists', 'destination already exists');

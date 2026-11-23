@@ -6,11 +6,14 @@ import { act, render, screen, cleanup, fireEvent, waitFor } from '@testing-libra
 const invoke = vi.fn();
 vi.mock('@renderer/api', () => ({ api: { invoke: (...a: unknown[]) => invoke(...a), on: () => () => {} } }));
 vi.mock('../ShellTab', () => ({ ShellTab: (p: { source: unknown; shellIndex: number }) => <div data-testid="shell-tab" data-shell={p.shellIndex}>{JSON.stringify(p.source)}</div> }));
-vi.mock('../FilesTab', () => ({ FilesTab: ({ openRelPath }: { openRelPath?: string }) => <div data-testid="files-panel">{openRelPath}</div> }));
+vi.mock('../FilesTab', () => ({ FilesTab: ({ openRelPath }: { openRelPath?: string }) => <div data-testid="files-panel">
+  {openRelPath}<textarea aria-label="Remote draft" />
+</div> }));
 vi.mock('../ActivityTab', () => ({ ActivityTab: ({ onOpenTarget }: { onOpenTarget?: (path: string) => void }) =>
   <button type="button" onClick={() => onOpenTarget?.('remote.txt')}>Open remote activity file</button> }));
 
 import { RemoteProjectPane } from '../RemoteProjectPane';
+import { WorkspaceDestinations } from '../WorkspaceDestinations';
 
 let alive: unknown[] = [];
 
@@ -35,6 +38,40 @@ describe('RemoteProjectPane', () => {
     expect(screen.getByRole('button', { name: 'Diff' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Settings' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Activity' })).toBeNull();
+    expect(await screen.findByText(/Workspace access unavailable/)).toBeTruthy();
+  });
+
+  test('the shared destinations keep local diff and unsaved markers', () => {
+    const onSelect = vi.fn();
+    render(<WorkspaceDestinations active="settings" activityEnabled={false} diffCount={2} envDirty onSelect={onSelect} />);
+    const diff = screen.getByRole('button', { name: 'Diff, 2 changed files' });
+    expect(screen.getByTestId('main-tab-diff-count').textContent).toBe('2');
+    expect(screen.getByTestId('project-settings-tab').getAttribute('aria-current')).toBe('page');
+    expect(screen.getByTestId('project-settings-tab').getAttribute('aria-label')).toMatch(/unsaved/i);
+    fireEvent.click(diff);
+    expect(onSelect).toHaveBeenCalledWith('diff');
+  });
+
+  test('reports a remote Diff failure and retries against that same host', async () => {
+    invoke.mockImplementation(async (_ch: string, input: { deviceId?: string; method?: string }) => {
+      if (input?.method === 'workspace.info') return { result: { activityEnabled: false } };
+      if (input?.method === 'workspace.diffStatus') throw new Error('temporarily unavailable');
+      if (input?.method === 'shells.launch') return { result: { shellIndex: 2 } };
+      return { result: [] };
+    });
+    render(<RemoteProjectPane deviceId="tower" deviceName="Tower" projectId={7} projectName="alpha" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Diff' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Could not read git status');
+    invoke.mockResolvedValueOnce({
+      result: { isRepo: false, branch: null, ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [] },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(await screen.findByText('Not a git repository.')).toBeTruthy();
+    expect(invoke.mock.calls.filter(([, input]) => input?.method === 'workspace.diffStatus')).toEqual([
+      ['p2p:rpc-call', { deviceId: 'tower', method: 'workspace.diffStatus', params: { projectId: 7 } }],
+      ['p2p:rpc-call', { deviceId: 'tower', method: 'workspace.diffStatus', params: { projectId: 7 } }],
+    ]);
+    expect(invoke).not.toHaveBeenCalledWith('git:panel-status', expect.anything());
   });
 
   test('returning from Files restores the picked remote session and does not relaunch it', async () => {
@@ -74,8 +111,12 @@ describe('RemoteProjectPane', () => {
     await waitFor(() => expect(screen.getByTestId('shell-tab').getAttribute('data-shell')).toBe('3'));
     fireEvent.click(screen.getByRole('button', { name: 'Files' }));
     expect(screen.getByTestId('files-panel')).toBeTruthy();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Remote draft' }), { target: { value: 'unsaved' } });
     rerender(<RemoteProjectPane {...project} openRequest={{ shellIndex: 3 }} />);
     expect((await screen.findByTestId('shell-tab')).getAttribute('data-shell')).toBe('3');
+    expect(screen.queryByRole('textbox', { name: 'Remote draft' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Files' }));
+    expect(screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'Remote draft' }).value).toBe('unsaved');
   });
 
   test('ignores a prior machine reporting Activity after a same-ID project switch', async () => {
