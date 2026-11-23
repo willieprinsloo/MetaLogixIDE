@@ -275,6 +275,25 @@ Components below `GeneralPanel` take values and callbacks as props, so unit
 tests render them without a DOM. Real focus, layout and colour are covered by
 `tests/e2e/settings-board.spec.ts`.
 
+### Metaproject session, assignment and Board
+
+Electron main owns the Metaproject account. It verifies the Flask web login and a protected project read in a nonpersistent Chromium session. The Board and REST client use that session. The Chat client uses its current session cookie for a direct Socket.IO WebSocket handshake and checks the returned account ID. It does not fall back to polling or use Metaproject desktop API credentials.
+
+The Board is a top-level `WebContentsView` with its own session partition, sandbox, and normal web protections. It has no IDE preload or workspace file protocol handler. Main restricts service requests to the configured origin. **Open in Browser** passes the canonical project URL to the OS, not the IDE session. Use HTTPS for the service. An unpackaged development run can opt into literal-loopback HTTP with `METAIDE_METAPROJECT_LOOPBACK=1`.
+
+Account changes revoke the previous session generation. Confirmed service rejection retires the current shared session. A network failure, Chat disconnect, or project access denial does not by itself sign the user out. Local sign-out detaches the Board and stops Chat before it attempts server logout. A private SQLite record authorizes one origin- and account-bound OS credential record for startup restore. No pre-upgrade password without a service origin is eligible for restore. If neither local revocation nor secure deletion works, the IDE reports that it could not forget the saved sign-in.
+
+The local `.metaproject.yaml` contains the assignment. A saved link has a numeric `project_id` and `metaproject_origin`. The reader also accepts supported legacy prefixed IDs. Existing originless links need pre-upgrade evidence or confirmation; a stored `board_url` is not a trusted destination. Main compares the file revision before replacing it, preserves unrelated bytes, and refuses ambiguous files. Removing a link does not send a remote delete request.
+
+Run the local Electron fixture from the repository root:
+
+```sh
+NODE_OPTIONS=--max-old-space-size=4096 pnpm build
+NODE_OPTIONS=--max-old-space-size=4096 pnpm exec playwright test tests/e2e/metaproject-board.spec.ts --workers=1
+```
+
+The fixture uses two loopback origins and a disposable profile. It does not verify the deployed Flask service, TLS/WSS proxy behavior, or OS credential stores.
+
 ### App chrome
 
 The chrome around the content (title bar, activity bar, sidebar columns and
