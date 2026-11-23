@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Mutable
 import { api } from '@renderer/api';
 import { MODAL_CLASSES } from '@renderer/modal-glass';
 import type { MetaprojectAssignment, MetaprojectBoardState, MetaprojectExternalCandidate, MetaprojectFailure, MetaprojectIpc } from '@shared/metaproject-contract';
-import { AccountStatus, useMetaprojectSession, useSignInIntent } from './session';
+import { AccountStatus, SignedInPersistenceWarning, useMetaprojectSession, useSignInIntent } from './session';
 import { failureCopy, mpButton } from './messages';
 import type { Load } from './useAssignment';
 
@@ -60,17 +60,15 @@ function useBoardGeometry(host: RefObject<HTMLDivElement | null>, canShow: boole
 
 type LeaseProps = Target & { epoch: number; covered: boolean; controls?: ControlRef; onReturn?: () => void; onSettings?: () => void };
 type Phase = MetaprojectBoardState['phase'];
+type LeaseLayout = (bounds: Bounds) => Promise<void>;
+type SetError = (error: MetaprojectFailure | null) => void;
 
-function useLease({ projectId, revision, epoch, covered, controls, onReturn }: LeaseProps) {
+function useNativeBoard(covered: boolean, setError: SetError) {
   const lease = useRef<string | null>(null);
   const last = useRef<string | undefined>(undefined);
   const pendingLayout = useRef<Promise<void>>(Promise.resolve());
   const suspended = useRef(false);
   useLayoutEffect(() => { if (!covered) suspended.current = false; }, [covered]);
-  const [phase, setPhase] = useState<Phase>('loading');
-  const [error, setError] = useState<MetaprojectFailure | null>(null);
-  const [candidate, setCandidate] = useState<MetaprojectExternalCandidate | null>(null);
-  const [generation, retry] = useState(0);
   const layout = useCallback((bounds: Bounds) => {
     const viewId = lease.current;
     if (!viewId || (bounds && suspended.current)) return pendingLayout.current;
@@ -82,7 +80,7 @@ function useLease({ projectId, revision, epoch, covered, controls, onReturn }: L
     }).catch(() => { if (lease.current === viewId) setError('unavailable'); });
     pendingLayout.current = pending;
     return pending;
-  }, []);
+  }, [setError]);
   const close = useCallback(() => {
     const viewId = lease.current;
     if (!viewId) return;
@@ -90,11 +88,22 @@ function useLease({ projectId, revision, epoch, covered, controls, onReturn }: L
     lease.current = null;
     void api.invoke('metaproject:board-close', { viewId }).catch(() => undefined);
   }, [layout]);
+  const hide = useCallback(() => { suspended.current = true; return layout(null); }, [layout]);
+  const start = useCallback((viewId: string) => { lease.current = viewId; last.current = undefined; }, []);
+  return { lease, start, close, hide, layout };
+}
+
+function useLease({ projectId, revision, epoch, covered, controls, onReturn }: LeaseProps) {
+  const [phase, setPhase] = useState<Phase>('loading');
+  const [error, setError] = useState<MetaprojectFailure | null>(null);
+  const [candidate, setCandidate] = useState<MetaprojectExternalCandidate | null>(null);
+  const [generation, retry] = useState(0);
+  const { lease, start, close, hide, layout } = useNativeBoard(covered, setError);
   useLayoutEffect(() => {
     const viewId = crypto.randomUUID();
-    lease.current = viewId; last.current = undefined;
+    start(viewId);
     setPhase('loading'); setError(null); setCandidate(null);
-    if (controls) controls.current = { hide: () => { suspended.current = true; return layout(null); }, close };
+    if (controls) controls.current = { hide, close };
     let observed = false;
     const same = (event: Target & { viewId: string; epoch: number }) => lease.current === viewId && event.viewId === viewId && event.epoch === epoch && event.projectId === projectId && event.revision === revision;
     const observe = (state: MetaprojectBoardState) => {
@@ -112,53 +121,69 @@ function useLease({ projectId, revision, epoch, covered, controls, onReturn }: L
       if (result.ok) observe(result.value); else { setPhase('error'); setError(result.reason); }
     }).catch(() => { if (lease.current === viewId) { setPhase('error'); setError('unavailable'); } });
     return () => { close(); if (controls) controls.current = null; offState(); offCandidate(); offFocus(); };
-  }, [projectId, revision, epoch, generation, controls, close, layout, onReturn]);
+  }, [projectId, revision, epoch, generation, controls, close, layout, hide, start, lease, onReturn]);
   return { lease, phase, error, setError, candidate, setCandidate, layout, retry: () => retry((n) => n + 1) };
+}
+
+function useExternalDecision(board: ReturnType<typeof useLease>, covered: boolean, focus: RefObject<HTMLButtonElement | null>) {
+  const { lease, candidate, setCandidate, setError } = board;
+  const confirmation = useRef<HTMLButtonElement>(null);
+  const submitted = useRef<MetaprojectExternalCandidate | null>(null);
+  const restore = useRef(false);
+  useLayoutEffect(() => { if (candidate && !covered) confirmation.current?.focus(); }, [candidate, covered]);
+  useLayoutEffect(() => {
+    if (candidate || covered || !restore.current) return;
+    restore.current = false;
+    if (focus.current?.disabled === false) focus.current.focus(); else board.lease.current && focus.current?.parentElement?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+  }, [candidate, covered, focus, board.lease]);
+  async function handleExternal(approved: boolean) {
+    if (!candidate || lease.current !== candidate.viewId || submitted.current === candidate) return;
+    const { viewId, candidateId } = candidate;
+    submitted.current = candidate;
+    try {
+      const result = await api.invoke(approved ? 'metaproject:board-external' : 'metaproject:board-dismiss-external', { viewId, candidateId });
+      if (!result.ok && lease.current === viewId && (approved || result.reason !== 'stale')) setError(result.reason);
+    } catch { if (lease.current === viewId) setError('unavailable'); }
+    finally {
+      if (submitted.current === candidate) submitted.current = null;
+      if (lease.current === viewId) { restore.current = true; setCandidate((prior) => prior === candidate ? null : prior); }
+    }
+  }
+  return { confirmation, handleExternal };
+}
+
+async function focusBoard(lease: RefObject<string | null>, host: RefObject<HTMLDivElement | null>, layout: LeaseLayout, setError: SetError) {
+  const viewId = lease.current;
+  const bounds = host.current ? intersect(host.current) : null;
+  if (!viewId || !bounds) return;
+  await layout(bounds);
+  if (lease.current !== viewId) return;
+  try { const result = await api.invoke('metaproject:board-focus', { viewId }); if (!result.ok && lease.current === viewId) setError(result.reason); }
+  catch { if (lease.current === viewId) setError('unavailable'); }
 }
 
 /** Manages one native view lease, rejecting events for another revision, window view or epoch. */
 export function BoardLease(props: LeaseProps) {
   const { covered, projectId, revision, onSettings } = props;
-  const { lease, phase, error, setError, candidate, setCandidate, layout, retry } = useLease(props);
+  const board = useLease(props);
+  const { lease, phase, error, setError, candidate, layout, retry } = board;
   const host = useRef<HTMLDivElement>(null);
   const focus = useRef<HTMLButtonElement>(null);
-  const confirmation = useRef<HTMLButtonElement>(null);
-  const returnFromConfirmation = useRef(false);
+  const { confirmation, handleExternal } = useExternalDecision(board, covered, focus);
   const shown = phase === 'ready' && !covered && !candidate && !error;
   useBoardGeometry(host, shown, layout);
-  useLayoutEffect(() => { if (candidate && !covered) confirmation.current?.focus(); }, [candidate, covered]);
-  useLayoutEffect(() => {
-    if (shown && returnFromConfirmation.current) { returnFromConfirmation.current = false; focus.current?.focus(); }
-  }, [shown]);
-  async function handleExternal(approved: boolean) {
-    const viewId = lease.current;
-    if (!candidate || !viewId) return;
-    returnFromConfirmation.current = true;
-    setCandidate(null);
-    if (!approved) return;
-    try {
-      const result = await api.invoke('metaproject:board-external', { viewId, candidateId: candidate.candidateId });
-      if (!result.ok && lease.current === viewId) setError(result.reason);
-    } catch { if (lease.current === viewId) setError('unavailable'); }
-  }
   return <div className="flex flex-1 min-h-0 min-w-0 flex-col">
     <div className="flex flex-wrap items-center gap-2 px-3 pb-2 text-xs">
-      <button ref={focus} className={mpButton} disabled={!shown} onClick={async () => {
-        const viewId = lease.current;
-        const bounds = host.current ? intersect(host.current) : null;
-        if (!viewId || !bounds) return;
-        await layout(bounds);
-        if (lease.current !== viewId) return;
-        try { const result = await api.invoke('metaproject:board-focus', { viewId }); if (!result.ok && lease.current === viewId) setError(result.reason); }
-        catch { if (lease.current === viewId) setError('unavailable'); }
-      }}>Focus Board</button>
+      <button ref={focus} className={mpButton} disabled={!shown} onClick={() => void focusBoard(lease, host, layout, setError)}>Focus Board</button>
       <BrowserButton projectId={projectId} revision={revision} />
       {error && <button className={mpButton} onClick={retry}>Retry Board</button>}
       {(error === 'denied' || error === 'not-found' || error === 'origin-mismatch' || error === 'conflict' || error === 'stale') && onSettings && <button className={mpButton} onClick={onSettings}>Open Project Settings</button>}
     </div>
     {phase === 'loading' && !error && <p role="status" className="p-3">Loading Board…</p>}
     {error && <p role="alert" className="p-3">{failureCopy[error]}</p>}
-    {candidate && <div role="group" aria-label="Open external link?" className="space-y-2 p-3">
+    {candidate && <div role="group" aria-label="Open external link?" className="space-y-2 p-3" onKeyDown={(event) => {
+      if (event.key === 'Escape') { event.stopPropagation(); void handleExternal(false); }
+    }}>
       <p>Open {candidate.label} in your default browser? The browser uses its own account.</p>
       <div className="flex flex-wrap gap-2">
         <button ref={confirmation} className={mpButton} onClick={() => void handleExternal(false)}>Cancel external link</button>
@@ -206,6 +231,7 @@ export function BoardPanel({ name, projectId, assignment, covered, controls, onC
       <h2 className="min-w-0 break-words font-semibold">Board · {name}</h2>
       <button ref={closeButton} className={mpButton} onClick={onClose}>Return to workspace</button>
     </header>
+    {snapshot?.phase === 'signed-in' && !cancelled && <div className="px-3"><SignedInPersistenceWarning /></div>}
     {assignment.kind === 'loading' && <p className="p-3" role="status">Loading assignment…</p>}
     {assignment.kind === 'error' && <div className="p-3" role="alert">{failureCopy[assignment.reason]} <button className={mpButton} onClick={onReload}>Retry assignment</button></div>}
     {assignment.kind === 'loaded' && !linked && <div className="space-y-2 p-3">

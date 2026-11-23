@@ -8,14 +8,24 @@ import type { Credentials } from './web-session';
 
 const service = 'metaIDE.metaproject.web.v1';
 const legacyService = 'metaIDE.metaproject';
+const keyringDeadlineMs = 3_000;
+const timeout = Symbol('keyring deadline');
 const grantSchema = z.object({ grantId: z.uuid(), origin: z.string(), actorId: accountId });
 const secretSchema = grantSchema.extend({ username: z.string().trim().min(1).max(254), password: z.string().min(1).max(256) });
 export type RememberedGrant = Omit<z.output<typeof grantSchema>, 'origin'> & { readonly origin: MetaprojectOrigin };
+export type GrantSave = { remembered: true } | { remembered: false; warning?: PersistenceWarning };
 
 interface GrantStore {
   read(): unknown;
   write(grant: RememberedGrant | null, origin?: MetaprojectOrigin): void;
   legacyUsername(): string;
+}
+
+async function bounded<T>(work: Promise<T>): Promise<T | typeof timeout> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof timeout>(resolve => { timer = setTimeout(() => resolve(timeout), keyringDeadlineMs); });
+  try { return await Promise.race([work, deadline]); }
+  finally { clearTimeout(timer); }
 }
 
 /** Rotates the profile's one authorized pointer without reusing a secure slot. */
@@ -33,7 +43,8 @@ export class RememberedAccount {
 
   /** Read one authorized record, rejecting malformed or mismatched values without replaying them. */
   async credentials(grant: RememberedGrant): Promise<Credentials | null> {
-    const stored = await this.keyring.getPassword(service, grant.grantId);
+    const stored = await bounded(this.keyring.getPassword(service, grant.grantId));
+    if (stored === timeout) throw new Error('Metaproject secure store did not respond');
     if (!stored || stored.length > 8192) return null;
     try {
       const decoded = decodeStoredSecret(stored);
@@ -58,20 +69,22 @@ export class RememberedAccount {
   }
 
   /** Publish only after secure save and rechecking ownership in the synchronous commit turn. */
-  async save(origin: MetaprojectOrigin, actorId: RememberedGrant['actorId'], credentials: Credentials, current: () => boolean): Promise<PersistenceWarning | undefined> {
+  async save(origin: MetaprojectOrigin, actorId: RememberedGrant['actorId'], credentials: Credentials, current: () => boolean): Promise<GrantSave> {
     const grant = { grantId: randomUUID(), origin, actorId };
     try {
-      await this.keyring.setPassword(service, grant.grantId, encodeStoredSecret(JSON.stringify({ ...grant, ...credentials })));
-      if (current()) {
-        this.store.write(grant);
-        return undefined;
+      const write = this.keyring.setPassword(service, grant.grantId, encodeStoredSecret(JSON.stringify({ ...grant, ...credentials })));
+      if (await bounded(write) === timeout) {
+        // Native storage cannot be aborted; only this unpublished, unique slot may be reconciled later.
+        void write.then(() => this.clear(service, grant.grantId), () => this.clear(service, grant.grantId));
+        return { remembered: false, warning: 'not-remembered' };
       }
+      if (!current()) { await this.clear(service, grant.grantId); return { remembered: false }; }
+      this.store.write(grant);
+      return { remembered: true };
     } catch {
       const removed = await this.clear(service, grant.grantId);
-      return removed ? 'not-remembered' : 'keychain-not-cleared';
+      return { remembered: false, warning: removed ? 'not-remembered' : 'keychain-not-cleared' };
     }
-    await this.clear(service, grant.grantId);
-    return undefined;
   }
 
   /** Retire only known legacy slots; an absent secure record is already clear. */
@@ -84,9 +97,12 @@ export class RememberedAccount {
   }
 
   private async clear(namespace: string, key: string): Promise<boolean> {
-    try {
-      if (await this.keyring.deletePassword(namespace, key)) return true;
-      return await this.keyring.getPassword(namespace, key) === null;
-    } catch { return false; }
+    try { return await bounded(this.deleteIfPresent(namespace, key)) === true; }
+    catch { return false; }
+  }
+
+  private async deleteIfPresent(namespace: string, key: string): Promise<boolean> {
+    if (await this.keyring.deletePassword(namespace, key)) return true;
+    return await this.keyring.getPassword(namespace, key) === null;
   }
 }

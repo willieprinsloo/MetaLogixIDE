@@ -1,13 +1,4 @@
-/**
- * Tiny extractor for the two fields we care about in `.metaproject.yaml`:
- *   project_id: PROJ-42
- *   board_url:  https://metaproject.internal
- *
- * We intentionally do NOT pull in a full YAML library. The file is
- * user-authored, small, and only two documented keys. A regex pass is
- * cheap, forgiving of comments/quoting, and can't crash the app on
- * malformed input.
- */
+/** Lossless assignment edits for a conservative subset of single-document YAML block mappings. */
 import { remoteProjectId, type RemoteProjectId } from './metaproject-contract';
 
 export interface MetaprojectLink {
@@ -25,13 +16,14 @@ function unquote(s: string): string {
   return t;
 }
 
+/** Forgiving legacy display extractor; never use it to authorize an assignment edit. */
 export function parseMetaproject(text: string): MetaprojectLink {
   let projectId: string | null = null;
   let boardUrl: string | null = null;
   for (const rawLine of text.split(/\r?\n/)) {
     const m = KEY_RE.exec(rawLine);
-    if (!m) continue;
-    const key = m[1]!.toLowerCase();
+    if (!m?.[1]) continue;
+    const key = m[1].toLowerCase();
     const value = unquote(m[2] ?? '');
     if (!value) continue;
     if (key === 'project_id')      projectId = value;
@@ -71,35 +63,79 @@ function readEntry(field: Field, index: number, prefix: string, remaining: strin
   return { field, index, prefix, value, quote: parts?.[1] ?? '', suffix: parts?.[4] ?? '' };
 }
 
-/** Read the lossless single-root scalar subset; reject ambiguous root syntax instead of guessing. */
+type MappingLine = { indent: number; key: string; prefix: string; value: string; index: number };
+type Level = { indent: number; keys: Set<string> };
+
+function tokenize(text: string): MappingLine[] | null {
+  const tokens: MappingLine[] = [];
+  for (const [index, raw] of text.split(/\r?\n/).entries()) {
+    if (/^[ \t]*(?:#|$)/.test(raw)) continue;
+    const line = raw.trimStart();
+    const indent = raw.length - line.length;
+    if (!/^ *$/.test(raw.slice(0, indent))) return null;
+    const match = rootKey.exec(line);
+    if (!match?.[1]) return null;
+    tokens.push({ indent, key: match[1], prefix: match[0], value: line.slice(match[0].length), index });
+  }
+  return tokens;
+}
+
+function scalar(value: string): 'mapping' | 'scalar' | 'invalid' {
+  const text = value.trim();
+  if (!text || text.startsWith('#')) return 'mapping';
+  if (text.startsWith("'")) return /^'(?:[^']|'')*'(?:[ \t]+#.*)?$/.test(text) ? 'scalar' : 'invalid';
+  if (text.startsWith('"')) return /^"[^"\\]*"(?:[ \t]+#.*)?$/.test(text) ? 'scalar' : 'invalid';
+  const plain = text.split(/[ \t]+#/, 1)[0] ?? '';
+  return /^(?:[!&*|>@`{}[\],%]|[-?:](?:[ \t]|$))|:(?:[ \t]|$)/.test(plain) ? 'invalid' : 'scalar';
+}
+
+function mappingLevel(levels: Level[], indent: number, parentAllowsChild: boolean): Level | null {
+  while ((levels.at(-1)?.indent ?? 0) > indent) {
+    levels.pop();
+    if (indent > (levels.at(-1)?.indent ?? 0)) return null;
+  }
+  const parent = levels.at(-1);
+  if (parent?.indent === indent) return parent;
+  if (!parentAllowsChild) return null;
+  const child = { indent, keys: new Set<string>() };
+  levels.push(child);
+  return child;
+}
+
+function assignmentEntries(tokens: MappingLine[]): Entry[] | null {
+  const levels: Level[] = [{ indent: 0, keys: new Set() }];
+  const entries: Entry[] = [];
+  let parentAllowsChild = false;
+  for (const { indent, key, prefix, value, index } of tokens) {
+    const level = mappingLevel(levels, indent, parentAllowsChild);
+    const field = indent === 0 ? fieldOf(key) : null;
+    const identity = field ?? key;
+    const kind = scalar(value);
+    if (!level || level.keys.has(identity) || kind === 'invalid') return null;
+    level.keys.add(identity);
+    parentAllowsChild = !field && kind === 'mapping';
+    if (field) {
+      const entry = readEntry(field, index, prefix, value);
+      if (!entry) return null;
+      entries.push(entry);
+    }
+  }
+  return entries;
+}
+
+/** Validate every mapping entry, including unchanged nested fields, before exposing editable bytes. */
 export function parseAssignmentDocument(input: string): AssignmentDocument | null {
   const bom = input.startsWith('\uFEFF') ? '\uFEFF' : '';
   const text = input.slice(bom.length);
-  if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u0085\u2028\u2029]|\r(?!\n)/.test(text)) return null;
-  const lines = text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
-  const entries: Entry[] = [];
-  let previousRoot: Field | null | undefined;
-  for (const [index, segment] of lines.entries()) {
-    const line = segment.replace(/\r?\n$/, '');
-    if (/^\s*(?:#|$)/.test(line)) continue;
-    if (line.startsWith(' ')) {
-      if (previousRoot !== null) return null;
-      continue;
-    }
-    const key = rootKey.exec(line);
-    if (!key?.[1]) return null;
-    const field = fieldOf(key[1]);
-    previousRoot = field;
-    if (!field) continue;
-    const entry = readEntry(field, index, key[0], line.slice(key[0].length));
-    if (!entry || entries.some(existing => existing.field === field)) return null;
-    entries.push(entry);
-  }
+  if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u0085\u2028\u2029\uFEFF]|\r(?!\n)/.test(text)) return null;
+  const tokens = tokenize(text);
+  const entries = tokens && assignmentEntries(tokens);
+  if (!entries) return null;
   const sourceId = entries.find(entry => entry.field === 'project_id');
   const origin = entries.find(entry => entry.field === 'metaproject_origin')?.value ?? null;
   const projectId = sourceId ? parseRemoteProjectId(sourceId.value) : null;
   if ((sourceId || origin) && projectId === null) return null;
-  return { lines, entries, origin, projectId, bom };
+  return { lines: text.match(/[^\n]*\n|[^\n]+$/g) ?? [], entries, origin, projectId, bom };
 }
 
 /** Replace/remove just the two assignment fields, retaining unrelated bytes and comment text. */

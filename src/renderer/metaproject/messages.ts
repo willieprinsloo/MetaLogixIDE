@@ -25,5 +25,7 @@ export const persistenceCopy: Record<PersistenceWarning, string> = {
   'forget-incomplete': 'Signed out locally, but could not clear remembered sign-in. Retry sign-out.',
 };
 
+export const assignmentReloadCopy = 'The assignment change was written to disk, but could not be confirmed. Reload the assignment before making more changes.';
+
 export const mpButton = 'min-h-11 min-w-11 sm:min-h-0 sm:min-w-0 rounded-md border border-[--border] bg-[--surface-active] px-2.5 py-1.5 text-xs text-[--text] hover:bg-[--panel-strong] focus-visible:ring-2 focus-visible:ring-[--accent] disabled:opacity-50';
 export const mpInput = 'min-h-11 sm:min-h-0 min-w-0 w-full rounded-md border border-[--border] bg-[--surface-field] px-2.5 py-1.5 text-base sm:text-sm text-[--text] focus-visible:ring-2 focus-visible:ring-[--accent]';

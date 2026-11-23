@@ -16,7 +16,7 @@ import { vi } from 'vitest';
 import type { ModalSurface } from '@renderer/modal-glass';
 import { UnloadSessionDialogView } from '@renderer/components/UnloadSessionDialog';
 
-vi.mock('@renderer/api', () => ({ api: { invoke: vi.fn() } }));
+vi.mock('@renderer/api', () => ({ api: { invoke: vi.fn(), on: vi.fn(() => () => undefined) } }));
 vi.mock('@renderer/components/settings/SettingsSectionPanel', () => ({
   SettingsSectionPanel: () => null,
 }));
@@ -24,6 +24,7 @@ vi.mock('@renderer/components/settings/SettingsSectionPanel', () => ({
 const { Settings } = await import('@renderer/components/Settings');
 const { PermissionModeDialog } = await import('@renderer/components/PermissionModeDialog');
 const { NewProjectDialog } = await import('@renderer/components/NewProjectDialog');
+const { MetaprojectSessionProvider } = await import('@renderer/metaproject/session');
 const { ProjectSearch } = await import('@renderer/components/ProjectSearch');
 const { PromptLibrary } = await import('@renderer/components/PromptLibrary');
 const { ScrollbackSearch } = await import('@renderer/components/ScrollbackSearch');
@@ -46,7 +47,9 @@ const RENDERERS: Record<string, () => string> = {
     ),
   'new-project': () =>
     renderToStaticMarkup(
-      createElement(NewProjectDialog, { open: true, roots: [], onClose: noop, onCreated: noop }),
+      createElement(MetaprojectSessionProvider, {
+        children: createElement(NewProjectDialog, { open: true, roots: [], onClose: noop, onCreated: noop }),
+      }),
     ),
   'permission-mode': () =>
     renderToStaticMarkup(createElement(PermissionModeDialog, { onConfirm: noopAsync, error: null })),

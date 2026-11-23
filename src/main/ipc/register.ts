@@ -206,6 +206,7 @@ export interface WindowHooks {
   /** Applies the vibrancy material to every open window (no-op off darwin). */
   setVibrancy: (material: VibrancyMaterial) => void;
   onProjectOpen?: (event: Electron.IpcMainInvokeEvent, request: unknown) => void;
+  onProjectAuthorityChanged?: () => void;
 }
 
 /** A file files:peek may read: its absolute path, the root it is displayed relative to, and that root's project (null when outside every project). */
@@ -1425,6 +1426,10 @@ function eventPayload<E extends IpcEventName>(name: E): IpcEvents[E] {
 
 let broadcastEvent: SendEvent | null = null;
 
+const PROJECT_AUTHORITY_CHANNELS = new Set<CoreChannel>([
+  'roots:add', 'roots:rescan', 'roots:remove', 'projects:open', 'projects:hide', 'projects:rename',
+]);
+
 /** Broadcast for in-process callers (p2p hub) that bypass the ipcMain wrapper's CHANNEL_EMITS. No-op before registerIpc. */
 export function emitAliveShellsChanged(): void { broadcastEvent?.('alive-shells:changed', {}); }
 export function emitProjectsChanged(): void { broadcastEvent?.('projects:changed', { kind: 'updated' }); }
@@ -1466,6 +1471,7 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
       if (channel === 'projects:open') windowHooks?.onProjectOpen?.(event, req);
       const fn = handlers[channel] as (s: Services, req: unknown, e?: Electron.IpcMainInvokeEvent) => Promise<unknown>;
       const result = await fn(services, req, event);
+      if (PROJECT_AUTHORITY_CHANNELS.has(channel)) windowHooks?.onProjectAuthorityChanged?.();
       for (const evt of CHANNEL_EMITS[channel] ?? []) sendEvent(evt, eventPayload(evt));
       return result;
     });

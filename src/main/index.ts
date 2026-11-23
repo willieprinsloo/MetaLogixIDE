@@ -447,6 +447,7 @@ function registerMainIpc(services: Services): void {
       lastMetaprojectProjectId = id.data;
       metaprojectLifecycle?.projectContextChanged();
     },
+    onProjectAuthorityChanged: () => metaprojectLifecycle?.projectAuthorityChanged(),
   });
 }
 

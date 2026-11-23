@@ -5,14 +5,16 @@ import { z } from 'zod';
 import { metaprojectActor, metaprojectRemoteProject, type MetaprojectActor, type MetaprojectFailure, type MetaprojectOrigin, type MetaprojectResult } from '@shared/metaproject-contract';
 
 export interface Credentials { readonly username: string; readonly password: string }
+export type WebMutation = { readonly method?: 'POST' | 'PATCH' | 'DELETE'; readonly json?: object };
 interface WebInput {
   readonly path: string;
   readonly signal: AbortSignal;
   readonly json?: object;
   readonly csrf?: string;
   readonly limit?: number;
+  readonly method?: WebMutation['method'];
 }
-export type WebReply = { status: number; contentType: string; body: Buffer } | { status: number; location: string };
+export type WebReply = { status: number; contentType: string; body: Buffer; retryAfter?: string } | { status: number; location: string };
 export type WebRequest = (input: WebInput) => Promise<WebReply>;
 export const projectList = z.object({ success: z.literal(true), projects: z.array(metaprojectRemoteProject) });
 const loginResponse = z.object({ success: z.literal(true), user: metaprojectActor });
@@ -21,7 +23,7 @@ export const projectListCap = 4 * 1024 * 1024;
 
 /** Safe internal failure without HTTP bodies or credential material. */
 export class WebFailure extends Error {
-  constructor(readonly reason: MetaprojectFailure) { super(reason); }
+  constructor(readonly reason: MetaprojectFailure, readonly retryAfterMs?: number) { super(reason); }
 }
 
 /** Create a new origin-confined, nonpersistent cookie jar. */
@@ -49,12 +51,12 @@ export function bindPartitionGuard(jar: Session, origin: MetaprojectOrigin, gues
 
 /** Request via Chromium without handling Set-Cookie or following redirects. */
 export function chromiumRequest(jar: Session, origin: MetaprojectOrigin): WebRequest {
-  return async ({ path, json, csrf, signal, limit = cap }) => {
+  return async ({ path, method, json, csrf, signal, limit = cap }) => {
     const url = new URL(path, origin);
     if (url.origin !== origin || url.username || url.password) throw new WebFailure('invalid-origin');
     if (signal.aborted) throw new WebFailure('stale');
     return new Promise<WebReply>((resolve, reject) => {
-      const req = net.request({ url: url.href, method: json ? 'POST' : 'GET', session: jar, credentials: 'include', redirect: 'manual' });
+      const req = net.request({ url: url.href, method: method ?? (json ? 'POST' : 'GET'), session: jar, credentials: 'include', redirect: 'manual' });
       const timer = setTimeout(() => fail('network'), 10_000);
       const abort = (): void => fail('stale');
       function clean(): void { clearTimeout(timer); signal.removeEventListener('abort', abort); }
@@ -77,12 +79,14 @@ export function chromiumRequest(jar: Session, origin: MetaprojectOrigin): WebReq
         response.on('end', () => {
           const header = response.headers['content-type'];
           const contentType = typeof header === 'string' ? header : header?.[0] ?? '';
-          finish({ status: response.statusCode, contentType, body: Buffer.concat(parts) });
+          const retry = response.headers['retry-after'];
+          const retryAfter = typeof retry === 'string' ? retry : retry?.[0];
+          finish({ status: response.statusCode, contentType, body: Buffer.concat(parts), ...(retryAfter ? { retryAfter } : {}) });
         });
       });
-      req.setHeader('Accept', json ? 'application/json' : '*/*');
-      if (json && csrf) {
-        req.setHeader('Content-Type', 'application/json');
+      req.setHeader('Accept', method || json ? 'application/json' : '*/*');
+      if (json) req.setHeader('Content-Type', 'application/json');
+      if (csrf) {
         req.setHeader('X-CSRFToken', csrf);
         req.setHeader('Referer', url.href);
         req.setHeader('Origin', origin);
@@ -105,9 +109,15 @@ export function requireWebBody(reply: WebReply, origin: MetaprojectOrigin, prote
   if (reply.status === 401) throw new WebFailure(protectedRoute ? 'expired' : 'rejected');
   if (reply.status === 403) throw new WebFailure(protectedRoute ? 'denied' : 'rejected');
   if (reply.status === 404) throw new WebFailure('not-found');
-  if (reply.status === 429) throw new WebFailure('throttled');
+  if (reply.status === 429) throw new WebFailure('throttled', retryDelay(reply.retryAfter));
   if (reply.status >= 500) throw new WebFailure('network');
   throw new WebFailure('protocol');
+}
+
+function retryDelay(value?: string): number | undefined {
+  if (!value || value.length > 64) return undefined;
+  const milliseconds = /^\d+$/.test(value) ? Number(value) * 1000 : Date.parse(value) - Date.now();
+  return Number.isFinite(milliseconds) ? Math.min(120_000, Math.max(750, milliseconds)) : undefined;
 }
 
 /** Parse a successful allow-listed response envelope, never normalizing errors to empty. */
@@ -119,7 +129,9 @@ export function webJson<T>(reply: WebReply, origin: MetaprojectOrigin, schema: z
 }
 
 /** Verify the Flask principal response and prove the same jar can reach a protected route. */
-export async function authenticateWeb(origin: MetaprojectOrigin, request: WebRequest, credentials: Credentials, signal: AbortSignal): Promise<MetaprojectResult<MetaprojectActor>> {
+export type AuthenticationResult = MetaprojectResult<MetaprojectActor> | { ok: false; reason: 'throttled'; retryAfterMs: number };
+
+export async function authenticateWeb(origin: MetaprojectOrigin, request: WebRequest, credentials: Credentials, signal: AbortSignal): Promise<AuthenticationResult> {
   const path = '/auth/login';
   try {
     const page = await request({ path, signal });
@@ -135,6 +147,7 @@ export async function authenticateWeb(origin: MetaprojectOrigin, request: WebReq
     return { ok: true, value: user };
   } catch (error) {
     const reason = error instanceof WebFailure ? error.reason : 'network';
+    if (reason === 'throttled' && error instanceof WebFailure && error.retryAfterMs !== undefined) return { ok: false, reason, retryAfterMs: error.retryAfterMs };
     return { ok: false, reason: reason === 'expired' ? 'rejected' : reason };
   }
 }

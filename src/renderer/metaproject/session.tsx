@@ -8,10 +8,12 @@ import { failureCopy, mpButton, mpInput, persistenceCopy } from './messages';
 type SignedIn = Extract<MetaprojectSessionSnapshot, { phase: 'signed-in' }>;
 type Resume = (snapshot: SignedIn) => void;
 type Prompt = { label: string; resume?: Resume; onCancel?: () => void; opener: HTMLElement | null; attemptId?: string; origin: string };
+type PromptState = Pick<ReturnType<typeof useSnapshot>, 'current' | 'accept' | 'version'>;
 type AccountCommand = 'metaproject:session-origin' | 'metaproject:session-logout' | 'metaproject:session-retry';
 type SessionContext = {
   snapshot: MetaprojectSessionSnapshot | null;
   statusError: boolean;
+  chatGeneration: number;
   refresh: () => void;
   promptOpen: boolean;
   request: (label: string, resume?: Resume, onCancel?: () => void) => (() => void) | undefined;
@@ -23,10 +25,13 @@ const Session = createContext<SessionContext | null>(null);
 function useSnapshot() {
   const [snapshot, setSnapshot] = useState<MetaprojectSessionSnapshot | null>(null);
   const [statusError, setStatusError] = useState(false);
+  const [chatGeneration, bumpChatGeneration] = useState(0);
   const state = useRef<MetaprojectSessionSnapshot | null>(null);
   const version = useRef(0);
   const accept = useCallback((next: MetaprojectSessionSnapshot) => {
     if (!next || typeof next.epoch !== 'number' || (state.current && next.epoch < state.current.epoch)) return;
+    const prior = state.current;
+    if (prior?.phase === 'signed-in' && !prior.connected && next.phase === 'signed-in' && next.connected && prior.epoch === next.epoch) bumpChatGeneration((n) => n + 1);
     version.current += 1;
     state.current = next;
     setStatusError(false);
@@ -44,7 +49,7 @@ function useSnapshot() {
     return () => { version.current += 1; off(); };
   }, [accept, refresh]);
   const current = useCallback(() => state.current, []);
-  return { snapshot, statusError, current, refresh, accept, version };
+  return { snapshot, statusError, chatGeneration, current, refresh, accept, version };
 }
 
 function useSignInPrompt(account: ReturnType<typeof useSnapshot>) {
@@ -80,7 +85,18 @@ function useSignInPrompt(account: ReturnType<typeof useSnapshot>) {
     return () => dismiss(entry, true);
   }, [current, dismiss]);
 
-  const submit = async (form: HTMLFormElement) => {
+  const submit = (form: HTMLFormElement) => submitSignIn(form, { current, accept, version }, {
+    active, dismiss, setBusy, setError,
+  });
+  return { prompt, request, dismiss, submit, busy, error };
+}
+
+type PromptActions = {
+  active: { current: Prompt | null }; dismiss: (prompt: Prompt, cancel: boolean) => void;
+  setBusy: (busy: boolean) => void; setError: (error: string | null) => void;
+};
+
+async function submitSignIn(form: HTMLFormElement, { current, accept, version }: PromptState, { active, dismiss, setBusy, setError }: PromptActions) {
     const entry = active.current;
     const now = current();
     if (!entry || entry.attemptId || now?.phase !== 'signed-out' || now.origin !== entry.origin) return;
@@ -105,8 +121,6 @@ function useSignInPrompt(account: ReturnType<typeof useSnapshot>) {
     finally {
       if (active.current === entry) { entry.attemptId = undefined; setBusy(false); }
     }
-  };
-  return { prompt, request, dismiss, submit, busy, error };
 }
 
 function loginFromForm(form: HTMLFormElement, attemptId: string, epoch: number) {
@@ -122,7 +136,7 @@ function loginFromForm(form: HTMLFormElement, attemptId: string, epoch: number) 
 /** Provides one session observer and prompt to the main IDE window, not pop-outs. */
 export function MetaprojectSessionProvider({ children }: { children: ReactNode }) {
   const account = useSnapshot();
-  const { accept, current, version, snapshot, refresh, statusError } = account;
+  const { accept, current, version, snapshot, refresh, statusError, chatGeneration } = account;
   const { prompt, request, dismiss, submit, busy, error } = useSignInPrompt(account);
   useLayoutEffect(() => {
     if (prompt && snapshot?.origin !== prompt.origin) dismiss(prompt, true);
@@ -136,7 +150,7 @@ export function MetaprojectSessionProvider({ children }: { children: ReactNode }
       return null;
     } catch { return failureCopy.unavailable; }
   };
-  return <Session.Provider value={{ snapshot, statusError, refresh, current, command, request, promptOpen: prompt !== null }}>
+  return <Session.Provider value={{ snapshot, statusError, chatGeneration, refresh, current, command, request, promptOpen: prompt !== null }}>
     <div className="contents" {...(prompt ? { inert: '' } : {})}>{children}</div>
     {prompt && <SignInDialog label={prompt.label} origin={prompt.origin} busy={busy} error={error}
       onCancel={() => { prompt.onCancel?.(); dismiss(prompt, true); }} onSubmit={submit} />}
@@ -159,6 +173,12 @@ export function useSignInIntent(scope: string | number | null) {
     const dispose = request(label, resume, onCancel);
     if (dispose) cancel.current = dispose;
   }, [request]);
+}
+
+/** Preserves a session-only fallback warning after the shared prompt has closed. */
+export function SignedInPersistenceWarning() {
+  const { snapshot } = useMetaprojectSession();
+  return snapshot?.phase === 'signed-in' && snapshot.warning ? <p role="alert">{persistenceCopy[snapshot.warning]}</p> : null;
 }
 
 /** Common status, safe errors and warning/retry controls for protected entry points. */

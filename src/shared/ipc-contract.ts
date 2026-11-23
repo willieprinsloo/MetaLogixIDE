@@ -313,15 +313,16 @@ export interface IpcContract extends MetaprojectIpc {
         message: string;
         created_at: string;
         parent_message_id: number | null;
+        is_deleted?: boolean;
         attachments?: Array<{ id: number; filename: string; file_size: number; mime_type?: string | null }>;
       }>;
     };
   };
   'metaproject:join-channel':   { request: { channelId: number; epoch: number }; response: { ok: true } };
-  'metaproject:send-message':   { request: { channelId: number; message: string; parentMessageId?: number | null; epoch: number }; response: { ok: true } };
-  'metaproject:mark-read':      { request: { channelId: number; lastMessageId: number; epoch: number }; response: { ok: true } };
-  'metaproject:edit-message':   { request: { channelId: number; messageId: number; message: string; epoch: number }; response: { ok: true } };
-  'metaproject:delete-message': { request: { channelId: number; messageId: number; epoch: number }; response: { ok: true } };
+  'metaproject:send-message':   { request: { projectId: number; channelId: number; message: string; parentMessageId?: number | null; epoch: number }; response: { ok: true } };
+  'metaproject:mark-read':      { request: { projectId: number; channelId: number; lastMessageId: number; epoch: number }; response: { ok: true } };
+  'metaproject:edit-message':   { request: { projectId: number; channelId: number; messageId: number; message: string; epoch: number }; response: { ok: true } };
+  'metaproject:delete-message': { request: { projectId: number; channelId: number; messageId: number; epoch: number }; response: { ok: true } };
   /**
    * Downloads a chat message attachment to the user's Downloads folder and
    * returns the absolute path we wrote to. Adds a ` (N)` suffix if the file

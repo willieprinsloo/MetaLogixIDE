@@ -3,10 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { parseMetaprojectOrigin, type MetaprojectActor, type MetaprojectFailure, type MetaprojectOrigin, type MetaprojectResult, type MetaprojectSessionSnapshot, type PersistenceWarning, type ValidMetaprojectRequest } from '@shared/metaproject-contract';
 import type { MetaprojectClient } from './client';
 import type { RememberedAccount, RememberedGrant } from './remembered-account';
-import { WebFailure, type Credentials } from './web-session';
+import { WebFailure, type AuthenticationResult, type Credentials } from './web-session';
 
 export interface SessionTransport {
-  authenticate(credentials: Credentials, signal: AbortSignal): Promise<MetaprojectResult<MetaprojectActor>>;
+  authenticate(credentials: Credentials, signal: AbortSignal): Promise<AuthenticationResult>;
   client(input: { actor: MetaprojectActor; signal: AbortSignal; changed(connected: boolean): void; rejected(): void; forward(event: string, payload: unknown): void }): MetaprojectClient;
   retire(logout: boolean): Promise<void>;
 }
@@ -75,7 +75,7 @@ export class SessionService {
     const result = await this.authenticate(attempt, credentials);
     if (!this.owns(attempt)) return failure('stale');
     if (!result.ok) {
-      this.loginAfter = Date.now() + (result.reason === 'throttled' ? 30_000 : 750);
+      this.applyLoginDelay(result);
       return this.abortAttempt(result.reason);
     }
     return this.finishLogin(attempt, result.value, input);
@@ -85,22 +85,22 @@ export class SessionService {
     const { account } = this.options;
     const forgotten = await account.forget();
     if (!this.owns(attempt)) return failure('stale');
-    let warning = forgotten.warning;
-    if (warning !== 'forget-incomplete' && input.remember) {
-      const saved = await account.save(attempt.origin, actor.id, { username: input.username, password: input.password }, () => this.owns(attempt));
-      warning = saved ?? warning;
-    }
+    if (forgotten.warning === 'forget-incomplete') return this.abortAttempt('unavailable', false, forgotten.warning);
+    const saved = input.remember ? await account.save(attempt.origin, actor.id, { username: input.username, password: input.password }, () => this.owns(attempt)) : null;
     if (!this.owns(attempt)) return failure('stale');
-    const remembered = this.grantFor(attempt.origin)?.actorId === actor.id && warning !== 'forget-incomplete';
-    if (warning === 'forget-incomplete') return this.abortAttempt('unavailable', false, warning);
-    // Do not leave a wait after grant publication in which a cancel could miss the new grant.
-    const response = this.activate(attempt, actor, remembered, warning);
-    void account.clearLegacy(input.username).then(cleared => {
-      if (!cleared && this.live?.epoch === attempt.epoch && this.state.phase === 'signed-in' && !this.state.warning) {
+    const warning = saved && !saved.remembered ? saved.warning ?? forgotten.warning : forgotten.warning;
+    const response = this.activate(attempt, actor, saved?.remembered ?? false, warning);
+    this.clearLegacyAfterLogin(attempt.epoch, input.username);
+    return response;
+  }
+
+  private clearLegacyAfterLogin(epoch: number, username: string): void {
+    const { account } = this.options;
+    void account.clearLegacy(username).then(cleared => {
+      if (!cleared && this.live?.epoch === epoch && this.state.phase === 'signed-in' && !this.state.warning) {
         this.set({ ...this.state, warning: 'keychain-not-cleared' });
       }
     });
-    return response;
   }
 
   /** Cancel only the request whose token is still current. */
@@ -163,7 +163,7 @@ export class SessionService {
 
   private owns(attempt: Attempt): boolean { return this.attempt === attempt && !this.disposed; }
 
-  private async authenticate(attempt: Attempt, credentials: Credentials): Promise<MetaprojectResult<MetaprojectActor>> {
+  private async authenticate(attempt: Attempt, credentials: Credentials): Promise<AuthenticationResult> {
     const deadline = AbortSignal.timeout(15_000);
     const result = await attempt.transport.authenticate(credentials, AbortSignal.any([deadline, attempt.controller.signal]));
     return deadline.aborted ? failure('network') : result;
@@ -202,14 +202,26 @@ export class SessionService {
     catch { return this.owns(attempt) ? this.abortAttempt('unavailable', true) : failure('stale'); }
     if (!this.owns(attempt)) return failure('stale');
     const result = credentials ? await this.authenticate(attempt, credentials) : failure('rejected');
+    return this.finishRestore(attempt, grant, result);
+  }
+
+  private async finishRestore(attempt: Attempt, grant: RememberedGrant, result: AuthenticationResult): Promise<SnapshotResult> {
     if (!this.owns(attempt)) return failure('stale');
-    if (result.ok && result.value.id === grant.actorId) return this.activate(attempt, result.value, true);
+    if (result.ok && result.value.id === grant.actorId && this.grantFor(grant.origin)?.grantId === grant.grantId) {
+      return this.activate(attempt, result.value, true);
+    }
+    if (result.ok && result.value.id === grant.actorId) return this.abortAttempt('stale');
     if (result.ok || result.reason === 'rejected') {
       await this.forgetSession('rejected');
       return failure('rejected');
     }
-    if (result.reason === 'throttled') this.loginAfter = Date.now() + 30_000;
+    if (result.reason === 'throttled') this.applyLoginDelay(result);
     return this.abortAttempt(result.reason, true);
+  }
+
+  private applyLoginDelay(result: Extract<AuthenticationResult, { ok: false }>): void {
+    const throttledDelay = 'retryAfterMs' in result ? result.retryAfterMs : 30_000;
+    this.loginAfter = Date.now() + (result.reason === 'throttled' ? throttledDelay : 750);
   }
 
   private abortAttempt(reason: MetaprojectFailure, retryRestore = false, warning?: PersistenceWarning): SnapshotResult {
@@ -232,8 +244,7 @@ export class SessionService {
     this.started = true;
     this.retire(reason, false, undefined, true);
     const epoch = this.state.epoch;
-    const forgotten = await this.options.account.forget(switchTo);
-    const legacy = await this.options.account.clearLegacy();
+    const [forgotten, legacy] = await Promise.all([this.options.account.forget(switchTo), this.options.account.clearLegacy()]);
     this.retiring = false;
     if (this.disposed || this.state.epoch !== epoch) return failure('stale');
     const warning = forgotten.warning ?? (legacy ? undefined : 'keychain-not-cleared');

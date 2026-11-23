@@ -48,7 +48,7 @@ it('requires confirmation for a candidate owned by the current Board lease', asy
   bridge.invoke.mockReset();
   bridge.invoke.mockImplementation(async (channel) => {
     if (channel === 'metaproject:board-open') return { ok: true, value: { ...target, phase: 'loading' } };
-    if (channel === 'metaproject:board-layout' || channel === 'metaproject:board-close' || channel === 'metaproject:board-external') return { ok: true };
+    if (['metaproject:board-layout', 'metaproject:board-close', 'metaproject:board-external', 'metaproject:board-dismiss-external'].includes(channel)) return { ok: true };
     throw new Error(`Unexpected ${channel}`);
   });
   const node = document.body.appendChild(document.createElement('div'));
@@ -58,14 +58,24 @@ it('requires confirmation for a candidate owned by the current Board lease', asy
   try {
     await act(async () => root.render(<BoardLease projectId={target.projectId} revision={target.revision} epoch={target.epoch} covered={false} />));
     const emit = listeners.get('metaproject:board-external-candidate');
-    if (!emit) throw new Error('Candidate listener missing');
+    const observeState = listeners.get('metaproject:board-state');
+    if (!emit || !observeState) throw new Error('Board listeners missing');
+    await act(async () => observeState({ ...target, phase: 'ready' }));
     await act(async () => emit({ ...target, epoch: 3, candidateId, label: 'outside.invalid' }));
     expect(confirm()).toBeUndefined();
     await act(async () => emit({ ...target, candidateId, label: 'outside.invalid' }));
     expect(confirm()).toBeDefined();
+    const button = (text: string) => [...node.querySelectorAll('button')].find((b) => b.textContent === text);
+    expect(document.activeElement).toBe(button('Cancel external link'));
+    await act(async () => button('Cancel external link')?.click());
+    expect(bridge.invoke).toHaveBeenCalledWith('metaproject:board-dismiss-external', { viewId, candidateId });
+    expect(document.activeElement).toBe(button('Focus Board'));
+    const nextId = '0856d88e-bbed-4f3e-8157-b9d3a4b34eec';
+    await act(async () => emit({ ...target, candidateId: nextId, label: 'next.invalid' }));
+    expect(confirm()).toBeDefined();
     expect(bridge.invoke.mock.calls.filter(([name]) => name === 'metaproject:board-external')).toHaveLength(0);
     await act(async () => confirm()?.click());
-    expect(bridge.invoke).toHaveBeenCalledWith('metaproject:board-external', { viewId, candidateId });
+    expect(bridge.invoke).toHaveBeenCalledWith('metaproject:board-external', { viewId, candidateId: nextId });
   } finally {
     act(() => root.unmount()); node.remove(); vi.unstubAllGlobals(); bridge.on.mockReset().mockImplementation(() => () => {});
   }

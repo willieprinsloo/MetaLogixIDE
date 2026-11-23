@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { metaprojectRequests, parseMetaprojectOrigin } from '@shared/metaproject-contract';
-import { isMetaprojectRendererEntry } from '@main/metaproject/owner';
+import { isMetaprojectRendererEntry, metaprojectOwner } from '@main/metaproject/owner';
 
 describe('Metaproject trust boundaries', () => {
   it('normalizes a bare host and default port, but retains a different effective port', () => {
@@ -24,7 +24,7 @@ describe('Metaproject trust boundaries', () => {
 
   it('validates assignment IDs without accepting renderer paths or remote URLs', () => {
     const save = metaprojectRequests['metaproject:assignment-save'];
-    const request = { projectId: 1, remoteId: 2, epoch: 1, revision: '0'.repeat(64) };
+    const request = { projectId: 1, remoteId: 2, epoch: 1, revision: '0'.repeat(64), operationId: 'd69f61c5-3efe-43dc-bd49-0f9b553497cd' };
     expect(save.safeParse(request).success).toBe(true);
     expect(save.safeParse({ ...request, remoteId: Number.MAX_SAFE_INTEGER + 1 }).success).toBe(false);
     expect(save.safeParse({ ...request, remoteId: '2' }).success).toBe(false);
@@ -40,5 +40,22 @@ describe('Metaproject trust boundaries', () => {
     expect(isMetaprojectRendererEntry('http://localhost:5174/', dev)).toBe(false);
     expect(isMetaprojectRendererEntry(installed, installed)).toBe(true);
     expect(isMetaprojectRendererEntry('file:///Other/out/renderer/index.html', installed)).toBe(false);
+  });
+
+  it('requires the live owner and its exact main frame, not a second window or same-URL subframe', () => {
+    const entry = 'file:///App/out/renderer/index.html';
+    const mainFrame = { url: `${entry}?platform=darwin` };
+    const renderer = { mainFrame, isDestroyed: () => false };
+    const owner = { webContents: renderer, isDestroyed: () => false };
+    const invocation = { sender: renderer, senderFrame: mainFrame };
+    expect(metaprojectOwner(invocation, owner, entry)).toBe(owner);
+    expect(metaprojectOwner(invocation, null, entry)).toBeNull();
+    expect(metaprojectOwner(invocation, { ...owner, isDestroyed: () => true }, entry)).toBeNull();
+    expect(metaprojectOwner({ ...invocation, sender: { ...renderer } }, owner, entry)).toBeNull();
+    expect(metaprojectOwner({ ...invocation, senderFrame: { ...mainFrame } }, owner, entry)).toBeNull();
+    expect(metaprojectOwner({ ...invocation, senderFrame: null }, owner, entry)).toBeNull();
+    expect(metaprojectOwner(invocation, owner, 'file:///Other/out/renderer/index.html')).toBeNull();
+    const closedRenderer = { ...renderer, isDestroyed: () => true };
+    expect(metaprojectOwner({ ...invocation, sender: closedRenderer }, { ...owner, webContents: closedRenderer }, entry)).toBeNull();
   });
 });

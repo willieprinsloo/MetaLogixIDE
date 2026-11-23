@@ -1,10 +1,10 @@
 /** Named project assignment editor reused from Project Settings and the Chat sidebar. */
-import { useId, useLayoutEffect, useRef, useState } from 'react';
-import { api } from '@renderer/api';
+import { useId, useState } from 'react';
 import type { MetaprojectAssignment, MetaprojectRemoteProject } from '@shared/metaproject-contract';
 import { failureCopy, mpButton, mpInput } from './messages';
-import { AccountStatus, useMetaprojectSession, useSignInIntent } from './session';
-import { applyAssignment, useAssignment, useAssignmentChoices, type AssignmentChoice, type Load } from './useAssignment';
+import { AccountStatus, SignedInPersistenceWarning, useMetaprojectSession, useSignInIntent } from './session';
+import { useAssignment, useAssignmentChoices, type Load } from './useAssignment';
+import { useAssignmentEditor } from './assignment-operations';
 
 interface ChoicesProps {
   choices: Load<MetaprojectRemoteProject[]>; onRetry: () => void;
@@ -47,75 +47,45 @@ export function AssignmentPanel({ projectId, compact = false }: { projectId: num
 interface EditorProps { assignment: MetaprojectAssignment; reload: () => void; checking: boolean; onSignIn: () => void; allowCreate: boolean; initialLink: boolean }
 
 function AssignmentEditor({ assignment, reload, checking, onSignIn, allowCreate, initialLink }: EditorProps) {
-  const { snapshot, current } = useMetaprojectSession();
-  const [mode, setMode] = useState<'none' | 'link' | 'create' | 'remove' | null>(null);
-  const activeMode = mode ?? (initialLink ? 'link' : 'none');
-  const [selected, select] = useState<number | null>(null);
-  const [name, setName] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
-  const [partial, setPartial] = useState<MetaprojectRemoteProject | null>(null);
-  const [committed, setCommitted] = useState<{ from: MetaprojectAssignment; value: MetaprojectAssignment }>();
-  const context = committed?.from === assignment ? committed.value : assignment;
-  const live = useRef(false);
-  useLayoutEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
-  const { state: choices, reload: retryList } = useAssignmentChoices(activeMode === 'link');
-  const signedIn = snapshot?.phase === 'signed-in';
-  const selectedChoice = choices.kind === 'loaded' && choices.value.some((p) => p.id === selected);
-
-  async function mutate(choice: AssignmentChoice | 'remove') {
-    if (busy || checking || !('revision' in context) || (choice !== 'remove' && !signedIn)) return;
-    const epoch = snapshot?.epoch;
-    setBusy(true); setFeedback(null);
-    try {
-      if (choice === 'remove') {
-        const result = await api.invoke('metaproject:assignment-remove', { projectId: context.projectId, revision: context.revision });
-        if (!live.current) return;
-        if (!result.ok) { setFeedback({ text: failureCopy[result.reason], error: true }); return; }
-        setCommitted({ from: assignment, value: result.value }); setMode('none'); setFeedback({ text: 'Assignment removed.', error: false });
-      } else if (epoch !== undefined) {
-        const result = await applyAssignment(context, epoch, choice);
-        if (!live.current || current()?.epoch !== epoch) return;
-        if (!result.ok) { setFeedback({ text: failureCopy[result.reason], error: true }); return; }
-        if (result.value.kind === 'created-not-assigned') {
-          setPartial(result.value.project); select(result.value.project.id); setMode('link');
-          setFeedback({ text: `Created ${result.value.project.name} (#${result.value.project.id}) but did not assign the folder. ${failureCopy[result.value.reason]} Link the existing project instead of creating it again.`, error: true });
-          return;
-        }
-        setCommitted({ from: assignment, value: result.value.assignment }); setMode('none'); setPartial(null); select(null);
-        setFeedback({ text: 'Metaproject assignment saved.', error: false });
-      }
-    } catch { if (live.current) setFeedback({ text: failureCopy.unavailable, error: true }); }
-    finally { if (live.current) setBusy(false); }
-  }
-
+  const editor = useAssignmentEditor(assignment, initialLink);
+  const { context, signedIn, busy, feedback, blocked } = editor;
   return <div className="space-y-3">
     <div className="break-words"><strong>{context.localName}</strong><div className="text-[--text-muted]">{context.localPath}</div></div>
-    <AssignmentSummary assignment={context} />
-    {!signedIn && <AccountStatus onSignIn={onSignIn} />}
-    {'revision' in context && <>
-      <div className="flex flex-wrap gap-2">
-        {signedIn && <button type="button" className={mpButton} disabled={busy || checking} onClick={() => setMode('link')}>{context.kind === 'linked' ? 'Change assignment' : 'Link existing'}</button>}
-        {allowCreate && signedIn && !partial && <button type="button" className={mpButton} disabled={busy || checking} onClick={() => setMode('create')}>Create and link</button>}
-        {context.kind !== 'unlinked' && <button type="button" className={mpButton} disabled={busy || checking} onClick={() => setMode('remove')}>Remove assignment</button>}
-      </div>
-      {signedIn && activeMode === 'link' && <div className="space-y-2">
-        <AssignmentChoices choices={choices} onRetry={retryList} selected={selected} onSelect={select} disabled={busy || checking} />
-        {context.kind !== 'unlinked' && <p>This replaces the current assignment for {context.localName}.</p>}
-        <button type="button" className={mpButton} disabled={busy || checking || !selectedChoice || selected === null} onClick={() => { if (selected !== null) void mutate({ kind: 'link', remoteId: selected }); }}>Save assignment</button>
-      </div>}
-      {signedIn && activeMode === 'create' && <div className="space-y-2">
-        <label className="block">New Metaproject project name<input className={mpInput} value={name} maxLength={255} disabled={busy || checking} onChange={(e) => setName(e.target.value)} /></label>
-        {context.kind !== 'unlinked' && <p>This replaces the current assignment for {context.localName}.</p>}
-        <button type="button" className={mpButton} disabled={busy || checking || !name.trim()} onClick={() => void mutate({ kind: 'create', name: name.trim() })}>Create project and save assignment</button>
-      </div>}
-      {activeMode === 'remove' && <div className="space-y-2"><p>Remove the assignment for {context.localName}? This only changes the local folder.</p><button type="button" className={mpButton} disabled={busy || checking} onClick={() => void mutate('remove')}>Confirm removal</button></div>}
-      {activeMode !== 'none' && <button type="button" className={mpButton} disabled={busy || checking} onClick={() => { setMode('none'); select(null); }}>Cancel assignment change</button>}
-    </>}
+    {!blocked && <AssignmentSummary assignment={context} />}
+    {signedIn ? <SignedInPersistenceWarning /> : <AccountStatus onSignIn={onSignIn} />}
+    {!blocked && 'revision' in context && <AssignmentActions editor={editor} disabled={busy || checking} allowCreate={allowCreate} />}
     {busy && <p role="status">Applying assignment…</p>}
     {feedback && <p role={feedback.error ? 'alert' : 'status'}>{feedback.text}</p>}
     {!busy && !checking && (feedback?.error || !('revision' in context)) && <button type="button" className={mpButton} onClick={reload}>Reload assignment</button>}
   </div>;
+}
+
+type ActionsProps = { editor: ReturnType<typeof useAssignmentEditor>; disabled: boolean; allowCreate: boolean };
+
+function AssignmentActions({ editor, disabled, allowCreate }: ActionsProps) {
+  const { context, activeMode, signedIn, partial, selected, select, changeMode, mutate } = editor;
+  const [name, setName] = useState('');
+  const { state: choices, reload: retryList } = useAssignmentChoices(activeMode === 'link');
+  const selectedChoice = choices.kind === 'loaded' && choices.value.some((p) => p.id === selected);
+  return <>
+      <div className="flex flex-wrap gap-2">
+        {signedIn && <button type="button" className={mpButton} disabled={disabled} onClick={() => changeMode('link')}>{context.kind === 'linked' ? 'Change assignment' : 'Link existing'}</button>}
+        {allowCreate && signedIn && !partial && <button type="button" className={mpButton} disabled={disabled} onClick={() => changeMode('create')}>Create and link</button>}
+        {context.kind !== 'unlinked' && <button type="button" className={mpButton} disabled={disabled} onClick={() => changeMode('remove')}>Remove assignment</button>}
+      </div>
+      {signedIn && activeMode === 'link' && <div className="space-y-2">
+        <AssignmentChoices choices={choices} onRetry={retryList} selected={selected} onSelect={select} disabled={disabled} />
+        {context.kind !== 'unlinked' && <p>This replaces the current assignment for {context.localName}.</p>}
+        <button type="button" className={mpButton} disabled={disabled || !selectedChoice || selected === null} onClick={() => { if (selected !== null) void mutate({ kind: 'link', remoteId: selected }); }}>Save assignment</button>
+      </div>}
+      {signedIn && activeMode === 'create' && <div className="space-y-2">
+        <label className="block">New Metaproject project name<input className={mpInput} value={name} maxLength={255} disabled={disabled} onChange={(e) => setName(e.target.value)} /></label>
+        {context.kind !== 'unlinked' && <p>This replaces the current assignment for {context.localName}.</p>}
+        <button type="button" className={mpButton} disabled={disabled || !name.trim()} onClick={() => void mutate({ kind: 'create', name: name.trim() })}>Create project and save assignment</button>
+      </div>}
+      {activeMode === 'remove' && <div className="space-y-2"><p>Remove the assignment for {context.localName}? This only changes the local folder.</p><button type="button" className={mpButton} disabled={disabled} onClick={() => void mutate({ kind: 'remove' })}>Confirm removal</button></div>}
+      {activeMode !== 'none' && <button type="button" className={mpButton} onClick={() => changeMode('none')}>Cancel assignment change</button>}
+  </>;
 }
 
 function AssignmentSummary({ assignment }: { assignment: MetaprojectAssignment }) {

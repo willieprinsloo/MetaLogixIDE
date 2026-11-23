@@ -3,23 +3,26 @@ import { io, NodeWebSocket, type Socket } from 'socket.io-client';
 import type { Session } from 'electron';
 import { z } from 'zod';
 import { accountId, metaprojectRemoteProject, type MetaprojectOrigin, type RemoteProjectId } from '@shared/metaproject-contract';
-import { projectList, projectListCap, requireWebBody, webJson, WebFailure, type WebRequest } from './web-session';
+import { projectList, projectListCap, requireWebBody, webJson, WebFailure, type WebMutation, type WebRequest } from './web-session';
+import { mutateChat, type ChatMutation } from './chat-mutations';
 
 const id = z.number().int().positive();
 const channel = z.object({ id, project_id: id.nullable(), name: z.string().max(1024), is_private: z.boolean() });
 const user = z.object({ id, username: z.string().max(254), display_name: z.string().nullish().transform(value => value ?? undefined), avatar_url: z.string().max(4096).nullish().transform(value => value ?? null) });
-const message = z.object({ id, channel_id: id, project_id: id.nullish(), user_id: id, user_name: z.string().optional(), user: user.nullable().optional().transform(value => value ?? undefined), message: z.string().max(64 * 1024), created_at: z.string().max(128), parent_message_id: id.nullable(), attachments: z.array(z.object({ id, filename: z.string().max(1024), file_size: z.number().int().nonnegative(), mime_type: z.string().max(256).nullish() })).optional() });
+const message = z.object({ id, channel_id: id, project_id: id.nullish(), user_id: id, user_name: z.string().optional(), user: user.nullable().optional().transform(value => value ?? undefined), message: z.string().max(64 * 1024), created_at: z.string().max(128), parent_message_id: id.nullable(), is_deleted: z.boolean().optional(), attachments: z.array(z.object({ id, filename: z.string().max(1024), file_size: z.number().int().nonnegative(), mime_type: z.string().max(256).nullish() })).optional() });
 const channels = z.object({ success: z.literal(true), channels: z.array(channel) });
 const messages = z.object({ success: z.literal(true), messages: z.array(message) });
-const users = z.object({ success: z.literal(true), users: z.array(user.extend({ email: z.string().max(254).optional() })) });
+const users = z.object({ success: z.literal(true), users: z.array(user.pick({ id: true, username: true })) });
 const project = z.object({ success: z.literal(true), project: metaprojectRemoteProject });
 const identity = z.object({ status: z.literal('success'), user_id: accountId });
 const socketMessage = z.object({ channel_id: id, message });
 const socketDeleted = z.object({ channel_id: id, message_id: id });
+const channelJoined = z.object({ channel_id: id });
+type Join = { result: Promise<{ ok: true }>; finish(error?: WebFailure): void };
 export interface CreateRemote { name: string; description?: string; projectType?: 'kanban' | 'sprint' | 'dcad' }
 interface ClientOptions {
   origin: MetaprojectOrigin;
-  jar: Session;
+  jar: Pick<Session, 'getUserAgent'> & { cookies: Pick<Session['cookies'], 'get'> };
   request: WebRequest;
   signal: AbortSignal;
   userId: number;
@@ -36,6 +39,7 @@ export class MetaprojectClient {
   private backoff = 1500;
   private probeAt = 0;
   private verified = false;
+  private readonly joins = new Map<number, Join>();
 
   constructor(private readonly options: ClientOptions) {
     options.signal.addEventListener('abort', () => this.stop(), { once: true });
@@ -50,6 +54,7 @@ export class MetaprojectClient {
     this.verified = false;
     const socket = this.socket;
     this.socket = null;
+    for (const join of this.joins.values()) join.finish(new WebFailure('network'));
     socket?.disconnect();
   }
 
@@ -88,6 +93,11 @@ export class MetaprojectClient {
     });
     socket.on('disconnect', disconnect);
     socket.on('connect_error', disconnect);
+    socket.on('channel_joined', (raw: unknown) => {
+      if (this.socket !== socket || !this.verified) return;
+      const joined = channelJoined.safeParse(raw);
+      if (joined.success) this.joins.get(joined.data.channel_id)?.finish();
+    });
     this.forwardSocket(socket);
     this.timer = setTimeout(disconnect, 10_000);
     socket.connect();
@@ -127,22 +137,49 @@ export class MetaprojectClient {
     this.retry = setTimeout(() => this.start(), delay);
   }
 
-  /** Enforce a verified socket and never queue mutations for replay. */
-  emit(event: string, payload: object): void {
-    if (!this.verified || !this.socket?.connected) throw new WebFailure('network');
-    this.socket.volatile.emit(event, payload);
+  /** Wait for the reference's room-specific confirmation on the current verified socket. */
+  async joinChannel(channelId: number): Promise<{ ok: true }> {
+    const socket = this.socket;
+    if (!this.verified || !socket?.connected) throw new WebFailure('network');
+    const pending = this.joins.get(channelId);
+    if (pending) return pending.result;
+    if (this.joins.size >= 256) throw new WebFailure('conflict');
+    const join = this.pendingJoin(channelId);
+    this.joins.set(channelId, join);
+    try { socket.emit('join_channel', { channel_id: channelId }); }
+    catch { join.finish(new WebFailure('network')); }
+    return join.result;
   }
 
-  private async read<T>(path: string, schema: z.ZodType<T>, json?: object): Promise<T> {
+  private pendingJoin(channelId: number): Join {
+    let finish: Join['finish'] = () => undefined;
+    const result = new Promise<{ ok: true }>((resolve, reject) => {
+      const timer = setTimeout(() => finish(new WebFailure('network')), 5_000);
+      finish = error => {
+        clearTimeout(timer);
+        this.joins.delete(channelId);
+        if (error) reject(error);
+        else resolve({ ok: true });
+      };
+    });
+    return { result, finish: error => finish(error) };
+  }
+
+  /** Return acceptance only from one origin-bound, protected Chat mutation. */
+  mutateChat(input: ChatMutation): Promise<{ ok: true }> {
+    return mutateChat((path, schema, mutation) => this.read(path, schema, mutation), input);
+  }
+
+  private async read<T>(path: string, schema: z.ZodType<T>, mutation?: WebMutation): Promise<T> {
     const { jar, origin, request, signal } = this.options;
     try {
       let csrf: string | undefined;
-      if (json) {
+      if (mutation) {
         const values = await jar.cookies.get({ url: new URL(path, origin).href, name: 'csrf_token' });
         csrf = values.length === 1 ? values[0]?.value : undefined;
         if (!csrf || !/^[a-zA-Z0-9._-]{1,2048}$/.test(csrf)) throw new WebFailure('protocol');
       }
-      return webJson(await request({ path, signal, ...(json ? { json, csrf } : {}), limit: projectListCap }), origin, schema);
+      return webJson(await request({ path, signal, ...mutation, csrf, limit: projectListCap }), origin, schema);
     } catch (error) {
       if (error instanceof WebFailure && error.reason === 'expired') this.options.rejected();
       throw error;
@@ -157,7 +194,7 @@ export class MetaprojectClient {
   }
   /** Create one remote project; never retry automatically. */
   async createProject(input: CreateRemote): Promise<z.output<typeof project>['project']> {
-    return (await this.read('/api/projects', project, { name: input.name, description: input.description ?? '', project_type: input.projectType ?? 'kanban' })).project;
+    return (await this.read('/api/projects', project, { json: { name: input.name, description: input.description ?? '', project_type: input.projectType ?? 'kanban' } })).project;
   }
   /** Read workspace or scoped Chat channels. */
   async listAllChannels(scope: 'all' | 'global' | number): Promise<z.output<typeof channels>['channels']> { return (await this.read(`/api/chat/channels/?scope=${scope}`, channels)).channels; }

@@ -2,7 +2,7 @@
 import { z } from 'zod';
 import type { Project } from '@shared/types';
 import { parseRemoteProjectId } from '@shared/parse-metaproject';
-import { parseMetaprojectOrigin, remoteProjectId, type AssignmentCreateOutcome, type MetaprojectAssignment, type MetaprojectOrigin, type MetaprojectRemoteProject, type MetaprojectResult, type RemoteProjectId, type ValidMetaprojectRequest } from '@shared/metaproject-contract';
+import { parseMetaprojectOrigin, remoteProjectId, type AssignmentCreateOutcome, type AssignmentMutationOutcome, type MetaprojectAssignment, type MetaprojectOrigin, type MetaprojectRemoteProject, type MetaprojectResult, type RemoteProjectId, type ValidMetaprojectRequest } from '@shared/metaproject-contract';
 import type { ProjectsRepo } from '@main/repos/projects-repo';
 import type { RootsRepo } from '@main/repos/roots-repo';
 import type { SettingsRepo } from '@main/repos/settings-repo';
@@ -110,7 +110,8 @@ export class AssignmentService {
   }
 
   /** Save only after current membership and project-detail access both succeed. */
-  async save(input: ValidMetaprojectRequest<'metaproject:assignment-save'>, owns: () => boolean): Promise<MetaprojectResult<MetaprojectAssignment>> {
+  async save(input: ValidMetaprojectRequest<'metaproject:assignment-save'>, owns: () => boolean): Promise<MetaprojectResult<AssignmentMutationOutcome>> {
+    if (!owns()) return failure('stale');
     const target = this.target(input);
     if (!target.ok) return target;
     const live = this.live(input.epoch);
@@ -126,9 +127,11 @@ export class AssignmentService {
   }
 
   /** Remove only the named local assignment; does not require or contact the server. */
-  remove(input: Context, owns: () => boolean): MetaprojectResult<MetaprojectAssignment> {
+  remove(input: Context, owns: () => boolean): MetaprojectResult<AssignmentMutationOutcome> {
+    if (!owns()) return failure('stale');
+    const epoch = this.options.session.snapshot().epoch;
     const target = this.target(input);
-    return target.ok ? this.commit(target.value, null, owns) : target;
+    return target.ok ? this.commit(target.value, null, () => owns() && this.options.session.snapshot().epoch === epoch) : target;
   }
 
   /** Preserve remote creation success if the local assignment cannot subsequently commit. */
@@ -141,10 +144,10 @@ export class AssignmentService {
     let created: MetaprojectRemoteProject;
     try { created = await live.value.client.createProject(input); }
     catch (error) { return failure(failureReason(error)); }
-    const assignment = await this.save({ projectId: input.projectId, epoch: input.epoch, revision: input.revision, remoteId: created.id }, owns);
-    return assignment.ok
-      ? ok({ kind: 'assigned', assignment: assignment.value })
-      : ok({ kind: 'created-not-assigned', project: created, reason: assignment.reason });
+    try {
+      const assignment = await this.save({ ...input, remoteId: created.id }, owns);
+      return assignment.ok ? assignment : ok({ kind: 'created-not-assigned', project: created, reason: assignment.reason });
+    } catch (error) { return ok({ kind: 'created-not-assigned', project: created, reason: failureReason(error) }); }
   }
 
   private live(epoch: number): MetaprojectResult<Live> {
@@ -165,16 +168,31 @@ export class AssignmentService {
     return ok({ project, file: file.value });
   }
 
-  private commit(target: { project: Project; file: AssignmentFile }, link: { id: RemoteProjectId; origin: MetaprojectOrigin } | null, owns: () => boolean): MetaprojectResult<MetaprojectAssignment> {
+  private commit(target: { project: Project; file: AssignmentFile }, link: { id: RemoteProjectId; origin: MetaprojectOrigin } | null, owns: () => boolean): MetaprojectResult<AssignmentMutationOutcome> {
     const { project, file } = target;
     const result = commitAssignmentFile(file, link, () => {
-      const row = this.options.projects.get(project.id);
-      return owns() && !!row && !row.hidden && row.path === project.path && row.rootId === project.rootId;
+      return owns() && this.ownsTarget(project, file.root);
     });
     if (!result.ok) return result;
     try { this.options.projects.clearLegacyMetaprojectLink(project.id); }
     catch { console.warn('[metaproject] could not clear obsolete assignment projection'); }
-    this.options.changed(project.id);
-    return ok(this.describe(project, this.read(project)));
+    try { this.options.changed(project.id); }
+    catch { console.warn('[metaproject] could not publish assignment change'); }
+    try { return ok(this.readback(project.id, link)); }
+    catch { return ok({ kind: 'committed-reload', projectId: project.id }); }
+  }
+
+  private ownsTarget(project: Project, root: string): boolean {
+    const row = this.options.projects.get(project.id);
+    return !!row && !row.hidden && row.path === project.path && row.rootId === project.rootId
+      && this.options.roots.list().some(item => item.id === project.rootId && item.path === root);
+  }
+
+  private readback(projectId: number, link: { id: RemoteProjectId; origin: MetaprojectOrigin } | null): AssignmentMutationOutcome {
+    const result = this.get(projectId);
+    if (!result.ok) return { kind: 'committed-reload', projectId };
+    const assignment = result.value;
+    const matches = link ? assignment.kind === 'linked' && assignment.remoteId === link.id && assignment.origin === link.origin : assignment.kind === 'unlinked';
+    return matches ? { kind: 'assigned', assignment } : { kind: 'committed-reload', projectId };
   }
 }

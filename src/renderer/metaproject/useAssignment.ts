@@ -1,39 +1,38 @@
 /** Loads registered assignments and current-account project choices without sharing stale picker results. */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api } from '@renderer/api';
-import type { AssignmentCreateOutcome, MetaprojectAssignment, MetaprojectFailure, MetaprojectRemoteProject, MetaprojectResult } from '@shared/metaproject-contract';
+import type { MetaprojectAssignment, MetaprojectFailure, MetaprojectRemoteProject, MetaprojectResult } from '@shared/metaproject-contract';
 import { useMetaprojectSession } from './session';
 
 export type Load<T> = { kind: 'loading' } | { kind: 'error'; reason: MetaprojectFailure } | { kind: 'loaded'; value: T };
 const loading = { kind: 'loading' } as const;
 
 function useLoad<T>(scope: string | null, load: () => Promise<Load<T>>) {
-  const [state, setState] = useState<{ scope: string; generation: number; result: Load<T> }>();
-  const [generation, bump] = useState(0);
+  const [state, setState] = useState<{ scope: string; cleared: number; result: Load<T> }>();
+  const [request, setRequest] = useState({ generation: 0, cleared: 0 });
   const revision = useRef(0);
-  const reload = useCallback(() => {
+  const invalidate = useCallback((clear: boolean) => {
     revision.current += 1;
-    bump((n) => n + 1);
+    setRequest(({ generation, cleared }) => ({ generation: generation + 1, cleared: cleared + Number(clear) }));
   }, []);
+  const reload = useCallback(() => invalidate(true), [invalidate]);
+  const refresh = useCallback(() => invalidate(false), [invalidate]);
   useLayoutEffect(() => () => { revision.current += 1; }, [scope]);
   useEffect(() => {
     if (scope === null) { setState(undefined); return; }
     const version = ++revision.current;
-    void load().then((result) => {
-      if (revision.current === version) setState({ scope, generation, result });
-    }).catch(() => {
-      if (revision.current === version) setState({ scope, generation, result: { kind: 'error', reason: 'unavailable' } });
-    });
-  }, [scope, generation, load]);
+    const finish = (result: Load<T>) => { if (revision.current === version) setState({ scope, cleared: request.cleared, result }); };
+    void load().then(finish).catch(() => finish({ kind: 'error', reason: 'unavailable' }));
+  }, [scope, request, load]);
   const cached = state?.scope === scope ? state : undefined;
-  return { state: cached?.generation === generation ? cached.result : loading, previous: cached?.result, reload };
+  return { state: cached?.cleared === request.cleared ? cached.result : loading, previous: cached?.result, reload, refresh };
 }
 
 function asLoad<T>(result: MetaprojectResult<T>): Load<T> {
   return result.ok ? { kind: 'loaded', value: result.value } : { kind: 'error', reason: result.reason };
 }
 
-/** Loads the current local folder assignment and invalidates it on named assignment or origin changes. */
+/** Rechecks broad project changes without interrupting a view whose authority is unchanged. */
 export function useAssignment(projectId: number | null) {
   const { snapshot } = useMetaprojectSession();
   const load = useCallback(async () => {
@@ -43,11 +42,16 @@ export function useAssignment(projectId: number | null) {
     return asLoad(result);
   }, [projectId]);
   const result = useLoad(projectId === null ? null : `${projectId}:${snapshot?.epoch ?? '-'}:${snapshot?.origin ?? '-'}`, load);
-  const { reload } = result;
+  const { reload, refresh } = result;
   useEffect(() => {
     if (projectId === null) return;
-    return api.on('metaproject:assignment-changed', (event) => { if (event.projectId === projectId) reload(); });
-  }, [projectId, reload]);
+    const offAssignment = api.on('metaproject:assignment-changed', ({ projectId: changed }) => { if (changed === projectId) reload(); });
+    const offProjects = api.on('projects:changed', ({ projectId: changed, kind }) => {
+      if (changed !== undefined && changed !== projectId) return;
+      if (changed === projectId && kind === 'removed') reload(); else refresh();
+    });
+    return () => { offAssignment(); offProjects(); };
+  }, [projectId, reload, refresh]);
   return result;
 }
 
@@ -64,17 +68,4 @@ export function useAssignmentChoices(open: boolean) {
     return result.value.epoch === epoch ? { kind: 'loaded', value: result.value.projects } : { kind: 'error', reason: 'stale' };
   }, [current, epoch]);
   return useLoad(epoch === null ? null : String(epoch), load);
-}
-
-export type AssignmentChoice = { kind: 'link'; remoteId: number } | { kind: 'create'; name: string };
-
-/** Applies exactly one remote link or create-and-link against the explicit committed folder revision. */
-export async function applyAssignment(project: MetaprojectAssignment, epoch: number, choice: AssignmentChoice): Promise<MetaprojectResult<AssignmentCreateOutcome>> {
-  if (!('revision' in project)) return { ok: false, reason: project.kind === 'invalid' ? 'invalid-file' : 'unavailable' };
-  const context = { projectId: project.projectId, revision: project.revision, epoch };
-  try {
-    if (choice.kind === 'create') return await api.invoke('metaproject:assignment-create', { ...context, name: choice.name });
-    const result = await api.invoke('metaproject:assignment-save', { ...context, remoteId: choice.remoteId });
-    return result.ok ? { ok: true, value: { kind: 'assigned', assignment: result.value } } : result;
-  } catch { return { ok: false, reason: 'unavailable' }; }
 }

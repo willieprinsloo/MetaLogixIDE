@@ -65,6 +65,8 @@ projects, tap a project to open its terminal, and dictate into it by voice.
 
 Board, Chat, and the assignment picker use one IDE sign-in. Select **Remember me** to restore it on restart through the OS credential store. Without it, access ends when you quit the IDE. Old saved passwords require re-entry. **Sign out and forget** in Metaproject settings clears local access even when the service is offline.
 
+If startup cannot reach the service, choose **Retry remembered sign-in** once you are back online. If the IDE cannot remove the saved sign-in, it still signs you out locally and reports the storage problem. Retry forgetting before relying on the next restart to stay signed out.
+
 You can replace or remove the assignment in Project Settings. Removal changes only the local `.metaproject.yaml`; it does not delete the remote project. A link belongs to the service where you saved it. Changing the service signs you out and does not transfer the link to the new service.
 
 ### `.metaide/` project convention

@@ -14,6 +14,7 @@ interface Lease {
   context: Open;
   ownerId: number;
   bounds: Bounds | null;
+  attached: boolean;
   guest: BoardGuest | null;
   phase: Phase;
   candidate: { url: string; id: string; expires: number } | null;
@@ -64,6 +65,11 @@ export class BoardController {
     if (this.lease?.context.epoch !== epoch) this.drop();
   }
 
+  /** Check an existing lease when the IDE rescans or changes registered roots. */
+  projectAuthorityChanged(): void {
+    if (this.lease) this.revalidate(this.lease);
+  }
+
   /** Preflight current access before constructing the top-level guest. */
   async open(context: Open, ownerId: number): Promise<MetaprojectResult<MetaprojectBoardState>> {
     const target = this.target(context);
@@ -71,18 +77,15 @@ export class BoardController {
     const live = this.options.session.client(context.epoch);
     if (!live) return failure(this.options.session.snapshot().epoch === context.epoch ? 'signed-out' : 'stale');
     this.drop();
-    const lease: Lease = { context, ownerId, bounds: null, guest: null, phase: { phase: 'loading' }, candidate: null };
+    const lease: Lease = { context, ownerId, bounds: null, attached: false, guest: null, phase: { phase: 'loading' }, candidate: null };
     this.lease = lease;
     this.options.state(this.state(lease));
     try {
       await live.client.checkProject(target.value.remoteId);
-      if (this.lease !== lease || this.options.session.client(context.epoch) !== live) return failure('stale');
+      if (!this.current(lease, live)) return this.superseded(lease);
       const checked = this.target(context);
       if (!checked.ok) return ok(this.update(lease, { phase: 'error', reason: checked.reason }));
-      lease.guest = this.options.guest(ownerId, live, this.events(lease));
-      const loaded = await lease.guest.load(this.url(target.value.origin, target.value.remoteId));
-      if (this.lease !== lease) return failure('stale');
-      return ok(this.update(lease, loaded.ok ? { phase: 'ready' } : { phase: 'error', reason: loaded.reason }));
+      return await this.loadGuest(lease, live, checked.value);
     } catch (error) {
       if (this.lease !== lease) return failure('stale');
       const reason = failureReason(error);
@@ -95,14 +98,18 @@ export class BoardController {
     const lease = this.match(ownerId, viewId);
     if (!lease) return failure('stale');
     lease.bounds = bounds;
-    this.layoutGuest(lease);
-    return ok(undefined);
+    let result: MetaprojectResult<undefined> = ok(undefined);
+    this.layoutGuest(lease, () => { result = this.revalidate(lease); return result.ok; });
+    return result;
   }
 
   /** Focus only the attached, current guest. */
   focus(ownerId: number, viewId: string): MetaprojectResult<undefined> {
     const lease = this.match(ownerId, viewId);
-    return lease?.guest?.focus() ? ok(undefined) : failure('stale');
+    if (!lease?.attached) return failure('stale');
+    const authority = this.revalidate(lease);
+    if (!authority.ok) return authority;
+    return lease.guest?.focus() ? ok(undefined) : failure('stale');
   }
 
   /** Release this exact lease even if preflight or load is pending. */
@@ -126,6 +133,38 @@ export class BoardController {
     lease.candidate = null;
     if (!this.options.session.client(lease.context.epoch) || !this.target(lease.context).ok) return failure('stale');
     return this.launch(candidate.url);
+  }
+
+  /** Clear only the matching offer; the renderer controls focus and subsequent layout. */
+  dismissExternal(ownerId: number, viewId: string, candidateId: string): MetaprojectResult<undefined> {
+    const lease = this.match(ownerId, viewId);
+    if (!lease || lease.candidate?.id !== candidateId) return failure('stale');
+    lease.candidate = null;
+    return ok(undefined);
+  }
+
+  private current(lease: Lease, live: Live): boolean {
+    return this.lease === lease && this.options.session.client(lease.context.epoch) === live && lease.phase.phase === 'loading';
+  }
+
+  private superseded(lease: Lease): MetaprojectResult<MetaprojectBoardState> {
+    return this.lease === lease && lease.phase.phase === 'error' ? ok(this.state(lease)) : failure('stale');
+  }
+
+  private async loadGuest(lease: Lease, live: Live, target: { origin: MetaprojectOrigin; remoteId: number }): Promise<MetaprojectResult<MetaprojectBoardState>> {
+    lease.guest = this.options.guest(lease.ownerId, live, this.events(lease));
+    const loaded = await lease.guest.load(this.url(target.origin, target.remoteId));
+    if (!this.current(lease, live)) return this.superseded(lease);
+    const checked = loaded.ok ? this.target(lease.context) : loaded;
+    return ok(this.update(lease, checked.ok ? { phase: 'ready' } : { phase: 'error', reason: checked.reason }));
+  }
+
+  private revalidate(lease: Lease): MetaprojectResult<undefined> {
+    if (lease.phase.phase === 'error') return failure(lease.phase.reason);
+    const target = this.target(lease.context);
+    if (target.ok) return ok(undefined);
+    this.update(lease, { phase: 'error', reason: target.reason });
+    return target;
   }
 
   private target(context: Target): MetaprojectResult<{ origin: MetaprojectOrigin; remoteId: Parameters<Live['client']['checkProject']>[0] }> {
@@ -158,7 +197,7 @@ export class BoardController {
     if (!url || (lease.candidate && lease.candidate.expires > Date.now())) return;
     const id = randomUUID();
     lease.candidate = { url, id, expires: Date.now() + 30_000 };
-    lease.guest?.layout(null);
+    this.layoutGuest(lease);
     this.options.candidate({ ...lease.context, candidateId: id, label: new URL(url).origin });
   }
 
@@ -168,7 +207,7 @@ export class BoardController {
   }
 
   private update(lease: Lease, phase: Phase): MetaprojectBoardState {
-    if (phase.phase === 'error') { lease.guest?.close(); lease.guest = null; }
+    if (phase.phase === 'error') { lease.guest?.close(); lease.guest = null; lease.candidate = null; }
     lease.phase = phase;
     this.layoutGuest(lease);
     const state = this.state(lease);
@@ -176,7 +215,11 @@ export class BoardController {
     return state;
   }
 
-  private layoutGuest(lease: Lease): void { lease.guest?.layout(lease.phase.phase === 'ready' ? lease.bounds : null); }
+  private layoutGuest(lease: Lease, beforeAttach?: () => boolean): void {
+    const bounds = lease.phase.phase === 'ready' && !lease.candidate ? lease.bounds : null;
+    if (!lease.guest) { lease.attached = false; return; }
+    lease.attached = beforeAttach ? lease.guest.layout(bounds, beforeAttach) : lease.guest.layout(bounds);
+  }
   private url(origin: MetaprojectOrigin, remoteId: number): string { return `${origin}/projects/${remoteId}`; }
   private async launch(url: string): Promise<MetaprojectResult<undefined>> {
     try { await this.options.openExternal(url); return ok(undefined); }

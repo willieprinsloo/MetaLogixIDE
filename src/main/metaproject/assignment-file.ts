@@ -74,7 +74,7 @@ export function readAssignmentFile(root: string, directory: string): Metaproject
 export function commitAssignmentFile(file: AssignmentFile, link: Parameters<typeof editMetaprojectAssignment>[1], owns: () => boolean): MetaprojectResult<undefined> {
   if (!owns()) return failure('stale');
   const text = editMetaprojectAssignment(file.document, link);
-  if (Buffer.byteLength(text) > cap) return failure('invalid-file');
+  if (Buffer.byteLength(text) > cap || !parseAssignmentDocument(text)) return failure('invalid-file');
   const temp = resolve(file.path, '..', `.metaproject-${randomUUID()}.tmp`);
   let staged = false;
   try {

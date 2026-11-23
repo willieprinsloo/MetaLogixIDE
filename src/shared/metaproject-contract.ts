@@ -77,6 +77,7 @@ export type MetaprojectBoardState = BoardContext & (
 export type MetaprojectExternalCandidate = BoardContext & { readonly candidateId: string; readonly label: string };
 
 const context = { projectId: localProjectId, revision };
+const assignmentMutation = { ...context, operationId: token };
 const projectType = z.enum(['kanban', 'sprint', 'dcad']);
 const createRemote = { name: z.string().trim().min(1).max(255), description: z.string().max(32768).optional(), projectType: projectType.optional() };
 const boardLease = { viewId: token };
@@ -90,19 +91,25 @@ export const metaprojectRequests = {
   'metaproject:session-origin': z.strictObject({ epoch, origin: originInput }),
   'metaproject:assignment-get': z.strictObject({ projectId: localProjectId }),
   'metaproject:assignment-list': z.strictObject({ epoch }),
-  'metaproject:assignment-save': z.strictObject({ ...context, epoch, remoteId: remoteProjectId }),
-  'metaproject:assignment-remove': z.strictObject(context),
-  'metaproject:assignment-create': z.strictObject({ ...context, epoch, ...createRemote }),
+  'metaproject:assignment-save': z.strictObject({ ...assignmentMutation, epoch, remoteId: remoteProjectId }),
+  'metaproject:assignment-remove': z.strictObject(assignmentMutation),
+  'metaproject:assignment-create': z.strictObject({ ...assignmentMutation, epoch, ...createRemote }),
+  'metaproject:assignment-cancel': z.strictObject({ operationId: token }),
   'metaproject:board-open': z.strictObject({ ...context, ...boardLease, epoch }),
   'metaproject:board-layout': z.strictObject({ ...boardLease, bounds: rect.nullable() }),
   'metaproject:board-focus': z.strictObject(boardLease),
   'metaproject:board-close': z.strictObject(boardLease),
   'metaproject:board-browser': z.strictObject(context),
   'metaproject:board-external': z.strictObject({ ...boardLease, candidateId: token }),
+  'metaproject:board-dismiss-external': z.strictObject({ ...boardLease, candidateId: token }),
 };
 
-export type AssignmentCreateOutcome =
+export type AssignmentMutationOutcome =
   | { readonly kind: 'assigned'; readonly assignment: MetaprojectAssignment }
+  | { readonly kind: 'committed-reload'; readonly projectId: number };
+
+export type AssignmentCreateOutcome =
+  | AssignmentMutationOutcome
   | { readonly kind: 'created-not-assigned'; readonly project: MetaprojectRemoteProject; readonly reason: MetaprojectFailure };
 
 interface Responses {
@@ -114,15 +121,17 @@ interface Responses {
   'metaproject:session-origin': MetaprojectResult<MetaprojectSessionSnapshot>;
   'metaproject:assignment-get': MetaprojectResult<MetaprojectAssignment>;
   'metaproject:assignment-list': MetaprojectResult<{ epoch: number; projects: MetaprojectRemoteProject[] }>;
-  'metaproject:assignment-save': MetaprojectResult<MetaprojectAssignment>;
-  'metaproject:assignment-remove': MetaprojectResult<MetaprojectAssignment>;
+  'metaproject:assignment-save': MetaprojectResult<AssignmentMutationOutcome>;
+  'metaproject:assignment-remove': MetaprojectResult<AssignmentMutationOutcome>;
   'metaproject:assignment-create': MetaprojectResult<AssignmentCreateOutcome>;
+  'metaproject:assignment-cancel': MetaprojectResult<undefined>;
   'metaproject:board-open': MetaprojectResult<MetaprojectBoardState>;
   'metaproject:board-layout': MetaprojectResult<undefined>;
   'metaproject:board-focus': MetaprojectResult<undefined>;
   'metaproject:board-close': MetaprojectResult<undefined>;
   'metaproject:board-browser': MetaprojectResult<undefined>;
   'metaproject:board-external': MetaprojectResult<undefined>;
+  'metaproject:board-dismiss-external': MetaprojectResult<undefined>;
 }
 
 export type MetaprojectChannel = keyof typeof metaprojectRequests;

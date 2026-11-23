@@ -20,6 +20,22 @@ it.each(['project_id: 1\nProject_Id: 2', '"project_id": 12', 'project_id: &ancho
   expect(parseAssignmentDocument(text)).toBeNull();
 });
 
+it.each([
+  'other: [not, closed', 'other: {nested: [incomplete}', 'other: "unclosed',
+  'other: |-\n  a\n  b', 'other: one\n  nested: bad', 'other:\n  nested: [bad',
+  'other:\n  nested: good\n   invalid: indentation', 'other:\n  duplicate: yes\n  duplicate: no',
+  'other: first: second', 'other:\n  child: 1\n child: 2',
+])('fails closed on unrelated syntax that cannot be verified: %s', text => {
+  expect(parseAssignmentDocument(text)).toBeNull();
+});
+
+it('preserves a well-formed nested mapping and quoted unrelated values', () => {
+  const text = '\uFEFF# local configuration\nmeta:\n  label: "semi: quoted" # note\n  details:\n    name: Dave\'s team\n  board_url: https://example.test/foo#section\n';
+  const doc = parseAssignmentDocument(text);
+  if (!doc) throw new Error('invalid fixture');
+  expect(editMetaprojectAssignment(doc, null)).toBe(text);
+});
+
 describe('parseMetaproject', () => {
   it('reads project_id and board_url', () => {
     const out = parseMetaproject('project_id: PROJ-42\nboard_url: https://metaproject.internal\n');

@@ -345,3 +345,74 @@ test('service rejection during Board open signs out the shared session without r
   expect(originA.requests.filter((entry) => entry.path === LOGIN)).toHaveLength(loginRequests);
   expect(await readFile(profile.yaml, 'utf8')).toContain(`metaproject_origin: ${originA.origin}`);
 });
+
+test('rescanning a folder with an externally removed assignment retires its open Board', async ({
+  profile,
+  originA,
+}) => {
+  const built = await profile.launch();
+  const { app, win } = built;
+  await saveInitialLink(win, profile, originA);
+  await openBoard(built, originA);
+  expect(await attachedGuests(app)).toBe(1);
+  await writeFile(profile.yaml, YAML_ORIGINAL);
+  await win.evaluate(async () => {
+    const bridge: unknown = Reflect.get(window, 'api');
+    if (
+      typeof bridge !== 'object' ||
+      bridge === null ||
+      !('invoke' in bridge) ||
+      typeof bridge.invoke !== 'function'
+    ) {
+      throw new Error('IDE bridge is unavailable');
+    }
+    const result: unknown = await bridge.invoke('roots:list', undefined);
+    if (
+      typeof result !== 'object' ||
+      result === null ||
+      !('roots' in result) ||
+      !Array.isArray(result.roots) ||
+      result.roots.length !== 1
+    ) {
+      throw new Error('Expected one registered fixture root');
+    }
+    const root: unknown = result.roots[0];
+    if (typeof root !== 'object' || root === null || !('id' in root) || typeof root.id !== 'number') {
+      throw new Error('Expected a fixture root ID');
+    }
+    await bridge.invoke('roots:rescan', { id: root.id });
+  });
+  await expect.poll(() => attachedGuests(app)).toBe(0);
+  expect(await readFile(profile.yaml, 'utf8')).toBe(YAML_ORIGINAL);
+});
+
+test('Chat keeps a refused draft and sends it only on the next explicit attempt', async ({
+  profile,
+  originA,
+}) => {
+  const { win } = await profile.launch();
+  await saveInitialLink(win, profile, originA);
+  await openChat(win);
+  const text = 'One deliberate retry';
+  const composer = win.getByPlaceholder(`Message #${originA.name} room — Enter to send`);
+  const historyMessage = win.getByText(text, { exact: true }).and(win.locator(':not(textarea)'));
+  await expect(composer).toBeEnabled();
+  await expect.poll(() => originA.joined).toContain(CHANNEL_ID);
+  const posts = () =>
+    originA.requests.filter(({ path, method }) => path === CHAT_PATH && method === 'POST');
+  originA.state.refuseChatSend = true;
+  await composer.fill(text);
+  await composer.press('Enter');
+  await expect.poll(posts).toHaveLength(1);
+  await expect(win.getByText(/could not send the message/i)).toBeVisible();
+  await expect(composer).toHaveValue(text);
+  await expect(historyMessage).toHaveCount(0);
+  originA.state.refuseChatSend = false;
+  await composer.press('Enter');
+  await expect(composer).toHaveValue('');
+  await expect(historyMessage).toBeVisible();
+  expect(posts()).toEqual([
+    { path: CHAT_PATH, method: 'POST', authenticated: true },
+    { path: CHAT_PATH, method: 'POST', authenticated: true },
+  ]);
+});

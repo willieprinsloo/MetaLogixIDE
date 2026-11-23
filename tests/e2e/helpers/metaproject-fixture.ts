@@ -23,6 +23,7 @@ const loginShape = z.object({
   remember: z.literal(false),
 });
 const draftShape = z.object({ is_draft: z.literal(true) });
+const sendShape = z.object({ message: z.string().min(1), parent_message_id: z.null() });
 
 // ws is already pinned by engine.io-client. Use its real WebSocket server,
 // with the minimal Engine.IO v4 / Socket.IO namespace/event packets below.
@@ -87,6 +88,7 @@ export interface MetaprojectFixture {
     polls: number;
     rejected: number;
     sockets: number;
+    refuseChatSend: boolean;
     redirects: Redirects;
   };
   publishChat(text: string): void;
@@ -176,6 +178,7 @@ export async function startMetaprojectFixture(label: 'A' | 'B'): Promise<Metapro
   const requests: RequestRecord[] = [];
   const upgrades: UpgradeRecord[] = [];
   const joined: number[] = [];
+  const history = [chatMessage(actorId + 1, 91, `${name} REST history`)];
   const state: MetaprojectFixture['state'] = {
     edits: 0,
     logins: 0,
@@ -183,11 +186,20 @@ export async function startMetaprojectFixture(label: 'A' | 'B'): Promise<Metapro
     polls: 0,
     rejected: 0,
     sockets: 0,
+    refuseChatSend: false,
     redirects: {},
   };
   const clients = new Map<FixtureSocket, { ready: boolean; joined: boolean }>();
   const wss = loadWebSocket();
   let origin = '';
+
+  function publish(message: object): void {
+    for (const [ws, entry] of clients) {
+      if (entry.joined) {
+        ws.send(`42${JSON.stringify(['channel_message', { channel_id: CHANNEL_ID, message }])}`);
+      }
+    }
+  }
 
   function issue(res: ServerResponse, authenticated: boolean, csrf = token()): string {
     const id = token();
@@ -261,11 +273,27 @@ export async function startMetaprojectFixture(label: 'A' | 'B'): Promise<Metapro
         ],
       });
     }
-    if (p === CHAT_PATH)
+    if (p === CHAT_PATH && method === 'GET')
       return json(res, 200, {
         success: true,
-        messages: [chatMessage(actorId + 1, 91, `${name} REST history`)],
+        messages: history,
       });
+    if (p === CHAT_PATH && method === 'POST') {
+      const sent = sendShape.safeParse(await body(req));
+      if (
+        !sent.success ||
+        session.csrf !== req.headers['x-csrftoken'] ||
+        req.headers.origin !== origin ||
+        req.headers.referer !== `${origin}${CHAT_PATH}`
+      ) {
+        return json(res, 400, { success: false });
+      }
+      if (state.refuseChatSend) return json(res, 403, { success: false });
+      const message = chatMessage(actorId, 100 + history.length, sent.data.message);
+      history.push(message);
+      publish(message);
+      return json(res, 201, { success: true, message });
+    }
     if (p === BOARD_ENTRY) return redirect(res, state.redirects.board ?? BOARD_PATH);
     if (p === BOARD_PATH)
       return html(
@@ -353,6 +381,9 @@ export async function startMetaprojectFixture(label: 'A' | 'B'): Promise<Metapro
           if (event.safeParse(incoming).success) {
             entry.joined = true;
             joined.push(CHANNEL_ID);
+            ws.send(
+              `42${JSON.stringify(['channel_joined', { channel_id: CHANNEL_ID, active_users: [] }])}`,
+            );
           }
         }
       });
@@ -376,12 +407,7 @@ export async function startMetaprojectFixture(label: 'A' | 'B'): Promise<Metapro
     joined,
     state,
     publishChat(text) {
-      for (const [ws, entry] of clients)
-        if (entry.joined) {
-          ws.send(
-            `42${JSON.stringify(['channel_message', { channel_id: CHANNEL_ID, message: chatMessage(actorId + 1, 92, text) }])}`,
-          );
-        }
+      publish(chatMessage(actorId + 1, 92, text));
     },
     expire() {
       sessions.clear();

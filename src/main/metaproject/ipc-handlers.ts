@@ -9,6 +9,7 @@ import type { ProjectsRepo } from '@main/repos/projects-repo';
 import type { RootsRepo } from '@main/repos/roots-repo';
 import type { SettingsRepo } from '@main/repos/settings-repo';
 import { AssignmentService } from './assignment-service';
+import { AssignmentOperations } from './assignment-operations';
 import { BoardController } from './board-controller';
 import { createBoardGuest } from './board-view';
 import { MetaprojectClient } from './client';
@@ -40,9 +41,10 @@ export interface MetaprojectLifecycle {
   dispose(): void;
   detachBoard(): void;
   projectContextChanged(): void;
+  projectAuthorityChanged(): void;
 }
 
-type Scope = { ownerId: number; owns(): boolean; contextCurrent(): boolean };
+type Scope = { ownerId: number; frame: object; owns(): boolean; contextCurrent(): boolean };
 type HandlerResult<T> = Promise<T> | T;
 
 function sessionTransport(origin: MetaprojectOrigin, jars: WeakMap<SessionTransport, Session>): SessionTransport {
@@ -102,6 +104,7 @@ export function registerMetaprojectIpc(options: MetaprojectIpcOptions): Metaproj
     dispose: () => { board.drop(); session.dispose(); bound.dispose(); },
     detachBoard: () => { context += 1; board.drop(); },
     projectContextChanged: () => { context += 1; board.drop(); },
+    projectAuthorityChanged: () => board.projectAuthorityChanged(),
   };
 }
 
@@ -111,15 +114,16 @@ function bindOwner(options: MetaprojectIpcOptions, context: () => number) {
     channels.add(channel);
     options.ipcMain.handle(channel, async (event, input: unknown) => {
       const owner = options.authorize(event);
+      const frame = event.senderFrame;
       const parsed = schema.safeParse(input);
-      if (!owner || !parsed.success) {
-        const reason = owner ? 'invalid-input' : 'stale';
+      if (!owner || !frame || !parsed.success) {
+        const reason = owner && frame ? 'invalid-input' : 'stale';
         if (reject) return reject(reason);
         throw new WebFailure(reason);
       }
       const generation = context();
-      const owns = (): boolean => options.authorize(event) === owner;
-      return handle(parsed.data, { ownerId: owner.id, owns, contextCurrent: () => owns() && context() === generation });
+      const owns = (): boolean => options.authorize(event) === owner && event.senderFrame === frame;
+      return handle(parsed.data, { ownerId: owner.id, frame, owns, contextCurrent: () => owns() && context() === generation });
     });
   }
   function result<I, O>(channel: string, schema: z.ZodType<I>, handle: (input: I, scope: Scope) => HandlerResult<MetaprojectResult<O>>): void {
@@ -142,11 +146,13 @@ function registerSessionHandlers({ raw, result }: Binder, session: SessionServic
 }
 
 function registerAssignmentHandlers({ result }: Binder, assignment: AssignmentService): void {
+  const operations = new AssignmentOperations();
   result('metaproject:assignment-get', requests['metaproject:assignment-get'], input => assignment.get(input.projectId));
   result('metaproject:assignment-list', requests['metaproject:assignment-list'], input => assignment.list(input.epoch));
-  result('metaproject:assignment-save', requests['metaproject:assignment-save'], (input, scope) => assignment.save(input, scope.contextCurrent));
-  result('metaproject:assignment-remove', requests['metaproject:assignment-remove'], (input, scope) => assignment.remove(input, scope.contextCurrent));
-  result('metaproject:assignment-create', requests['metaproject:assignment-create'], (input, scope) => assignment.create(input, scope.contextCurrent));
+  result('metaproject:assignment-save', requests['metaproject:assignment-save'], (input, scope) => operations.run(input, scope, owns => assignment.save(input, owns)));
+  result('metaproject:assignment-remove', requests['metaproject:assignment-remove'], (input, scope) => operations.run(input, scope, owns => assignment.remove(input, owns)));
+  result('metaproject:assignment-create', requests['metaproject:assignment-create'], (input, scope) => operations.run(input, scope, owns => assignment.create(input, owns)));
+  result('metaproject:assignment-cancel', requests['metaproject:assignment-cancel'], (input, scope) => operations.cancel(input, scope.frame));
 }
 
 function registerBoardHandlers({ result }: Binder, board: BoardController): void {
@@ -156,12 +162,14 @@ function registerBoardHandlers({ result }: Binder, board: BoardController): void
   result('metaproject:board-close', requests['metaproject:board-close'], (input, scope) => board.close(scope.ownerId, input.viewId));
   result('metaproject:board-browser', requests['metaproject:board-browser'], input => board.browser(input));
   result('metaproject:board-external', requests['metaproject:board-external'], (input, scope) => board.external(scope.ownerId, input.viewId, input.candidateId));
+  result('metaproject:board-dismiss-external', requests['metaproject:board-dismiss-external'], (input, scope) => board.dismissExternal(scope.ownerId, input.viewId, input.candidateId));
 }
 
 const positive = z.number().int().positive();
 const chatMessage = z.string().min(1).max(64 * 1024);
 const chatChannel = { epoch, channelId: positive };
-const chatWithMessage = { ...chatChannel, messageId: positive };
+const chatProject = { ...chatChannel, projectId: positive };
+const chatWithMessage = { ...chatProject, messageId: positive };
 const attachmentName = z.string().min(1).max(180).refine(name => !/[<>:"/\\|?*\x00-\x1f]/.test(name) && !/[. ]$/.test(name) && !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name));
 type ChatChannel = Extract<keyof IpcContract, `metaproject:${string}`>;
 
@@ -186,21 +194,24 @@ function registerChatHandlers(binder: Binder, session: SessionService): void {
   chat('metaproject:list-all-channels', z.strictObject({ epoch, scope: z.union([z.enum(['all', 'global']), positive]) }), async (client, input) => ({ channels: await client.listAllChannels(input.scope) }));
   chat('metaproject:list-messages', z.strictObject({ ...chatChannel, projectId: positive, limit: positive.max(100).optional() }), async (client, input) => ({ messages: await client.listMessages(input.projectId, input.channelId, input.limit ?? 50) }));
   chat('metaproject:list-users', z.strictObject({ epoch }), async client => ({ users: await client.listUsers() }));
+  registerAttachmentHandler(chat);
+  registerChatMutations(chat);
+}
+
+function registerAttachmentHandler(chat: ReturnType<typeof chatHandlers>): void {
   chat('metaproject:download-attachment', z.strictObject({ epoch, projectId: positive, attachmentId: positive, filename: attachmentName }), async (client, input, current) => {
     const bytes = await client.fetchAttachment(input.projectId, input.attachmentId);
     if (!current()) throw new WebFailure('stale');
     return { path: writeAttachment(bytes, input.filename) };
   });
-  chat('metaproject:join-channel', z.strictObject(chatChannel), (client, input) => emit(client, 'join_channel', { channel_id: input.channelId }));
-  chat('metaproject:send-message', z.strictObject({ ...chatChannel, message: chatMessage, parentMessageId: positive.nullish() }), (client, input) => emit(client, 'send_channel_message', { channel_id: input.channelId, message: input.message, parent_message_id: input.parentMessageId ?? null }));
-  chat('metaproject:mark-read', z.strictObject({ ...chatChannel, lastMessageId: positive }), (client, input) => emit(client, 'mark_channel_read', { channel_id: input.channelId, last_message_id: input.lastMessageId }));
-  chat('metaproject:edit-message', z.strictObject({ ...chatWithMessage, message: chatMessage }), (client, input) => emit(client, 'edit_channel_message', { channel_id: input.channelId, message_id: input.messageId, message: input.message }));
-  chat('metaproject:delete-message', z.strictObject(chatWithMessage), (client, input) => emit(client, 'delete_channel_message', { channel_id: input.channelId, message_id: input.messageId }));
 }
 
-function emit(client: MetaprojectClient, name: string, payload: object): { ok: true } {
-  client.emit(name, payload);
-  return { ok: true };
+function registerChatMutations(chat: ReturnType<typeof chatHandlers>): void {
+  chat('metaproject:join-channel', z.strictObject(chatChannel), (client, input) => client.joinChannel(input.channelId));
+  chat('metaproject:send-message', z.strictObject({ ...chatProject, message: chatMessage, parentMessageId: positive.nullish() }), (client, input) => client.mutateChat({ ...input, kind: 'send' }));
+  chat('metaproject:mark-read', z.strictObject({ ...chatProject, lastMessageId: positive }), (client, input) => client.mutateChat({ ...input, kind: 'mark-read' }));
+  chat('metaproject:edit-message', z.strictObject({ ...chatWithMessage, message: chatMessage }), (client, input) => client.mutateChat({ ...input, kind: 'edit' }));
+  chat('metaproject:delete-message', z.strictObject(chatWithMessage), (client, input) => client.mutateChat({ ...input, kind: 'delete' }));
 }
 
 function writeAttachment(bytes: Buffer, filename: string): string {

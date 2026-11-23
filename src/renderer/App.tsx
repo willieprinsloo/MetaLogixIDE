@@ -1172,7 +1172,7 @@ function MainApp() {
                 ? <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId} projectName={remotePane.projectName} initialShellIndex={remotePane.shellIndex} onClose={() => setRemotePane(null)} />
                 : mainTab === 'settings'
                 ? settingsTarget
-                  ? <ProjectSettingsTab key={settingsTarget.id} target={settingsTarget} onSaved={applyDefaultAgentProject}>
+                  ? <ProjectSettingsTab key={settingsTarget.id} target={settingsTarget} onSaved={applyDefaultAgentProject} assignmentVisible={!boardVisible}>
                       <ScrollIntoViewOnRequest request={envFocusRequest}>
                         <ProjectEnvTab
                           projectId={settingsTarget.id}

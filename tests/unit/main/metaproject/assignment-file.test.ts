@@ -23,3 +23,14 @@ it('rejects external edits and symlinks without changing their bytes', () => {
     expect(readAssignmentFile(root, dir)).toEqual({ ok: false, reason: 'invalid-file' });
   } finally { rmSync(root, { force: true, recursive: true }); }
 });
+
+it('never changes bytes for unreadable unrelated YAML', () => {
+  const root = mkdtempSync(join(tmpdir(), 'assignment-unit-'));
+  try {
+    const path = join(root, '.metaproject.yaml');
+    const original = 'project_id: 4\nother: [unclosed\n';
+    writeFileSync(path, original);
+    expect(readAssignmentFile(root, root)).toEqual({ ok: false, reason: 'invalid-file' });
+    expect(readFileSync(path, 'utf8')).toBe(original);
+  } finally { rmSync(root, { force: true, recursive: true }); }
+});
