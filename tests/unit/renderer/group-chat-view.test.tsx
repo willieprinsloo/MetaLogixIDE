@@ -82,3 +82,21 @@ describe('reply link clicks', () => {
     expect(prevented).toBe(false);
   });
 });
+
+describe('GroupChatView with no project or no group', () => {
+  const renderWith = (extra: Record<string, unknown>) => renderToStaticMarkup(
+    <GroupChatView groups={[]} group={null} draft="" error={null}
+      onPick={noop} onNew={noop} onRemoveMember={noop} onOpenAdd={noop} onStop={noop} onDelete={noop}
+      onRounds={noop} onDraft={noop} onSend={noop} {...extra} />,
+  );
+
+  it('with no project open, says to pick one and disables + New', () => {
+    const html = renderWith({ noProject: true });
+    expect(html).toContain('Open a project in the sidebar first');
+    expect(/<button[^>]*data-testid="group-new"[^>]*>/.exec(html)?.[0]).toContain('disabled');
+  });
+
+  it('shows an error even when no group exists yet', () => {
+    expect(renderWith({ error: 'group chats are not ready yet' })).toContain('group chats are not ready yet');
+  });
+});

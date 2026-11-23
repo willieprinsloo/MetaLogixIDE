@@ -134,6 +134,7 @@ export function GroupChatPanel({ projectId, focusedShell, onDismiss }: {
         error={error}
         addMenu={addMenu}
         onClose={onDismiss}
+        noProject={!projectId}
         onPick={(id) => { setSelectedId(id); setAddOpen(false); }}
         onNew={() => void run(async () => {
           const { group: g } = await api.invoke('groups:create', { projectId, claudeShell: focusedShell ?? undefined });

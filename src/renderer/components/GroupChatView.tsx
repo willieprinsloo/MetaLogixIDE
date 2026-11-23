@@ -38,6 +38,8 @@ interface Props {
   /** The "+ Add" menu, when open. */
   addMenu?: ReactNode;
   onClose?: () => void;
+  /** No project is open: group chats belong to a project, so there is nothing to start yet. */
+  noProject?: boolean;
 }
 
 function EngineBadge({ engine }: { engine: MemberEngine }) {
@@ -99,7 +101,7 @@ export function GroupChatView(p: Props) {
           {p.groups.length === 0 && <option value="">No group chats yet</option>}
           {p.groups.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
         </select>
-        <button type="button" onClick={p.onNew} data-testid="group-new" className="px-2 py-1 rounded-md border border-[--border] hover:bg-[--accent-soft] pressable">
+        <button type="button" onClick={p.onNew} disabled={p.noProject} data-testid="group-new" className="px-2 py-1 rounded-md border border-[--border] hover:bg-[--accent-soft] pressable disabled:opacity-40">
           + New
         </button>
         {p.onClose && (
@@ -108,8 +110,16 @@ export function GroupChatView(p: Props) {
       </div>
 
       {!g && (
-        <div className="flex-1 flex items-center justify-center px-6 text-center text-[--text-muted]">
-          Start a group chat to have your Claude tab talk with GPT, Gemini or Ollama agents. Nothing runs until you send a message.
+        <div className="flex-1 flex flex-col items-center justify-center gap-3 px-6 text-center text-[--text-muted]">
+          {p.noProject ? (
+            <div>Open a project in the sidebar first: a group chat belongs to a project and its Claude tabs.</div>
+          ) : (
+            <>
+              <div>Start a group chat to have your Claude tab talk with GPT, Gemini or Ollama agents. Nothing runs until you send a message.</div>
+              <div className="text-xs">Agents use the CLIs signed in on this computer (<code>claude</code>, <code>codex</code>, <code>gemini</code>) or a local Ollama: there is no account to link here.</div>
+            </>
+          )}
+          {p.error && <div className="text-xs text-red-500" role="alert">{p.error}</div>}
         </div>
       )}
 
