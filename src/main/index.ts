@@ -395,6 +395,7 @@ function registerWindowsAppId(): void {
 function createServices(): Services {
   return buildServices({
     migrationsDir: resolve(app.getAppPath(), 'migrations'),
+    hookForwarderPath: resolve(app.getAppPath(), 'resources', 'claude-hooks', 'forward.cjs'),
     dropDir: testModeDropDir(process.env, app.getPath('userData')),
   });
 }

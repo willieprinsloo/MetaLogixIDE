@@ -73,9 +73,16 @@ describe('createLaunchDecorator — Claude argv gets --settings and the hook env
   });
 
   it('overrides a user-set METAIDE_HOOK_* in the launch env', () => {
-    const { decorate } = setup();
-    const out = decorate(1, 0, launchOf(['claude'], { METAIDE_HOOK_TOKEN: 'forged' }));
+    const { sessions } = setup();
+    const decorate = createLaunchDecorator({
+      sessions,
+      settingsPath: () => SETTINGS,
+      forwarderEnv: () => ({ METAIDE_HOOK_ENDPOINT: '/private/hook.sock', METAIDE_HOOK_EXE: '/app/metaide' }),
+    });
+    const out = decorate(1, 0, launchOf(['claude'], { METAIDE_HOOK_TOKEN: 'forged', METAIDE_HOOK_ENDPOINT: '/other.sock' }));
     expect(out.env.METAIDE_HOOK_TOKEN).toBe('tok-1');
+    expect(out.env.METAIDE_HOOK_ENDPOINT).toBe('/private/hook.sock');
+    expect(out.env.METAIDE_HOOK_EXE).toBe('/app/metaide');
   });
 });
 
@@ -164,4 +171,3 @@ describe('goesThroughCmdShim', () => {
     expect(goesThroughCmdShim(['/x/claude.cmd'])).toBe(false);
   });
 });
-

@@ -4,7 +4,8 @@
  * when the app supplies settings, forwards Claude notification hooks.
  */
 import { _electron as electron, expect, type Page, type ElectronApplication } from '@playwright/test';
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
+import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 
@@ -29,6 +30,9 @@ export function baseEnv(): NodeJS.ProcessEnv {
   const rest = { ...process.env };
   delete rest.METAIDE_HOOK_SHELL;
   delete rest.METAIDE_HOOK_TOKEN;
+  delete rest.METAIDE_HOOK_ENDPOINT;
+  delete rest.METAIDE_HOOK_EXE;
+  delete rest.METAIDE_HOOK_FORWARDER;
   delete rest.METAIDE_OMP_STATUS_PORT;
   delete rest.METAIDE_OMP_STATUS_TOKEN;
   delete rest.METAIDE_OMP_STATUS_SPAWN;
@@ -250,16 +254,16 @@ export async function waitForShell(win: Page, projId: number, shellIndex: number
   }, { timeout: 10000, message: `shell ${projId}:${shellIndex} prints ${pattern}` }).toContain(pattern);
 }
 
-/** Waits for a confirmed hook receipt, not a screen state: Stop eligibility uses hook history. */
-export async function sendAndConfirmUserPrompt(win: Page, projectId: number, shellIndex: number, text: string): Promise<void> {
+/** Waits for the fixture's hook process to finish; notification assertions verify actual delivery. */
+export async function sendAndWaitForPromptHook(win: Page, projectId: number, shellIndex: number, text: string): Promise<void> {
   const count = async (): Promise<number> => win.evaluate(async (shell: { projectId: number; shellIndex: number }) => {
     const appWindow = window as unknown as { api: Api };
     const snap = await appWindow.api.invoke('shells:snapshot', shell) as unknown as { output: string };
-    return snap.output.split('HOOK-ACK UserPromptSubmit').length - 1;
+    return snap.output.split('HOOK-DONE UserPromptSubmit').length - 1;
   }, { projectId, shellIndex });
   const before = await count();
   await sendLine(win, projectId, shellIndex, text);
-  await expect.poll(count, { timeout: 5000, message: `UserPromptSubmit accepted for ${projectId}:${shellIndex}` }).toBeGreaterThan(before);
+  await expect.poll(count, { timeout: 5000, message: `UserPromptSubmit command finished for ${projectId}:${shellIndex}` }).toBeGreaterThan(before);
 }
 
 export async function aliveShells(win: Page): Promise<Array<{ projectId: number; shellIndex: number; launchArgv: string[] }>> {
@@ -271,13 +275,12 @@ export async function aliveShells(win: Page): Promise<Array<{ projectId: number;
 }
 
 
-/** A shell's real hook credentials plus the receiver's authenticated POST URL. */
-export interface HookCredentials { url: string; shellId: string; token: string }
+/** A fixture shell's credentials and its originating IDE's private endpoint. */
+export interface HookCredentials { endpoint: string; shellId: string; token: string }
 
 /**
  * Resolves a hook-tracked shell's real session id + token (via `/hook-env`)
- * and the receiver's URL (from the app's own settings file under
- * `isolatedHome`), so a test can POST a hook event directly to the
+ * and the receiver's endpoint, so a test can POST a hook event directly to the
  * receiver — bypassing the PTY entirely. Call this ONLY while the shell is
  * idle or busy, never while it might be blocked: `/hook-env` is itself
  * typed through the PTY (`sendLine`), and its own submit Enter would answer
@@ -285,14 +288,7 @@ export interface HookCredentials { url: string; shellId: string; token: string }
  * returned credentials are then safe to reuse for the rest of the test,
  * since a session's id/token never change for the life of its spawn.
  */
-export async function hookCredentials(win: Page, isolatedHome: string, projId: number, shellIndex: number): Promise<HookCredentials> {
-  const hooksDir = join(isolatedHome, '.metaide', 'claude-hooks');
-  const settingsFile = readdirSync(hooksDir).find((f) => f.startsWith('settings-'));
-  if (!settingsFile) throw new Error(`no app-owned hook settings file found under ${hooksDir}`);
-  const settings = JSON.parse(readFileSync(join(hooksDir, settingsFile), 'utf8')) as {
-    hooks: { Notification: Array<{ hooks: Array<{ url: string }> }> };
-  };
-  const url = settings.hooks.Notification[0]!.hooks[0]!.url;
+export async function hookCredentials(win: Page, projId: number, shellIndex: number): Promise<HookCredentials> {
   await sendLine(win, projId, shellIndex, '/hook-env');
   await waitForShell(win, projId, shellIndex, 'HOOK-ENV shell=');
   const snap = await win.evaluate(async (args: { projectId: number; shellIndex: number }) => {
@@ -300,9 +296,10 @@ export async function hookCredentials(win: Page, isolatedHome: string, projId: n
     const s = await api.invoke('shells:snapshot', args) as unknown as { output: string };
     return s.output;
   }, { projectId: projId, shellIndex });
+  const endpoint = /HOOK-ENDPOINT ([^\r\n]+)/.exec(snap)?.[1]?.trim();
   const m = /HOOK-ENV shell=(\S+) token=(\S+)/.exec(snap);
-  if (!m) throw new Error(`no HOOK-ENV line in shell ${shellIndex} output`);
-  return { url, shellId: m[1]!, token: m[2]! };
+  if (!endpoint || endpoint === 'none' || !m) throw new Error(`no hook credentials in shell ${shellIndex} output`);
+  return { endpoint, shellId: m[1]!, token: m[2]! };
 }
 
 /**
@@ -311,11 +308,27 @@ export async function hookCredentials(win: Page, isolatedHome: string, projId: n
  * already-blocked shell without the delivery mechanism itself answering
  * the prompt (see `hookCredentials`).
  */
-export async function postRawHook(creds: HookCredentials, body: Record<string, unknown>): Promise<Response> {
-  return fetch(creds.url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Metaide-Shell': creds.shellId, Authorization: `Bearer ${creds.token}` },
-    body: JSON.stringify(body),
+export async function postRawHook(creds: HookCredentials, body: Record<string, unknown>): Promise<{ status: number }> {
+  const json = JSON.stringify(body);
+  return new Promise((resolve, reject) => {
+    const req = request({
+      socketPath: creds.endpoint,
+      path: '/claude-hook',
+      method: 'POST',
+      headers: {
+        Host: 'localhost',
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(json),
+        'X-Metaide-Shell': creds.shellId,
+        ...(creds.token ? { Authorization: `Bearer ${creds.token}` } : {}),
+      },
+    }, (res) => {
+      res.on('error', reject);
+      res.on('end', () => resolve({ status: res.statusCode ?? 0 }));
+      res.resume();
+    });
+    req.on('error', reject);
+    req.end(json);
   });
 }
 

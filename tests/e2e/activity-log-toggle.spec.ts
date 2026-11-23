@@ -250,11 +250,11 @@ test.describe('activity log on/off setting', () => {
       await openProject(win, 'proja');
       const idA = await projectId(win, 'proja');
       await waitForShell(win, idA, 0, 'mock-claude ready');
-      const credsA = await hookCredentials(win, world.home, idA, 0);
+      const credsA = await hookCredentials(win, idA, 0);
       await openProject(win, 'projb');
       const idB = await projectId(win, 'projb');
       await waitForShell(win, idB, 0, 'mock-claude ready');
-      const credsB = await hookCredentials(win, world.home, idB, 0);
+      const credsB = await hookCredentials(win, idB, 0);
 
       const logA = join(world.root, 'proja', '.metaide', 'activity.jsonl');
       const logB = join(world.root, 'projb', '.metaide', 'activity.jsonl');
@@ -332,7 +332,7 @@ test.describe('activity log on/off setting', () => {
       await openProject(win, 'proja');
       const id = await projectId(win, 'proja');
       await waitForShell(win, id, 0, 'mock-claude ready');
-      const creds = await hookCredentials(win, world.home, id, 0);
+      const creds = await hookCredentials(win, id, 0);
 
       // Turn Follow files on in the Activity tab, then return to Shell.
       await win.getByTestId(TAB_BUTTON).click();

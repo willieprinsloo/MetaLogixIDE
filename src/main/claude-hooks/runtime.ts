@@ -1,62 +1,79 @@
-/**
- * Lifecycle of the hook transport: start the receiver, then write this
- * instance's port-keyed settings file for its URL; on stop, remove that
- * file and stop the receiver. The settings path is non-null only while
- * both start steps succeeded, which is what the launch decorator keys
- * injection on (AC22). A file left behind by a crash is inert.
- */
+import { randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { ENDPOINT_ENV, EXECUTABLE_ENV, FORWARDER_ENV } from './protocol';
 import { hookSettingsPath, removeHookSettings, writeHookSettings } from './settings-file';
 
-/** Collaborators; the file writer/remover default to the real ones. */
-export interface HookRuntimeDeps {
-  receiver: { start(): Promise<number>; stop(): Promise<void>; url(): string | null };
-  homeDir: string;
-  writeSettings?: (path: string, url: string) => void;
-  removeSettings?: (path: string) => void;
+export interface HookEndpoint {
+  readonly path: string;
+  remove(): void;
 }
 
-/** Owns receiver start/stop and the per-instance settings file handed to Claude spawns. */
+/** Allocates a fresh endpoint; Windows uses an unguessable named pipe. */
+export function allocateHookEndpoint(platform: NodeJS.Platform, id: string): HookEndpoint {
+  if (platform === 'win32') return { path: `\\\\.\\pipe\\metaide-claude-hook-${id}`, remove() {} };
+  const dir = mkdtempSync(join(tmpdir(), 'metaide-hook-'));
+  return { path: join(dir, 'hook.sock'), remove: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+export interface HookRuntimeDeps {
+  receiver: { start(endpoint: string): Promise<void>; stop(): Promise<void> };
+  homeDir: string;
+  forwarderPath: string;
+  platform?: NodeJS.Platform;
+  executable?: string;
+  instanceId?: () => string;
+  allocateEndpoint?: typeof allocateHookEndpoint;
+  writeSettings?: typeof writeHookSettings;
+  removeSettings?: typeof removeHookSettings;
+}
+
+/** Publishes launch settings only while the originating receiver is available. */
 export class ClaudeHookRuntime {
-  private path: string | null = null;
-  private readonly writeSettings: (path: string, url: string) => void;
-  private readonly removeSettings: (path: string) => void;
+  private active: { path: string; endpoint: HookEndpoint } | null = null;
 
-  constructor(private readonly deps: HookRuntimeDeps) {
-    this.writeSettings = deps.writeSettings ?? writeHookSettings;
-    this.removeSettings = deps.removeSettings ?? removeHookSettings;
-  }
+  constructor(private readonly deps: HookRuntimeDeps) {}
 
-  /** Starts the receiver and writes its settings file; rejects (receiver stopped again) when either fails. */
   async start(): Promise<void> {
-    const port = await this.deps.receiver.start();
-    const path = hookSettingsPath(this.deps.homeDir, port);
+    if (this.active) return;
+    const platform = this.deps.platform ?? process.platform;
+    const id = (this.deps.instanceId ?? randomUUID)();
+    const endpoint = (this.deps.allocateEndpoint ?? allocateHookEndpoint)(platform, id);
+    const path = hookSettingsPath(this.deps.homeDir, id);
     try {
-      this.writeSettings(path, this.deps.receiver.url()!);
-    } catch (err) {
-      await this.deps.receiver.stop();
-      throw err;
+      await this.deps.receiver.start(endpoint.path);
+      (this.deps.writeSettings ?? writeHookSettings)(path, platform);
+      this.active = { path, endpoint };
+    } catch (error) {
+      try { await this.deps.receiver.stop(); } finally { this.cleanUp(() => endpoint.remove()); }
+      throw error;
     }
-    this.path = path;
   }
 
-  /** Path of this instance's settings file, or null while hooks are unavailable. */
   settingsPath(): string | null {
-    return this.path;
+    return this.active?.path ?? null;
   }
 
-  /** Stops injecting into new spawns, removes this instance's settings file, then stops the receiver. */
+  forwarderEnv(): Readonly<Record<string, string>> {
+    if (!this.active) return {};
+    return {
+      [ENDPOINT_ENV]: this.active.endpoint.path,
+      [FORWARDER_ENV]: this.deps.forwarderPath,
+      [EXECUTABLE_ENV]: this.deps.executable ?? process.execPath,
+    };
+  }
+
   async stop(): Promise<void> {
-    const path = this.path;
-    this.path = null;
-    if (path !== null) this.removeOwnFile(path);
-    await this.deps.receiver.stop();
+    const active = this.active;
+    this.active = null;
+    if (active) this.cleanUp(() => (this.deps.removeSettings ?? removeHookSettings)(active.path));
+    try { await this.deps.receiver.stop(); }
+    finally { if (active) this.cleanUp(() => active.endpoint.remove()); }
   }
 
-  private removeOwnFile(path: string): void {
-    try {
-      this.removeSettings(path);
-    } catch (err) {
-      console.warn('[claude-hooks] could not remove hook settings file', { path, cause: err });
-    }
+  private cleanUp(remove: () => void): void {
+    try { remove(); }
+    catch { console.warn('[claude-hooks] could not remove instance files'); }
   }
 }
