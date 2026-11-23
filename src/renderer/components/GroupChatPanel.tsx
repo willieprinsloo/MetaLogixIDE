@@ -137,9 +137,10 @@ export function GroupChatPanel({ projectId, focusedShell, onDismiss }: {
         noProject={!projectId}
         onPick={(id) => { setSelectedId(id); setAddOpen(false); }}
         onNew={() => void run(async () => {
-          const { group: g } = await api.invoke('groups:create', { projectId, claudeShell: focusedShell ?? undefined });
+          const { group: g, notice } = await api.invoke('groups:create', { projectId, claudeShell: focusedShell ?? undefined });
           setSelectedId(g.id);
           await reload();
+          if (notice) setError(notice);
         })}
         onRemoveMember={(member) => group && void run(() => api.invoke('groups:remove-member', { id: group.id, member }))}
         onOpenAdd={openAdd}

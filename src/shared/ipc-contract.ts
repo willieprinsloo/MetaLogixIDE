@@ -340,7 +340,7 @@ export interface IpcContract {
   /* ─── Group chats between agents (docs/superpowers/specs/2026-11-19-group-chats-design.md) ─── */
   'groups:list':          { request: { projectId: number }; response: { groups: GroupView[] } };
   /** `claudeShell` seeds the group with that Claude tab, when it can join. */
-  'groups:create':        { request: { projectId: number; name?: string; claudeShell?: { projectId: number; shellIndex: number } }; response: { group: GroupView } };
+  'groups:create':        { request: { projectId: number; name?: string; claudeShell?: { projectId: number; shellIndex: number } }; response: { group: GroupView; notice?: string } };
   'groups:update':        { request: { id: string; name?: string; maxRounds?: number }; response: { group: GroupView } };
   'groups:add-claude':    { request: { id: string; shell: { projectId: number; shellIndex: number } }; response: { group: GroupView } };
   'groups:add-headless':  { request: { id: string; engine: HeadlessEngine; name: string; model?: string | null }; response: { group: GroupView } };

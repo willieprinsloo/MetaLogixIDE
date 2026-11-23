@@ -44,3 +44,26 @@ describe('group-chat IPC handlers', () => {
     expect(await handlers['groups:update'](servicesWith({ update }), { id: 'g', maxRounds: 99 })).toEqual({ group: { id: 'g', maxRounds: 10 } });
   });
 });
+
+describe('groups:create tells why the Claude tab didn’t join', () => {
+  const view = (engines: string[]) => ({ id: 'g', memberInfo: Object.fromEntries(engines.map((e, i) => [`m${i}`, { engine: e }])) });
+  const shell = { projectId: 1, shellIndex: 0 };
+
+  it('returns the tab’s reason when it couldn’t join', async () => {
+    const svc = { create: vi.fn(() => view([])), joinableClaudeTabs: vi.fn(() => [{ projectId: 1, shellIndex: 0, title: 'Claude tab 1', joinable: false, why: 'send it a message first' }]) };
+    const r = await handlers['groups:create'](servicesWith(svc), { projectId: 1, claudeShell: shell });
+    expect(r.notice).toBe('Your Claude tab couldn’t join yet: send it a message first, then use + Add.');
+  });
+
+  it('says so when the tab in view isn’t running Claude', async () => {
+    const svc = { create: vi.fn(() => view([])), joinableClaudeTabs: vi.fn(() => []) };
+    const r = await handlers['groups:create'](servicesWith(svc), { projectId: 1, claudeShell: shell });
+    expect(r.notice).toBe('The tab in view isn’t running Claude, so it wasn’t added. Use + Add once a Claude tab is running.');
+  });
+
+  it('no notice when the Claude tab joined', async () => {
+    const svc = { create: vi.fn(() => view(['claude'])), joinableClaudeTabs: vi.fn(() => []) };
+    const r = await handlers['groups:create'](servicesWith(svc), { projectId: 1, claudeShell: shell });
+    expect(r.notice).toBeUndefined();
+  });
+});

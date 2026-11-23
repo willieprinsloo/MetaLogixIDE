@@ -1370,7 +1370,17 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
 
   /* ─── Group chats ─── */
   'groups:list':          async (s, { projectId }) => ({ groups: groupChat(s).list(projectId) }),
-  'groups:create':        async (s, { projectId, name, claudeShell }) => ({ group: groupChat(s).create(projectId, { name, claudeShell }) }),
+  'groups:create':        async (s, { projectId, name, claudeShell }) => {
+    const svc = groupChat(s);
+    const group = svc.create(projectId, { name, claudeShell });
+    if (!claudeShell || Object.values(group.memberInfo).some((m) => m.engine === 'claude')) return { group };
+    // the tab in view didn't join: say why instead of leaving the user guessing
+    const tab = svc.joinableClaudeTabs(projectId).find((t) => t.shellIndex === claudeShell.shellIndex);
+    const notice = tab?.why
+      ? `Your Claude tab couldn’t join yet: ${tab.why}, then use + Add.`
+      : 'The tab in view isn’t running Claude, so it wasn’t added. Use + Add once a Claude tab is running.';
+    return { group, notice };
+  },
   'groups:update':        async (s, { id, name, maxRounds }) => ({ group: groupChat(s).update(id, { name, maxRounds }) }),
   'groups:add-claude':    async (s, { id, shell }) => ({ group: groupChat(s).addClaudeTab(id, shell) }),
   'groups:add-headless':  async (s, { id, engine, name, model }) => {
