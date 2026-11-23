@@ -92,7 +92,9 @@ timeline request.
 Remote workspace access is unavailable for projects that overlap host
 application storage (including logs and crash dumps), contain another
 registered project, or overlap another project's Activity or launch files
-through filesystem aliases. Open an eligible nested project directly instead.
+through filesystem aliases. A project's own Activity and launch resources
+must also resolve within that project's root. Open an eligible nested project
+directly instead.
 This restriction applies to workspace tabs, not to the existing Shell or
 legacy file APIs.
 
