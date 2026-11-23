@@ -1,6 +1,6 @@
 import type { Project, Root, AliveShellSummary, SettingsMap } from './types';
 import type { ClaudePermissionMode } from './claude-permission-mode';
-import type { ChromeFrostLevel, TerminalFrostLevel, VibrancyMaterial } from './frosted-glass';
+import type { ChromeFrostLevel, TerminalFrostMode, VibrancyMaterial } from './frosted-glass';
 import type { AgentShellStateEntry } from './agent-state';
 import type { FontFamilyPreference, FontSettingKey } from './font-settings';
 import type { TerminalFontWeight } from './terminal-font-weight';
@@ -117,7 +117,8 @@ export interface IpcContract extends MetaprojectIpc {
   /** Current live agent shells, including recognized idle shells; absent shells are non-agent idle. */
   'agent-state:list': { request: undefined; response: { shells: AgentShellStateEntry[] } };
   'shells:pin':         { request: { projectId: number; shellIndex: number; pinned: boolean }; response: { ok: true } };
-  'shells:snapshot':    { request: { projectId: number; shellIndex: number };   response: { output: string; alive: boolean } };
+  /** Desktop cut: live output at or below replayPosition is already represented in a live snapshot. */
+  'shells:snapshot':    { request: { projectId: number; shellIndex: number };   response: { output: string; alive: boolean; replayPosition: number } };
   /**
    * Snapshot of every alive shell's currently-detected ports. The main
    * process scans PTY output for common "listening on 3000" / "Local:
@@ -273,7 +274,7 @@ export interface IpcContract extends MetaprojectIpc {
   'window:toggle-fullscreen': { request: undefined; response: { fullscreen: boolean } };
   'settings:set-frost-chrome': { request: { enabled: boolean }; response: { ok: true } | { ok: false; error: 'invalid' } };
   'settings:set-chrome-frost-level': { request: { level: ChromeFrostLevel }; response: { ok: true } | { ok: false; error: 'invalid' } };
-  'settings:set-terminal-frost-level': { request: { level: TerminalFrostLevel }; response: { ok: true } | { ok: false; error: 'invalid' } };
+  'settings:set-terminal-frost-level': { request: { level: TerminalFrostMode }; response: { ok: true } | { ok: false; error: 'invalid' } };
   'settings:set-vibrancy-material': { request: { material: VibrancyMaterial }; response: { ok: true } | { ok: false; error: 'invalid' } };
   /** Returns the absolute path of the current electron-log file so users can attach it to a bug report. */
   'app:get-log-path':       { request: undefined; response: { path: string } };
@@ -439,7 +440,8 @@ export type IpcResponse<C extends IpcChannelName> = IpcContract[C]['response'];
 
 // Streaming (main → renderer) event channels — separate from request/response.
 export interface IpcEvents extends MetaprojectEvents {
-  'pty:data':               { projectId: number; shellIndex: number; data: string };
+  /** Desktop-only output position, shared across shells and increasing for the lifetime of main IPC. */
+  'pty:data':               { projectId: number; shellIndex: number; data: string; replayPosition: number };
   'pty:exit':               { projectId: number; shellIndex: number; code: number | null };
   'pty:input-owner-changed':{ projectId: number; shellIndex: number; ownerWindowId: number };
   'projects:changed':       { kind: 'added' | 'removed' | 'updated'; projectId?: number };

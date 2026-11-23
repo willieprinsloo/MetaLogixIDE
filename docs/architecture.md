@@ -101,6 +101,19 @@ stay cheap and must never wait on a child process.
   (`src/main/pty/manager.ts`). Each event becomes one `pty:data` send per
   window. Pending output is flushed before the shell's `exit` event and on
   kill, so no byte is lost or reordered.
+- **Desktop replay position.** The main IPC registration numbers each output
+  event. It captures the current number before requesting a serialized
+  `shells:snapshot`. A live snapshot includes output through that position.
+  If the captured shell exits or is replaced before serialization completes,
+  the handler returns an empty, non-live snapshot. The local terminal view
+  subscribes before requesting the snapshot. It skips output at or below
+  the position of a live snapshot and preserves later chunks in arrival order.
+  A failed or non-live snapshot does not suppress live output. This metadata
+  is local to desktop IPC and does not change the paired-device stream.
+- **Desktop terminal view source.** `ShellTab` opens one source through
+  `src/renderer/terminal/terminal-view-source.ts`. The source owns snapshot,
+  input, resize, and close for the view. A paired source receives replay on
+  the existing stream instead of requesting a desktop snapshot.
 - **Scrollback append is O(chunk).** `RollingScrollback` keeps the raw
   scrollback as a list of chunks with a running length and trims whole
   chunks from the front. It joins the chunks and snaps the cut to a line
@@ -262,7 +275,9 @@ version footer and the Done bar. Each section is its own module in
 
 | File | Responsibility |
 |---|---|
-| `GeneralPanel.tsx` | Appearance, Fonts, Workspace and Notifications sections. Loads and saves the General settings, including the "Record agent activity" switch (`activity_log_enabled`) in Workspace. |
+| `GeneralPanel.tsx` | Appearance, Fonts, Terminal, Workspace and Notifications sections. Loads and saves the General settings, including the "Record agent activity" switch (`activity_log_enabled`) in Workspace. |
+| `TerminalEngineControl.tsx` | Terminal engine radios. Displays the saved value while a save is pending. On failure, retains the previous value and reports the error. |
+| `TerminalPaddingControl.tsx` | Horizontal and vertical padding fields. Enter or blur commits a whole number from 0 to 32 px. Reset restores the default for that axis. |
 | `RootsPanel.tsx`, `LaunchPanel.tsx`, `MetaprojectPanel.tsx` | The other sections. |
 | `primitives.tsx` | `SettingsSection`, `SettingRow`, `SettingStack`, `WorkspaceNumber`, `Switch`, and the older `Header` and `Field`. |
 | `PaletteCards.tsx`, `palette-swatches.ts` | Palette cards (`aria-pressed` buttons) and their preview colours. |
@@ -274,6 +289,36 @@ version footer and the Done bar. Each section is its own module in
 Components below `GeneralPanel` take values and callbacks as props, so unit
 tests render them without a DOM. Real focus, layout and colour are covered by
 `tests/e2e/settings-board.spec.ts`.
+
+Terminal padding is a desktop-local preference. Separate values control the
+horizontal and vertical insets. The default is 12 px on each side, 8 px above,
+and 4 px below. A custom vertical value applies equally above and below.
+Open local tabs, splits, and popouts receive committed updates. `ShellTab`
+observes the inner viewport and refits the current engine without reopening the
+view or restarting the shell. Paired shells keep the default padding.
+
+The desktop settings repository stores `terminal_engine` as a viewer-local
+preference. Missing or invalid values read as `xterm` without changing the
+stored row. The existing settings IPC validates writes and sends a change
+event only after a different value is saved. A terminal view reads this value
+once at opening. A read failure or timeout selects xterm.js. Setting changes
+do not replace a renderer in an open view. Settings → General → Terminal
+offers xterm.js (the default) and Ghostty (WASM).
+
+A Ghostty view feeds the same shell output to an inert xterm.js standby.
+Ghostty fits the terminal with its own cell measurements. The shell and the
+standby use that grid until xterm.js takes over and fits the pane itself.
+On macOS, Option-drag selects text in Ghostty without sending mouse input
+to the shell. An ordinary drag still reaches apps that enable mouse reporting.
+Shift-click extends a Ghostty text selection from its anchor. A plain selection
+click clears the old highlight and sets a new anchor.
+The standby parser handles live clipboard writes after local snapshot replay,
+including during Ghostty startup and fallback. Ghostty does not duplicate
+those writes. On renderer failure, the standby drains its output before it
+takes over keyboard input. It restores focus only if no newer interaction
+took focus. The shell connection does not change.
+Ghostty compiles verified bundled WASM in a lazy renderer chunk. The desktop
+document's script policy permits WASM compilation, but not JavaScript eval.
 
 ### Metaproject session, assignment and Board
 
@@ -304,7 +349,15 @@ The chrome around the content (title bar, activity bar, sidebar columns and
 status bar) is one continuous surface, `--surface-chrome`, painted once on the
 window root. Regions are separated by tone and spacing, not borders. The main
 area and the popout's content are rounded sheets (`--surface-sheet`) inset on
-that surface. Dialogs and popovers keep their edges because they float.
+that surface. The main sheet has 8px side margins and 14px corners. It starts
+at the bottom of the toolbar with no extra gap. When the toolbar is hidden,
+the sheet has a 2px top margin. The bottom margin is 2px above the status bar
+and 8px when the bar is hidden. A single terminal has a subtle 1px border.
+In split mode, each terminal paints a separate 14px rounded card with a
+1px gray border, regardless of focus. The workspace has no shared terminal
+border or background, so the workspace chrome is visible through the 10px
+resize gap.
+Dialogs and popovers keep their edges because they float.
 
 `src/renderer/styles.css` ("Chrome surfaces and semantic hues") derives every
 chrome token from the palette tokens above, so all palettes and both
@@ -454,8 +507,15 @@ chrome"). `styles.css` is not changed by this layer. On macOS:
 | Chrome root (`[data-chrome-root]`) | `--surface-chrome`: the opaque `--chrome-solid` at `--chrome-glass-alpha`. At Chrome frost Subtle that is 0.805 to 0.87 per palette and theme; Medium and Strong are lower (see "Frosted glass settings"). |
 | Main and popout sheet, chat column (`[data-view="chat"]`) | `--sheet-solid`, alpha 1. |
 | Sheet while a shell shows (`[data-sheet-content="shell"]`), Terminal frost not Off | `--surface-terminal`: `--sheet-solid` at `--terminal-live-alpha`. |
-| Split-shell cards | `--surface-pane`: `--pane-solid`. With Terminal frost on, cards follow the sheet; only at Chrome Subtle with Terminal Subtle do they add their own glass, as before. |
+| Split-shell cards | Each card uses the terminal sheet surface. Presets and Custom set the opacity of both cards without changing the workspace chrome in the gap. |
 | Raw `--panel`, `--panel-strong`, `--chat-surface` | Same colour, alpha 1, so menus, popovers and inputs are never more translucent than before. |
+
+**Custom terminal opacity.** Settings → General → Appearance → Frosted glass
+keeps the terminal presets and adds Custom. The 10–100% slider previews the
+background in the current window and saves at the end of the edit. Open
+windows receive the saved value. Reset returns to 70%. The setting does not
+change terminal text opacity or native window material. Reduce Transparency
+keeps the surface opaque without discarding the saved value.
 
 Hover, selected, active and field fills (`--surface-hover`, `--surface-active`,
 `--accent-soft`, `--surface-field`) and the Tasks badge fill
@@ -627,18 +687,13 @@ blurs what is behind the window. The app never blurs anything itself.
   paints an opaque `#000` underlay under `--bg`. The window stays solid, as it
   was before Linux windows became transparent.
 - **Blur is the compositor's.** The app does not request the
-  `ext-background-effect-v1` Wayland protocol. Electron 32.3.3 (Chromium 128)
-  binds no blur protocol, and a native addon cannot reach Chromium's
-  `wl_surface`. A compositor that blurs translucent surfaces by its own policy
-  blurs the window with no help from the app. Hyprland 0.56 or later does this
-  through its `decoration:blur` settings, for a translucent surface that has no
-  blur effect object.
-- **Wayland and XWayland.** The app sets no Ozone switch. Chromium runs as a
-  native Wayland client only if the environment sets
-  `ELECTRON_OZONE_PLATFORM_HINT=wayland` (or `auto`). Without it the window runs
-  under XWayland. The window is translucent as a native Wayland client.
-  Whether the XWayland window is translucent, and whether the compositor blurs
-  it, is recorded by the manual check in the build report, not by a code path.
+  `ext-background-effect-v1` Wayland protocol. A compositor can blur a
+  translucent window through its own policy. Hyprland exposes this policy
+  through its `decoration:blur` settings.
+- **Wayland and XWayland.** The app sets no Ozone switch. [Electron uses native
+  Wayland by default in Wayland sessions](https://github.com/electron/electron/blob/v43.8.12/docs/breaking-changes.md#removed-electron_ozone_platform_hint-environment-variable).
+  Use `--ozone-platform=x11` to force XWayland. Electron no longer reads
+  `ELECTRON_OZONE_PLATFORM_HINT`.
 - **No blur available.** On a compositor that does not blur, the translucent
   chrome shows the desktop unblurred. The user can turn Frosted chrome off.
 
@@ -945,7 +1000,7 @@ kill.
 
 Rules:
 
-- Motion uses the `motion` package (pinned at 14.0.0) through a strict
+- Pane folds and menus use the `motion` package (pinned at 14.0.0) through a strict
   `LazyMotion` with `domAnimation` in `main.tsx`, under
   `MotionConfig reducedMotion="user"`. Only `m.*` elements are used.
 - A fold animates one CSS variable, `--fold`, on the folding pane's
@@ -964,6 +1019,33 @@ Rules:
   drops its backdrop, role and test id and takes no pointer or keyboard
   input; reopening during an exit reuses the same instance, and a menu
   opened with `autoFocus` refocuses its first item.
+- Desktop local terminal chips fade and move vertically on pointer or keyboard add or close;
+  surviving chips slide horizontally to their new positions. The strip uses
+  pre/post-commit chip positions and Web Animations, so Motion's global
+  layout feature set and terminal geometry stay unchanged. With Reduce
+  Motion enabled, only the chip fades remain. Project switches, restores,
+  and chip selection do not animate membership.
+- A launch animates only if its returned index identifies the next
+  unambiguous addition; if an alive-list update beats the reply, the chip
+  appears without motion. The project-keyed strip records close intent before
+  the close request. When the chip leaves, an inert copy fades within the old
+  viewport bounds, independent of any new shell reusing its index. A rejected
+  close clears its intent. Animation never delays a close or controls PTY or focus.
+- The icon-only top-row tabs keep accessible names and show labels on hover
+  or keyboard focus. The Diff count and unsaved marker stay visible. These
+  tabs crossfade their selected background in place; their panels do not slide.
+- The desktop toolbar sits above the main sheet, aligned with the workspace
+  column, with 6px padding above and below its controls. Board is an icon
+  with a tooltip. The status bar shows the project
+  name and active agent. The terminal strip is centered in the toolbar, including
+  at medium window widths. It moves below the workspace icons and project
+  controls when the workspace column is narrower than 620px.
+  Tabs scroll within the strip. Add remains beside the tabs, and its menu
+  stays within the header's horizontal bounds. The icon-only Split toggle
+  sits immediately before Popout at the right edge.
+- Local terminal tab navigation does not animate the terminal panel. The old
+  view is removed without a snapshot. The new view appears at full opacity
+  once its terminal engine is ready. Tab chip motion is independent of the panel.
 
 ### Terminal focus
 
@@ -994,6 +1076,9 @@ Rules:
   is one pending request; a newer one replaces it, and starting a new
   switch or scrollback jump cancels it. A switch that lands on the Files
   tab requests nothing.
+- A new local terminal tab requests focus for its shell when the launch
+  succeeds. If the user navigates elsewhere or focuses a different text
+  field while the launch waits, the new tab does not take over.
 - A request expires after `FOCUS_REQUEST_TTL_MS`. It is honoured when no
   overlay is open and no text-entry element has focus, checked when the
   terminal opens, or at once when it is already open. A window blur drops
@@ -1053,10 +1138,12 @@ bracketed paste on that sends an empty bracketed pair.
 
 Paste routes: macOS ⌘V and the Edit menu fire a DOM `paste` event, which the
 paste hook takes. Ctrl+Shift+V and the context-menu Paste item read the
-clipboard and call the same function (`ShellTab.tsx:183`,
-`ShellTab.tsx:599`). All routes sanitise the text. When the clipboard has no
-text, all routes try the clipboard image. The renderer is sandboxed, so the
-main process reads the image.
+clipboard and call the same function (`pasteFromText` in
+`src/renderer/components/ShellTab.tsx`). All routes sanitise the text. When the clipboard has no
+text, all routes try the clipboard image. The main process reads the image.
+Electron 43 retains `clipboard.readImage()`, which reads native Windows PNG-only
+clipboard entries. Before upgrading to a newer major, verify that terminal
+paste and paired-device upload still handle those entries.
 
 Temporary directory:
 
@@ -1278,11 +1365,10 @@ Rules:
 
 ### Local primary-session unload
 
-The local project-row X, selected-project header X, and palette Unload current session
-open one confirmation dialog. The action stops only shell index 0. Other shells,
+The local project-row X and the **Unload current session** palette action
+open the same confirmation dialog. The action stops only shell index 0. Other shells,
 project records, files, and the selected project remain unchanged
-(`src/renderer/App.tsx:288-306,429-460,874-876`;
-`src/renderer/components/Sidebar.tsx:282-420`).
+(`src/renderer/App.tsx`; `src/renderer/components/Sidebar.tsx`).
 
 The dialog inspects the live PTY generation and the agent state for shell 0.
 It warns when that agent is busy or needs input. It also warns when shell 0
@@ -1818,9 +1904,9 @@ the whole side falls back to escaped plain text.
 | `markdown-it` | 14.3.0 | Markdown parser. `html` is `false`. |
 | `highlight.js` | lockfile | Code block highlighting, and both sides of the Diff tab. |
 | `katex` | 0.16.47, exact pin | Math. Also the version `mermaid` depends on, so the bundle has one copy. |
-| `mermaid` | 11.17.2, exact pin | Diagrams. Version 12 requires Node 22, and the repo uses Node 20. |
+| `mermaid` | 11.17.2, exact pin | Diagrams. |
 | mise CLI | external, user-installed; developed against 2026.10.4 | Tasks panel listing and running. Only the `name`, `description`, `hide` and `global` fields of `mise tasks ls --json` are read. The JSON format is not documented by mise. |
-| Electron `powerSaveBlocker` | electron 32.3.3 | Keep-awake assertion, type `prevent-app-suspension`. On macOS it is a system idle-sleep assertion, not a display one; the E2E suite checks this against `pmset -g assertions`. |
+| Electron `powerSaveBlocker` | electron 43.8.12 | Keep-awake assertion, type `prevent-app-suspension`. On macOS it is a system idle-sleep assertion, not a display one; the E2E suite checks this against `pmset -g assertions`. |
 | `/usr/bin/pmset` | macOS, system | `pmset displaysleepnow` turns the display off for keep-awake. No root needed in practice; this is not documented. `pmset -g assertions` is read in E2E only. |
 | ScreenSaverEngine | macOS, system | Keep-awake darken fallback, launched with `/usr/bin/open`. |
 

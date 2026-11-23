@@ -1,6 +1,7 @@
 import type { AgentHarness } from './agent-harness';
 import type { ClaudePermissionMode } from './claude-permission-mode';
-import type { ChromeFrostLevel, TerminalFrostLevel, VibrancyMaterial } from './frosted-glass';
+import type { ChromeFrostLevel, TerminalFrostMode, VibrancyMaterial } from './frosted-glass';
+import type { TerminalEngine } from './terminal-engine';
 
 export interface Root {
   id: number;
@@ -105,6 +106,11 @@ export type SettingsMap = {
   'scrollback_lines':              number;
   'max_watched_paths':             number;
   'theme':                         'dark' | 'light' | 'system';
+  /** Desktop-only preference for new terminal views. It does not belong to the shell or its host. */
+  'terminal_engine':               TerminalEngine;
+  /** Viewer-local override in whole CSS pixels per edge. Null preserves the built-in inset. */
+  'terminal_padding_horizontal':   number | null;
+  'terminal_padding_vertical':     number | null;
   /** Host-installed family used by ordinary application UI; null keeps the built-in stack. */
   'ui_font_family':                string | null;
   /** Host-installed family used by integrated terminals; null keeps the built-in stack. */
@@ -142,7 +148,8 @@ export type SettingsMap = {
   /** macOS and Linux: chrome frost strength. Write via settings:set-chrome-frost-level only. */
   'chrome_frost_level':            ChromeFrostLevel;
   /** macOS and Linux: terminal frost strength. Write via settings:set-terminal-frost-level only. */
-  'terminal_frost_level':          TerminalFrostLevel;
+  'terminal_frost_level':          TerminalFrostMode;
+  'terminal_frost_opacity':        number;
   /** macOS only: native vibrancy material. Write via settings:set-vibrancy-material only. */
   'vibrancy_material':             VibrancyMaterial;
   /** App-wide env variables applied to every spawn; project variables override. Write via settings:set-app-env only. */

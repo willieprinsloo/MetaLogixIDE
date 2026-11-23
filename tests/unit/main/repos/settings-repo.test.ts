@@ -17,6 +17,116 @@ function seed() {
 }
 
 describe('SettingsRepo', () => {
+  describe('desktop terminal engine', () => {
+    it('defaults to xterm on a fresh profile and seeds it on upgrade without touching other settings', () => {
+      const db = openDb(':memory:');
+      try {
+        runMigrations(db, migrationsDir);
+        const repo = new SettingsRepo(db);
+        repo.set('theme', 'light');
+        expect(repo.get('terminal_engine')).toBe('xterm');
+        expect(repo.getAll().terminal_engine).toBe('xterm');
+        repo.seedDefaults();
+        expect(db.prepare('SELECT value FROM settings WHERE key = ?').get('terminal_engine')).toEqual({ value: '"xterm"' });
+        expect(repo.get('theme')).toBe('light');
+        expect(seed().get('terminal_engine')).toBe('xterm');
+      } finally { db.close(); }
+    });
+
+    it.each(['not JSON', 'null', '42', '[]', '{"engine":"ghostty"}', '"Ghostty"', '"ghostty "', '"next-engine"'])(
+      'reads invalid stored value %s as xterm without rewriting it', (raw) => {
+        const db = openDb(':memory:');
+        try {
+          runMigrations(db, migrationsDir);
+          db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('terminal_engine', raw);
+          const repo = new SettingsRepo(db);
+          repo.seedDefaults();
+          expect(repo.get('terminal_engine')).toBe('xterm');
+          expect(repo.getAll().terminal_engine).toBe('xterm');
+          expect(db.prepare('SELECT value FROM settings WHERE key = ?').get('terminal_engine')).toEqual({ value: raw });
+        } finally { db.close(); }
+      },
+    );
+
+    it('preserves either saved engine when the database is reopened and defaults are seeded', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'st-engine-'));
+      const path = join(dir, 'db');
+      function withRepo(run: (repo: SettingsRepo) => void): void {
+        const db = openDb(path);
+        try {
+          runMigrations(db, migrationsDir);
+          const repo = new SettingsRepo(db);
+          repo.seedDefaults();
+          run(repo);
+        } finally { db.close(); }
+      }
+      try {
+        withRepo(repo => repo.set('terminal_engine', 'ghostty'));
+        withRepo(repo => {
+          expect(repo.get('terminal_engine')).toBe('ghostty');
+          expect(repo.getAll().terminal_engine).toBe('ghostty');
+          repo.set('terminal_engine', 'xterm');
+        });
+        withRepo(repo => expect(repo.get('terminal_engine')).toBe('xterm'));
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('does not hide unrelated malformed JSON or database failures', () => {
+      const db = openDb(':memory:');
+      try {
+        runMigrations(db, migrationsDir);
+        db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('theme', 'not JSON');
+        const repo = new SettingsRepo(db);
+        expect(() => repo.get('theme')).toThrow(SyntaxError);
+        expect(() => repo.getAll()).toThrow(SyntaxError);
+        db.exec('DROP TABLE settings');
+        expect(() => repo.get('terminal_engine')).toThrow('no such table');
+        expect(() => repo.getAll()).toThrow('no such table');
+      } finally { db.close(); }
+    });
+  });
+
+  describe('desktop terminal padding', () => {
+    it('keeps independent overrides, including zero, after reopening the database', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'st-padding-'));
+      function withRepo(run: (repo: SettingsRepo) => void): void {
+        const db = openDb(join(dir, 'db'));
+        try {
+          runMigrations(db, migrationsDir);
+          const repo = new SettingsRepo(db);
+          repo.seedDefaults();
+          run(repo);
+        } finally { db.close(); }
+      }
+      try {
+        withRepo(repo => {
+          repo.set('terminal_padding_horizontal', 0);
+          repo.set('terminal_padding_vertical', 32);
+        });
+        withRepo(repo => {
+          expect(repo.get('terminal_padding_horizontal')).toBe(0);
+          expect(repo.get('terminal_padding_vertical')).toBe(32);
+          repo.set('terminal_padding_horizontal', null);
+        });
+        withRepo(repo => expect(repo.getAll()).toMatchObject({
+          terminal_padding_horizontal: null, terminal_padding_vertical: 32,
+        }));
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it.each(['not JSON', '33', '1.5', '"12"'])('uses Default for corrupt padding %s', raw => {
+      const db = openDb(':memory:');
+      try {
+        runMigrations(db, migrationsDir);
+        const repo = new SettingsRepo(db);
+        repo.seedDefaults();
+        db.prepare('UPDATE settings SET value = ? WHERE key = ?').run(raw, 'terminal_padding_horizontal');
+        expect(repo.get('terminal_padding_horizontal')).toBeNull();
+        expect(repo.getAll().terminal_padding_horizontal).toBeNull();
+      } finally { db.close(); }
+    });
+  });
+
   describe('Metaproject private state', () => {
     it('commits an origin and restore tombstone together and keeps private rows out of public settings', () => {
       const directory = mkdtempSync(join(tmpdir(), 'metaproject-st-'));

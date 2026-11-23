@@ -6,7 +6,7 @@ with the IDE layer they've been missing: a shared project view, live file
 editor, structured activity log across shells, P2P discovery of your other
 dev machines, and a built-in bridge to [metaproject].
 
-Built on Electron 32 + React 18 + TypeScript.
+Built on Electron 43, React 18, and TypeScript. The desktop app requires macOS 12 or later on Mac.
 
 ## What it does
 
@@ -14,6 +14,10 @@ Built on Electron 32 + React 18 + TypeScript.
 - Multi-tab shells per project, each running Claude, OpenAI Codex or
   opencode, or a custom command you save per-project. Agent shells resume
   their last session in the project when reopened.
+- On desktop, Settings → General → Terminal lets you choose xterm.js
+  (the default) or Ghostty (WASM). The choice applies when you open or
+  reopen a terminal view. If Ghostty fails, the view falls back to
+  xterm.js without restarting the shell.
 - Project switcher, file finder, prompt library, cross-shell scrollback
   search, port detection, hot/hanging shell watchdog.
 - Shared agent memory: every CLI tool call, user prompt, and turn-end is
@@ -85,18 +89,22 @@ globals and are shadowed by per-user project profiles.
 
 ## Development
 
+Use Node.js 24 and pnpm 11. The install step downloads Electron and prepares its native modules.
+
 ```bash
 pnpm install            # one-time
 pnpm dev                # dev + HMR
 pnpm typecheck          # TypeScript check across node + web
 pnpm test               # vitest
-pnpm dist:mac           # package a signed DMG + zip (arm64 + x64)
+pnpm dist:mac           # package a DMG and ZIP (arm64 and x64)
 ```
 
-If better-sqlite3 complains about `NODE_MODULE_VERSION`:
-- `pnpm rebuild better-sqlite3` — for CLI node (tests)
-- `pnpm postinstall` or `./node_modules/.bin/electron-rebuild -f -w better-sqlite3`
-  — for Electron (dev + packaging)
+SQLite uses the platform binary included in `better-sqlite3`. Run `pnpm rebuild:electron`
+to rebuild `node-pty` for the installed Electron version.
+
+The macOS packaging step ad-hoc signs the app bundle so macOS can accept native
+notifications. It does not use a Developer ID certificate, sign the DMG, or
+notarize the artifacts.
 
 ## Project layout
 

@@ -2,6 +2,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { isValidElement, type ReactNode } from 'react';
 import type * as ReactModule from 'react';
+import type { IpcEvents, IpcResponse } from '@shared/ipc-contract';
+import type { GhosttyView } from '@renderer/terminal/ghostty-view-engine';
+import type { openGhosttyWithStandby } from '@renderer/terminal/engine-composition';
+import type { ILinkProvider } from '@xterm/xterm';
 
 const runtime = vi.hoisted(() => {
   type Effect = { deps?: readonly unknown[]; cleanup?: () => void; run?: () => unknown };
@@ -65,15 +69,20 @@ type TerminalProbe = {
   readonly writes: string[];
   readonly pending: Array<() => void>;
   readonly scrollToBottom: Mock;
+  readonly element: { inert: boolean; style: { visibility: string } };
+  readonly resize: Mock;
+  readonly onData: Mock;
+  readonly registerLinkProvider: Mock<(links: ILinkProvider) => { dispose(): void }>;
   readonly buffer: { normal: { baseY: number; viewportY: number }; alternate: { baseY: number; viewportY: number }; active: { baseY: number; viewportY: number } };
   opened: boolean;
   finishWrite(): void;
   userScroll(position: number): void;
 };
-const terminals = vi.hoisted(() => ({ instances: [] as TerminalProbe[] }));
+const terminals = vi.hoisted(() => ({ instances: [] as TerminalProbe[], failOpen: false }));
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
     options: Record<string, unknown> = {};
+    element = { inert: false, style: { visibility: '' } };
     parser = { registerOscHandler: () => ({ dispose() {} }) };
     cols = 80;
     rows = 24;
@@ -91,9 +100,13 @@ vi.mock('@xterm/xterm', () => ({
     constructor() { this.buffer.active = this.buffer.normal; terminals.instances.push(this); }
     loadAddon() {}
     attachCustomKeyEventHandler() {}
-    registerLinkProvider() { return { dispose() {} }; }
-    onData() {}
-    open() { this.opened = true; }
+    registerLinkProvider = vi.fn<(links: ILinkProvider) => { dispose(): void }>(() => ({ dispose() {} }));
+    onData = vi.fn();
+    resize = vi.fn();
+    open() {
+      if (terminals.failOpen) throw new Error('DOM renderer unavailable');
+      this.opened = true;
+    }
     reset() {
       this.buffer.normal.baseY = 0;
       this.buffer.normal.viewportY = 0;
@@ -136,25 +149,41 @@ vi.mock('@renderer/terminal-font-update', () => ({
 vi.mock('@renderer/fonts/font-settings-context', () => ({ useFontSettings: () => ({ terminalFontFamily: null }) }));
 vi.mock('@renderer/fonts/terminal-font-size-context', () => ({ useTerminalFontSize: () => ({ size: 13, ready: true, setSize() {} }) }));
 vi.mock('@renderer/fonts/terminal-font-weight-context', () => ({ useTerminalFontWeight: () => ({ weight: 400, boldWeight: 700, ready: true }) }));
+vi.mock('@renderer/terminal/terminal-padding-context', () => ({ useTerminalPadding: () => ({ left: 12, right: 12, top: 8, bottom: 4 }) }));
 vi.mock('@renderer/shortcut-platform', () => ({ useShortcutPlatform: () => 'other' }));
 vi.mock('@renderer/hooks/useTerminalDrop', () => ({ useTerminalDrop: () => ({ overlay: null, handlers: {} }) }));
 vi.mock('@renderer/hooks/useTerminalPaste', () => ({ useTerminalPaste: () => async () => undefined }));
 const focusOpened = vi.hoisted(() => vi.fn());
+const openComposition = vi.hoisted(() => vi.fn<typeof openGhosttyWithStandby>());
+vi.mock('@renderer/terminal/engine-composition', () => ({ openGhosttyWithStandby: openComposition }));
 vi.mock('@renderer/hooks/useWindowTerminalFocus', () => ({
   terminalFocus: { register: () => ({ opened: focusOpened, used() {}, unregister() {} }) },
 }));
-const stream = vi.hoisted((): { onData: (data: string) => void } => ({ onData: () => undefined }));
-vi.mock('@renderer/hooks/useShellStream', () => ({
-  useShellStream: (_project: number, _shell: number, onData: (data: string) => void) => { stream.onData = onData; },
+type StreamEvent = IpcEvents['pty:data' | 'pty:exit'];
+const stream = vi.hoisted(() => ({
+  handlers: new Map<string, (payload: StreamEvent) => void>(),
+  nextPosition: 1,
+  onData(data: string, replayPosition?: number, projectId = 5, shellIndex = 0) {
+    const payload: IpcEvents['pty:data'] = { data, replayPosition: replayPosition ?? this.nextPosition++, projectId, shellIndex };
+    this.handlers.get('pty:data')?.(payload);
+  },
+  exit(code: number) {
+    const payload: IpcEvents['pty:exit'] = { code, projectId: 5, shellIndex: 0 };
+    this.handlers.get('pty:exit')?.(payload);
+  },
 }));
 vi.mock('@renderer/components/HoverPreview', () => ({ HoverPreview: () => null }));
 vi.mock('@renderer/components/ContextMenu', () => ({ ContextMenu: () => null }));
 const invoke = vi.hoisted(() => vi.fn());
-vi.mock('@renderer/api', () => ({ api: { invoke, on: () => () => undefined } }));
+vi.mock('@renderer/api', () => ({ api: { invoke, on: (name: string, callback: (payload: StreamEvent) => void) => {
+  stream.handlers.set(name, callback);
+  return () => stream.handlers.delete(name);
+} } }));
 
 const frameCallbacks: Array<FrameRequestCallback> = [];
 const viewport = { attached: true, clientHeight: 480, scrollHeight: 480, scrollTop: 0 };
 const flush = async () => { for (let index = 0; index < 12; index++) await Promise.resolve(); };
+const candidateHost = { className: '', inert: false, remove: vi.fn() };
 const host = {
   clientWidth: 640,
   clientHeight: 480,
@@ -162,6 +191,7 @@ const host = {
   querySelector: (selector: string) => selector === '.xterm-viewport' && viewport.attached ? viewport : null,
   addEventListener() {},
   removeEventListener() {},
+  append: vi.fn(),
 };
 function attachRefs(node: ReactNode): void {
   if (Array.isArray(node)) { for (const child of node) attachRefs(child); return; }
@@ -175,13 +205,28 @@ function attachRefs(node: ReactNode): void {
 }
 vi.stubGlobal('self', globalThis);
 const { ShellTab } = await import('@renderer/components/ShellTab');
-async function mount(snapshot: Promise<{ output: string }>): Promise<TerminalProbe> {
-  invoke.mockImplementation((channel: string) => channel === 'shells:snapshot' ? snapshot : Promise.resolve(undefined));
-  runtime.render('local', () => {
+type Snapshot = IpcResponse<'shells:snapshot'>;
+
+function liveSnapshot(output: string, replayPosition = 0): Snapshot {
+  return { output, alive: true, replayPosition };
+}
+
+function renderShell(): unknown {
+  return runtime.render('local', () => {
     const tree: unknown = ShellTab({ projectId: 5, shellIndex: 0 });
     if (!isValidElement(tree)) throw new Error('Local terminal did not render');
     return tree;
   }, attachRefs);
+}
+
+async function mount(snapshot: Promise<Snapshot>, capture?: () => void, engine: 'xterm' | 'ghostty' = 'xterm'): Promise<TerminalProbe> {
+  invoke.mockImplementation((channel: string) => {
+    if (channel === 'settings:get') return Promise.resolve({ value: engine });
+    if (channel !== 'shells:snapshot') return Promise.resolve(undefined);
+    capture?.();
+    return snapshot;
+  });
+  renderShell();
   await flush();
   const instance = terminals.instances[0];
   if (!instance?.opened) throw new Error('Local terminal did not open');
@@ -191,8 +236,14 @@ async function mount(snapshot: Promise<{ output: string }>): Promise<TerminalPro
 beforeEach(() => {
   runtime.reset();
   terminals.instances.length = 0;
+  terminals.failOpen = false;
   invoke.mockReset();
+  stream.handlers.clear();
+  stream.nextPosition = 1;
   focusOpened.mockReset();
+  candidateHost.remove.mockClear();
+  host.append.mockClear();
+  openComposition.mockReset();
   frameCallbacks.length = 0;
   host.style.visibility = '';
   viewport.attached = true;
@@ -202,6 +253,7 @@ beforeEach(() => {
   vi.stubGlobal('self', globalThis);
   vi.stubGlobal('document', {
     documentElement: {},
+    createElement: () => candidateHost,
     fonts: { load: async () => [], ready: Promise.resolve() },
   });
   vi.stubGlobal('getComputedStyle', () => ({ getPropertyValue: () => '' }));
@@ -216,15 +268,155 @@ beforeEach(() => {
 afterEach(() => { runtime.unmount(); vi.unstubAllGlobals(); });
 
 describe('local shell initial snapshot viewport', () => {
+  it('reveals the candidate after forwarding buffered output, then transfers the display and input to standby', async () => {
+    const composition = { write: vi.fn(), fit: vi.fn(), dispose: vi.fn() };
+    openComposition.mockImplementation(options => {
+      options.onState({ kind: 'loading' });
+      return composition;
+    });
+    const snapshot = Promise.withResolvers<Snapshot>();
+    const term = await mount(snapshot.promise, undefined, 'ghostty');
+    stream.onData('live before snapshot\n', 3);
+    snapshot.resolve(liveSnapshot('snapshot\n', 2));
+    await flush();
+    const options = openComposition.mock.calls[0]?.[0];
+    if (!options) throw new Error('Missing Ghostty composition');
+    expect(options.snapshot).toBe('snapshot\n');
+    expect(options.standbyAvailable()).toBe(true);
+    expect(options.canRefit()).toBe(true);
+    expect(options.appearance()).toMatchObject({ lineHeight: 1.25, cursorStyle: 'bar' });
+    expect(composition.write.mock.calls).toEqual([['live before snapshot\n']]);
+    expect(term.element.inert).toBe(true);
+    expect(candidateHost.inert).toBe(true);
+    expect(host.style.visibility).toBe('hidden');
+    expect(term.onData).not.toHaveBeenCalled();
+    options.alignGrid(96, 36);
+    expect(term.resize).toHaveBeenCalledWith(96, 36);
+    expect(invoke).toHaveBeenCalledWith('shells:resize', { projectId: 5, shellIndex: 0, cols: 96, rows: 36 });
+
+    const candidate = {
+      surface: { buffer: { active: { length: 0, getLine: () => undefined } }, focus: vi.fn(), paste: vi.fn(),
+        hasSelection: () => false, getSelection: () => '', clearSelection: vi.fn() },
+      find: { step: vi.fn(), clear: vi.fn() }, write: vi.fn(), fit: vi.fn(), dispose: vi.fn(),
+      applyAppearance: vi.fn(), reveal: vi.fn<GhosttyView['reveal']>(), focus: vi.fn(),
+    } satisfies GhosttyView;
+    options.onState({ kind: 'ghostty' }, candidate);
+    expect(candidateHost.inert).toBe(false);
+    expect(term.element.style.visibility).toBe('hidden');
+    expect(host.style.visibility).toBe('');
+    expect(focusOpened).toHaveBeenCalledOnce();
+    const handlers = candidate.reveal.mock.calls[0]?.[0];
+    const [file] = handlers?.pathLinks?.('See src/main/index.ts:42') ?? [];
+    expect(file?.text).toBe('src/main/index.ts:42');
+    stream.onData('live after reveal\n', 4);
+    expect(composition.write).toHaveBeenLastCalledWith('live after reveal\n');
+    options.onState({ kind: 'recovering', reason: 'renderer-fault' });
+    options.enableXterm(false);
+    options.onState({ kind: 'xterm', reason: 'renderer-fault' });
+    expect(term.element).toEqual({ inert: false, style: { visibility: '' } });
+    expect(term.onData).toHaveBeenCalledOnce();
+    expect(focusOpened).toHaveBeenLastCalledWith(false);
+    expect(stream.handlers.has('pty:data')).toBe(true);
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'shells:snapshot')).toHaveLength(1);
+    runtime.unmount();
+    expect(composition.dispose).toHaveBeenCalledOnce();
+    expect(stream.handlers.size).toBe(0);
+  });
+  it('shows a recovery message without restarting the shell when the default renderer cannot open', async () => {
+    terminals.failOpen = true;
+    invoke.mockResolvedValue(liveSnapshot(''));
+    renderShell();
+    await flush();
+    expect(JSON.stringify(renderShell())).toContain('The terminal display could not');
+    expect(stream.handlers.has('pty:data')).toBe(true);
+    expect(invoke.mock.calls.some(([channel]) => channel === 'shells:launch')).toBe(false);
+  });
+  it('subscribes before capture and writes only live chunks after the cut, including equal-valued chunks', async () => {
+    const snapshot = Promise.withResolvers<Snapshot>();
+    const term = await mount(snapshot.promise, () => {
+      expect(stream.handlers.has('pty:data')).toBe(true);
+      stream.onData('covered\n', 2);
+      stream.onData('repeat\n', 3);
+    });
+    stream.onData('other shell\n', 4, 5, 1);
+    stream.onData('repeat\n', 5);
+    snapshot.resolve(liveSnapshot('covered\n', 2));
+    await flush();
+    expect(term.writes).toEqual(['covered\n', 'repeat\nrepeat\n']);
+    stream.onData('older delivery\n', 1);
+    stream.onData('newest\n', 6);
+    term.finishWrite();
+    term.finishWrite();
+    expect(term.writes).toEqual(['covered\n', 'repeat\nrepeat\n', 'newest\n']);
+  });
+
+  it('ignores a late covered event but forwards fresh output between parser completion and reveal', async () => {
+    const snapshot = Promise.withResolvers<Snapshot>();
+    const term = await mount(snapshot.promise);
+    snapshot.resolve(liveSnapshot('snapshot\n', 4));
+    await flush();
+    term.finishWrite();
+    stream.onData('covered\n', 4);
+    stream.onData('first live\n', 5);
+    expect(term.writes).toEqual(['snapshot\n', 'first live\n']);
+    for (const callback of frameCallbacks.splice(0)) callback(0);
+    expect(host.style.visibility).toBe('');
+  });
+
+  it('preserves output when no valid snapshot is available', async () => {
+    const snapshot = Promise.withResolvers<Snapshot>();
+    const term = await mount(snapshot.promise);
+    stream.onData('final output\n', 2);
+    snapshot.resolve({ output: '', alive: false, replayPosition: 2 });
+    await flush();
+    expect(term.writes).toEqual(['final output\n']);
+  });
+
+  it('preserves output when snapshot capture rejects', async () => {
+    const snapshot = Promise.withResolvers<Snapshot>();
+    const term = await mount(snapshot.promise);
+    stream.onData('queued\n', 2);
+    snapshot.reject(new Error('snapshot failed'));
+    await flush();
+    expect(term.writes).toEqual(['queued\n']);
+  });
+
+  it('unsubscribes on disposal and ignores a late snapshot reply', async () => {
+    const snapshot = Promise.withResolvers<Snapshot>();
+    const term = await mount(snapshot.promise);
+    stream.onData('buffered in old view\n', 2);
+    runtime.unmount();
+    expect(stream.handlers.size).toBe(0);
+    snapshot.resolve(liveSnapshot('closed view\n', 1));
+    await flush();
+    expect(term.writes).toEqual([]);
+    expect(focusOpened).not.toHaveBeenCalled();
+  });
+
+  it('does not wait on a pending snapshot on exit or replay it after exit', async () => {
+    const snapshot = Promise.withResolvers<Snapshot>();
+    const term = await mount(snapshot.promise);
+    stream.onData('final output\n', 2);
+    stream.exit(7);
+    await flush();
+    expect(term.writes.join('')).toBe('final output\n\r\n[shell exited]\r\n');
+    term.finishWrite();
+    for (const callback of frameCallbacks.splice(0)) callback(0);
+    expect(host.style.visibility).toBe('');
+    snapshot.resolve(liveSnapshot('stale state\n', 2));
+    await flush();
+    expect(term.writes.join('')).toBe('final output\n\r\n[shell exited]\r\n');
+  });
+
   it('positions long ordinary scrollback at the newest parsed viewport on the first frame', async () => {
-    const snapshot = Promise.withResolvers<{ output: string }>();
+    const snapshot = Promise.withResolvers<Snapshot>();
     const term = await mount(snapshot.promise);
     expect(invoke).toHaveBeenCalledWith('shells:snapshot', { projectId: 5, shellIndex: 0 });
     expect(term.writes).toEqual([]);
     expect(host.style.visibility).toBe('hidden');
     expect(focusOpened).not.toHaveBeenCalled();
     const output = Array.from({ length: 48 }, (_, index) => `line ${index}\n`).join('');
-    snapshot.resolve({ output });
+    snapshot.resolve(liveSnapshot(output));
     await flush();
     expect(term.writes).toEqual([output]);
     expect(term.buffer.active.baseY).toBe(0);
@@ -251,11 +443,11 @@ describe('local shell initial snapshot viewport', () => {
   });
 
   it('waits for omp-style alternate-screen replay and queued live output before settling the first visible viewport', async () => {
-    const snapshot = Promise.withResolvers<{ output: string }>();
+    const snapshot = Promise.withResolvers<Snapshot>();
     const term = await mount(snapshot.promise);
     stream.onData('last live update\n');
     const output = `${Array.from({ length: 40 }, (_, index) => `old ${index}\n`).join('')}\u001b[?1049h\u001b[Homp newest`;
-    snapshot.resolve({ output });
+    snapshot.resolve(liveSnapshot(output));
     await flush();
     expect(term.writes).toEqual([output, 'last live update\n']);
     expect(term.scrollToBottom).not.toHaveBeenCalled();
@@ -281,10 +473,10 @@ describe('local shell initial snapshot viewport', () => {
   });
 
   it('buffers output that arrives while the initial snapshot is parsing, revealing only after its last parse', async () => {
-    const snapshot = Promise.withResolvers<{ output: string }>();
+    const snapshot = Promise.withResolvers<Snapshot>();
     const term = await mount(snapshot.promise);
     const output = Array.from({ length: 45 }, (_, index) => `old ${index}\n`).join('');
-    snapshot.resolve({ output });
+    snapshot.resolve(liveSnapshot(output));
     await flush();
     stream.onData('during replay\n');
     expect(term.writes).toEqual([output]);
@@ -303,10 +495,10 @@ describe('local shell initial snapshot viewport', () => {
   });
 
   it('does not reveal an empty snapshot before its browser viewport attaches', async () => {
-    const snapshot = Promise.withResolvers<{ output: string }>();
+    const snapshot = Promise.withResolvers<Snapshot>();
     const term = await mount(snapshot.promise);
     viewport.attached = false;
-    snapshot.resolve({ output: '' });
+    snapshot.resolve(liveSnapshot(''));
     await flush();
     expect(term.writes).toEqual([]);
     expect(host.style.visibility).toBe('hidden');

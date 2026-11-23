@@ -4,12 +4,15 @@ import {
   FROSTED_GLASS_KEYS,
   FROSTED_GLASS_QUERY_KEYS,
   isChromeFrostLevel,
-  isTerminalFrostLevel,
+  isTerminalFrostMode,
+  isTerminalFrostOpacity,
+  TERMINAL_FROST_OPACITY,
+  TERMINAL_FROST_OPACITY_KEY,
   isVibrancyMaterial,
   toFrostPlatform,
   type ChromeFrostLevel,
   type FrostFlags,
-  type TerminalFrostLevel,
+  type TerminalFrostMode,
   type VibrancyMaterial,
 } from '@shared/frosted-glass';
 
@@ -71,7 +74,8 @@ export interface RendererQueryInput {
   platform: NodeJS.Platform;
   frostChrome: boolean;
   chromeFrost: ChromeFrostLevel;
-  terminalFrost: TerminalFrostLevel;
+  terminalFrost: TerminalFrostMode;
+  terminalOpacity?: number;
 }
 
 /**
@@ -90,10 +94,14 @@ export function rendererQuery(input: RendererQueryInput): string {
   parts.push(`${FROSTED_GLASS_QUERY_KEYS.frostChrome}=${frostChrome ? '1' : '0'}`);
   parts.push(`${FROSTED_GLASS_QUERY_KEYS.chromeFrost}=${chromeFrost}`);
   parts.push(`${FROSTED_GLASS_QUERY_KEYS.terminalFrost}=${terminalFrost}`);
+  if (terminalFrost === 'custom') {
+    const opacity = isTerminalFrostOpacity(input.terminalOpacity) ? input.terminalOpacity : TERMINAL_FROST_OPACITY.default;
+    parts.push(`${FROSTED_GLASS_QUERY_KEYS.terminalOpacity}=${opacity}`);
+  }
   return parts.join('&');
 }
 
-/** The four frosted-glass settings main reads for window creation and the renderer query string. */
+/** Validated settings for first-paint frost and native material. */
 export interface StoredFrostedGlass extends FrostFlags {
   vibrancyMaterial: VibrancyMaterial;
 }
@@ -105,10 +113,10 @@ export const FROSTED_GLASS_FALLBACK: StoredFrostedGlass = {
   vibrancyMaterial: FROSTED_GLASS_DEFAULTS.vibrancyMaterial,
 };
 
-type FrostedGlassKey = (typeof FROSTED_GLASS_KEYS)[keyof typeof FROSTED_GLASS_KEYS];
+type FrostedGlassKey = (typeof FROSTED_GLASS_KEYS)[keyof typeof FROSTED_GLASS_KEYS] | typeof TERMINAL_FROST_OPACITY_KEY;
 
 /**
- * Reads the four stored frosted-glass settings through `get` (the settings repository) and
+ * Reads the stored frosted-glass settings through `get` (the settings repository) and
  * validates each with the shared guards, so only an approved flag, level or material reaches
  * `rendererQuery` and `platformChrome`. A value outside its allow-list falls back to its own
  * default; a read that throws falls back to every default (AC1, AC5).
@@ -118,11 +126,13 @@ export function readStoredFrostedGlass(get: (key: FrostedGlassKey) => unknown): 
     const frostChrome = get(FROSTED_GLASS_KEYS.frostChrome);
     const chromeFrost = get(FROSTED_GLASS_KEYS.chromeFrostLevel);
     const terminalFrost = get(FROSTED_GLASS_KEYS.terminalFrostLevel);
+    const terminalOpacity = terminalFrost === 'custom' ? get(TERMINAL_FROST_OPACITY_KEY) : undefined;
     const material = get(FROSTED_GLASS_KEYS.vibrancyMaterial);
     return {
       frostChrome: typeof frostChrome === 'boolean' ? frostChrome : FROSTED_GLASS_FALLBACK.frostChrome,
       chromeFrost: isChromeFrostLevel(chromeFrost) ? chromeFrost : FROSTED_GLASS_FALLBACK.chromeFrost,
-      terminalFrost: isTerminalFrostLevel(terminalFrost) ? terminalFrost : FROSTED_GLASS_FALLBACK.terminalFrost,
+      terminalFrost: isTerminalFrostMode(terminalFrost) ? terminalFrost : FROSTED_GLASS_FALLBACK.terminalFrost,
+      ...(terminalFrost === 'custom' ? { terminalOpacity: isTerminalFrostOpacity(terminalOpacity) ? terminalOpacity : TERMINAL_FROST_OPACITY.default } : {}),
       vibrancyMaterial: isVibrancyMaterial(material) ? material : FROSTED_GLASS_FALLBACK.vibrancyMaterial,
     };
   } catch {

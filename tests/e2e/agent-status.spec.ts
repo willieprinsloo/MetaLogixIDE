@@ -13,7 +13,6 @@ import {
   expectShellState,
   tabDot,
   rowDot,
-  chipDot,
   expectAgentDot,
   expectInactiveAgentIdle,
   expectAggregate,
@@ -38,15 +37,15 @@ test('AC1/AC4/AC12/AC13: undecorated app-launched Claude follows its screen thro
     await waitForShell(h.win, id, 0, 'HOOK-ARGV count=0');
     await sendLine(h.win, id, 0, '/status-work');
     await expectAgentDot(tabDot(h.win, 0), 'claude', 'busy');
-    await expectAggregate(chipDot(h.win), 'busy');
+    await expectAggregate(rowDot(h.win, 'demo'), 'busy');
     await sendLine(h.win, id, 0, '/status-approval');
     await expectAgentDot(tabDot(h.win, 0), 'claude', 'blocked');
-    await expectAggregate(chipDot(h.win), 'blocked');
+    await expectAggregate(rowDot(h.win, 'demo'), 'blocked');
     await sendLine(h.win, id, 0, '/status-resume');
     await expectAgentDot(tabDot(h.win, 0), 'claude', 'busy');
     await sendLine(h.win, id, 0, '/status-ready');
     await expectAgentDot(tabDot(h.win, 0), 'claude', 'idle');
-    await expectAggregate(chipDot(h.win), 'idle');
+    await expectAggregate(rowDot(h.win, 'demo'), 'idle');
   } finally {
     await h.close();
   }

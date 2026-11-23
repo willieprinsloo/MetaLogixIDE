@@ -5,6 +5,7 @@ import { App } from './App';
 import { FontSettingsProvider } from './fonts/font-settings-context';
 import { TerminalFontSizeProvider } from './fonts/terminal-font-size-context';
 import { TerminalFontWeightProvider } from './fonts/terminal-font-weight-context';
+import { TerminalPaddingProvider } from './terminal/terminal-padding-context';
 import { applyRootFlags, parseFrostQuery } from './root-flags';
 import './styles.css';
 import './frosted-chrome.css';
@@ -26,7 +27,7 @@ createRoot(rootElement).render(
         <FontSettingsProvider>
           <TerminalFontSizeProvider>
             <TerminalFontWeightProvider>
-              <App />
+              <TerminalPaddingProvider><App /></TerminalPaddingProvider>
             </TerminalFontWeightProvider>
           </TerminalFontSizeProvider>
         </FontSettingsProvider>

@@ -8,7 +8,7 @@ import { pruneMissingProjects } from '@main/domain/prune-missing';
 import { discoverAllTasks } from '@main/domain/tasks';
 import { randomUUID } from 'node:crypto';
 import type { VibrancyMaterial } from '@shared/frosted-glass';
-import { isChromeFrostLevel, isTerminalFrostLevel, isVibrancyMaterial } from '@shared/frosted-glass';
+import { isChromeFrostLevel, isTerminalFrostMode, isTerminalFrostOpacity, isVibrancyMaterial, TERMINAL_FROST_OPACITY_KEY } from '@shared/frosted-glass';
 import { profileLaunchArgv, resolveLaunch } from '@main/domain/launch';
 import { harnessOf, type AgentHarness } from '@shared/agent-harness';
 import { parseProjectDefaultAgent, setProjectDefaultAgent } from '@main/domain/project-default-agent';
@@ -22,6 +22,8 @@ import { applyClaudePermissionMode } from '@main/domain/claude-permission-mode';
 import { isClaudePermissionMode } from '@shared/claude-permission-mode';
 import type { P2PApi } from '../p2p/types';
 import { isFontSettingKey, parseFontFamilyPreference } from '@shared/font-settings';
+import { TERMINAL_ENGINE_KEY, isTerminalEngine } from '@shared/terminal-engine';
+import { isTerminalPaddingKey, isTerminalPaddingValue } from '@shared/terminal-padding';
 import { TERMINAL_FONT_SIZE_KEY, parseTerminalFontSize } from '@shared/terminal-font-size';
 import {
   TERMINAL_FONT_WEIGHT_KEY,
@@ -250,10 +252,49 @@ function p2pApi(s: Services): P2PApi {
   return s.p2p.api;
 }
 
+/** Returns whether to publish settings:changed after this synchronous write. */
+function setSetting(s: Services, { key, value }: IpcRequest<'settings:set'>): boolean {
+  if (typeof key !== 'string') throw new Error('Invalid settings key');
+  if (isManagedMetaprojectSetting(key)) throw new Error('Use Metaproject Settings to change the service');
+  if (key === TERMINAL_ENGINE_KEY) {
+    if (!isTerminalEngine(value)) throw new Error('Invalid terminal engine');
+    if (s.settings.get(key) === value) return false;
+    s.settings.set(key, value);
+    return true;
+  }
+  if (isTerminalPaddingKey(key)) {
+    if (!isTerminalPaddingValue(value)) throw new Error('Invalid terminal padding');
+    if (s.settings.get(key) === value) return false;
+    s.settings.set(key, value);
+    return true;
+  }
+  if (key === TERMINAL_FROST_OPACITY_KEY) {
+    if (!isTerminalFrostOpacity(value)) throw new Error('Invalid terminal frost opacity');
+    if (s.settings.get(key) === value) return false;
+    s.settings.set(key, value);
+    return true;
+  }
+  // Permission mode and font preferences have dedicated validated setters.
+  if (key === 'claude_permission_mode') throw new Error('claude_permission_mode can only be changed via settings:set-claude-permission-mode');
+  if (isFontSettingKey(key)) throw new Error(`${key} can only be changed via settings:set-font`);
+  if (key === TERMINAL_FONT_SIZE_KEY) throw new Error(`${key} can only be changed via settings:set-terminal-font-size`);
+  if (key === TERMINAL_FONT_WEIGHT_KEY) throw new Error(`${key} can only be changed via settings:set-terminal-font-weight`);
+  if (key === TERMINAL_BOLD_WEIGHT_KEY) throw new Error(`${key} can only be changed via settings:set-terminal-bold-weight`);
+  if (key === 'app_env') throw new Error('app_env can only be changed via settings:set-app-env');
+  // Legacy key: read only by the terminal_frost_level migration, never written again (D19).
+  if ((key as string) === 'frost_terminal') throw new Error('frost_terminal is a legacy key; use settings:set-terminal-frost-level');
+  if (key === 'frost_chrome') throw new Error('frost_chrome can only be changed via settings:set-frost-chrome');
+  if (key === 'chrome_frost_level') throw new Error('chrome_frost_level can only be changed via settings:set-chrome-frost-level');
+  if (key === 'terminal_frost_level') throw new Error('terminal_frost_level can only be changed via settings:set-terminal-frost-level');
+  if (key === 'vibrancy_material') throw new Error('vibrancy_material can only be changed via settings:set-vibrancy-material');
+  s.settings.set(key, value as never);
+  return true;
+}
+
 /** Exported so the P2P hub can call the same implementations directly (no ipcMain round-trip). */
 type CoreChannel = Exclude<IpcChannelName, `metaproject:${string}`>;
 
-export const handlers: { [C in CoreChannel]: Handler<C> } = {
+export const handlers: { [C in Exclude<CoreChannel, 'shells:snapshot' | 'settings:set'>]: Handler<C> } = {
   'dialogs:pick-directory': async (_s, _req, event) => {
     if (process.env.METAIDE_TEST_MODE === '1') {
       return { path: null };
@@ -788,33 +829,10 @@ export const handlers: { [C in CoreChannel]: Handler<C> } = {
     return { shells };
   },
   'shells:pin':   async (s, { projectId, shellIndex, pinned }) => { s.shells.setPinned(projectId, shellIndex, pinned); return { ok: true } as const; },
-  'shells:snapshot': async (s, { projectId, shellIndex }) => {
-    const alive = s.ptyManager?.isAlive(projectId, shellIndex) ?? false;
-    const output = await s.ptyManager?.getSnapshot(projectId, shellIndex) ?? '';
-    return { output, alive };
-  },
 
   'settings:get': async (s, { key }) => {
     if (isManagedMetaprojectSetting(key) && key !== 'metaproject_base_url') throw new Error('Private Metaproject setting');
     return { value: s.settings.get(key) };
-  },
-  'settings:set': async (s, { key, value }) => {
-    if (isManagedMetaprojectSetting(key)) throw new Error('Use Metaproject Settings to change the service');
-    // Permission mode and font preferences have dedicated validated setters.
-    if (key === 'claude_permission_mode') throw new Error('claude_permission_mode can only be changed via settings:set-claude-permission-mode');
-    if (isFontSettingKey(key)) throw new Error(`${key} can only be changed via settings:set-font`);
-    if (key === TERMINAL_FONT_SIZE_KEY) throw new Error(`${key} can only be changed via settings:set-terminal-font-size`);
-    if (key === TERMINAL_FONT_WEIGHT_KEY) throw new Error(`${key} can only be changed via settings:set-terminal-font-weight`);
-    if (key === TERMINAL_BOLD_WEIGHT_KEY) throw new Error(`${key} can only be changed via settings:set-terminal-bold-weight`);
-    if (key === 'app_env') throw new Error('app_env can only be changed via settings:set-app-env');
-    // Legacy key: read only by the terminal_frost_level migration, never written again (D19).
-    if ((key as string) === 'frost_terminal') throw new Error('frost_terminal is a legacy key; use settings:set-terminal-frost-level');
-    if (key === 'frost_chrome') throw new Error('frost_chrome can only be changed via settings:set-frost-chrome');
-    if (key === 'chrome_frost_level') throw new Error('chrome_frost_level can only be changed via settings:set-chrome-frost-level');
-    if (key === 'terminal_frost_level') throw new Error('terminal_frost_level can only be changed via settings:set-terminal-frost-level');
-    if (key === 'vibrancy_material') throw new Error('vibrancy_material can only be changed via settings:set-vibrancy-material');
-    s.settings.set(key, value as never);
-    return { ok: true } as const;
   },
   'settings:set-font': async (s, request) => {
     if (!isFontSettingKey(request.key)) throw new Error('invalid font setting key');
@@ -955,7 +973,7 @@ export const handlers: { [C in CoreChannel]: Handler<C> } = {
     return { ok: true } as const;
   },
   'settings:set-terminal-frost-level': async (s, { level }) => {
-    if (!isTerminalFrostLevel(level)) return { ok: false, error: 'invalid' } as const;
+    if (!isTerminalFrostMode(level)) return { ok: false, error: 'invalid' } as const;
     s.settings.set('terminal_frost_level', level);
     return { ok: true } as const;
   },
@@ -1434,11 +1452,30 @@ const PROJECT_AUTHORITY_CHANNELS = new Set<CoreChannel>([
 export function emitAliveShellsChanged(): void { broadcastEvent?.('alive-shells:changed', {}); }
 export function emitProjectsChanged(): void { broadcastEvent?.('projects:changed', { kind: 'updated' }); }
 
+function registerDesktopReplayIpc(ipcMain: IpcMain, services: Services, sendEvent: SendEvent): void {
+  let position = 0;
+  const pty = services.ptyManager;
+  pty?.on('data', (event: Omit<IpcEvents['pty:data'], 'replayPosition'>) => {
+    sendEvent('pty:data', { ...event, replayPosition: ++position });
+  });
+
+  ipcMain.handle('shells:snapshot', async (_event, { projectId, shellIndex }: IpcRequest<'shells:snapshot'>): Promise<IpcResponse<'shells:snapshot'>> => {
+    const replayPosition = position;
+    const dead = { output: '', alive: false, replayPosition };
+    const generation = pty?.liveShell(projectId, shellIndex)?.generation;
+    if (!pty || generation === undefined) return dead;
+    // getSnapshot queues the existing parser barrier before yielding. Capture the IPC cut in the same turn.
+    const output = await pty.getSnapshot(projectId, shellIndex);
+    if (pty.liveShell(projectId, shellIndex)?.generation !== generation) return dead;
+    return { output, alive: true, replayPosition };
+  });
+}
+
 /** Registers IPC handlers and forwards PTY exits only when no newer generation owns the shell. */
 export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: SendEvent, windowHooks?: WindowHooks): void {
   broadcastEvent = sendEvent;
+  registerDesktopReplayIpc(ipcMain, services, sendEvent);
   if (services.ptyManager) {
-    services.ptyManager.on('data', (ev: IpcEvents['pty:data']) => sendEvent('pty:data', ev));
     services.ptyManager.on('exit', (ev: IpcEvents['pty:exit'] & { generation: string }) => {
       const live = services.ptyManager.liveShell(ev.projectId, ev.shellIndex);
       if (live && live.generation !== ev.generation) return;
@@ -1452,7 +1489,6 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
   // Wired separately below: these channels emit keyed `settings:changed`
   // events that the fixed per-channel payload cannot express.
   const CUSTOM_EMIT_CHANNELS: Partial<Record<IpcChannelName, true>> = {
-    'settings:set': true,
     'settings:set-font': true,
     'settings:set-terminal-font-size': true,
     'settings:set-terminal-font-weight': true,
@@ -1465,7 +1501,7 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
     'settings:set-vibrancy-material': true,
   };
 
-  for (const channel of Object.keys(handlers) as CoreChannel[]) {
+  for (const channel of Object.keys(handlers) as (keyof typeof handlers)[]) {
     if (WINDOW_CHANNELS.has(channel) || CUSTOM_EMIT_CHANNELS[channel]) continue; // wired below
     ipcMain.handle(channel, async (event, req) => {
       if (channel === 'projects:open') windowHooks?.onProjectOpen?.(event, req);
@@ -1477,10 +1513,9 @@ export function registerIpc(ipcMain: IpcMain, services: Services, sendEvent: Sen
     });
   }
 
-  ipcMain.handle('settings:set', async (_e, req: IpcRequest<'settings:set'>) => {
-    const result = await handlers['settings:set'](services, req);
-    sendEvent('settings:changed', { key: req.key });
-    return result;
+  ipcMain.handle('settings:set', async (_e, req: IpcRequest<'settings:set'>): Promise<IpcResponse<'settings:set'>> => {
+    if (setSetting(services, req)) sendEvent('settings:changed', { key: req.key });
+    return { ok: true };
   });
 
   ipcMain.handle('settings:set-font', async (_e, req: IpcRequest<'settings:set-font'>) => {

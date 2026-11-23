@@ -3,7 +3,7 @@ import { SplitIcon } from './shell-icons';
 import { ICON_SIZE } from './icon-size';
 import { SPLIT_COPY, SPLIT_TESTIDS } from '../split-copy';
 
-const BASE = 'shrink-0 h-7 px-2.5 inline-flex items-center gap-[7px] rounded-[7px] text-xs focus-visible:rounded-[7px]';
+const BASE = 'shrink-0 h-7 w-7 inline-flex items-center justify-center rounded';
 const ON = 'bg-[--accent-soft] text-[--accent-soft-text]';
 const OFF = 'text-[--text-muted] hover:text-[--text] hover:bg-[--surface-hover]';
 
@@ -12,22 +12,19 @@ interface Props {
   onToggle: () => void;
 }
 
-/**
- * Right-aligned "Split" toggle for the shell tab strip. The visible label is the accessible name in
- * both states; `aria-pressed` carries the state and the tooltip says what a click does.
- */
-export function SplitPill({ on, onToggle }: Props) {
+/** Icon-only toolbar toggle with a stable accessible name and a state-specific tooltip. */
+export function SplitButton({ on, onToggle }: Props) {
   return (
-    <Tooltip label={on ? SPLIT_COPY.tooltipOn : SPLIT_COPY.tooltipOff}>
+    <Tooltip label={on ? SPLIT_COPY.tooltipOn : SPLIT_COPY.tooltipOff} focusable>
       <button
         type="button"
+        aria-label={SPLIT_COPY.buttonLabel}
         aria-pressed={on}
         onClick={onToggle}
         className={`${BASE} ${on ? ON : OFF}`}
         data-testid={SPLIT_TESTIDS.toggle}
       >
-        <SplitIcon size={ICON_SIZE.sm} />
-        {SPLIT_COPY.pill}
+        <span aria-hidden="true" className="pointer-events-none"><SplitIcon size={ICON_SIZE.md} /></span>
       </button>
     </Tooltip>
   );

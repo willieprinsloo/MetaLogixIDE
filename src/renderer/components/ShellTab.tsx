@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
-import { Terminal, type IDisposable, type ITheme, type ILinkProvider, type IBufferCellPosition } from '@xterm/xterm';
+import { Terminal, type IDisposable, type ITheme, type ILinkProvider } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -8,8 +8,13 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { api } from '@renderer/api';
 import { FROST_ATTR } from '@renderer/frosted-chrome-contract';
-import { openRemoteShell, type RemoteShellHandle } from '@renderer/p2p/remoteShellBridge';
-import { useShellStream } from '@renderer/hooks/useShellStream';
+import type { RemoteShellHandle } from '@renderer/p2p/remoteShellBridge';
+import { openTerminalViewSource } from '@renderer/terminal/terminal-view-source';
+import { readTerminalEngine } from '@renderer/terminal/terminal-engine-setting';
+import { useTerminalPadding } from '@renderer/terminal/terminal-padding-context';
+import { openGhosttyWithStandby } from '@renderer/terminal/engine-composition';
+import type { GhosttyView, TerminalViewSurface } from '@renderer/terminal/ghostty-view-engine';
+import type { TerminalFileLink } from '@renderer/terminal/terminal-view-links';
 import { useTerminalDrop } from '@renderer/hooks/useTerminalDrop';
 import { useTerminalPaste } from '@renderer/hooks/useTerminalPaste';
 import { dropOverlayLabel } from '@renderer/remote-upload/remote-drop';
@@ -43,6 +48,7 @@ import { stepTerminalFontSize } from '@shared/terminal-font-size';
 import { buildFontFamilyStack } from '@renderer/fonts/font-family';
 import { TERMINAL_FONT_FALLBACK, type FontFamilyPreference } from '@shared/font-settings';
 import { TERMINAL_SCROLLBACK_LINES } from '@shared/terminal-scrollback';
+import { DEFAULT_TERMINAL_PADDING } from '@shared/terminal-padding';
 import {
   createTerminalFontUpdater,
   createTerminalGeometrySynchronizer,
@@ -79,6 +85,10 @@ function buildTheme(): ITheme {
     brightCyan: readVar('--term-bright-cyan', '#00ffff'),
     brightWhite: readVar('--term-bright-white', '#ffffff'),
   };
+}
+
+function openTerminalWebLink(url: string): void {
+  void api.invoke('app:open-external', { url }).catch(() => toast('Could not open terminal link', { kind: 'error' }));
 }
 
 type StreamHandlers = { data: (d: string) => void; exit: (code: number | null) => void };
@@ -133,9 +143,11 @@ export function ShellTab({
   source?: 'local' | { kind: 'remote'; deviceId: string; deviceName?: string };
 }) {
   const remoteDeviceId = typeof source === 'object' ? source.deviceId : null;
+  const padding = useTerminalPadding();
+  const horizontalPadding = (remoteDeviceId === null ? padding.horizontal : null) ?? DEFAULT_TERMINAL_PADDING.sides;
+  const verticalPadding = remoteDeviceId === null ? padding.vertical : null;
   const remoteHostNameRef = useRef<string>(REMOTE_INPUT_COPY.hostFallback);
   remoteHostNameRef.current = (typeof source === 'object' && source.deviceName) || REMOTE_INPUT_COPY.hostFallback;
-  const remoteRef = useRef<RemoteShellHandle | null>(null);
   // Live-data / exit handlers shared by the local pty stream and the remote bridge (assigned below).
   const streamHandlersRef = useRef<StreamHandlers>({ data: () => {}, exit: () => {} });
   const [reconnecting, setReconnecting] = useState(false);
@@ -148,12 +160,17 @@ export function ShellTab({
   const [altScreen, setAltScreen] = useState(false);
   const termHostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
+  const activeSurfaceRef = useRef<TerminalViewSurface | null>(null);
+  const outputRef = useRef<((data: string) => void) | null>(null);
+  const ghosttyRef = useRef<GhosttyView | null>(null);
+  const [engineStatus, setEngineStatus] = useState<'xterm' | 'loading' | 'ghostty' | 'recovering' | 'fallback' | 'failed'>('xterm');
   const searchRef = useRef<SearchAddon | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const geometrySyncRef = useRef<TerminalGeometrySynchronizer | null>(null);
   const fontUpdaterRef = useRef<TerminalFontUpdater | null>(null);
   const appliedFontFamilyRef = useRef<FontFamilyPreference>(null);
   const snapshotReady = useRef(false);
+  const replayDrained = useRef(false);
   const pendingLive = useRef('');
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -218,7 +235,7 @@ export function ShellTab({
   const primaryRef = useRef(primary);
   primaryRef.current = primary;
   const shellExitedRef = useRef(false);
-  const pasteIntoTerminal = useCallback((text: string) => { termRef.current?.paste(text); }, []);
+  const pasteIntoTerminal = useCallback((text: string) => { activeSurfaceRef.current?.paste(text); }, []);
   const uploads = useUploadProgress(uploadClient());
   const remoteTarget = useRemoteTarget(remoteDeviceId, remoteHostNameRef.current, uploads.tracker);
   const pasteFromText = useTerminalPaste(termHostRef, pasteIntoTerminal, remoteTarget);
@@ -229,8 +246,14 @@ export function ShellTab({
   });
 
   useEffect(() => {
-    if (!termHostRef.current) return;
-    termHostRef.current.style.visibility = 'hidden';
+    const terminalHost = termHostRef.current;
+    if (!terminalHost) return;
+    const opening = new AbortController();
+    let optionalView: ReturnType<typeof openGhosttyWithStandby> | undefined;
+    let ghostHost: HTMLDivElement | undefined;
+    let optionalEngine = false;
+    setEngineStatus('xterm');
+    terminalHost.style.visibility = 'hidden';
     const term = new Terminal({
       macOptionClickForcesSelection: true,
       scrollback: TERMINAL_SCROLLBACK_LINES,
@@ -261,57 +284,56 @@ export function ShellTab({
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
     term.unicode.activeVersion = '11';
-    term.loadAddon(new WebLinksAddon((_ev: MouseEvent, url: string) => {
-      void api.invoke('app:open-external', { url }).catch((e) => console.error(e));
-    }));
-    const oscDisposable = registerClipboardOsc(term, {
+    term.loadAddon(new WebLinksAddon((_ev: MouseEvent, url: string) => openTerminalWebLink(url)));
+    const clipboard = {
       writeText: (text) => navigator.clipboard.writeText(text),
       onError: createCopyFailedToast(),
-    });
+    } satisfies Parameters<typeof registerClipboardOsc>[1];
+    let oscDisposable: IDisposable | undefined;
     const search = new SearchAddon();
     term.loadAddon(search);
     searchRef.current = search;
-    term.attachCustomKeyEventHandler(createTerminalKeyHandler({
+    const keys = createTerminalKeyHandler({
       platform: platformRef.current,
-      hasSelection: () => term.hasSelection(),
-      getSelection: () => term.getSelection(),
+      hasSelection: () => activeSurfaceRef.current?.hasSelection() ?? false,
+      getSelection: () => activeSurfaceRef.current?.getSelection() ?? '',
       writeClipboard: (text) => navigator.clipboard.writeText(text),
       readClipboard: () => navigator.clipboard.readText(),
       paste: (text) => { void pasteFromText(text); },
       onClipboardError: (op, err) => {
         toast(SHORTCUT_COPY.clipboardErrorTitle(op), { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') });
       },
-    }));
+    });
+    term.attachCustomKeyEventHandler(keys);
 
     // File-path link provider: matches things like src/main/index.ts:42
     // in terminal output, shows a hover preview, click opens in Files.
+    function pathLinks(text: string): TerminalFileLink[] {
+      return detectPaths(text).map((h) => ({
+        start: h.startIndex,
+        end: h.endIndex,
+        text: h.raw,
+        activate: () => {
+          hoverHold.dispose();
+          setHover(null);
+          void openPeekedPathRef.current(h.path, h.line);
+        },
+        hover: (ev: MouseEvent) => {
+          // Dwell leaves selection gestures free of preview cards.
+          hoverHold.linkEnter(() => setHover({ x: ev.clientX, y: ev.clientY, projectId, path: h.path, line: h.line }));
+        },
+        leave: hoverHold.linkLeave,
+      }));
+    }
     const pathLinkProvider: ILinkProvider = {
       provideLinks(bufferLineNumber, callback) {
-        const buf = term.buffer.active;
-        const rawLine = buf.getLine(bufferLineNumber - 1);
+        const rawLine = term.buffer.active.getLine(bufferLineNumber - 1);
         if (!rawLine) { callback(undefined); return; }
-        const text = rawLine.translateToString(true);
-        const hits = detectPaths(text);
-        if (hits.length === 0) { callback(undefined); return; }
-        callback(hits.map((h) => ({
-          range: {
-            start: { x: h.startIndex + 1, y: bufferLineNumber } as IBufferCellPosition,
-            end:   { x: h.endIndex,       y: bufferLineNumber } as IBufferCellPosition,
-          },
-          text: h.raw,
-          activate: () => {
-            hoverHold.dispose();
-            setHover(null);
-            void openPeekedPathRef.current(h.path, h.line);
-          },
-          hover: (ev: MouseEvent) => {
-            // Dwell: the card opens only after the pointer rests on the
-            // path, so sweeping the mouse across output never pops a card
-            // over text the user is about to select.
-            hoverHold.linkEnter(() => setHover({ x: ev.clientX, y: ev.clientY, projectId, path: h.path, line: h.line }));
-          },
-          leave: hoverHold.linkLeave,
-        })));
+        const links = pathLinks(rawLine.translateToString(true)).map(({ start, end, ...link }) => ({
+          ...link,
+          range: { start: { x: start + 1, y: bufferLineNumber }, end: { x: end, y: bufferLineNumber } },
+        }));
+        callback(links.length ? links : undefined);
       },
     };
     // Remote shells have no local peek/preview (paths belong to the host's filesystem).
@@ -324,26 +346,39 @@ export function ShellTab({
     // the "text wraps into a vertical column on the right" bug. We wait
     // until document.fonts is ready AND the host has real pixel dimensions
     // BEFORE opening the terminal.
-    const remote = remoteDeviceId ? openRemoteShell(remoteDeviceId, projectId, shellIndex) : null;
-    remoteRef.current = remote;
-    if (remote) {
-      wireRemoteShell(remote, { handlers: streamHandlersRef, setReconnecting, hostName: () => remoteHostNameRef.current, cancelUploads: uploads.tracker.cancel });
-    }
-    term.onData((data) => {
-      if (remote) remote.send(data);
-      else void api.invoke('shells:write', { projectId, shellIndex, data });
-    });
+    snapshotReady.current = false;
+    replayDrained.current = false;
+    pendingLive.current = '';
     termRef.current = term;
+    outputRef.current = data => term.write(data);
+    const viewSource = openTerminalViewSource({
+      target: { projectId, shellIndex },
+      remoteDeviceId,
+      remoteHandlers: (remote) => wireRemoteShell(remote, { handlers: streamHandlersRef, setReconnecting, hostName: () => remoteHostNameRef.current, cancelUploads: uploads.tracker.cancel }),
+      data: (data) => streamHandlersRef.current.data(data),
+      exit: (code) => streamHandlersRef.current.exit(code),
+    });
+    function enableXtermClipboard() {
+      if (!opening.signal.aborted) oscDisposable = registerClipboardOsc(term, clipboard);
+    }
+    const engine = readTerminalEngine(opening.signal).then(selected => {
+      if (!opening.signal.aborted && selected === 'xterm') {
+        activeSurfaceRef.current = term;
+        term.onData(viewSource.send);
+        enableXtermClipboard();
+      }
+      return selected;
+    });
     let opened = false;
     let disposed = false;
     const focusReg = terminalFocus.register({
       key: { projectId, shellIndex },
       primary: primaryRef.current,
-      isOpen: () => opened && snapshotReady.current,
-      focus: () => term.focus(),
+      isOpen: () => snapshotReady.current,
+      focus: () => activeSurfaceRef.current?.focus(),
     });
 
-    const synchronizeGeometry = createTerminalGeometrySynchronizer({
+    const syncXtermGeometry = createTerminalGeometrySynchronizer({
       terminal: term,
       fit,
       dimensions: () => {
@@ -351,19 +386,20 @@ export function ShellTab({
         if (!opened || !host) return null;
         return { width: host.clientWidth, height: host.clientHeight };
       },
-      resize: (cols, rows) => {
-        if (remote) remote.resize(cols, rows);
-        else void api.invoke('shells:resize', { projectId, shellIndex, cols, rows });
-      },
+      resize: (cols, rows) => { if (!optionalEngine) viewSource.resize(cols, rows); },
       fullWidthCols: () => {
         if (term.buffer.active.type !== 'alternate') return null;
         const host = termHostRef.current;
-        const screen = host?.querySelector<HTMLElement>('.xterm-screen');
+        const screen = term.element?.querySelector<HTMLElement>('.xterm-screen');
         // The screen is exactly cols × cell width, so it yields the cell width.
         const cellWidth = screen && term.cols > 0 ? screen.getBoundingClientRect().width / term.cols : 0;
         return host && cellWidth > 0 ? Math.floor(host.clientWidth / cellWidth) : null;
       },
     });
+    const synchronizeGeometry: TerminalGeometrySynchronizer = (options) => {
+      if (optionalEngine) optionalView?.fit();
+      else syncXtermGeometry(options);
+    };
     geometrySyncRef.current = synchronizeGeometry;
     const fontUpdater = createTerminalFontUpdater({
       terminal: term,
@@ -378,12 +414,9 @@ export function ShellTab({
     // Snapshot fetch runs in parallel with the open-when-ready gate below;
     // whichever finishes second writes the snapshot into a correctly-sized
     // terminal.
-    snapshotReady.current = false;
-    pendingLive.current = '';
     let cachedSnapshot: string | null = null;
-    // Remote: the hub replays scrollback as the first stream events, so there is no snapshot to fetch.
-    const snapshotPromise = (remote ? Promise.resolve({ output: '' }) : api.invoke('shells:snapshot', { projectId, shellIndex }))
-      .then(({ output }) => {
+    const snapshotPromise = viewSource.snapshot
+      .then((output) => {
         cachedSnapshot = output;
         // Existing output means the process already started — an idle Claude
         // prompt emits nothing, so don't wait for live data to drop the overlay.
@@ -391,11 +424,11 @@ export function ShellTab({
           if (startingTimerRef.current) { clearTimeout(startingTimerRef.current); startingTimerRef.current = null; }
           setShowStarting(false);
         }
-      })
-      .catch(() => { cachedSnapshot = ''; });
+      });
 
     function writeSnapshotAndFlush() {
       if (termRef.current !== term || disposed) return;
+      if (optionalEngine) { startGhosttyView(); return; }
       const output = cachedSnapshot ?? '';
       if (output) term.reset();
 
@@ -426,12 +459,9 @@ export function ShellTab({
         if (termRef.current !== term || disposed) return;
         const live = pendingLive.current;
         pendingLive.current = '';
-        if (live) {
-          snapshotReady.current = true;
-          term.write(live, settleReplay);
-        } else {
-          settleReplay();
-        }
+        replayDrained.current = true;
+        if (live) term.write(live, settleReplay);
+        else settleReplay();
       };
 
       const live = pendingLive.current;
@@ -446,6 +476,72 @@ export function ShellTab({
       }
     }
 
+    function startGhosttyView() {
+      const host = termHostRef.current;
+      if (!host) return;
+      const candidateHost = document.createElement('div');
+      candidateHost.className = 'absolute inset-0';
+      candidateHost.inert = true;
+      host.append(candidateHost);
+      ghostHost = candidateHost;
+      const standbyElement = term.element;
+      if (standbyElement) standbyElement.inert = true;
+      activeSurfaceRef.current = null;
+      const show = (surface: TerminalViewSurface) => {
+        activeSurfaceRef.current = surface;
+        snapshotReady.current = true;
+        host.style.visibility = '';
+      };
+      optionalView = openGhosttyWithStandby({
+        host: candidateHost,
+        standby: term,
+        standbyAvailable: () => opened,
+        snapshot: cachedSnapshot ?? '',
+        enableClipboard: enableXtermClipboard,
+        send: viewSource.send,
+        canRefit: () => !isTerminalGeometryHeld(),
+        alignGrid(cols, rows) {
+          if (opened && (term.cols !== cols || term.rows !== rows)) term.resize(cols, rows);
+          viewSource.resize(cols, rows);
+        },
+        appearance: () => ({
+          theme: buildTheme(), fontFamily: term.options.fontFamily,
+          fontSize: term.options.fontSize, fontWeight: term.options.fontWeight, fontWeightBold: term.options.fontWeightBold,
+          cursorBlink: true, cursorStyle: 'bar', lineHeight: 1.25, letterSpacing: 0,
+        }),
+        enableXterm(restoreFocus) {
+          term.onData(viewSource.send);
+          candidateHost.remove();
+          if (standbyElement) { standbyElement.style.visibility = ''; standbyElement.inert = false; }
+          optionalEngine = false;
+          syncXtermGeometry({ forceResize: true });
+          term.scrollToBottom();
+          show(term);
+          focusReg.opened(restoreFocus);
+        },
+        onState(state, candidate) {
+          setEngineStatus(state.kind === 'xterm' ? 'fallback' : state.kind);
+          ghosttyRef.current = candidate ?? null;
+          if (candidate) {
+            candidate.reveal({ platform: platformRef.current, keys, pathLinks: remoteDeviceId ? undefined : pathLinks, openWebLink: openTerminalWebLink, focused: focusReg.used });
+            if (standbyElement) standbyElement.style.visibility = 'hidden';
+            candidateHost.inert = false;
+            show(candidate.surface);
+            focusReg.opened();
+          } else if (state.kind === 'recovering' || state.kind === 'failed') {
+            activeSurfaceRef.current = null;
+            snapshotReady.current = false;
+          }
+        },
+      });
+      outputRef.current = optionalView.write;
+      // Snapshot and its buffered successor enter both engines before any new live output.
+      const live = pendingLive.current;
+      pendingLive.current = '';
+      if (live) optionalView.write(live);
+      replayDrained.current = true;
+    }
+
     /**
      * The actual open sequence: wait for fonts + a laid-out container,
      * THEN term.open, fit, and write the snapshot. This is the fix for
@@ -454,6 +550,21 @@ export function ShellTab({
      * because xterm computed a bogus cell size and every wrap landed at
      * the wrong column.
      */
+    function openXterm(host: HTMLElement): boolean {
+      try { term.open(host); }
+      catch (error) {
+        console.warn('[metaide] xterm.js display unavailable', error);
+        return false;
+      }
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => { try { webgl.dispose(); } catch { /* fine */ } });
+        term.loadAddon(webgl);
+      } catch (e) { console.warn('[metaide] webgl renderer unavailable, falling back to DOM', e); }
+      term.textarea?.addEventListener('focus', focusReg.used);
+      return true;
+    }
+
     async function openWhenReady(): Promise<void> {
       await initialFontUpdate;
       try { await document.fonts.ready; }
@@ -469,26 +580,21 @@ export function ShellTab({
         if (performance.now() - startedAt > 2000) break;
         await new Promise<void>((r) => requestAnimationFrame(() => r()));
       }
+      const selected = await engine;
       if (disposed || termRef.current !== term) return;
       const host = termHostRef.current;
       if (!host) return;
-      term.open(host);
-      // Load the WebGL renderer AFTER open so its context binds to the
-      // actual canvas. WebGL sidesteps the DOM renderer's row-width-vs-
-      // container-width overflow bug that produced the vertical-stripe
-      // artefact when cols were slightly off from the container's pixel
-      // width (Chrome would wrap the "row" div's overflow into the next
-      // visual line). If WebGL init fails (no GPU / driver hiccup) we
-      // silently fall back to the DOM renderer.
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => { try { webgl.dispose(); } catch { /* fine */ } });
-        term.loadAddon(webgl);
-      } catch (e) { console.warn('[metaide] webgl renderer unavailable, falling back to DOM', e); }
-      opened = true;
-      term.textarea?.addEventListener('focus', () => focusReg.used());
-      // First fit AFTER open so xterm has an element to measure.
-      synchronizeGeometry();
+      optionalEngine = selected === 'ghostty';
+      opened = openXterm(host);
+      if (opened) syncXtermGeometry();
+      else if (!optionalEngine) {
+        activeSurfaceRef.current = null;
+        outputRef.current = null;
+        pendingLive.current = '';
+        replayDrained.current = true;
+        setEngineStatus('failed');
+        return;
+      }
       // Snapshot may already be back — write it into the correctly-sized
       // terminal. If not yet, the .then() below picks up.
       if (cachedSnapshot != null) writeSnapshotAndFlush();
@@ -507,7 +613,8 @@ export function ShellTab({
     window.addEventListener('focus', passiveSync);
 
     const ro = new ResizeObserver(passiveSync);
-    if (containerRef.current) ro.observe(containerRef.current);
+    // Padding can change the fit host without changing the outer frame.
+    if (termHostRef.current) ro.observe(termHostRef.current);
     const bufferChange = term.buffer.onBufferChange((buffer) => setAltScreen(buffer.type === 'alternate'));
 
     // Intercept every copy from the terminal (Cmd+C, right-click Copy,
@@ -516,7 +623,7 @@ export function ShellTab({
     // and trailing-space column padding. Without this, pastes into email
     // land as "Â " for NBSP and tofu boxes for Nerd Font glyphs.
     function onCopy(e: ClipboardEvent) {
-      const sel = term.getSelection();
+      const sel = activeSurfaceRef.current?.getSelection();
       if (!sel) return;
       e.preventDefault();
       const cleaned = sanitizeTerminalCopy(sel);
@@ -530,15 +637,22 @@ export function ShellTab({
     copyHost?.addEventListener('copy', onCopy);
 
     const media = window.matchMedia('(prefers-color-scheme: dark)');
-    const onScheme = () => { term.options.theme = buildTheme(); };
+    const onScheme = () => {
+      const theme = buildTheme();
+      term.options.theme = theme;
+      ghosttyRef.current?.applyAppearance({ theme });
+    };
     media.addEventListener('change', onScheme);
     // Appearance, palette and frosted-glass level changes (the level-scoped --term-fg) must refresh existing terminals.
-    const themeObserver = new MutationObserver(() => { term.options.theme = buildTheme(); });
+    const themeObserver = new MutationObserver(onScheme);
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-palette', FROST_ATTR.platform, FROST_ATTR.chromeFrost, FROST_ATTR.terminalFrost] });
 
     return () => {
       fontUpdater.dispose();
       disposed = true;
+      opening.abort();
+      optionalView?.dispose();
+      ghostHost?.remove();
       opened = false;
       window.clearTimeout(late1);
       window.clearTimeout(late2);
@@ -550,12 +664,14 @@ export function ShellTab({
       themeObserver.disconnect();
       copyHost?.removeEventListener('copy', onCopy);
       linkProviderDisposable.dispose();
-      oscDisposable.dispose();
+      oscDisposable?.dispose();
       focusReg.unregister();
-      remote?.close();
-      if (remoteRef.current === remote) remoteRef.current = null;
+      viewSource.close();
       term.dispose();
       if (termRef.current === term) termRef.current = null;
+      activeSurfaceRef.current = null;
+      outputRef.current = null;
+      ghosttyRef.current = null;
       if (fontUpdaterRef.current === fontUpdater) fontUpdaterRef.current = null;
       if (geometrySyncRef.current === synchronizeGeometry) geometrySyncRef.current = null;
       searchRef.current = null;
@@ -565,12 +681,22 @@ export function ShellTab({
   }, [projectId, shellIndex, remoteDeviceId, pasteFromText, hoverHold, uploads.tracker]);
 
   const findNext = useCallback((q: string) => {
+    if (ghosttyRef.current) { ghosttyRef.current.find.step(q, 1); return; }
     if (!q || !searchRef.current) return;
     searchRef.current.findNext(q, { caseSensitive: false, wholeWord: false, regex: false });
   }, []);
   const findPrev = useCallback((q: string) => {
+    if (ghosttyRef.current) { ghosttyRef.current.find.step(q, -1); return; }
     if (!q || !searchRef.current) return;
     searchRef.current.findPrevious(q, { caseSensitive: false, wholeWord: false, regex: false });
+  }, []);
+
+  const closeFind = useCallback(() => {
+    setSearchOpen(false);
+    setSearchQuery('');
+    if (ghosttyRef.current) ghosttyRef.current.find.clear();
+    else searchRef.current?.clearDecorations();
+    activeSurfaceRef.current?.focus();
   }, []);
 
   // Entering or leaving the alternate screen changes the usable width (scrollbar strip); refit.
@@ -582,13 +708,16 @@ export function ShellTab({
   useEffect(() => {
     if (!termRef.current) return;
     termRef.current.options.fontSize = fontSize;
+    ghosttyRef.current?.applyAppearance({ fontSize });
     geometrySyncRef.current?.({ forceResize: true });
   }, [fontSize]);
 
   // Weight changes repaint without remeasuring: xterm's cell size ignores weight, so the PTY keeps its geometry.
   useEffect(() => {
     if (!termRef.current) return;
-    termRef.current.options = terminalFontWeightOptions({ weight: fontWeight, boldWeight });
+    const weights = terminalFontWeightOptions({ weight: fontWeight, boldWeight });
+    termRef.current.options = weights;
+    ghosttyRef.current?.applyAppearance(weights);
   }, [fontWeight, boldWeight]);
 
   useEffect(() => {
@@ -596,6 +725,7 @@ export function ShellTab({
     if (!updater || appliedFontFamilyRef.current === terminalFontFamily) return;
     appliedFontFamilyRef.current = terminalFontFamily;
     void updater.apply(terminalFontFamily);
+    ghosttyRef.current?.applyAppearance({ fontFamily: buildFontFamilyStack(terminalFontFamily, TERMINAL_FONT_FALLBACK) });
   }, [terminalFontFamily]);
 
   useEffect(() => {
@@ -612,8 +742,18 @@ export function ShellTab({
         setFontSize(stepTerminalFontSize(fontSize, ZOOM_STEP[action]));
       }
     };
+    function onGhosttyKey(e: KeyboardEvent) {
+      if (!(e.target instanceof Element) || !e.target.closest('[data-terminal-engine-host="ghostty"]') || !terminalTabAction(e, platform)) return;
+      // Ghostty stops rejected key events at its own capture listener.
+      e.stopPropagation();
+      onKey(e);
+    }
+    el.addEventListener('keydown', onGhosttyKey, true);
     el.addEventListener('keydown', onKey);
-    return () => el.removeEventListener('keydown', onKey);
+    return () => {
+      el.removeEventListener('keydown', onGhosttyKey, true);
+      el.removeEventListener('keydown', onKey);
+    };
   }, [fontSize, setFontSize, platform]);
 
   streamHandlersRef.current = {
@@ -627,21 +767,17 @@ export function ShellTab({
       if (!sessionCorrupted && /Invalid [`']?signature[`']? in [`']?thinking[`']? block/i.test(data)) {
         setSessionCorrupted(true);
       }
-      if (snapshotReady.current) termRef.current?.write(data);
+      if (replayDrained.current) outputRef.current?.(data);
       else pendingLive.current += data;
     },
     exit: (code) => {
       shellExitedRef.current = true;
-      termRef.current?.write('\r\n[shell exited]\r\n');
+      const notice = '\r\n[shell exited]\r\n';
+      if (!replayDrained.current) pendingLive.current += notice;
+      else outputRef.current?.(notice);
       setExitInfo({ code });
     },
   };
-  useShellStream(
-    remoteDeviceId ? null : projectId,
-    shellIndex,
-    (d) => streamHandlersRef.current.data(d),
-    (c) => streamHandlersRef.current.exit(c),
-  );
 
   // After an exit, relaunch the normal way so the agent resumes its session.
   // A missing session falls back to a fresh start in main; a corrupted one has
@@ -745,11 +881,19 @@ export function ShellTab({
         setMenu({ x: e.clientX, y: e.clientY });
       }}
       data-alt-screen={altScreen || undefined}
-      className="relative w-full h-full min-h-0 px-3 pt-2 pb-1 bg-transparent focus:outline-none"
+      className="relative w-full h-full min-h-0 bg-transparent focus:outline-none"
+      style={{ paddingInline: horizontalPadding, paddingTop: verticalPadding ?? DEFAULT_TERMINAL_PADDING.top,
+        paddingBottom: verticalPadding ?? DEFAULT_TERMINAL_PADDING.bottom }}
     >
       {/* `isolate` keeps xterm's internal z-indexes (e.g. its link layer) inside the
           host, so the exit overlay, drop hint and search bar always paint above it. */}
-      <div ref={termHostRef} className="w-full h-full isolate" style={{ visibility: 'hidden' }} />
+      <div ref={termHostRef} className="relative w-full h-full isolate" style={{ visibility: 'hidden' }} data-terminal-engine={engineStatus} />
+      {(engineStatus === 'loading' || engineStatus === 'recovering' || engineStatus === 'fallback') && (
+        <p role="status" className="pointer-events-none absolute right-2 top-2 z-10 rounded-md bg-[--surface-field] px-2 py-1 text-xs text-[--text]">
+          {engineStatus === 'loading' ? 'Loading Ghostty…' : engineStatus === 'recovering' ? 'Switching to xterm.js…' : 'Using xterm.js after Ghostty failed'}
+        </p>
+      )}
+       {engineStatus === 'failed' && <p className="absolute inset-x-0 top-2 text-center text-sm" role="alert" tabIndex={0}>The terminal display could not recover. Switch away and back to reconnect to the running shell.</p>}
       {!remoteDeviceId && sessionCorrupted && (
         <div className="absolute inset-x-0 top-3 flex items-center justify-center pointer-events-none">
           <div className="pointer-events-auto flex items-center gap-3 bg-[--danger]/15 border border-[--danger]/40 rounded-md shadow-xl px-3 py-2 text-xs text-[--text] max-w-[720px]">
@@ -891,7 +1035,7 @@ export function ShellTab({
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter')      { if (e.shiftKey) findPrev(searchQuery); else findNext(searchQuery); }
-              else if (e.key === 'Escape') { setSearchOpen(false); setSearchQuery(''); searchRef.current?.clearDecorations(); termRef.current?.focus(); }
+              else if (e.key === 'Escape') closeFind();
             }}
             placeholder="Find…"
             className="bg-transparent text-sm px-2 py-0.5 outline-none placeholder:text-[--text-muted] w-40"
@@ -899,7 +1043,7 @@ export function ShellTab({
           <button onClick={() => findPrev(searchQuery)} title={SHORTCUT_COPY.searchPrevTitle(platform)} className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel]">↑</button>
           <button onClick={() => findNext(searchQuery)} title={SHORTCUT_COPY.searchNextTitle(platform)} className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel]">↓</button>
           <button
-            onClick={() => { setSearchOpen(false); setSearchQuery(''); searchRef.current?.clearDecorations(); termRef.current?.focus(); }}
+            onClick={closeFind}
             title="Close (Esc)"
             className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel]"
           >
@@ -915,7 +1059,7 @@ export function ShellTab({
       />
       <AnimatePresence>
         {menu && (() => {
-          const term = termRef.current;
+          const term = activeSurfaceRef.current;
           const hasSelection = !!term?.hasSelection();
           const items: ContextMenuItem[] = [
             {
@@ -936,7 +1080,7 @@ export function ShellTab({
               label: 'Copy all (visible scrollback)',
               separatorAfter: true,
               onClick: async () => {
-                const t = termRef.current;
+                const t = activeSurfaceRef.current;
                 if (!t) return;
                 const buf = t.buffer.active;
                 const lines: string[] = [];
@@ -965,10 +1109,10 @@ export function ShellTab({
             {
               label: 'Clear selection',
               disabled: !hasSelection,
-              onClick: () => { termRef.current?.clearSelection(); },
+              onClick: () => { activeSurfaceRef.current?.clearSelection(); },
             },
           ];
-          return <ContextMenu key="context-menu" x={menu.x} y={menu.y} items={items} onClose={() => { setMenu(null); termRef.current?.focus(); }} />;
+          return <ContextMenu key="context-menu" x={menu.x} y={menu.y} items={items} onClose={() => { setMenu(null); activeSurfaceRef.current?.focus(); }} />;
         })()}
       </AnimatePresence>
     </div>

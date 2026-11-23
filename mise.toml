@@ -1,5 +1,4 @@
-# Mirrors .nvmrc (Node 20) and the pnpm major CI uses. Native deps
-# (better-sqlite3 11) do not compile against newer Node majors.
+# Mirrors .nvmrc and the Node and pnpm majors used in CI.
 [tools]
-node = "20"
+node = "24"
 pnpm = "11"

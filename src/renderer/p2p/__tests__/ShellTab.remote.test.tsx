@@ -30,7 +30,6 @@ vi.mock('@renderer/fonts/font-settings-context', () => ({ useFontSettings: () =>
 vi.mock('@renderer/fonts/terminal-font-size-context', () => ({ useTerminalFontSize: () => ({ size: 13, ready: true, setSize: () => {} }) }));
 vi.mock('@renderer/fonts/terminal-font-weight-context', () => ({ useTerminalFontWeight: () => ({ weight: 400, boldWeight: 700, ready: true }) }));
 vi.mock('@renderer/shortcut-platform', () => ({ useShortcutPlatform: () => 'mac' }));
-vi.mock('@renderer/hooks/useShellStream', () => ({ useShellStream: () => {} }));
 vi.mock('@renderer/hooks/useTerminalDrop', () => ({ useTerminalDrop: () => ({ overlay: null, handlers: {} }) }));
 vi.mock('@renderer/hooks/useTerminalPaste', () => ({ useTerminalPaste: () => () => {} }));
 vi.mock('@renderer/hooks/useWindowTerminalFocus', () => ({ terminalFocus: { register: () => ({ unregister() {} }) } }));
@@ -49,7 +48,7 @@ import { ShellTab } from '../../components/ShellTab';
 beforeEach(() => {
   cleanup();
   invoke.mockReset();
-  invoke.mockResolvedValue({ output: '', profiles: [] });
+  invoke.mockResolvedValue({ output: '', alive: false, replayPosition: 0, profiles: [] });
   openRemoteShell.mockClear();
   handle.exit = undefined;
   (globalThis as { ResizeObserver?: unknown }).ResizeObserver ??= class { observe() {} disconnect() {} unobserve() {} };

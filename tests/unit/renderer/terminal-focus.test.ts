@@ -115,6 +115,21 @@ describe('createTerminalFocusCoordinator', () => {
     coord = createTerminalFocusCoordinator({ activeElementKind: () => active, now: () => clock });
   });
 
+  it('restores a renderer handoff only when no other element owns focus and no overlay is open', () => {
+    const t = add({ projectId: 1, shellIndex: 0 }, { open: true });
+    active = 'terminal';
+    t.reg.opened(true);
+    active = 'text-entry';
+    t.reg.opened(true);
+    active = 'none';
+    coord.setOverlayOpen(true);
+    t.reg.opened(true);
+    expect(t.focusCalls).toBe(0);
+    coord.setOverlayOpen(false);
+    t.reg.opened(true);
+    expect(t.focusCalls).toBe(1);
+  });
+
   describe('window focus', () => {
     it.each(['none', 'control'] as const)('focuses a single open terminal once when active is %s', (kind) => {
       const t = add({ projectId: 1, shellIndex: 0 }, { primary: true, open: true });

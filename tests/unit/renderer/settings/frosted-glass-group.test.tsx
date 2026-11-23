@@ -3,7 +3,7 @@ import { isValidElement, type ReactElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { FrostedGlassGroup } from '@renderer/components/settings/FrostedGlassGroup';
 import { FROSTED_GLASS_COPY, FROSTED_GLASS_TESTIDS } from '@renderer/frosted-chrome-contract';
-import { CHROME_FROST_LEVELS, TERMINAL_FROST_LEVELS, VIBRANCY_MATERIALS } from '@shared/frosted-glass';
+import { CHROME_FROST_LEVELS, TERMINAL_FROST_MODES, VIBRANCY_MATERIALS } from '@shared/frosted-glass';
 import type { FrostedGlassSettingsApi } from '@renderer/hooks/useFrostedGlassSettings';
 
 const setFrostChrome = vi.fn().mockResolvedValue(undefined);
@@ -33,6 +33,7 @@ let hookValues: FrostedGlassSettingsApi = fakeApi();
 vi.mock('@renderer/hooks/useFrostedGlassSettings', () => ({
   useFrostedGlassSettings: () => hookValues,
 }));
+vi.mock('@renderer/api', () => ({ api: { invoke: vi.fn() } }));
 vi.mock('@renderer/hooks/usePrefersReducedTransparency', () => ({
   usePrefersReducedTransparency: () => reduceTransparency,
 }));
@@ -95,7 +96,7 @@ describe('FrostedGlassGroup — placement and semantics (AC26)', () => {
     const html = renderToStaticMarkup(<FrostedGlassGroup platform="mac" />);
     expect((html.match(/role="radiogroup"/g) ?? []).length).toBe(2);
     const radioCount = (html.match(/role="radio"/g) ?? []).length;
-    expect(radioCount).toBe(CHROME_FROST_LEVELS.length + TERMINAL_FROST_LEVELS.length);
+    expect(radioCount).toBe(CHROME_FROST_LEVELS.length + TERMINAL_FROST_MODES.length);
   });
 });
 
@@ -103,7 +104,7 @@ describe('FrostedGlassGroup — disabled levels (AC9)', () => {
   it('disables both level radiogroups and shows the reason when Frosted chrome is OFF', () => {
     hookValues = fakeApi({ frostChrome: false, chromeFrostLevel: 'medium', terminalFrostLevel: 'strong' });
     const html = renderToStaticMarkup(<FrostedGlassGroup platform="mac" />);
-    expect((html.match(/aria-disabled="true"/g) ?? []).length).toBe(CHROME_FROST_LEVELS.length + TERMINAL_FROST_LEVELS.length);
+    expect((html.match(/aria-disabled="true"/g) ?? []).length).toBe(CHROME_FROST_LEVELS.length + TERMINAL_FROST_MODES.length);
     expect((html.match(new RegExp(FROSTED_GLASS_COPY.disabledReason, 'g')) ?? []).length).toBeGreaterThanOrEqual(2);
     expect(html).toContain('>medium<'.replace('medium', FROSTED_GLASS_COPY.levels.medium));
     expect(html).toContain(FROSTED_GLASS_COPY.levels.strong);
@@ -208,7 +209,7 @@ describe('FrostedGlassGroup — linux variant (AC12, AC13, AC14, AC22)', () => {
   it('disables levels with "Needs Frosted chrome" while off, keeping the values', () => {
     hookValues = fakeApi({ frostChrome: false, chromeFrostLevel: 'medium', terminalFrostLevel: 'strong' });
     const html = linux();
-    expect((html.match(/aria-disabled="true"/g) ?? []).length).toBe(CHROME_FROST_LEVELS.length + TERMINAL_FROST_LEVELS.length);
+    expect((html.match(/aria-disabled="true"/g) ?? []).length).toBe(CHROME_FROST_LEVELS.length + TERMINAL_FROST_MODES.length);
     expect(html).toContain(FROSTED_GLASS_COPY.disabledReason);
     expect(html).toContain(FROSTED_GLASS_COPY.levels.strong);
     expect(setChromeFrostLevel).not.toHaveBeenCalled();
