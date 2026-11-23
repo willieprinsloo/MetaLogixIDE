@@ -430,6 +430,7 @@ function registerWindowsAppId(): void {
 function createServices(): Services {
   const services = buildServices({
     migrationsDir: resolve(app.getAppPath(), 'migrations'),
+    hookForwarderPath: resolve(app.getAppPath(), 'resources', 'claude-hooks', 'forward.cjs'),
     dropDir: testModeDropDir(process.env, app.getPath('userData')),
   });
   // safeStorage requires `app` to be ready — attach the credential store here

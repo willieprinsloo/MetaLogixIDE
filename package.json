@@ -44,6 +44,7 @@
     ],
     "files": [
       "out/**/*",
+      "resources/claude-hooks/**/*",
       "migrations/**/*",
       "package.json",
       "!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,test,__tests__,tests,powered-test,example,examples,*.d.ts,tsconfig*.json}",

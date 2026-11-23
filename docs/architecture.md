@@ -1548,20 +1548,23 @@ links outside a diagram open through the `app:open-external` IPC channel.
 
 ### Claude notification event
 
-1. At app start, `runtime.ts` starts the receiver on an ephemeral
-   `127.0.0.1` port. It writes
-   `~/.metaide/claude-hooks/settings-<port>.json` with `Notification`,
-   `Stop` and `UserPromptSubmit` HTTP hooks, each with a one-second timeout
-   (`src/main/claude-hooks/settings-file.ts:21-55`).
+1. At startup, `runtime.ts` opens a Unix socket in a private temporary
+   directory, or a randomly named pipe on Windows. It writes
+   `~/.metaide/claude-hooks/settings-<instance>.json` with asynchronous
+   command hooks for `Notification`, `Stop`, `UserPromptSubmit`,
+   `PreToolUse` and `PostToolUse`.
 2. When a Claude shell spawns, the decorator issues a session id and a
    secret. It adds `--settings <file>` after `argv[0]`, and
-   `METAIDE_HOOK_SHELL` and `METAIDE_HOOK_TOKEN` to the environment.
-3. Claude Code posts each hook event. It fills the `X-Metaide-Shell` and
-   `Authorization: Bearer` headers from those environment variables.
+   the credentials, private endpoint and forwarder paths to the environment.
+   It leaves explicitly supplied `--settings` and non-Claude launches alone.
+3. Claude sends hook JSON on stdin to the bundled forwarder, which runs in
+   Electron's Node mode. The forwarder makes one bounded delivery attempt to
+   the originating endpoint. It emits no output or decision if the IDE is
+   unavailable. The token never goes into argv or the settings file.
 4. The receiver checks method, path, `Host`, content type, the id and
    secret, and then the body size (1 MiB at most). It answers `204` with no
-   body, and only then passes the event on through the fan-out. Claude Code
-   never gets a decision from the app.
+   body, and only then passes the event on through the fan-out to notifications
+   and Activity. Claude Code never gets a decision from the app.
 5. `ClaudeHookHistory` confirms the current session and updates only
    notification eligibility. It sends the applied event and its prior and
    current eligibility to `ClaudeNotifier`.
@@ -1570,6 +1573,12 @@ links outside a diagram open through the `app:open-external` IPC channel.
 7. A click on a popped-out shell's notification focuses the popout.
    Otherwise the main window is restored and focused, and
    `shell:focus-request` is sent only while the shell is still alive.
+
+An IDE restart does not reauthorize a previously launched Claude process.
+After upgrading from the old HTTP hooks, resume the conversation in a newly
+launched Claude process to replace the settings that the old process loaded.
+The IDE removes its own settings file on a clean quit; it does not sweep legacy
+per-port files that another instance could still be using.
 
 ### Agent status update
 
