@@ -1,22 +1,19 @@
 import { describe, it, expect } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { buildHookSettings, hookSettingsPath, removeHookSettings, writeHookSettings } from '@main/claude-hooks/settings-file';
 
-const URL = 'http://127.0.0.1:43210/claude-hook';
-
 const expectedHook = {
-  type: 'http',
-  url: URL,
+  type: 'command',
+  command: 'ELECTRON_RUN_AS_NODE=1 "$METAIDE_HOOK_EXE" "$METAIDE_HOOK_FORWARDER" >/dev/null 2>&1 || :',
+  async: true,
   timeout: 1,
-  headers: { 'X-Metaide-Shell': '$METAIDE_HOOK_SHELL', Authorization: 'Bearer $METAIDE_HOOK_TOKEN' },
-  allowedEnvVars: ['METAIDE_HOOK_SHELL', 'METAIDE_HOOK_TOKEN'],
 };
 
 describe('buildHookSettings', () => {
   it('registers notification, turn-confirmation, and tool-use events', () => {
-    expect(buildHookSettings(URL)).toEqual({
+    expect(buildHookSettings('linux')).toEqual({
       hooks: {
         Notification: [{ matcher: '', hooks: [expectedHook] }],
         Stop: [{ hooks: [expectedHook] }],
@@ -28,24 +25,30 @@ describe('buildHookSettings', () => {
   });
 
   it('registers nothing else (user settings stay in charge of everything but these hooks)', () => {
-    const settings = buildHookSettings(URL);
+    const settings = buildHookSettings('linux');
     expect(Object.keys(settings)).toEqual(['hooks']);
     expect(Object.keys(settings.hooks).sort()).toEqual(['Notification', 'PostToolUse', 'PreToolUse', 'Stop', 'UserPromptSubmit']);
+  });
+  it('uses PowerShell on Windows without writing a token or a receiver address', () => {
+    const hook = buildHookSettings('win32').hooks.Stop[0]?.hooks[0];
+    expect(hook).toMatchObject({ type: 'command', shell: 'powershell', async: true });
+    expect(hook?.command).toContain('$env:METAIDE_HOOK_EXE');
+    expect(hook?.command).not.toMatch(/TOKEN|https?:\/\//);
   });
 });
 
 describe('hookSettingsPath (AC7)', () => {
-  it('lives under <home>/.metaide/claude-hooks/, keyed by the receiver port', () => {
-    expect(hookSettingsPath('/home/u', 43210)).toBe(join('/home/u', '.metaide', 'claude-hooks', 'settings-43210.json'));
+  it('lives under <home>/.metaide/claude-hooks/, keyed by the IDE instance', () => {
+    expect(hookSettingsPath('/home/u', 'instance')).toBe(join('/home/u', '.metaide', 'claude-hooks', 'settings-instance.json'));
   });
 
-  it('differs per receiver port so two app instances never share a file', () => {
-    expect(hookSettingsPath('/home/u', 5000)).not.toBe(hookSettingsPath('/home/u', 5001));
+  it('differs per instance so two app instances never share a file', () => {
+    expect(hookSettingsPath('/home/u', 'a')).not.toBe(hookSettingsPath('/home/u', 'b'));
   });
 
   it('is outside ~/.claude, ~/.claude.json and any project .claude directory', () => {
     const home = '/home/u';
-    const rel = relative(home, hookSettingsPath(home, 43210));
+    const rel = relative(home, hookSettingsPath(home, 'instance'));
     const segments = rel.split(sep);
     expect(segments.some((s) => s.startsWith('.claude'))).toBe(false);
     expect(rel.startsWith('..')).toBe(false);
@@ -53,43 +56,40 @@ describe('hookSettingsPath (AC7)', () => {
 });
 
 describe('writeHookSettings / removeHookSettings', () => {
-  const pathIn = (home: string) => hookSettingsPath(home, 43210);
+  const pathIn = (home: string) => hookSettingsPath(home, 'instance');
 
   it('writes the settings JSON with mode 0600, creating the directory', () => {
     const home = mkdtempSync(join(tmpdir(), 'hooks-home-'));
-    writeHookSettings(pathIn(home), URL);
-    expect(JSON.parse(readFileSync(pathIn(home), 'utf8'))).toEqual(buildHookSettings(URL));
+    writeHookSettings(pathIn(home), 'linux');
+    expect(JSON.parse(readFileSync(pathIn(home), 'utf8'))).toEqual(buildHookSettings('linux'));
     if (process.platform !== 'win32') expect(statSync(pathIn(home)).mode & 0o777).toBe(0o600);
   });
 
-  it('contains no secret — only env-var templates', () => {
+  it('contains neither the bearer token nor the receiver endpoint', () => {
     const home = mkdtempSync(join(tmpdir(), 'hooks-home-'));
-    writeHookSettings(pathIn(home), URL);
+    writeHookSettings(pathIn(home), 'linux');
     const content = readFileSync(pathIn(home), 'utf8');
-    expect(content).not.toMatch(/Bearer (?!\$METAIDE_HOOK_TOKEN)/);
-    expect(content).toContain('$METAIDE_HOOK_TOKEN');
+    expect(content).not.toMatch(/Bearer|METAIDE_HOOK_TOKEN|METAIDE_HOOK_ENDPOINT/);
   });
 
-  it('overwrites a stale file (e.g. left by a crash with a reused port) and tightens its mode', () => {
+  it('does not replace an existing instance file', () => {
     const home = mkdtempSync(join(tmpdir(), 'hooks-home-'));
     mkdirSync(join(home, '.metaide', 'claude-hooks'), { recursive: true });
     writeFileSync(pathIn(home), '{"stale":true}');
-    chmodSync(pathIn(home), 0o644);
-    writeHookSettings(pathIn(home), URL);
-    expect(JSON.parse(readFileSync(pathIn(home), 'utf8'))).toEqual(buildHookSettings(URL));
-    if (process.platform !== 'win32') expect(statSync(pathIn(home)).mode & 0o777).toBe(0o600);
+    expect(() => writeHookSettings(pathIn(home), 'linux')).toThrow(/EEXIST/);
+    expect(readFileSync(pathIn(home), 'utf8')).toBe('{"stale":true}');
   });
 
   it('touches nothing under the home Claude config', () => {
     const home = mkdtempSync(join(tmpdir(), 'hooks-home-'));
-    writeHookSettings(pathIn(home), URL);
+    writeHookSettings(pathIn(home), 'linux');
     expect(() => statSync(join(home, '.claude'))).toThrow();
     expect(() => statSync(join(home, '.claude.json'))).toThrow();
   });
 
   it('removeHookSettings deletes the file and ignores one that is already gone', () => {
     const home = mkdtempSync(join(tmpdir(), 'hooks-home-'));
-    writeHookSettings(pathIn(home), URL);
+    writeHookSettings(pathIn(home), 'linux');
     removeHookSettings(pathIn(home));
     expect(existsSync(pathIn(home))).toBe(false);
     expect(() => removeHookSettings(pathIn(home))).not.toThrow();

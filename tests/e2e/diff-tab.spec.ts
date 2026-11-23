@@ -349,12 +349,12 @@ test('command palette "Switch to Diff tab" activates the Diff tab (AC4)', async 
 
 test('a Claude notification is not suppressed while the Diff tab is showing (AC5)', async () => {
   h = await launch([PROJ]);
-  const { app, win, isolatedHome } = h;
+  const { app, win } = h;
   await installNotificationSpy(app);
   await openProject(win, PROJ);
   const id = await projectId(win, PROJ);
   await waitForShell(win, id, 0, 'mock-claude ready');
-  const creds = await hookCredentials(win, isolatedHome, id, 0);
+  const creds = await hookCredentials(win, id, 0);
 
   // Suppression needs the main window to hold OS focus, which another app can take between
   // specs; focus it explicitly (same show()/focus() + isFocused() poll as claude-notifications).

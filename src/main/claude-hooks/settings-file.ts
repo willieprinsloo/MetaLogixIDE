@@ -1,21 +1,21 @@
 /** Writes only Claude notification and turn-confirmation hooks; status dots never consume hooks. */
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { SHELL_ENV, SHELL_HEADER, TOKEN_ENV } from './protocol';
+import { EXECUTABLE_ENV, FORWARDER_ENV } from './protocol';
 
-/** One Claude Code `http` hook entry. */
-export interface HttpHook {
-  type: 'http';
-  url: string;
+/** One observational Claude Code command hook. */
+export interface CommandHook {
+  type: 'command';
+  command: string;
+  async: true;
   timeout: number;
-  headers: Record<string, string>;
-  allowedEnvVars: string[];
+  shell?: 'powershell';
 }
 
 /** One matcher group of a hook event. */
 export interface HookGroup {
   matcher?: string;
-  hooks: HttpHook[];
+  hooks: CommandHook[];
 }
 
 /** Name of a hook event the app registers. */
@@ -30,19 +30,22 @@ const HOOK_TIMEOUT_SECONDS = 1;
 const FILE_MODE = 0o600;
 const DIR_MODE = 0o700;
 
-/** `<homeDir>/.metaide/claude-hooks/settings-<port>.json` for the receiver listening on `port`. */
-export function hookSettingsPath(homeDir: string, port: number): string {
-  return join(homeDir, '.metaide', 'claude-hooks', `settings-${port}.json`);
+/** Private settings file owned by one IDE instance. */
+export function hookSettingsPath(homeDir: string, instanceId: string): string {
+  return join(homeDir, '.metaide', 'claude-hooks', `settings-${instanceId}.json`);
 }
 
-/** Builds the hook settings for a receiver at `url`. */
-export function buildHookSettings(url: string): HookSettings {
-  const hook: HttpHook = {
-    type: 'http',
-    url,
+/** Uses a shell only to set Electron's child-only Node mode and suppress missing-executable errors. */
+export function buildHookSettings(platform: NodeJS.Platform): HookSettings {
+  const windows = platform === 'win32';
+  const hook: CommandHook = {
+    type: 'command',
+    command: windows
+      ? `$env:ELECTRON_RUN_AS_NODE='1'; & $env:${EXECUTABLE_ENV} $env:${FORWARDER_ENV} *> $null; exit 0`
+      : `ELECTRON_RUN_AS_NODE=1 "$${EXECUTABLE_ENV}" "$${FORWARDER_ENV}" >/dev/null 2>&1 || :`,
+    ...(windows ? { shell: 'powershell' } : {}),
+    async: true,
     timeout: HOOK_TIMEOUT_SECONDS,
-    headers: { [SHELL_HEADER]: `$${SHELL_ENV}`, Authorization: `Bearer $${TOKEN_ENV}` },
-    allowedEnvVars: [SHELL_ENV, TOKEN_ENV],
   };
   const all = (): HookGroup[] => [{ matcher: '', hooks: [hook] }];
   const unmatched = (): HookGroup[] => [{ hooks: [hook] }];
@@ -59,10 +62,10 @@ export function buildHookSettings(url: string): HookSettings {
   };
 }
 
-/** Writes the settings for `url` to `path` with mode 0600, creating its directory; throws on I/O failure. */
-export function writeHookSettings(path: string, url: string): void {
+/** Writes a new instance settings file without following an existing entry. */
+export function writeHookSettings(path: string, platform: NodeJS.Platform): void {
   mkdirSync(dirname(path), { recursive: true, mode: DIR_MODE });
-  writeFileSync(path, JSON.stringify(buildHookSettings(url), null, 2), { mode: FILE_MODE });
+  writeFileSync(path, JSON.stringify(buildHookSettings(platform), null, 2), { mode: FILE_MODE, flag: 'wx' });
   chmodSync(path, FILE_MODE);
 }
 

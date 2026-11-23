@@ -97,7 +97,7 @@ function lastOutputAt(ptyManager: PtyManager, shell: ShellKey): number | null {
  * `dropDir` overrides the drop staging directory, which is otherwise resolved
  * here once from the OS temp directory and the current uid.
  */
-export function buildServices(opts: { dbPath?: string; migrationsDir?: string; homeDir?: string; dropDir?: string } = {}): Services {
+export function buildServices(opts: { dbPath?: string; migrationsDir?: string; homeDir?: string; dropDir?: string; hookForwarderPath?: string } = {}): Services {
   const home = opts.homeDir ?? homedir();
   const dbPath = opts.dbPath ?? join(home, '.metaide', 'metaide.db');
   const migrationsDir = opts.migrationsDir ?? resolve(process.cwd(), 'migrations');
@@ -113,8 +113,13 @@ export function buildServices(opts: { dbPath?: string; migrationsDir?: string; h
   const prompts = new PromptsRepo(db);
   const hookSessions = new SessionRegistry();
   const hookReceiver = new ClaudeHookReceiver(hookSessions);
-  const hookRuntime = new ClaudeHookRuntime({ receiver: hookReceiver, homeDir: home });
-  const claudeDecorator = createLaunchDecorator({ sessions: hookSessions, settingsPath: () => hookRuntime.settingsPath() });
+  const hookRuntime = new ClaudeHookRuntime({
+    receiver: hookReceiver, homeDir: home,
+    forwarderPath: opts.hookForwarderPath ?? resolve('resources/claude-hooks/forward.cjs'),
+  });
+  const claudeDecorator = createLaunchDecorator({
+    sessions: hookSessions, settingsPath: () => hookRuntime.settingsPath(), forwarderEnv: () => hookRuntime.forwarderEnv(),
+  });
   const ptyManager = new PtyManager({
     spawnDecorator: (projectId, shellIndex, launch) =>
       claudeDecorator(projectId, shellIndex, launch),

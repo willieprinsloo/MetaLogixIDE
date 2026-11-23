@@ -194,7 +194,7 @@ test('AC1/AC12: authenticated contradictory Claude notification hooks never beco
     await installNotificationSpy(h.app);
     await openProject(h.win, 'demo');
     const id = await projectId(h.win, 'demo');
-    const creds = await hookCredentials(h.win, h.home, id, 0);
+    const creds = await hookCredentials(h.win, id, 0);
     await sendLine(h.win, id, 0, '/status-work');
     await expectShellState(h.win, id, 0, 'busy');
     expect((await postRawHook(creds, { hook_event_name: 'Stop' })).status).toBe(204);
@@ -234,7 +234,7 @@ test('AC11/AC12: disabling both Claude notification toggles leaves Claude dots l
     await installNotificationSpy(h.app);
     await openProject(h.win, 'demo');
     const id = await projectId(h.win, 'demo');
-    const creds = await hookCredentials(h.win, h.home, id, 0);
+    const creds = await hookCredentials(h.win, id, 0);
     await h.win.getByTestId('settings-open').click();
     const modal = h.win.getByTestId('settings-modal');
     const needsInput = modal.getByTestId('notify-needs-input-toggle');
