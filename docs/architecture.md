@@ -1204,7 +1204,16 @@ escaped for the host's platform. Limits and copy live in
 - While a shell shows the alternate screen (opencode, vim, …) the terminal
   reclaims the 14px the fit addon reserves for a scrollbar (nothing scrolls
   there), so the gap on the right matches the left padding. It refits on
-  entering and leaving the alternate screen; the shell padding never changes.
+  entering and leaving the alternate screen. The text grid keeps its padding.
+- `src/renderer/terminal/terminal-backdrop.ts` samples eight cells at the edge of
+  the alternate screen. If they agree on an RGB value or an extended ANSI
+  index, the viewer uses the active engine's color and paints it through
+  the padding and the space left by partial cells. Normal shells retain their
+  transparency. xterm.js uses its standard extended palette. Ghostty reads its
+  native palette when the sampled index changes and samples renders at most once
+  per 125 ms to limit buffer allocation. Returning to the normal shell clears the
+  fill immediately. The viewer does not infer a color when the samples differ or
+  track redefinitions of the same ANSI index.
 - Diff-rendering TUIs such as opencode debounce SIGWINCH and repaint only
   changed cells. 250 ms after the last resize, `PtyManager` briefly shrinks an
   alternate-screen PTY by one row and restores it, which those apps treat as a

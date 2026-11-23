@@ -59,16 +59,21 @@ test('the workspace toolbar sits above the main sheet, with an icon-only Board a
     await expect(win.getByTestId('section-in-use').getByTestId('row-unload')).toBeAttached();
 
     const board = bar.getByTestId('metaproject-board');
+    const boardTooltip = win.getByRole('tooltip').filter({ hasText: /^Board$/ });
     await expect.soft(board).toHaveText('', { timeout: 1000 });
     await expect(board.locator('svg')).toBeVisible();
-    await expect(board).toHaveAccessibleName('Link project board');
+    await expect(board).toHaveAccessibleName('Board');
+    await board.dispatchEvent('mouseover');
+    await expect.soft(boardTooltip).toBeVisible({ timeout: 1000 });
+    await board.dispatchEvent('mouseout');
+    await expect(boardTooltip).toBeHidden();
     // Desktop tab order reaches Board from the terminal strip on wide layouts.
     await bar.getByTestId('tabbar-new-shell').focus();
     await win.keyboard.press('Tab');
     await expect(board).toBeFocused();
-    await expect(win.getByRole('tooltip').filter({ hasText: 'Link project board' })).toBeVisible();
-    await board.click();
-    await expect(win.locator('[data-view="chat"]')).toBeVisible();
+    await expect.soft(boardTooltip).toBeVisible({ timeout: 1000 });
+    await win.keyboard.press('Enter');
+    await expect(win.getByRole('region', { name: 'Metaproject assignment' })).toBeVisible();
   } finally {
     await app.close();
     cleanup();

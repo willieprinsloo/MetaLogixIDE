@@ -28,6 +28,7 @@ vi.mock('@xterm/xterm', () => ({
     attachCustomKeyEventHandler() {} registerLinkProvider = vi.fn(() => ({ dispose() {} }));
     onData(cb: (d: string) => void) { fake.dataCb = cb; return { dispose() {} }; }
     onResize() { return { dispose() {} }; } onSelectionChange() { return { dispose() {} }; }
+    onRender() { return { dispose() {} }; }
     hasSelection() { return false; } getSelection() { return ''; }
     element = document.createElement('div');
   },

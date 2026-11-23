@@ -49,6 +49,7 @@ import { buildFontFamilyStack } from '@renderer/fonts/font-family';
 import { TERMINAL_FONT_FALLBACK, type FontFamilyPreference } from '@shared/font-settings';
 import { TERMINAL_SCROLLBACK_LINES } from '@shared/terminal-scrollback';
 import { DEFAULT_TERMINAL_PADDING } from '@shared/terminal-padding';
+import { watchTerminalBackdrop } from '@renderer/terminal/terminal-backdrop';
 import {
   createTerminalFontUpdater,
   createTerminalGeometrySynchronizer,
@@ -247,7 +248,13 @@ export function ShellTab({
 
   useEffect(() => {
     const terminalHost = termHostRef.current;
-    if (!terminalHost) return;
+    const pane = containerRef.current;
+    if (!terminalHost || !pane) return;
+    const paintBackdrop = (color: string | undefined) => {
+      pane.style.backgroundColor = color ?? '';
+      pane.toggleAttribute('data-terminal-backdrop', color !== undefined);
+    };
+    let backdrop: IDisposable | undefined;
     const opening = new AbortController();
     let optionalView: ReturnType<typeof openGhosttyWithStandby> | undefined;
     let ghostHost: HTMLDivElement | undefined;
@@ -449,6 +456,7 @@ export function ShellTab({
             return;
           }
           snapshotReady.current = true;
+          backdrop = watchTerminalBackdrop(term, paintBackdrop);
           host.style.visibility = '';
           focusReg.opened();
           requestAnimationFrame(() => synchronizeGeometry());
@@ -514,6 +522,7 @@ export function ShellTab({
           candidateHost.remove();
           if (standbyElement) { standbyElement.style.visibility = ''; standbyElement.inert = false; }
           optionalEngine = false;
+          backdrop = watchTerminalBackdrop(term, paintBackdrop);
           syncXtermGeometry({ forceResize: true });
           term.scrollToBottom();
           show(term);
@@ -523,7 +532,8 @@ export function ShellTab({
           setEngineStatus(state.kind === 'xterm' ? 'fallback' : state.kind);
           ghosttyRef.current = candidate ?? null;
           if (candidate) {
-            candidate.reveal({ platform: platformRef.current, keys, pathLinks: remoteDeviceId ? undefined : pathLinks, openWebLink: openTerminalWebLink, focused: focusReg.used });
+            candidate.reveal({ platform: platformRef.current, keys, pathLinks: remoteDeviceId ? undefined : pathLinks,
+              openWebLink: openTerminalWebLink, focused: focusReg.used, paintBackdrop });
             if (standbyElement) standbyElement.style.visibility = 'hidden';
             candidateHost.inert = false;
             show(candidate.surface);
@@ -660,6 +670,7 @@ export function ShellTab({
       offHoldRelease();
       ro.disconnect();
       bufferChange.dispose();
+      backdrop?.dispose();
       media.removeEventListener('change', onScheme);
       themeObserver.disconnect();
       copyHost?.removeEventListener('copy', onCopy);
@@ -856,8 +867,7 @@ export function ShellTab({
     }
   }, [projectId, shellIndex, relaunching]);
 
-  // Outer div = padding + background. Inner div = pure terminal viewport,
-  // so xterm's own geometry math sees an element with no padding or extra chrome.
+  // The full pane paints through the padding without changing either renderer's fit host.
   return (
     <div
       ref={containerRef}
@@ -881,7 +891,7 @@ export function ShellTab({
         setMenu({ x: e.clientX, y: e.clientY });
       }}
       data-alt-screen={altScreen || undefined}
-      className="relative w-full h-full min-h-0 bg-transparent focus:outline-none"
+      className="terminal-pane relative w-full h-full min-h-0 focus:outline-none"
       style={{ paddingInline: horizontalPadding, paddingTop: verticalPadding ?? DEFAULT_TERMINAL_PADDING.top,
         paddingBottom: verticalPadding ?? DEFAULT_TERMINAL_PADDING.bottom }}
     >

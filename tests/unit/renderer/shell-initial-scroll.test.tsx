@@ -102,6 +102,7 @@ vi.mock('@xterm/xterm', () => ({
     attachCustomKeyEventHandler() {}
     registerLinkProvider = vi.fn<(links: ILinkProvider) => { dispose(): void }>(() => ({ dispose() {} }));
     onData = vi.fn();
+    onRender = () => ({ dispose() {} });
     resize = vi.fn();
     open() {
       if (terminals.failOpen) throw new Error('DOM renderer unavailable');
@@ -189,6 +190,7 @@ const host = {
   clientHeight: 480,
   style: { visibility: '' },
   querySelector: (selector: string) => selector === '.xterm-viewport' && viewport.attached ? viewport : null,
+  toggleAttribute() {},
   addEventListener() {},
   removeEventListener() {},
   append: vi.fn(),

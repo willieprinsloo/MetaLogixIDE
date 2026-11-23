@@ -1106,15 +1106,20 @@ function MainApp() {
               <div className="workspace-project-actions flex min-w-0 flex-wrap items-center justify-end gap-2 pr-2">
                 {selected && (
                   <>
-                    <button ref={boardOpener} type="button" className="no-drag flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-[--text] hover:bg-[--panel-strong] focus-visible:ring-2 focus-visible:ring-[--accent]"
-                      data-testid="metaproject-board" aria-pressed={boardVisible} onClick={() => {
-                        if (boardVisible) returnToWorkspace();
-                        else if (assignment.state.kind === 'loaded' && assignment.state.value.kind !== 'linked') openProjectSettings(selected);
-                        else {
-                          if (activeView === 'fleet') setActiveView('projects');
-                          terminalFocus.cancelRequest(); setBoardProject(selected.id);
-                        }
-                      }}><span className="text-[--hue-purple]" aria-hidden="true"><BoardIcon /></span>Board</button>
+                    <Tooltip label="Board" focusable>
+                      <button ref={boardOpener} type="button"
+                        className="no-drag flex h-7 w-7 items-center justify-center rounded text-[--hue-purple] hover:bg-[--panel-strong] focus-visible:ring-2 focus-visible:ring-[--accent]"
+                        data-testid="metaproject-board" aria-label="Board" aria-pressed={boardVisible} onClick={() => {
+                          if (boardVisible) returnToWorkspace();
+                          else if (assignment.state.kind === 'loaded' && assignment.state.value.kind !== 'linked') openProjectSettings(selected);
+                          else {
+                            if (activeView === 'fleet') setActiveView('projects');
+                            terminalFocus.cancelRequest(); setBoardProject(selected.id);
+                          }
+                        }}>
+                        <span aria-hidden="true"><BoardIcon /></span>
+                      </button>
+                    </Tooltip>
                     <Tooltip label="Prompt library" shortcut={SHORTCUT_COPY.promptsShortcut(platform)}>
                       <button
                         onClick={() => setPromptsOpen(true)}
