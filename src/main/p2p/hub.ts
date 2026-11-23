@@ -19,7 +19,7 @@ export interface HubOptions {
   /** Paired device on the other end; recorded in every audit entry. */
   remoteDeviceId: string;
   /** Host-authenticated desktop peer. Omission never grants workspace access. */
-  desktopWorkspaceAllowed?: boolean;
+  desktopWorkspaceAllowed?: boolean | (() => boolean);
   /** Defaults to the instance given to `setHubServices`. */
   services?: Services;
   /** Test knobs. Defaults: ~/.metaide/logs/p2p-audit.log, 10 MiB. */
@@ -251,7 +251,8 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
   // Every inbound request (including invalid_params / unknown_method rejections that never reach a
   // handler) is audited through the peer's onCall hook; one entry per call, streams at open.
   peer.setOnCall(record);
-  registerWorkspace(peer, s, opts.desktopWorkspaceAllowed === true, events.projectsChanged);
+  const workspaceAllowed = opts.desktopWorkspaceAllowed;
+  registerWorkspace(peer, s, () => typeof workspaceAllowed === 'function' ? workspaceAllowed() : workspaceAllowed === true, events.projectsChanged);
 
   /** Registers `impl`; auditing happens in the peer's onCall hook. */
   function on<M extends RpcMethodName>(

@@ -158,6 +158,8 @@ export type FleetEntry = {
   self?: boolean;
   /** True for a paired device that only connects in (the mobile app). Listed for revoking, never shown as a machine. */
   viewer?: boolean;
+  /** Host-local grant state; absent for ineligible devices such as the mobile viewer. */
+  workspaceAccess?: boolean;
 };
 
 /** Stored in `p2p_settings` (singleton row, id = 1). */

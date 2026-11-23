@@ -407,13 +407,13 @@ function readActivity(project: Project, root: string): Result<'workspace.activit
 
 /** Registers only the workspace contract, with desktop authorization before any project access. */
 export function registerWorkspace(
-  peer: RpcPeer, s: WorkspaceServices, desktopAllowed: boolean, projectsChanged: () => void,
+  peer: RpcPeer, s: WorkspaceServices, desktopAllowed: () => boolean, projectsChanged: () => void,
 ): void {
   function on<M extends WorkspaceMethod>(
     method: M, run: (project: Project, params: Params<M>) => Result<M> | Promise<Result<M>>,
   ): void {
     peer.handle(method, async (params, ctx) => {
-      if (!desktopAllowed) throw new RpcError('forbidden', 'workspace access requires a paired desktop');
+      if (!desktopAllowed()) throw new RpcError('forbidden', 'workspace access requires a grant from the host');
       if (ctx.stream !== undefined) throw new RpcError('not_a_stream', 'workspace methods are not streams');
       const project = s.projects.get(params.projectId);
       if (!project) throw new RpcError('unknown_project', 'no such project');

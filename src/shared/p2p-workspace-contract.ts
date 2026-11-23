@@ -44,7 +44,7 @@ export const WorkspaceMethods = {
     result: z.object({ content: z.string(), kind: z.enum(['text', 'binary']), sizeBytes: z.number() }),
   },
   'workspace.fileWrite': {
-    params: file.extend({ content: z.string().max(512 * 1024) }),
+    params: file.extend({ content: z.string().max(512 * 1024), createOnly: z.boolean().optional() }),
     result: ok.extend({ sizeBytes: z.number() }),
   },
   'workspace.fileMkdir': { params: file, result: ok },

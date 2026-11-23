@@ -1001,6 +1001,7 @@ export function createP2P(services: Services, opts: StartP2POpts = {}): P2PHandl
     generatePairCode: () => need().generatePairCode(),
     redeemPairCode: (code) => need().redeemPairCode(code),
     revokeDevice: (id) => need().revokeDevice(id),
+    setWorkspaceAccess: async () => { throw new Error('Workspace permissions are unavailable'); },
     reconnectDevice: (id) => need().reconnectDevice(id),
     rpcCall: (id, m, p) => need().rpcCall(id, m, p),
     rpcCloseStream: (streamId) => {
