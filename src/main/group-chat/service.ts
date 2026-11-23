@@ -135,6 +135,27 @@ export class GroupChatService {
     return this.changed(g);
   }
 
+  /**
+   * Re-attaches a Claude member whose conversation is no longer in any tab (after `/clear`, a
+   * restart, or a new tab) to the project's Claude tab. Only when exactly one tab can take over,
+   * so a group message never lands in a conversation the user didn't mean.
+   */
+  reconnectClaude(id: string, member: string): GroupView {
+    const g = this.must(id);
+    const rec = this.records.get(id)?.[member];
+    if (!rec || rec.kind !== 'claude-tab') throw new Error('That member isn’t a Claude tab');
+    const taken = new Set(Object.values(this.records.get(id)!)
+      .filter((r): r is ClaudeRecord => r.kind === 'claude-tab' && r.id !== member).map((r) => r.claudeSessionId));
+    const tabs = this.deps.liveClaudeShells(rec.projectId)
+      .map((t) => ({ ...t, sid: this.deps.claudeSessionOf(t) }))
+      .filter((t): t is typeof t & { sid: string } => t.sid !== null && !taken.has(t.sid));
+    if (tabs.length === 0) throw new Error('No Claude tab can take over yet: open one in this project and send it a message first');
+    if (tabs.length > 1) throw new Error('There is more than one Claude tab: remove this member and use + Add to pick one');
+    rec.claudeSessionId = tabs[0]!.sid;
+    rec.title = tabs[0]!.title;
+    return this.changed(g);
+  }
+
   addHeadless(id: string, o: { engine: HeadlessEngine; name: string; model?: string | null }): GroupView {
     const g = this.must(id);
     const name = String(o.name || '').trim().slice(0, 40) || ENGINE_LABEL[o.engine];

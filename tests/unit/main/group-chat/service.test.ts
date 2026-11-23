@@ -196,6 +196,37 @@ describe('GroupChatService', () => {
     expect(s.svc.list(1)[0]!.log.some((e) => e.kind === 'fail' && e.from === claudeId && /isn’t open/.test(e.text))).toBe(true);
   });
 
+  it('reconnectClaude re-attaches an unavailable Claude member to the project’s Claude tab (after /clear or a restart)', async () => {
+    const s = setup();
+    const g = twoMembers(s);
+    const claudeId = Object.entries(g.memberInfo).find(([, i]) => i.engine === 'claude')![0];
+    s.sessions.set('1:0', 'sess-NEW');
+    s.live.splice(1, 1); // only one Claude tab running
+    expect(s.svc.list(1)[0]!.memberInfo[claudeId]!.available).toBe(false);
+    const v = s.svc.reconnectClaude(g.id, claudeId);
+    expect(v.memberInfo[claudeId]!.available).toBe(true);
+    s.svc.say(g.id, 'go');
+    await s.flush();
+    expect(s.turns.filter((t) => t.member.kind === 'claude-tab')).toHaveLength(1);
+  });
+
+  it('reconnectClaude asks you to pick when several Claude tabs could be meant', () => {
+    const s = setup();
+    const g = twoMembers(s);
+    const claudeId = Object.entries(g.memberInfo).find(([, i]) => i.engine === 'claude')![0];
+    s.sessions.set('1:0', 'sess-X');
+    s.sessions.set('1:1', 'sess-Y');
+    expect(() => s.svc.reconnectClaude(g.id, claudeId)).toThrow(/more than one Claude tab/);
+  });
+
+  it('reconnectClaude says so when no Claude tab can take over', () => {
+    const s = setup();
+    const g = twoMembers(s);
+    const claudeId = Object.entries(g.memberInfo).find(([, i]) => i.engine === 'claude')![0];
+    s.sessions.clear();
+    expect(() => s.svc.reconnectClaude(g.id, claudeId)).toThrow(/send it a message first/);
+  });
+
   it('protectedShells lists member tabs only while the group is running', async () => {
     const s = setup();
     const g = twoMembers(s);

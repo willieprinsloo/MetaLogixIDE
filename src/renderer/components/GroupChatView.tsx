@@ -38,6 +38,8 @@ interface Props {
   /** The "+ Add" menu, when open. */
   addMenu?: ReactNode;
   onClose?: () => void;
+  /** Re-attach an unavailable Claude member to the project's Claude tab. */
+  onReconnect?: (member: string) => void;
   /** No project is open: group chats belong to a project, so there is nothing to start yet. */
   noProject?: boolean;
 }
@@ -139,6 +141,17 @@ export function GroupChatView(p: Props) {
                   <EngineBadge engine={info.engine} />
                   <span className="truncate max-w-[160px]">{info.name.replace(/ \([^)]*\)$/, '')}</span>
                   {!info.available && <span className="text-[10px] text-[--text-muted]">its Claude tab isn’t open</span>}
+                  {!info.available && info.engine === 'claude' && p.onReconnect && (
+                    <button
+                      type="button"
+                      data-testid="group-reconnect"
+                      onClick={() => p.onReconnect!(m)}
+                      title="Attach this member to the Claude tab running in this project"
+                      className="px-1.5 rounded bg-[--accent] text-white text-[10px]"
+                    >
+                      Reconnect
+                    </button>
+                  )}
                   <button
                     type="button"
                     data-testid="group-remove-member"

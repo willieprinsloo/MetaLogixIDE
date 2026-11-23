@@ -1387,6 +1387,7 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     if (!HEADLESS_ENGINES.has(engine)) throw new Error(`unknown engine: ${String(engine)}`);
     return { group: groupChat(s).addHeadless(id, { engine, name, model }) };
   },
+  'groups:reconnect-claude': async (s, { id, member }) => ({ group: groupChat(s).reconnectClaude(id, member) }),
   'groups:remove-member': async (s, { id, member }) => ({ group: groupChat(s).removeMember(id, member) }),
   'groups:say':           async (s, { id, text }) => {
     if (typeof text !== 'string' || !text.trim()) throw new Error('the message is empty');

@@ -100,3 +100,15 @@ describe('GroupChatView with no project or no group', () => {
     expect(renderWith({ error: 'group chats are not ready yet' })).toContain('group chats are not ready yet');
   });
 });
+
+describe('reconnecting a Claude member', () => {
+  it('an unavailable Claude member gets a Reconnect button', () => {
+    const g = G({ memberInfo: { boss: info('Main (Claude)', 'claude', { available: false }), gpt: info('Review (GPT)', 'codex') } });
+    const html = renderToStaticMarkup(
+      <GroupChatView groups={[g]} group={g} draft="" error={null}
+        onPick={noop} onNew={noop} onRemoveMember={noop} onOpenAdd={noop} onStop={noop} onDelete={noop}
+        onRounds={noop} onDraft={noop} onSend={noop} onReconnect={noop} />,
+    );
+    expect(html.match(/data-testid="group-reconnect"/g)).toHaveLength(1);
+  });
+});

@@ -344,7 +344,9 @@ export interface IpcContract {
   'groups:update':        { request: { id: string; name?: string; maxRounds?: number }; response: { group: GroupView } };
   'groups:add-claude':    { request: { id: string; shell: { projectId: number; shellIndex: number } }; response: { group: GroupView } };
   'groups:add-headless':  { request: { id: string; engine: HeadlessEngine; name: string; model?: string | null }; response: { group: GroupView } };
-  'groups:remove-member': { request: { id: string; member: string }; response: { group: GroupView } };
+  /** Re-attach a Claude member whose conversation changed (/clear, restart) to the project's Claude tab. */
+  'groups:reconnect-claude': { request: { id: string; member: string }; response: { group: GroupView } };
+  'groups:remove-member':{ request: { id: string; member: string }; response: { group: GroupView } };
   /** The only call that starts a conversation. */
   'groups:say':           { request: { id: string; text: string }; response: { group: GroupView } };
   'groups:stop':          { request: { id: string }; response: { group: GroupView } };

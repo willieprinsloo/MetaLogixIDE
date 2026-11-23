@@ -142,6 +142,7 @@ export function GroupChatPanel({ projectId, focusedShell, onDismiss }: {
           await reload();
           if (notice) setError(notice);
         })}
+        onReconnect={(member) => group && void run(() => api.invoke('groups:reconnect-claude', { id: group.id, member }))}
         onRemoveMember={(member) => group && void run(() => api.invoke('groups:remove-member', { id: group.id, member }))}
         onOpenAdd={openAdd}
         onStop={() => group && void run(() => api.invoke('groups:stop', { id: group.id }))}
