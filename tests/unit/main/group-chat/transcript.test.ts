@@ -18,6 +18,15 @@ describe('findGroupAnswer', () => {
     expect(findGroupAnswer(jsonl(user('earlier'), said('old'), user(ROUND), said('A')), HEADER)).toEqual({ status: 'answered', text: 'A' });
   });
 
+  it('finds our message when Claude Code saved it wrapped as a paste (real transcript format)', () => {
+    const pasted = `\n\n<pasted_content id="ff29">\n${ROUND}\n</pasted_content>`;
+    expect(findGroupAnswer(jsonl(user(pasted), said('Hi, Claude tab 1 here.')), HEADER)).toEqual({ status: 'answered', text: 'Hi, Claude tab 1 here.' });
+  });
+
+  it('a message that only quotes the header later on is not ours', () => {
+    expect(findGroupAnswer(jsonl(user(`please look at this:\n${ROUND}`), said('x')), HEADER)).toEqual({ status: 'not-yet' });
+  });
+
   it('accepts our message as text parts too', () => {
     expect(findGroupAnswer(jsonl(user([{ type: 'text', text: ROUND }]), said('A')), HEADER)).toEqual({ status: 'answered', text: 'A' });
   });

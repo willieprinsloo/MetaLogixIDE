@@ -40,12 +40,21 @@ function assistantText(line: Line): string {
   return (c as Part[]).filter((p) => p?.type === 'text' && typeof p.text === 'string').map((p) => p.text as string).join('');
 }
 
+/**
+ * Claude Code saves a pasted prompt wrapped as `\n\n<pasted_content id="…">\n…`, so the round
+ * header follows that opening tag. Our message is one whose text, once that wrapper and leading
+ * whitespace are removed, starts with the header.
+ */
+const PASTE_OPEN = /^\s*<pasted_content\b[^>]*>\s*/;
+const isOurs = (text: string, header: string): boolean => text.replace(PASTE_OPEN, '').trimStart().startsWith(header);
+
 export function findGroupAnswer(jsonl: string, header: string): TranscriptAnswer {
   const lines = jsonl.split(/\r?\n/).filter((l) => l.trim() !== '').map(parse).filter((l): l is Line => l !== null);
   let start = -1;
   for (let i = lines.length - 1; i >= 0; i--) {
     const l = lines[i]!;
-    if (l.type === 'user' && userText(l)?.startsWith(header)) { start = i; break; }
+    const t = l.type === 'user' ? userText(l) : null;
+    if (t !== null && isOurs(t, header)) { start = i; break; }
   }
   if (start < 0) return { status: 'not-yet' };
   const parts: string[] = [];
