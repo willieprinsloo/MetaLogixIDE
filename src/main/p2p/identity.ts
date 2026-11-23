@@ -76,9 +76,10 @@ export function loadOrCreateDeviceKey(file: string = DEFAULT_KEY_PATH): DeviceKe
 
 /**
  * `code` is the peer's mrsignald host connect code: the address a viewer puts in `session_request`.
- * `viewer` marks a device that only ever connects in (the mobile app): trusted, but not a fleet machine.
+ * `viewer` marks an explicit viewer-only device (the mobile app). A missing `code` only means undialable.
+ * `workspaceAccess` is a local grant, never supplied by pairing metadata. Missing means denied.
  */
-export type KnownDevice = { pub: string; name: string; addedAt: number; code?: string; viewer?: boolean };
+export type KnownDevice = { pub: string; name: string; addedAt: number; code?: string; viewer?: boolean; workspaceAccess?: true };
 
 /**
  * True for a device that cannot be a fleet machine: it said so when pairing, or it gave no connect code,
@@ -92,15 +93,22 @@ export const CONNECT_CODE_RE = /^[A-Za-z0-9-]{4,32}$/;
 
 export function loadKnownDevices(file: string = DEFAULT_KNOWN_DEVICES_PATH): KnownDevice[] {
   if (!fs.existsSync(file)) return [];
-  const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { devices?: unknown };
-  if (!parsed || !Array.isArray(parsed.devices)) throw new Error('known_devices.json malformed');
-  return parsed.devices.map((d) => {
-    const x = d as Partial<KnownDevice>;
-    if (typeof x.pub !== 'string' || !/^[0-9a-f]{64}$/.test(x.pub) || typeof x.name !== 'string' || typeof x.addedAt !== 'number') {
+  const parsed: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (!parsed || typeof parsed !== 'object' || !('devices' in parsed) || !Array.isArray(parsed.devices)) {
+    throw new Error('known_devices.json malformed');
+  }
+  return parsed.devices.map((x: unknown): KnownDevice => {
+    if (!x || typeof x !== 'object' || !('pub' in x) || typeof x.pub !== 'string' || !/^[0-9a-f]{64}$/.test(x.pub)
+      || !('name' in x) || typeof x.name !== 'string' || !('addedAt' in x) || typeof x.addedAt !== 'number') {
       throw new Error('known_devices.json contains an invalid entry');
     }
-    const code = typeof x.code === 'string' && CONNECT_CODE_RE.test(x.code) ? x.code : undefined;
-    return { pub: canonicalPubHex(x.pub), name: x.name, addedAt: x.addedAt, ...(code ? { code } : {}), ...(x.viewer === true ? { viewer: true } : {}) };
+    const code = 'code' in x && typeof x.code === 'string' && CONNECT_CODE_RE.test(x.code) ? x.code : undefined;
+    const viewer = 'viewer' in x && x.viewer === true;
+    const workspaceAccess = !viewer && 'workspaceAccess' in x && x.workspaceAccess === true;
+    return {
+      pub: canonicalPubHex(x.pub), name: x.name, addedAt: x.addedAt,
+      ...(code ? { code } : {}), ...(viewer ? { viewer: true } : {}), ...(workspaceAccess ? { workspaceAccess: true } : {}),
+    };
   });
 }
 
@@ -121,14 +129,32 @@ export function isTrustedDevice(pub: Uint8Array | string, file: string = DEFAULT
   return loadKnownDevices(file).some((d) => d.pub === want);
 }
 
-/** Adds or replaces a device. An omitted `code` or `viewer` keeps what a previous pairing recorded. */
+/** Re-pairing preserves a local grant unless the peer is explicitly viewer-only. */
 export function addKnownDevice(pub: Uint8Array | string, name: string, file: string = DEFAULT_KNOWN_DEVICES_PATH, now: number = Date.now(), code?: string, viewer?: boolean): void {
   const canon = canonicalPubHex(pub);
-  const prev = loadKnownDevices(file).find((d) => d.pub === canon);
-  const list = loadKnownDevices(file).filter((d) => d.pub !== canon);
+  const devices = loadKnownDevices(file);
+  const prev = devices.find((d) => d.pub === canon);
+  const list = devices.filter((d) => d.pub !== canon);
   const keep = code && CONNECT_CODE_RE.test(code) ? code : prev?.code;
-  list.push({ pub: canon, name, addedAt: now, ...(keep ? { code: keep } : {}), ...((viewer ?? prev?.viewer) === true ? { viewer: true } : {}) });
+  // Omitted peer metadata must not clear a previously recorded viewer-only classification.
+  const explicitViewer = viewer === true || prev?.viewer === true;
+  list.push({
+    pub: canon, name, addedAt: now,
+    ...(keep ? { code: keep } : {}), ...(explicitViewer ? { viewer: true } : {}),
+    ...(!explicitViewer && prev?.workspaceAccess === true ? { workspaceAccess: true } : {}),
+  });
   saveKnownDevices(list, file);
+}
+
+export function setKnownDeviceWorkspaceAccess(pub: string, allowed: boolean, file: string = DEFAULT_KNOWN_DEVICES_PATH): void {
+  const canon = canonicalPubHex(pub);
+  const devices = loadKnownDevices(file);
+  const device = devices.find((d) => d.pub === canon);
+  if (!device) throw new Error('Unknown paired device');
+  if (device.viewer === true) throw new Error('Viewer-only devices cannot be allowed workspace access');
+  if (allowed) device.workspaceAccess = true;
+  else delete device.workspaceAccess;
+  saveKnownDevices(devices, file);
 }
 
 export function removeKnownDevice(pub: Uint8Array | string, file: string = DEFAULT_KNOWN_DEVICES_PATH): boolean {

@@ -24,13 +24,17 @@ const sameShells = (a: readonly RemoteProjectShell[], b: readonly RemoteProjectS
  * The live shells (tabs) of one project on a paired machine, in tab order. Polled, because the host
  * pushes no shell-list events over P2P. A failed poll keeps the last list.
  */
-export function useRemoteProjectShells(deviceId: string, projectId: number): RemoteProjectShell[] {
+export function useRemoteProjectShells(deviceId: string, projectId: number, active = true): RemoteProjectShell[] {
   const [state, setState] = useState<{ key: string; shells: RemoteProjectShell[] }>({ key: '', shells: [] });
   const key = `${deviceId}:${projectId}`;
 
   useEffect(() => {
+    if (!active) return;
     let cancelled = false;
+    let pending = false;
     const tick = () => {
+      if (pending) return;
+      pending = true;
       api.invoke('p2p:rpc-call', { deviceId, method: 'shells.alive', params: {} }).then(
         (res) => {
           if (cancelled) return;
@@ -45,12 +49,12 @@ export function useRemoteProjectShells(deviceId: string, projectId: number): Rem
           setState((prev) => (prev.key === key && sameShells(prev.shells, shells) ? prev : { key, shells }));
         },
         () => { /* keep the last list; the next tick retries */ },
-      );
+      ).finally(() => { pending = false; });
     };
     tick();
     const id = window.setInterval(tick, POLL_MS);
     return () => { cancelled = true; window.clearInterval(id); };
-  }, [deviceId, projectId, key]);
+  }, [active, deviceId, projectId, key]);
 
   // A list fetched for a previous (device, project) never shows against the new one.
   return state.key === key ? state.shells : EMPTY;

@@ -15,6 +15,7 @@ const bridge = vi.hoisted(() => ({
   activity: true as boolean,
   calls: [] as Array<{ channel: string; payload: unknown }>,
   listeners: new Map<string, Set<(payload: unknown) => void>>(),
+  holdLocalOpen: null as Promise<{ project: Project }> | null,
 }));
 
 vi.mock('@renderer/api', () => ({
@@ -31,7 +32,7 @@ vi.mock('@renderer/api', () => ({
       if (channel === 'metaproject:assignment-get') return { ok: true, value: { kind: 'linked', projectId: 1, revision: 'a'.repeat(64), remoteId: 42, origin: 'https://fixture.invalid', localName: 'Project 1', localPath: '/work/1' } };
       if (channel === 'metaproject:board-open') return new Promise(() => {});
       if (channel === 'metaproject:board-layout' || channel === 'metaproject:board-close') return { ok: true };
-      if (channel === 'projects:open') return { project: project(payload?.id ?? 1) };
+      if (channel === 'projects:open') return bridge.holdLocalOpen ?? { project: project(payload?.id ?? 1) };
       if (channel === 'projects:list') return { projects: [project(1)] };
       if (channel === 'shells:alive-list') return { shells: [{ projectId: 1, shellIndex: 0 }] };
       if (channel === 'settings:get') return { value: payload?.key === 'activity_log_enabled' ? bridge.activity : undefined };
@@ -81,9 +82,9 @@ vi.mock('@renderer/components/Sidebar', () => ({
 vi.mock('@renderer/components/StatusBar', () => ({ StatusBar: ({ onOpenPalette }: { onOpenPalette: () => void }) =>
   <button data-testid="status-bar-palette-hint" onClick={onOpenPalette}>Commands</button> }));
 vi.mock('@renderer/components/CommandPalette', () => ({ CommandPalette: ({ request, commands, onClose }: {
-  request: unknown; commands: Array<{ id: string; run: () => Promise<void> }>; onClose: () => void;
-}) => request ? <div role="dialog" aria-label="Commands">{commands.filter((item) => item.id === 'shell.unload')
-  .map((item) => <button key={item.id} onClick={() => { onClose(); void item.run(); }}>Unload current session</button>)}</div> : null }));
+  request: unknown; commands: Array<{ id: string; title: string; run: () => Promise<void> }>; onClose: () => void;
+}) => request ? <div role="dialog" aria-label="Commands">{commands.filter((item) => ['shell.unload', 'shell.popout', 'view.shell', 'term.new'].includes(item.id))
+  .map((item) => <button key={item.id} onClick={() => { onClose(); void item.run(); }}>{item.title}</button>)}</div> : null }));
 vi.mock('@renderer/components/ShellTab', () => ({ ShellTab: () => null }));
 vi.mock('@renderer/components/FilesTab', () => ({ FilesTab: () => <div data-testid="files-view"><textarea aria-label="Workspace draft" /></div> }));
 vi.mock('@renderer/components/ActivityTab', () => ({ ActivityTab: () => <div data-testid="activity-tab" /> }));
@@ -135,6 +136,7 @@ async function emitFollow(): Promise<void> {
 beforeEach(() => {
   bridge.calls = [];
   bridge.listeners.clear();
+  bridge.holdLocalOpen = null;
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => window.setTimeout(() => callback(0), 0));
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('crypto', { randomUUID: () => '0856d88e-bbed-4f3e-8157-b9d3a4b34eea' });
@@ -147,6 +149,65 @@ afterEach(async () => {
   container = null;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+it('does not expose hidden local workspace actions after a remote Fleet notice', async () => {
+  await mount({ activity: true, tab: 'files' });
+  const paletteContent = () => document.querySelector('[aria-label="Commands"]')?.textContent;
+  await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="status-bar-palette-hint"]')?.click(); });
+  expect(paletteContent()).toContain('Switch to Shell tab');
+  await act(async () => {
+    [...document.querySelectorAll('button')].find((button) => button.textContent === 'Pop current shell into a new window')?.click();
+  });
+  expect(bridge.calls).toContainEqual({ channel: 'windows:popout-shell', payload: { projectId: 1, shellIndex: 0 } });
+  await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+
+  await act(async () => {
+    for (const listener of bridge.listeners.get('p2p:focus-remote-shell') ?? []) {
+      listener({ deviceId: 'tower', deviceName: 'Tower', projectId: 1, projectName: 'Remote', shellIndex: 0 });
+    }
+  });
+  expect(document.querySelector('[data-testid="remote-project-pane"]')?.textContent).toContain('Remote @ Tower');
+  await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="status-bar-palette-hint"]')?.click(); });
+  expect(paletteContent()).toBe('');
+  await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+  const before = bridge.calls.length;
+  await act(async () => {
+    for (const key of ['t', 'w']) window.dispatchEvent(new KeyboardEvent('keydown', { key, metaKey: true, bubbles: true, cancelable: true }));
+  });
+  expect(bridge.calls.slice(before).map(({ channel }) => channel)).not.toContain('shells:launch-plain');
+  expect(bridge.calls.slice(before).map(({ channel }) => channel)).not.toContain('shells:kill');
+  expect(stored('metaide.mainTab')).toBe('files');
+});
+
+it('an unsuperseded OS file-open request reaches the local Files tab', async () => {
+  await mount({ activity: true, tab: 'shell' });
+  await act(async () => {
+    for (const listener of bridge.listeners.get('app:open-file-request') ?? []) listener({ path: '/work/1/readme.md' });
+  });
+  expect(document.querySelector('[data-testid="files-view"]')).not.toBeNull();
+  expect(stored('metaide.mainTab')).toBe('files');
+});
+
+it('does not let a pending OS file open replace a later Fleet notice', async () => {
+  await mount({ activity: true, tab: 'shell' });
+  let completeOpen: (value: { project: Project }) => void = () => {};
+  bridge.holdLocalOpen = new Promise((resolve) => { completeOpen = resolve; });
+  const before = bridge.calls.length;
+  await act(async () => {
+    for (const listener of bridge.listeners.get('app:open-file-request') ?? []) listener({ path: '/work/1/readme.md' });
+  });
+  expect(bridge.calls.slice(before)).toContainEqual({ channel: 'projects:open', payload: { id: 1 } });
+  await act(async () => {
+    for (const listener of bridge.listeners.get('p2p:focus-remote-shell') ?? []) {
+      listener({ deviceId: 'tower', deviceName: 'Tower', projectId: 1, projectName: 'Remote', shellIndex: 0 });
+    }
+  });
+  expect(document.querySelector('[data-testid="remote-project-pane"]')).not.toBeNull();
+  await act(async () => { completeOpen({ project: project(1) }); });
+  expect(document.querySelector('[data-testid="remote-project-pane"]')?.textContent).toContain('Remote @ Tower');
+  expect(bridge.calls.slice(before).map(({ channel }) => channel)).not.toContain('shells:launch');
+  expect(stored('metaide.mainTab')).toBe('shell');
 });
 
 describe('App activity-log switch', () => {

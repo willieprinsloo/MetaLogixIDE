@@ -1,13 +1,19 @@
 // @vitest-environment jsdom
 /** RemoteProjectPane: the main-area pane for a project on a paired machine (moved unchanged from Sidebar.machines.test.tsx). */
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 
 const invoke = vi.fn();
 vi.mock('@renderer/api', () => ({ api: { invoke: (...a: unknown[]) => invoke(...a), on: () => () => {} } }));
 vi.mock('../ShellTab', () => ({ ShellTab: (p: { source: unknown; shellIndex: number }) => <div data-testid="shell-tab" data-shell={p.shellIndex}>{JSON.stringify(p.source)}</div> }));
+vi.mock('../FilesTab', () => ({ FilesTab: ({ openRelPath }: { openRelPath?: string }) => <div data-testid="files-panel">
+  {openRelPath}<textarea aria-label="Remote draft" />
+</div> }));
+vi.mock('../ActivityTab', () => ({ ActivityTab: ({ onOpenTarget }: { onOpenTarget?: (path: string) => void }) =>
+  <button type="button" onClick={() => onOpenTarget?.('remote.txt')}>Open remote activity file</button> }));
 
 import { RemoteProjectPane } from '../RemoteProjectPane';
+import { WorkspaceDestinations } from '../WorkspaceDestinations';
 
 let alive: unknown[] = [];
 
@@ -18,11 +24,143 @@ beforeEach(() => {
   invoke.mockImplementation(async (_ch: string, a: { method?: string }) => {
     if (a?.method === 'shells.launch') return { result: { shellIndex: 2 } };
     if (a?.method === 'shells.alive') return { result: alive };
+    if (a?.method === 'workspace.info') throw new Error('unknown_method');
     return {};
   });
 });
 
 describe('RemoteProjectPane', () => {
+  test('offers workspace destinations independently of shell session tabs', async () => {
+    render(<RemoteProjectPane deviceId="tower" deviceName="Tower" projectId={7} projectName="alpha" />);
+    await screen.findByTestId('shell-tab');
+    expect(screen.getByRole('button', { name: 'Shell' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('button', { name: 'Files' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Diff' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Activity' })).toBeNull();
+    expect(await screen.findByText(/Workspace access unavailable/)).toBeTruthy();
+  });
+
+  test('the shared destinations keep local diff and unsaved markers', () => {
+    const onSelect = vi.fn();
+    render(<WorkspaceDestinations active="settings" activityEnabled={false} diffCount={2} envDirty onSelect={onSelect} />);
+    const diff = screen.getByRole('button', { name: 'Diff, 2 changed files' });
+    expect(screen.getByTestId('main-tab-diff-count').textContent).toBe('2');
+    expect(screen.getByTestId('project-settings-tab').getAttribute('aria-current')).toBe('page');
+    expect(screen.getByTestId('project-settings-tab').getAttribute('aria-label')).toMatch(/unsaved/i);
+    fireEvent.click(diff);
+    expect(onSelect).toHaveBeenCalledWith('diff');
+  });
+
+  test('reports a remote Diff failure and retries against that same host', async () => {
+    invoke.mockImplementation(async (_ch: string, input: { deviceId?: string; method?: string }) => {
+      if (input?.method === 'workspace.info') return { result: { activityEnabled: false } };
+      if (input?.method === 'workspace.diffStatus') throw new Error('temporarily unavailable');
+      if (input?.method === 'shells.launch') return { result: { shellIndex: 2 } };
+      return { result: [] };
+    });
+    render(<RemoteProjectPane deviceId="tower" deviceName="Tower" projectId={7} projectName="alpha" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Diff' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Could not read git status');
+    invoke.mockResolvedValueOnce({
+      result: { isRepo: false, branch: null, ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [] },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(await screen.findByText('Not a git repository.')).toBeTruthy();
+    expect(invoke.mock.calls.filter(([, input]) => input?.method === 'workspace.diffStatus')).toEqual([
+      ['p2p:rpc-call', { deviceId: 'tower', method: 'workspace.diffStatus', params: { projectId: 7 } }],
+      ['p2p:rpc-call', { deviceId: 'tower', method: 'workspace.diffStatus', params: { projectId: 7 } }],
+    ]);
+    expect(invoke).not.toHaveBeenCalledWith('git:panel-status', expect.anything());
+  });
+
+  test('returning from Files restores the picked remote session and does not relaunch it', async () => {
+    alive = [{ projectId: 7, shellIndex: 2, launchArgv: ['claude'] }, { projectId: 7, shellIndex: 3, launchArgv: ['opencode'] }];
+    render(<RemoteProjectPane deviceId="tower" deviceName="Tower" projectId={7} projectName="alpha" />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Opencode' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Files' }));
+    expect(screen.getByTestId('files-panel')).toBeTruthy();
+    expect(screen.queryByTestId('shell-tab')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Files' }).getAttribute('aria-current')).toBe('page');
+    fireEvent.click(screen.getByRole('button', { name: 'Shell' }));
+    expect((await screen.findByTestId('shell-tab')).getAttribute('data-shell')).toBe('3');
+    expect(invoke.mock.calls.filter(([, input]) => input?.method === 'shells.launch')).toHaveLength(1);
+  });
+
+  test('uses the selected host Activity capability and routes its file link within that workspace', async () => {
+    invoke.mockImplementation(async (_ch: string, input: { deviceId?: string; method?: string }) => {
+      if (input?.method === 'workspace.info') return { result: { activityEnabled: input.deviceId === 'tower' } };
+      if (input?.method === 'shells.launch') return { result: { shellIndex: 2 } };
+      return { result: [] };
+    });
+    const { rerender } = render(<RemoteProjectPane deviceId="tower" deviceName="Tower" projectId={7} projectName="alpha" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Activity' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open remote activity file' }));
+    expect(screen.getByTestId('files-panel').textContent).toBe('remote.txt');
+
+    rerender(<RemoteProjectPane deviceId="laptop" deviceName="Laptop" projectId={7} projectName="alpha" />);
+    expect((await screen.findByTestId('shell-tab')).textContent).toContain('"deviceId":"laptop"');
+    expect(screen.queryByRole('button', { name: 'Activity' })).toBeNull();
+    expect(screen.queryByTestId('files-panel')).toBeNull();
+  });
+
+  test('a repeated notice for the same shell returns from Files to Shell', async () => {
+    alive = [{ projectId: 7, shellIndex: 2, launchArgv: ['claude'] }, { projectId: 7, shellIndex: 3, launchArgv: ['opencode'] }];
+    const project = { deviceId: 'tower', deviceName: 'Tower', projectId: 7, projectName: 'alpha' };
+    const { rerender } = render(<RemoteProjectPane {...project} openRequest={{ shellIndex: 3 }} />);
+    await waitFor(() => expect(screen.getByTestId('shell-tab').getAttribute('data-shell')).toBe('3'));
+    fireEvent.click(screen.getByRole('button', { name: 'Files' }));
+    expect(screen.getByTestId('files-panel')).toBeTruthy();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Remote draft' }), { target: { value: 'unsaved' } });
+    rerender(<RemoteProjectPane {...project} openRequest={{ shellIndex: 3 }} />);
+    expect((await screen.findByTestId('shell-tab')).getAttribute('data-shell')).toBe('3');
+    expect(screen.queryByRole('textbox', { name: 'Remote draft' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Files' }));
+    expect(screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'Remote draft' }).value).toBe('unsaved');
+  });
+
+  test('ignores a prior machine reporting Activity after a same-ID project switch', async () => {
+    let finishTower: (value: { result: { activityEnabled: boolean } }) => void = () => {};
+    const towerInfo = new Promise<{ result: { activityEnabled: boolean } }>((resolve) => { finishTower = resolve; });
+    invoke.mockImplementation(async (_ch: string, input: { deviceId?: string; method?: string }) => {
+      if (input?.method === 'workspace.info') {
+        return input.deviceId === 'tower' ? towerInfo : { result: { activityEnabled: false } };
+      }
+      if (input?.method === 'shells.launch') return { result: { shellIndex: 2 } };
+      return { result: [] };
+    });
+    const { rerender } = render(<RemoteProjectPane deviceId="tower" deviceName="Tower" projectId={7} projectName="alpha" />);
+    expect(invoke).toHaveBeenCalledWith('p2p:rpc-call', { deviceId: 'tower', method: 'workspace.info', params: { projectId: 7 } });
+    rerender(<RemoteProjectPane deviceId="laptop" deviceName="Laptop" projectId={7} projectName="alpha" />);
+    expect((await screen.findByTestId('shell-tab')).textContent).toContain('"deviceId":"laptop"');
+    await act(async () => { finishTower({ result: { activityEnabled: true } }); });
+    expect(screen.queryByRole('button', { name: 'Activity' })).toBeNull();
+  });
+
+  test('a lost workspace grant removes Activity but keeps the selected Shell usable', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let granted = true;
+    try {
+      invoke.mockImplementation(async (_ch: string, input: { method?: string }) => {
+        if (input?.method === 'workspace.info') {
+          if (!granted) throw new Error('workspace access requires a grant from the host');
+          return { result: { activityEnabled: true } };
+        }
+        if (input?.method === 'shells.launch') return { result: { shellIndex: 2 } };
+        return { result: [] };
+      });
+      render(<RemoteProjectPane deviceId="tower" deviceName="Tower" projectId={7} projectName="alpha" />);
+      expect(await screen.findByRole('button', { name: 'Activity' })).toBeTruthy();
+      granted = false;
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      expect(screen.getByText(/Workspace access unavailable/)).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Activity' })).toBeNull();
+      expect(screen.getByTestId('shell-tab').getAttribute('data-shell')).toBe('2');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('header shows Project @ Machine with a P2P badge and a remote ShellTab', async () => {
     render(<RemoteProjectPane deviceId="tower" deviceName="Tower" projectId={7} projectName="alpha" />);
     expect(screen.getByText('alpha @ Tower')).toBeTruthy();

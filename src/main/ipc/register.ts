@@ -1244,6 +1244,10 @@ export const handlers: { [C in Exclude<CoreChannel, 'shells:snapshot' | 'setting
   'p2p:pair-generate-code': async (s) => p2pApi(s).generatePairCode(),
   'p2p:pair-redeem-code':   async (s, { code }) => p2pApi(s).redeemPairCode(code),
   'p2p:revoke-device':      async (s, { deviceId }) => { await p2pApi(s).revokeDevice(deviceId); return { ok: true } as const; },
+  'p2p:set-workspace-access': async (s, { deviceId, allowed }) => {
+    await p2pApi(s).setWorkspaceAccess(deviceId, allowed);
+    return { ok: true } as const;
+  },
   'p2p:reconnect-device':   async (s, { deviceId }) => { await p2pApi(s).reconnectDevice(deviceId); return { ok: true } as const; },
   'p2p:rpc-call':           async (s, { deviceId, method, params }) => ({ result: await p2pApi(s).rpcCall(deviceId, method, params ?? {}) }),
   'p2p:rpc-close-stream':   async (s, { streamId }) => { p2pApi(s).rpcCloseStream(streamId); return { ok: true } as const; },

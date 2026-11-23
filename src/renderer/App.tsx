@@ -43,12 +43,10 @@ import { ToastStack } from './components/ToastStack';
 import { PermissionModeDialog } from './components/PermissionModeDialog';
 import { ProjectEnvTab } from './components/ProjectEnvTab';
 import { DiffTab } from './components/DiffTab';
-import { ENV_COPY, ENV_TESTIDS } from './project-env-copy';
-import { DIFF_COPY, DIFF_TESTIDS } from './diff-tab-copy';
+import { DIFF_TESTIDS } from './diff-tab-copy';
 import { diffTabCount } from './diff/diff-selection';
 import { isMainTab, visibleMainTab, type MainTab } from './main-tab';
 import { useActivityLogEnabled } from './hooks/useActivityLogEnabled';
-import { ACTIVITY_LOG_TESTIDS } from './activity-log-contract';
 import { useEnvDrafts } from './hooks/useEnvDrafts';
 import { useClaudePermissionMode } from './hooks/useClaudePermissionMode';
 import { useTaskCount } from './hooks/useTaskCount';
@@ -86,7 +84,7 @@ import { ICON_SIZE } from './components/icon-size';
 import { ShellTabsBar, type ShellLaunched, type ShellTabMotion } from './components/ShellTabsBar';
 import { SplitButton } from './components/SplitButton';
 import { ShellSplit } from './components/ShellSplit';
-import { WorkspaceTabButton } from './components/WorkspaceTabButton';
+import { WorkspaceDestinations } from './components/WorkspaceDestinations';
 import { ShellTabDot } from './components/ShellTabDot';
 import { SPLIT_RATIO_DEFAULT, sanitizeRatio } from './split-ratio';
 import { shellChipLabel, stripShells } from './shell-label';
@@ -176,7 +174,12 @@ function MainApp() {
   const [remotePane, setRemotePane] = useState<OpenPaneRequest | null>(null);
   const remotePaneRef = useRef(remotePane);
   remotePaneRef.current = remotePane;
-  const openPane = useCallback((req: OpenPaneRequest) => { closeBoard(); setRemotePane(req); }, [closeBoard]);
+  const localWorkspaceProject = remotePane ? null : selected;
+  function openLocalWorkspaceFile(relPath: string, line: number | null): void {
+    if (remotePaneRef.current) return;
+    setMainTab('files');
+    setOpenInFiles({ relPath, line });
+  }
   // -1 never matches a real project id, so this reads idle when nothing is selected.
   // Keep a live ref of `selected` so the shortcut handler (bound once in a
   // useEffect with an empty dep list) always reads the current project.
@@ -207,6 +210,13 @@ function MainApp() {
     (v): v is ActivityView => v === 'projects' || v === 'chat' || v === 'git' || v === 'tasks' || v === 'fleet',
   );
   const setActiveView = useCallback((view: ActivityView) => { closeBoard(); persistActiveView(view); }, [closeBoard, persistActiveView]);
+  const openPane = useCallback((request: OpenPaneRequest) => {
+    ++selectionRequestRef.current;
+    remotePaneRef.current = request;
+    terminalFocus.cancelRequest();
+    setActiveView('projects');
+    setRemotePane(request);
+  }, [setActiveView]);
   const activeViewRef = useRef<ActivityView>('projects');
   activeViewRef.current = activeView;
   useEffect(() => api.on('metaproject:chat-event', ({ epoch, event }) => {
@@ -450,7 +460,7 @@ function MainApp() {
   /** Launches a plain shell in the selected project: a new tab (⌘T) or, with `newWindow`, a new window (⌘⇧T). */
   const openNewTerminal = useCallback((newWindow: boolean, onLaunched?: ShellLaunched) => {
     const p = selectedRef.current;
-    if (!p) return;
+    if (!p || remotePaneRef.current) return;
     const activate = newWindow ? null : beginTerminalTabLaunch(p.id, onLaunched);
     void (async () => {
       try {
@@ -468,7 +478,7 @@ function MainApp() {
   openNewTerminalRef.current = openNewTerminal;
 
   const commands = useMemo(() => buildPaletteCommands({
-    hasProject: selected != null,
+    hasProject: localWorkspaceProject !== null,
     hasPrimary: primaryAlive && remotePane === null,
     sidebarOpen,
     openPalette,
@@ -479,16 +489,18 @@ function MainApp() {
     toggleSidebar: () => toggleSidebar(false),
     statusBarVisible: showStatusBar,
     toggleStatusBar: () => { void api.invoke('settings:set', { key: 'show_status_bar', value: !showStatusBar }); },
-    showTab: setMainTab,
+    showTab: (tab) => { if (!remotePaneRef.current) setMainTab(tab); },
     openHelp: () => setHelpOpen(true),
     openNewProject: () => setNewProjectOpen(true),
     unloadSession: async () => {
-      if (selected && !remotePane && primaryAlive) {
+      if (selected && !remotePaneRef.current && primaryAlive) {
         openUnloadSession(selected, document.querySelector<HTMLElement>('[data-testid="status-bar-palette-hint"]'));
       }
     },
     popOutShell: async () => {
-      if (selected) await api.invoke('windows:popout-shell', { projectId: selected.id, shellIndex: 0 });
+      if (localWorkspaceProject && !remotePaneRef.current) {
+        await api.invoke('windows:popout-shell', { projectId: localWorkspaceProject.id, shellIndex: 0 });
+      }
     },
     findInTerminal: () => toast(SHORTCUT_COPY.findInTerminalToast(platform), { kind: 'info' }),
     openNewTerminal,
@@ -500,7 +512,7 @@ function MainApp() {
     },
     keepAwake: paletteKeepAwake,
     platform,
-  }), [selected, remotePane, primaryAlive, openUnloadSession, sidebarOpen, openPalette, setActiveView, toggleSidebar, showStatusBar, setMainTab, openNewTerminal, setThemeMode, setThemePalette, paletteKeepAwake, platform, setSearchOpen, setScrollbackOpen, setPromptsOpen, setHelpOpen, setNewProjectOpen, setSettingsOpen]);
+  }), [selected, remotePane, localWorkspaceProject, primaryAlive, openUnloadSession, sidebarOpen, openPalette, setActiveView, toggleSidebar, showStatusBar, setMainTab, openNewTerminal, setThemeMode, setThemePalette, paletteKeepAwake, platform, setSearchOpen, setScrollbackOpen, setPromptsOpen, setHelpOpen, setNewProjectOpen, setSettingsOpen]);
 
   const refreshAlive = useCallback(async () => {
     const { shells } = await api.invoke('shells:alive-list', undefined as never);
@@ -578,6 +590,7 @@ function MainApp() {
       const requestId = ++selectionRequestRef.current;
       try {
         const { projects } = await api.invoke('projects:list', undefined as never);
+        if (selectionRequestRef.current !== requestId) return;
         // Longest-prefix wins — a project nested inside a parent project
         // (rare, but possible with multiple roots) still routes correctly.
         const match = projects
@@ -597,9 +610,13 @@ function MainApp() {
         setActiveView('projects');
         setSelected(project);
         try { await api.invoke('shells:launch', { projectId: project.id }); } catch { /* fine */ }
+        if (selectionRequestRef.current !== requestId) return;
         setMainTab('files');
-        if (relPath) requestAnimationFrame(() => setOpenInFiles({ relPath, line: null }));
+        if (relPath) requestAnimationFrame(() => {
+          if (selectionRequestRef.current === requestId) setOpenInFiles({ relPath, line: null });
+        });
       } catch (e) {
+        if (selectionRequestRef.current !== requestId) return;
         toast('Could not open file', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
       }
     });
@@ -609,11 +626,10 @@ function MainApp() {
   // A clicked fleet notice: open that shell on the paired machine it came from.
   useEffect(() => {
     const off = api.on('p2p:focus-remote-shell', ({ deviceId, deviceName, projectId, projectName, shellIndex }) => {
-      setActiveView('projects');
-      setRemotePane({ source: { kind: 'remote', deviceId }, deviceName, projectId, projectName, shellIndex });
+      openPane({ source: { kind: 'remote', deviceId }, deviceName, projectId, projectName, shellIndex });
     });
     return () => { off(); };
-  }, [setActiveView]);
+  }, [openPane]);
 
   // Click-to-focus for "command done" OS notifications: the main process
   // fires `shell:focus-request` with a (projectId, shellIndex). We look up
@@ -647,7 +663,7 @@ function MainApp() {
       'toggle-sidebar': () => toggleSidebar(false),
       'open-settings': () => setSettingsOpen(true),
       'new-project': () => setNewProjectOpen(true),
-      'project-search': () => setSearchOpen(true),
+      'project-search': () => { if (!remotePaneRef.current) setSearchOpen(true); },
       prompts: () => setPromptsOpen(true),
       'scrollback-search': () => setScrollbackOpen(true),
       'toggle-help': () => setHelpOpen(!helpOpenRef.current),
@@ -660,7 +676,9 @@ function MainApp() {
       if (palette.kind === 'swallow') return;
       if (palette.kind === 'toggle' || palette.kind === 'open') {
         e.preventDefault();
-        if (palette.kind === 'open') openPalette(palette.seed);
+        if (palette.kind === 'open') {
+          if (!remotePaneRef.current || palette.seed !== '@') openPalette(palette.seed);
+        }
         else if (paletteOpenRef.current) setPaletteRequest(null);
         else openPalette('');
         return;
@@ -674,6 +692,7 @@ function MainApp() {
       if (mod && e.key.toLowerCase() === 'w' && !e.shiftKey && !e.altKey) {
         // ⌘W → close the active shell tab in the current project.
         const p = selectedRef.current;
+        if (remotePaneRef.current) { e.preventDefault(); return; }
         if (!p) return;
         e.preventDefault();
         const idx = activeShellIndexRef.current;
@@ -952,7 +971,7 @@ function MainApp() {
     } catch (e) { toast('Tile failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
   }
 
-  const mainSheetContent: SheetContent = !boardVisible && mainTab === 'shell' ? 'shell' : 'other';
+  const mainSheetContent: SheetContent = !remotePane && !boardVisible && mainTab === 'shell' ? 'shell' : 'other';
 
   return (
     <div className="h-screen w-screen overflow-hidden flex flex-col bg-[--surface-chrome]" data-chrome-root>
@@ -1055,39 +1074,11 @@ function MainApp() {
           )}
         </AnimatePresence>
         <div className="workspace-header-container flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden" data-testid="main-column">
-            <header className="workspace-header-row drag relative shrink-0 items-center gap-x-1.5 gap-y-1 px-3 py-1.5 text-xs" hidden={!!remotePane} data-testid={DIFF_TESTIDS.tabBar}>
-              <div className="workspace-destinations flex min-w-0 flex-wrap items-center gap-1.5">
-                <WorkspaceTabButton tab="shell" label="Shell" active={!boardVisible && mainTab === 'shell'} onClick={() => setMainTab('shell')} />
-                <WorkspaceTabButton tab="files" label="Files" active={!boardVisible && mainTab === 'files'} onClick={() => setMainTab('files')} />
-                <WorkspaceTabButton tab="diff" label={DIFF_COPY.tabLabel}
-                  active={!boardVisible && mainTab === 'diff'}
-                  onClick={() => setMainTab('diff')}
-                  testId={DIFF_TESTIDS.tab}
-                  ariaLabel={diffCount !== null ? DIFF_COPY.tabCountLabel(diffCount) : undefined}
-                >
-                  {diffCount !== null && (
-                    <span aria-hidden className="ml-1.5 font-mono text-[10px] text-[--hue-orange-text]" data-testid={DIFF_TESTIDS.tabCount}>
-                      {diffCount}
-                    </span>
-                  )}
-                </WorkspaceTabButton>
-                <WorkspaceTabButton tab="settings" label={PROJECT_SETTINGS_COPY.tab}
-                  active={!boardVisible && mainTab === 'settings'}
-                  onClick={openSelectedProjectSettings}
-                  testId={PROJECT_SETTINGS_TESTIDS.tab}
-                  ariaLabel={envDirty ? ENV_COPY.tabUnsavedLabel : undefined}
-                >
-                  {envDirty && (
-                    <span aria-hidden className="ml-1 text-[--accent]" data-testid={ENV_TESTIDS.unsaved}>
-                      {ENV_COPY.tabUnsavedMarker}
-                    </span>
-                  )}
-                </WorkspaceTabButton>
-                {activityEnabled && (
-                  <WorkspaceTabButton tab="activity" label="Activity" active={!boardVisible && mainTab === 'activity'} onClick={() => setMainTab('activity')} testId={ACTIVITY_LOG_TESTIDS.tabButton} />
-                )}
-              </div>
-              {!remotePane && !boardVisible && selected && mainTab === 'shell' && (
+            {!remotePane && <header className="workspace-header-row drag relative shrink-0 items-center gap-x-1.5 gap-y-1 px-3 py-1.5 text-xs" data-testid={DIFF_TESTIDS.tabBar}>
+              <WorkspaceDestinations active={boardVisible ? null : mainTab} activityEnabled={activityEnabled}
+                diffCount={diffCount} envDirty={envDirty}
+                onSelect={(tab) => tab === 'settings' ? openSelectedProjectSettings() : setMainTab(tab)} />
+              {!boardVisible && selected && mainTab === 'shell' && (
                 <ShellTabsBar
                   key={`shell-tabs-${selected.id}`}
                   projectId={selected.id}
@@ -1167,7 +1158,7 @@ function MainApp() {
                   </>
                 )}
               </div>
-            </header>
+            </header>}
           <main
             className={`workspace-sheet mx-2 mt-0.5 flex flex-1 flex-col min-h-0 min-w-0 rounded-[14px] bg-[--surface-sheet] ${showStatusBar ? 'mb-0.5' : 'mb-2'}`}
             data-sheet-content={mainSheetContent}
@@ -1184,10 +1175,11 @@ function MainApp() {
                         setActiveShellIndexFor(projectId, shellIndex);
                       });
                     }}
-                    onOpenRemote={(req) => { setActiveView('projects'); setRemotePane(req); }}
+                    onOpenRemote={openPane}
                   />
                 : remotePane
-                ? <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId} projectName={remotePane.projectName} initialShellIndex={remotePane.shellIndex} onClose={() => setRemotePane(null)} />
+                ? <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId}
+                    projectName={remotePane.projectName} openRequest={remotePane} onClose={() => setRemotePane(null)} />
                 : mainTab === 'settings'
                 ? settingsTarget
                   ? <ProjectSettingsTab key={settingsTarget.id} target={settingsTarget} onSaved={applyDefaultAgentProject} assignmentVisible={!boardVisible}>
@@ -1268,29 +1260,26 @@ function MainApp() {
       <CommandPalette
         request={paletteRequest}
         commands={commands}
-        currentProject={selected}
+        currentProject={localWorkspaceProject}
         onPickProject={(p) => { void pick(p); }}
         onPickCurrent={(p) => { if (mainTabRef.current === 'shell') focusAfterPaletteRef.current = p.id; }}
-        onPickFile={(relPath) => { setMainTab('files'); setOpenInFiles({ relPath, line: null }); }}
+        onPickFile={(relPath) => openLocalWorkspaceFile(relPath, null)}
         onClose={() => setPaletteRequest(null)}
       />
       <ToastStack />
       <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
       <ProjectSearch
-        open={searchOpen && selected != null}
-        projectId={selected?.id ?? null}
+        open={searchOpen && localWorkspaceProject !== null}
+        projectId={localWorkspaceProject?.id ?? null}
         onClose={() => setSearchOpen(false)}
-        onOpenMatch={(relPath, line) => {
-          setMainTab('files');
-          setOpenInFiles({ relPath, line });
-        }}
+        onOpenMatch={openLocalWorkspaceFile}
       />
       <PromptLibrary
         open={promptsOpen}
         onClose={() => setPromptsOpen(false)}
-        projectId={selected?.id ?? null}
-        activeShell={selected ? { projectId: selected.id, shellIndex: activeShellIndex } : null}
-        activeShellLabel={selected ? `${selected.name} · shell ${activeShellIndex}` : undefined}
+        projectId={localWorkspaceProject?.id ?? null}
+        activeShell={localWorkspaceProject ? { projectId: localWorkspaceProject.id, shellIndex: activeShellIndex } : null}
+        activeShellLabel={localWorkspaceProject ? `${localWorkspaceProject.name} · shell ${activeShellIndex}` : undefined}
       />
       <ScrollbackSearch
         open={scrollbackOpen}

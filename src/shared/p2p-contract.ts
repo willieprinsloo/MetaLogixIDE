@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { MAX_STAGED_BYTES } from './terminal-drop-contract';
 import { UPLOAD_CHUNK_MAX_B64_CHARS } from './remote-upload-contract';
+import { WorkspaceMethods } from './p2p-workspace-contract';
 
 /** Shapes for the RPC catalogue in docs/superpowers/specs/2026-10-26-metaide-p2p-design.md §5. */
 
@@ -49,6 +50,7 @@ export const Dirent = z.object({
 });
 
 export const RpcMethods = {
+  ...WorkspaceMethods,
   'device.info': { params: z.object({}), result: DeviceInfo },
   'projects.list': { params: z.object({}), result: z.array(Project) },
   'projects.get': { params: z.object({ id: z.number().int().positive() }), result: Project },
@@ -156,6 +158,8 @@ export type FleetEntry = {
   self?: boolean;
   /** True for a paired device that only connects in (the mobile app). Listed for revoking, never shown as a machine. */
   viewer?: boolean;
+  /** Host-local grant state; absent for ineligible devices such as the mobile viewer. */
+  workspaceAccess?: boolean;
 };
 
 /** Stored in `p2p_settings` (singleton row, id = 1). */

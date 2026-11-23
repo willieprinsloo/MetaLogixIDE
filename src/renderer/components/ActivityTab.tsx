@@ -2,6 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@renderer/api';
 import type { ActivityEntry, ActivityKind } from '@shared/activity';
 import { isFileToolActivity } from '@renderer/agent-file-targets';
+import type { RemoteWorkspace } from '@renderer/p2p/remote-workspace';
+
+type RemoteActivity =
+  | { projectId: number; remote: RemoteWorkspace; status: 'ready'; entries: ActivityEntry[] }
+  | { projectId: number; remote: RemoteWorkspace; status: 'error' };
+
+const REMOTE_POLL_MS = 3000;
+const EMPTY_ENTRIES: ActivityEntry[] = [];
 
 /**
  * Shared agent timeline. Reads the project's `.metaide/activity.jsonl` on
@@ -9,28 +17,49 @@ import { isFileToolActivity } from '@renderer/agent-file-targets';
  * looking at one project see each other's actions live. Filterable by kind;
  * follow-tail mode auto-scrolls to the newest row.
  */
-export function ActivityTab({ projectId, onOpenTarget, followFiles, onFollowFilesChange }: {
+export function ActivityTab({ projectId, remote, onOpenTarget, followFiles, onFollowFilesChange }: {
   projectId: number;
+  remote?: RemoteWorkspace;
   onOpenTarget?: (target: string) => void;
   followFiles: boolean;
   onFollowFilesChange: (v: boolean) => void;
-}) {
-  const [entries, setEntries] = useState<ActivityEntry[]>([]);
+}): JSX.Element {
+  const [localEntries, setLocalEntries] = useState<ActivityEntry[]>([]);
+  const [remoteActivity, setRemoteActivity] = useState<RemoteActivity | null>(null);
+  const current = remoteActivity?.remote === remote && remoteActivity?.projectId === projectId ? remoteActivity : null;
+  const entries = remote ? (current?.status === 'ready' ? current.entries : EMPTY_ENTRIES) : localEntries;
   const [filter, setFilter] = useState<ActivityKind | 'all'>('all');
   const [follow, setFollow] = useState(true);
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
+    setRemoteActivity(null);
+    if (remote) {
+      const workspace = remote;
+      let timer: number | undefined;
+      async function poll() {
+        try {
+          const { entries } = await workspace.call('workspace.activity', { projectId });
+          if (!cancelled) setRemoteActivity({ projectId, remote: workspace, status: 'ready', entries });
+        } catch {
+          if (!cancelled) setRemoteActivity({ projectId, remote: workspace, status: 'error' });
+        } finally {
+          if (!cancelled) timer = window.setTimeout(() => void poll(), REMOTE_POLL_MS);
+        }
+      }
+      void poll();
+      return () => { cancelled = true; window.clearTimeout(timer); };
+    }
     (async () => {
       try {
         const { entries } = await api.invoke('activity:list', { projectId, limit: 200 });
-        if (!cancelled) setEntries(entries);
+        if (!cancelled) setLocalEntries(entries);
       } catch { /* ignore */ }
     })();
     const off = api.on('activity:changed', (ev) => {
       if (ev.projectId !== projectId) return;
-      setEntries((prev) => {
+      setLocalEntries((prev) => {
         // Cap the in-memory buffer so a busy agent doesn't grow the renderer
         // unboundedly; older entries are still in the file and come back via
         // `activity:list` if the user reopens.
@@ -39,7 +68,7 @@ export function ActivityTab({ projectId, onOpenTarget, followFiles, onFollowFile
       });
     });
     return () => { cancelled = true; off(); };
-  }, [projectId]);
+  }, [projectId, remote]);
 
   useEffect(() => {
     if (!follow) return;
@@ -63,20 +92,22 @@ export function ActivityTab({ projectId, onOpenTarget, followFiles, onFollowFile
         <KindChip active={filter === 'turn-end'}  onClick={() => setFilter('turn-end')}>Turn ends</KindChip>
         <div className="flex-1" />
         <span className="text-[--text-muted] font-mono tabular-nums">{visible.length} / {entries.length}</span>
-        <label className="flex items-center gap-1 text-[--text-muted] cursor-pointer" title="Live-open every file the agent edits in the Files viewer">
+        {!remote && <label className="flex items-center gap-1 text-[--text-muted] cursor-pointer" title="Live-open every file the agent edits in the Files viewer">
           <input type="checkbox" checked={followFiles} onChange={(e) => onFollowFilesChange(e.target.checked)} className="accent-[color:var(--accent)]" />
           Follow files
-        </label>
+        </label>}
         <label className="flex items-center gap-1 text-[--text-muted] cursor-pointer">
           <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} className="accent-[color:var(--accent)]" />
           Follow
         </label>
       </div>
       <div ref={listRef} className="flex-1 overflow-auto font-mono text-[12px] leading-[20px] p-2 min-h-0">
-        {visible.length === 0 && (
+        {remote && !current && <p role="status" className="p-6 text-center text-sm text-[--text-muted]">Loading remote activity…</p>}
+        {current?.status === 'error' && <p role="alert" className="p-6 text-center text-sm text-[--danger]">Remote activity is unavailable. Check that the host is connected and activity logging is enabled.</p>}
+        {(!remote || current?.status === 'ready') && visible.length === 0 && (
           <div className="p-6 text-sm text-[--text-muted] text-center">
             No activity yet. When an agent in this project runs a tool, prompts, or finishes a turn, it shows up here.
-            <br /><span className="opacity-60">Tail from a terminal: <code>tail -f .metaide/activity.jsonl</code></span>
+            {!remote && <><br /><span className="opacity-60">Tail from a terminal: <code>tail -f .metaide/activity.jsonl</code></span></>}
           </div>
         )}
         {visible.map((e) => <ActivityRow key={e.id} entry={e} onOpenTarget={onOpenTarget} />)}
@@ -118,7 +149,7 @@ function ActivityRow({ entry, onOpenTarget }: { entry: ActivityEntry; onOpenTarg
       {onOpenTarget && isFileToolActivity(entry) ? (
         <button
           type="button"
-          onClick={() => onOpenTarget(entry.target!)}
+          onClick={() => onOpenTarget(target)}
           className="flex-1 min-w-0 truncate text-left text-[--text] hover:underline cursor-pointer"
           title={target}
         >

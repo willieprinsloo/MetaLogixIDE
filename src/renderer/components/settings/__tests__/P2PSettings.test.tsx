@@ -13,7 +13,7 @@ const SETTINGS = {
 };
 const FLEET = [
   { deviceId: 'self-device-id', name: 'My Laptop', online: true, lastSeenAt: 1, self: true },
-  { deviceId: 'tower-device-id-0123456789', name: 'Tower', online: false, lastSeenAt: null },
+  { deviceId: 'tower-device-id-0123456789', name: 'Tower', online: false, lastSeenAt: null, workspaceAccess: false },
 ];
 
 beforeEach(() => {
@@ -43,6 +43,54 @@ describe('P2PSettings', () => {
     await waitFor(() => expect((sw as HTMLInputElement).checked).toBe(true));
     fireEvent.click(sw);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('p2p:settings-set', { serveEnabled: false }));
+  });
+
+  test('grants and revokes access for an undialable desktop, but never shows a switch for mobile', async () => {
+    const deviceId = 'offline-desktop';
+    let workspaceAccess = false;
+    invoke.mockImplementation(async (ch: string, req?: { deviceId: string; allowed: boolean }) => {
+      if (ch === 'p2p:settings-get') return { ...SETTINGS, serveEnabled: false };
+      if (ch === 'p2p:fleet-list') return {
+        fleet: [
+          ...FLEET,
+          { deviceId, name: 'Offline Desktop', online: false, lastSeenAt: null, viewer: true, workspaceAccess },
+          { deviceId: 'phone', name: 'Phone', online: false, lastSeenAt: null, viewer: true },
+        ],
+      };
+      if (ch === 'p2p:set-workspace-access' && req?.deviceId === deviceId) workspaceAccess = req.allowed;
+      return { ok: true };
+    });
+
+    render(<P2PSettings />);
+    const sw = await screen.findByRole<HTMLInputElement>('switch', { name: 'Allow workspace access for Offline Desktop' });
+    expect(sw.checked).toBe(false);
+    expect(sw.disabled).toBe(false);
+    expect(screen.queryByRole('switch', { name: 'Allow workspace access for Phone' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Revoke Phone' })).toBeTruthy();
+    fireEvent.click(sw);
+    await waitFor(() => expect(sw.checked).toBe(true));
+    await waitFor(() => expect(sw.disabled).toBe(false));
+    expect(invoke).toHaveBeenCalledWith('p2p:set-workspace-access', { deviceId, allowed: true });
+
+    fireEvent.click(sw);
+    await waitFor(() => expect(sw.checked).toBe(false));
+    expect(invoke).toHaveBeenCalledWith('p2p:set-workspace-access', { deviceId, allowed: false });
+    expect(screen.getByRole<HTMLInputElement>('switch', { name: 'Allow workspace access for Tower' }).checked).toBe(false);
+    expect(invoke).not.toHaveBeenCalledWith('p2p:settings-set', expect.anything());
+  });
+
+  test('a permission change rejected by the host leaves the switch unchanged', async () => {
+    invoke.mockImplementation(async (ch: string) => {
+      if (ch === 'p2p:settings-get') return SETTINGS;
+      if (ch === 'p2p:fleet-list') return { fleet: FLEET };
+      throw new Error('Could not store workspace access');
+    });
+    render(<P2PSettings />);
+    const sw = await screen.findByRole<HTMLInputElement>('switch', { name: 'Allow workspace access for Tower' });
+    fireEvent.click(sw);
+    expect((await screen.findByRole('alert')).textContent).toBe('Could not store workspace access');
+    expect(sw.checked).toBe(false);
+    expect(sw.disabled).toBe(false);
   });
 
   test('saves device name on blur', async () => {

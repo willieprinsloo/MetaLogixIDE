@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useRef } from 'react';
 import { api } from '@renderer/api';
+import type { RemoteWorkspace } from '@renderer/p2p/remote-workspace';
 import { entryKey, sidesRequestFor, type DiffEntry } from '@renderer/diff/diff-selection';
 import {
   IDLE_SIDES,
@@ -17,7 +18,7 @@ import {
  * (a manual Refresh) reads the full sides again, as does a reload while a side fails the content check
  * (AC38). Superseded responses are dropped.
  */
-export function useDiffSides(projectId: number, entry: DiffEntry | null, reloadToken: number, refreshToken: number): DiffSidesState {
+export function useDiffSides(projectId: number, entry: DiffEntry | null, reloadToken: number, refreshToken: number, remote?: RemoteWorkspace): DiffSidesState {
   const [state, dispatch] = useReducer(diffSidesReducer, IDLE_SIDES);
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -25,6 +26,8 @@ export function useDiffSides(projectId: number, entry: DiffEntry | null, reloadT
   const entryRef = useRef(entry);
   entryRef.current = entry;
   const refreshRef = useRef(refreshToken);
+  const remotePending = useRef(false);
+  const [settledToken, retryPending] = useReducer((token: number) => token + 1, 0);
   const key = entry ? entryKey(entry) : null;
   const origPath = entry?.origPath;
 
@@ -33,28 +36,43 @@ export function useDiffSides(projectId: number, entry: DiffEntry | null, reloadT
   }, [key]);
 
   useEffect(() => {
-    const forced = refreshRef.current !== refreshToken;
-    refreshRef.current = refreshToken;
     const current = entryRef.current;
     if (!current || key === null) return;
     const gate = gateRef.current;
+    if (remote && gate.inFlight) {
+      remotePending.current = true;
+      return;
+    }
+    const forced = refreshRef.current !== refreshToken;
+    refreshRef.current = refreshToken;
     const plan = planSidesRequest(stateRef.current, key, gate.inFlight, forced);
     if (plan.skip) return;
     const seq = gate.begin();
-    api
-      .invoke('git:diff-sides', { projectId, ...sidesRequestFor(current), ...plan.extra })
+    const params = { projectId, ...sidesRequestFor(current), ...plan.extra };
+    const response = remote ? remote.call('workspace.diffSides', params) : api.invoke('git:diff-sides', params);
+    response
       .then((response) => {
         if (gate.isLatest(seq)) dispatch({ type: 'response', key, response });
       })
       .catch((e: unknown) => {
         if (gate.isLatest(seq)) dispatch({ type: 'failure', key, message: errorText(e) });
       })
-      .finally(() => gate.settle(seq));
-  }, [projectId, key, origPath, reloadToken, refreshToken]);
+      .finally(() => {
+        if (!gate.isLatest(seq)) return;
+        gate.settle(seq);
+        if (remotePending.current) {
+          remotePending.current = false;
+          retryPending();
+        }
+      });
+  }, [projectId, key, origPath, reloadToken, refreshToken, settledToken, remote]);
 
   useEffect(() => {
     const gate = gateRef.current;
-    return () => gate.invalidate();
+    return () => {
+      remotePending.current = false;
+      gate.invalidate();
+    };
   }, []);
 
   return state;

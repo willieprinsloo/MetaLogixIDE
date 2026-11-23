@@ -55,13 +55,50 @@ relay and device settings live in Settings → P2P
 in the sidebar's machine switcher (see **Machine switcher** below) and in the
 Fleet view; a remote project opens in `RemoteProjectPane`, whose terminals
 are `ShellTab` with a remote source (`src/renderer/components/RemoteMachineList.tsx`,
-`FleetView.tsx`, `RemoteProjectPane.tsx`). The pane shows one tab per shell
-the project has running on that machine (`src/renderer/p2p/useRemoteProjectShells.ts`,
-polled from `shells.alive` every 3 s) and attaches to the one selected; it
-opens on the shell `shells.launch` returns. Tabs are labelled as local ones
-are, through `src/shared/shell-launch-name.ts`: the launch command, or the
-agent the host reports in `agent` when one was started by hand in a terminal.
-Remote tabs can be viewed and switched, not added or closed. The fleet list
+`FleetView.tsx`, `RemoteProjectPane.tsx`). Remote and local workspaces share
+the `WorkspaceDestinations` controls, but remote navigation and data requests
+are scoped to the paired device and its project ID. Returning to Shell restores
+the selected running session; a fleet notice selects its shell. Shell session
+tabs are polled from `shells.alive` while Shell is visible and use the same
+labels as local sessions (`src/shared/shell-launch-name.ts`). Remote shell
+sessions can be viewed and switched, not added or closed from the tab strip.
+
+Remote Files supports browsing, source previews, text editing and ordinary
+file/folder operations on the host. Binary and rich previews, local file
+reveal, and desktop drag-out are not available in this view. Diff displays
+the host's staged, unstaged and untracked changes without changing Git state.
+Settings displays and changes the default agent only; it does not display
+environment values or replace legacy custom commands. Activity shows the
+host timeline when the host enables logging. Its file links open in the same
+remote workspace. Older hosts keep their existing Shell support and report
+that the workspace is unavailable.
+
+The `workspace.*` catalog (`src/shared/p2p-workspace-contract.ts`) is separate
+from local IPC. On the host, enable **Allow workspace access** for the paired
+desktop under Settings → P2P. Pairing alone does not grant workspace access,
+and the viewing desktop does not need to accept incoming connections.
+Turning the grant off blocks subsequent workspace requests without closing
+Shell. Viewer-only clients such as the mobile app are not eligible.
+
+`src/main/p2p/workspace.ts` resolves project IDs on the host, validates paths
+against the project root, protects Git metadata, the Activity log, and launch
+configuration from remote mutations, and bounds responses. New File refuses
+an existing name; ordinary saves preserve POSIX permission bits and refuse
+to replace symlinks. Path checks are not an OS sandbox against concurrent
+host-side changes. Settings responses include only agent names and a flag
+for legacy commands. The host checks its Activity switch on each workspace
+timeline request.
+
+Remote workspace access is unavailable for projects that overlap host
+application storage (including logs and crash dumps), contain another
+registered project, or overlap another project's Activity or launch files
+through filesystem aliases. A project's own Activity and launch resources
+must also resolve within that project's root. Open an eligible nested project
+directly instead.
+This restriction applies to workspace tabs, not to the existing Shell or
+legacy file APIs.
+
+The fleet list
 (`p2p:fleet-list`) holds paired machines only and never sets
 `FleetEntry.self`, so the renderer adds this machine itself. A host's
 `shells.alive` reply carries each shell's `agentState` (idle, busy, blocked
