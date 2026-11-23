@@ -29,6 +29,7 @@ interface Attempt {
 interface LiveSession extends Attempt { client: MetaprojectClient }
 type Login = ValidMetaprojectRequest<'metaproject:session-login'>;
 type SnapshotResult = MetaprojectResult<MetaprojectSessionSnapshot>;
+type ForgetResult = Awaited<ReturnType<RememberedAccount['forget']>>;
 
 /** Wrap a successful value in the shared result envelope. */
 export function ok<T>(value: T): MetaprojectResult<T> { return { ok: true, value }; }
@@ -73,6 +74,10 @@ export class SessionService {
     const attempt = this.begin('signing-in', input.attemptId, this.state.origin);
     const credentials = { username: input.username, password: input.password };
     const result = await this.authenticate(attempt, credentials);
+    return this.finishExplicitAuthentication(attempt, result, input);
+  }
+
+  private finishExplicitAuthentication(attempt: Attempt, result: AuthenticationResult, input: Login): SnapshotResult | Promise<SnapshotResult> {
     if (!this.owns(attempt)) return failure('stale');
     if (!result.ok) {
       this.applyLoginDelay(result);
@@ -247,10 +252,14 @@ export class SessionService {
     const [forgotten, legacy] = await Promise.all([this.options.account.forget(switchTo), this.options.account.clearLegacy()]);
     this.retiring = false;
     if (this.disposed || this.state.epoch !== epoch) return failure('stale');
+    this.publishForgottenSession(epoch, forgotten, legacy, reason, switchTo);
+    return switchTo && !forgotten.committed ? failure('unavailable') : ok(this.state);
+  }
+
+  private publishForgottenSession(epoch: number, forgotten: ForgetResult, legacy: boolean, reason?: MetaprojectFailure, switchTo?: MetaprojectOrigin): void {
     const warning = forgotten.warning ?? (legacy ? undefined : 'keychain-not-cleared');
     const scope = switchTo && forgotten.committed ? { epoch, origin: switchTo, configuredOrigin: switchTo } : this.scope();
     if (switchTo && forgotten.committed) this.loginAfter = 0;
     this.set({ ...scope, phase: 'signed-out', ...(reason ? { reason } : {}), ...(warning ? { warning } : {}) });
-    return switchTo && !forgotten.committed ? failure('unavailable') : ok(this.state);
   }
 }

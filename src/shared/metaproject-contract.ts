@@ -14,8 +14,7 @@ type AccountId = z.output<typeof accountId>;
 type Origin = string & { readonly __brand: 'MetaprojectOrigin' };
 export type { LocalProjectId, RemoteProjectId, AccountId, Origin as MetaprojectOrigin };
 
-/** WHATWG normalizes the URL; raw authority also gates the dev-only HTTP exception. */
-export function parseMetaprojectOrigin(input: unknown, allowLoopbackHttp: boolean): Origin | null {
+function parseServiceAuthority(input: unknown): { url: URL; authority: string } | null {
   const parsed = originInput.safeParse(input);
   if (!parsed.success) return null;
   const text = parsed.data;
@@ -26,6 +25,14 @@ export function parseMetaprojectOrigin(input: unknown, allowLoopbackHttp: boolea
   if (!authority || authority.includes('@') || authority.endsWith(':')) return null;
   const url = URL.parse(absolute);
   if (url === null || !url.hostname) return null;
+  return { url, authority };
+}
+
+/** WHATWG normalizes the URL; raw authority also gates the dev-only HTTP exception. */
+export function parseMetaprojectOrigin(input: unknown, allowLoopbackHttp: boolean): Origin | null {
+  const destination = parseServiceAuthority(input);
+  if (!destination) return null;
+  const { url, authority } = destination;
   const literalLoopback = /^(?:127\.0\.0\.1|\[::1\])(?::[0-9]+)?$/.test(authority);
   if (url.protocol !== 'https:' && !(allowLoopbackHttp && literalLoopback && url.protocol === 'http:')) return null;
   // Exact serialized origin from the validated URL, not the input authority.

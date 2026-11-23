@@ -6,6 +6,7 @@ import type { MetaprojectIpc, MetaprojectSessionSnapshot } from '@shared/metapro
 import { failureCopy, mpButton, mpInput, persistenceCopy } from './messages';
 
 type SignedIn = Extract<MetaprojectSessionSnapshot, { phase: 'signed-in' }>;
+type SignedOut = Extract<MetaprojectSessionSnapshot, { phase: 'signed-out' }>;
 type Resume = (snapshot: SignedIn) => void;
 type Prompt = { label: string; resume?: Resume; onCancel?: () => void; opener: HTMLElement | null; attemptId?: string; origin: string };
 type PromptState = Pick<ReturnType<typeof useSnapshot>, 'current' | 'accept' | 'version'>;
@@ -96,31 +97,39 @@ type PromptActions = {
   setBusy: (busy: boolean) => void; setError: (error: string | null) => void;
 };
 
-async function submitSignIn(form: HTMLFormElement, { current, accept, version }: PromptState, { active, dismiss, setBusy, setError }: PromptActions) {
-    const entry = active.current;
-    const now = current();
-    if (!entry || entry.attemptId || now?.phase !== 'signed-out' || now.origin !== entry.origin) return;
-    const attemptId = crypto.randomUUID();
-    const before = version.current;
-    try {
-      const pending = loginFromForm(form, attemptId, now.epoch);
-      if (!pending) { setError(failureCopy['invalid-input']); return; }
-      entry.attemptId = attemptId;
-      setBusy(true);
-      setError(null);
-      const result = await pending;
-      if (active.current !== entry) return;
-      if (!result.ok) { setError(failureCopy[result.reason]); return; }
-      if (version.current === before) accept(result.value);
-      const latest = current();
-      if (result.value.phase === 'signed-in' && latest?.phase === 'signed-in' && latest.epoch === result.value.epoch && latest.origin === entry.origin) {
-        dismiss(entry, false);
-        entry.resume?.(latest);
-      } else setError(failureCopy.stale);
-    } catch { if (active.current === entry) setError(failureCopy.unavailable); }
-    finally {
-      if (active.current === entry) { entry.attemptId = undefined; setBusy(false); }
-    }
+async function submitSignIn(form: HTMLFormElement, account: PromptState, actions: PromptActions) {
+  const { active, setBusy, setError } = actions;
+  const entry = active.current;
+  const now = account.current();
+  if (!entry || entry.attemptId || now?.phase !== 'signed-out' || now.origin !== entry.origin) return;
+  const attemptId = crypto.randomUUID();
+  const before = account.version.current;
+  try {
+    const pending = loginFromForm(form, attemptId, now.epoch);
+    if (!pending) { setError(failureCopy['invalid-input']); return; }
+    entry.attemptId = attemptId;
+    setBusy(true);
+    setError(null);
+    const result = await pending;
+    settleSignInResult(result, entry, before, account, actions);
+  } catch { if (active.current === entry) setError(failureCopy.unavailable); }
+  finally {
+    if (active.current === entry) { entry.attemptId = undefined; setBusy(false); }
+  }
+}
+
+function settleSignInResult(
+  result: MetaprojectIpc['metaproject:session-login']['response'], entry: Prompt, before: number,
+  { current, accept, version }: PromptState, { active, dismiss, setError }: PromptActions,
+) {
+  if (active.current !== entry) return;
+  if (!result.ok) { setError(failureCopy[result.reason]); return; }
+  if (version.current === before) accept(result.value);
+  const latest = current();
+  if (result.value.phase === 'signed-in' && latest?.phase === 'signed-in' && latest.epoch === result.value.epoch && latest.origin === entry.origin) {
+    dismiss(entry, false);
+    entry.resume?.(latest);
+  } else setError(failureCopy.stale);
 }
 
 function loginFromForm(form: HTMLFormElement, attemptId: string, epoch: number) {
@@ -187,21 +196,34 @@ export function AccountStatus({ onSignIn }: { onSignIn: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
   if (!snapshot) return statusError ? <div role="alert">Unable to load Metaproject status. <button className={mpButton} onClick={refresh}>Retry</button></div> : <p role="status">Loading Metaproject account…</p>;
+  if (snapshot.phase !== 'signed-out') return renderActiveAccountStatus(snapshot);
+  return renderSignedOutAccountStatus(snapshot, {
+    onSignIn, retrying, error,
+    onRetry: async () => {
+      setRetrying(true); setError(await command('metaproject:session-retry', { epoch: snapshot.epoch })); setRetrying(false);
+    },
+  });
+}
+
+function renderActiveAccountStatus(snapshot: Exclude<MetaprojectSessionSnapshot, SignedOut>) {
   if (snapshot.phase === 'restoring' || snapshot.phase === 'signing-in') return <p role="status">{snapshot.phase === 'restoring' ? 'Restoring Metaproject sign-in…' : 'Signing in…'}</p>;
   if (snapshot.phase === 'signed-in') return <div>
     <p role="status">Signed in as {snapshot.actor.display_name || snapshot.actor.username}{snapshot.remembered ? ' · Remembered on this device' : ''}</p>
     {snapshot.warning && <p role="alert">{persistenceCopy[snapshot.warning]}</p>}
   </div>;
-  if (snapshot.phase !== 'signed-out') return null;
+  return null;
+}
+
+type SignedOutControls = { onSignIn: () => void; onRetry: () => Promise<void>; retrying: boolean; error: string | null };
+
+function renderSignedOutAccountStatus(snapshot: SignedOut, { onSignIn, onRetry, retrying, error }: SignedOutControls) {
   return <div className="space-y-2">
     <p role="status">Signed out of Metaproject.</p>
     {!snapshot.origin ? <p>{failureCopy['invalid-origin']}</p> : <>
       {snapshot.reason && snapshot.reason !== 'signed-out' && <p role="alert">{failureCopy[snapshot.reason]}</p>}
       <div className="flex flex-wrap gap-2">
         <button className={mpButton} onClick={onSignIn}>Sign in to Metaproject</button>
-        {snapshot.retryRestore && <button className={mpButton} disabled={retrying} onClick={async () => {
-          setRetrying(true); setError(await command('metaproject:session-retry', { epoch: snapshot.epoch })); setRetrying(false);
-        }}>Retry remembered sign-in</button>}
+        {snapshot.retryRestore && <button className={mpButton} disabled={retrying} onClick={onRetry}>Retry remembered sign-in</button>}
       </div>
     </>}
     {snapshot.warning && <p role="alert">{persistenceCopy[snapshot.warning]}</p>}

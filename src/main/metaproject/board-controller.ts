@@ -87,9 +87,7 @@ export class BoardController {
       if (!checked.ok) return ok(this.update(lease, { phase: 'error', reason: checked.reason }));
       return await this.loadGuest(lease, live, checked.value);
     } catch (error) {
-      if (this.lease !== lease) return failure('stale');
-      const reason = failureReason(error);
-      return ok(this.update(lease, { phase: 'error', reason }));
+      return this.failOpen(lease, error);
     }
   }
 
@@ -149,6 +147,12 @@ export class BoardController {
 
   private superseded(lease: Lease): MetaprojectResult<MetaprojectBoardState> {
     return this.lease === lease && lease.phase.phase === 'error' ? ok(this.state(lease)) : failure('stale');
+  }
+
+  private failOpen(lease: Lease, error: unknown): MetaprojectResult<MetaprojectBoardState> {
+    if (this.lease !== lease) return failure('stale');
+    const reason = failureReason(error);
+    return ok(this.update(lease, { phase: 'error', reason }));
   }
 
   private async loadGuest(lease: Lease, live: Live, target: { origin: MetaprojectOrigin; remoteId: number }): Promise<MetaprojectResult<MetaprojectBoardState>> {

@@ -11,6 +11,7 @@ import { failure, failureReason, ok, type SessionService } from './session-servi
 
 const provenance = z.object({ origin: z.string().nullable(), entries: z.record(z.string(), z.object({ revision: z.string().regex(/^[0-9a-f]{64}$/), remoteId: remoteProjectId, kind: z.enum(['yaml', 'db']) })) });
 type Evidence = z.output<typeof provenance>;
+type EvidenceEntry = Evidence['entries'][string];
 type Context = { projectId: number; revision: string };
 type Load = ReturnType<typeof readAssignmentFile>;
 type AssignmentFile = Extract<Load, { ok: true }>['value'];
@@ -88,15 +89,23 @@ export class AssignmentService {
     if (!result.ok) return { ...target, kind: result.reason === 'invalid-file' ? 'invalid' : 'unavailable' };
     const { document, revision } = result.value;
     const versioned = { ...target, revision };
-    const evidence = this.evidence?.entries[project.id];
-    const matching = evidence?.revision === revision ? evidence : undefined;
+    const matching = this.matchingEvidence(project, revision);
     if (!document.projectId) return matching?.kind === 'db' && legacyHint(project) === matching.remoteId
       ? { ...versioned, kind: 'unconfirmed', remoteId: matching.remoteId }
       : { ...versioned, kind: 'unlinked' };
-    const rawOrigin = document.origin ?? (matching?.kind === 'yaml' ? this.evidence?.origin : null);
-    const origin = parseMetaprojectOrigin(rawOrigin, this.options.allowLoopback);
+    const origin = this.assignmentOrigin(document.origin, matching);
     if (document.origin && (!origin || !/^https?:\/\//i.test(document.origin))) return { ...target, kind: 'invalid' };
     return { ...versioned, ...classifyAssignment(document.projectId, origin, this.options.session.snapshot().origin) };
+  }
+
+  private matchingEvidence(project: Project, revision: string): EvidenceEntry | undefined {
+    const evidence = this.evidence?.entries[project.id];
+    return evidence?.revision === revision ? evidence : undefined;
+  }
+
+  private assignmentOrigin(persistedOrigin: string | null, matching: EvidenceEntry | undefined): MetaprojectOrigin | null {
+    const rawOrigin = persistedOrigin ?? (matching?.kind === 'yaml' ? this.evidence?.origin : null);
+    return parseMetaprojectOrigin(rawOrigin, this.options.allowLoopback);
   }
 
   /** Return the accessible list once per request, with an epoch fence after transport. */

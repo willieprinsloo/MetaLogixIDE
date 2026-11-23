@@ -52,13 +52,18 @@ export function createBoardGuest(owner: BrowserWindow, jar: Session, origin: Met
 
 function nativeHost(owner: BrowserWindow, view: WebContentsView, state: GuestNavigation): Pick<BoardGuest, 'layout' | 'focus'> {
   let attached = false;
+
+  function detach(): void {
+    if (attached) owner.contentView.removeChildView(view);
+    attached = false;
+  }
+
   return {
     layout(bounds, beforeAttach) {
       if (state.closed || owner.isDestroyed()) return false;
       const clipped = bounds ? clampBoardBounds(bounds, owner.getContentBounds()) : null;
       if (!clipped) {
-        if (attached) owner.contentView.removeChildView(view);
-        attached = false;
+        detach();
         return false;
       }
       if (!attached && beforeAttach && !beforeAttach()) return false;

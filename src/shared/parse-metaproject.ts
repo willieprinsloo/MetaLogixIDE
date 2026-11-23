@@ -34,6 +34,7 @@ export function parseMetaproject(text: string): MetaprojectLink {
 
 type Field = 'project_id' | 'metaproject_origin';
 type Entry = { field: Field; index: number; prefix: string; value: string; quote: string; suffix: string };
+type AssignmentLink = { id: RemoteProjectId; origin: string };
 interface AssignmentDocument {
   readonly projectId: RemoteProjectId | null;
   readonly origin: string | null;
@@ -147,23 +148,25 @@ export function parseAssignmentDocument(input: string): AssignmentDocument | nul
 }
 
 /** Replace/remove just the two assignment fields, retaining unrelated bytes and comment text. */
-export function editMetaprojectAssignment(doc: AssignmentDocument, link: { id: RemoteProjectId; origin: string } | null): string {
+export function editMetaprojectAssignment(doc: AssignmentDocument, link: AssignmentLink | null): string {
   const lines = [...doc.lines];
   const newline = lines.find(line => line.endsWith('\n'))?.endsWith('\r\n') ? '\r\n' : '\n';
-  for (const entry of doc.entries) {
-    const ending = /\r?\n$/.exec(lines[entry.index] ?? '')?.[0] ?? '';
-    if (link) {
-      const value = entry.field === 'project_id' ? link.id : link.origin;
-      lines[entry.index] = `${entry.prefix}${entry.quote}${value}${entry.quote}${entry.suffix}${ending}`;
-    } else {
-      const comment = entry.suffix.trimStart();
-      lines[entry.index] = comment ? `${comment}${ending}` : '';
-    }
-  }
+  for (const entry of doc.entries) editAssignmentLine(lines, entry, link);
   const base = lines.join('');
   if (!link) return doc.bom + base;
   const missing = [`project_id: ${link.id}`, `metaproject_origin: ${link.origin}`].filter((_, index) =>
     !doc.entries.some(entry => entry.field === (index === 0 ? 'project_id' : 'metaproject_origin')));
   if (!missing.length) return doc.bom + base;
   return doc.bom + base + (base && !base.endsWith('\n') ? newline : '') + missing.join(newline) + newline;
+}
+
+function editAssignmentLine(lines: string[], entry: Entry, link: AssignmentLink | null): void {
+  const ending = /\r?\n$/.exec(lines[entry.index] ?? '')?.[0] ?? '';
+  if (link) {
+    const value = entry.field === 'project_id' ? link.id : link.origin;
+    lines[entry.index] = `${entry.prefix}${entry.quote}${value}${entry.quote}${entry.suffix}${ending}`;
+    return;
+  }
+  const comment = entry.suffix.trimStart();
+  lines[entry.index] = comment ? `${comment}${ending}` : '';
 }

@@ -106,12 +106,19 @@ export function isLoginLocation(raw: string, origin: MetaprojectOrigin): boolean
 export function requireWebBody(reply: WebReply, origin: MetaprojectOrigin, protectedRoute: boolean): Buffer {
   if ('location' in reply) throw new WebFailure(protectedRoute && isLoginLocation(reply.location, origin) ? 'expired' : 'protocol');
   if (reply.status >= 200 && reply.status < 300) return reply.body;
-  if (reply.status === 401) throw new WebFailure(protectedRoute ? 'expired' : 'rejected');
-  if (reply.status === 403) throw new WebFailure(protectedRoute ? 'denied' : 'rejected');
-  if (reply.status === 404) throw new WebFailure('not-found');
-  if (reply.status === 429) throw new WebFailure('throttled', retryDelay(reply.retryAfter));
-  if (reply.status >= 500) throw new WebFailure('network');
-  throw new WebFailure('protocol');
+  throw webStatusFailure(reply, protectedRoute);
+}
+
+function webStatusFailure(reply: Extract<WebReply, { body: Buffer }>, protectedRoute: boolean): WebFailure {
+  if (reply.status === 401) return authStatusFailure(protectedRoute, 'expired');
+  if (reply.status === 403) return authStatusFailure(protectedRoute, 'denied');
+  if (reply.status === 404) return new WebFailure('not-found');
+  if (reply.status === 429) return new WebFailure('throttled', retryDelay(reply.retryAfter));
+  return new WebFailure(reply.status >= 500 ? 'network' : 'protocol');
+}
+
+function authStatusFailure(protectedRoute: boolean, reason: 'expired' | 'denied'): WebFailure {
+  return new WebFailure(protectedRoute ? reason : 'rejected');
 }
 
 function retryDelay(value?: string): number | undefined {
@@ -128,9 +135,9 @@ export function webJson<T>(reply: WebReply, origin: MetaprojectOrigin, schema: z
   catch { throw new WebFailure('protocol'); }
 }
 
-/** Verify the Flask principal response and prove the same jar can reach a protected route. */
 export type AuthenticationResult = MetaprojectResult<MetaprojectActor> | { ok: false; reason: 'throttled'; retryAfterMs: number };
 
+/** Verify the Flask principal response and prove the same jar can reach a protected route. */
 export async function authenticateWeb(origin: MetaprojectOrigin, request: WebRequest, credentials: Credentials, signal: AbortSignal): Promise<AuthenticationResult> {
   const path = '/auth/login';
   try {
@@ -146,8 +153,12 @@ export async function authenticateWeb(origin: MetaprojectOrigin, request: WebReq
     webJson(await request({ path: '/api/projects', signal, limit: projectListCap }), origin, projectList);
     return { ok: true, value: user };
   } catch (error) {
-    const reason = error instanceof WebFailure ? error.reason : 'network';
-    if (reason === 'throttled' && error instanceof WebFailure && error.retryAfterMs !== undefined) return { ok: false, reason, retryAfterMs: error.retryAfterMs };
-    return { ok: false, reason: reason === 'expired' ? 'rejected' : reason };
+    return authenticationFailure(error);
   }
+}
+
+function authenticationFailure(error: unknown): AuthenticationResult {
+  const reason = error instanceof WebFailure ? error.reason : 'network';
+  if (reason === 'throttled' && error instanceof WebFailure && error.retryAfterMs !== undefined) return { ok: false, reason, retryAfterMs: error.retryAfterMs };
+  return { ok: false, reason: reason === 'expired' ? 'rejected' : reason };
 }

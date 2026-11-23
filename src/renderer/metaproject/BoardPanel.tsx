@@ -137,6 +137,12 @@ function useExternalDecision(board: ReturnType<typeof useLease>, covered: boolea
     if (focus.current?.disabled === false) focus.current.focus();
     else if (board.lease.current) focus.current?.parentElement?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
   }, [candidate, covered, focus, board.lease]);
+  function finishExternalDecision(entry: MetaprojectExternalCandidate, viewId: string) {
+    if (submitted.current === entry) submitted.current = null;
+    if (lease.current !== viewId) return;
+    restore.current = true;
+    setCandidate((prior) => prior === entry ? null : prior);
+  }
   async function handleExternal(approved: boolean) {
     if (!candidate || lease.current !== candidate.viewId || submitted.current === candidate) return;
     const { viewId, candidateId } = candidate;
@@ -145,10 +151,7 @@ function useExternalDecision(board: ReturnType<typeof useLease>, covered: boolea
       const result = await api.invoke(approved ? 'metaproject:board-external' : 'metaproject:board-dismiss-external', { viewId, candidateId });
       if (!result.ok && lease.current === viewId && (approved || result.reason !== 'stale')) setError(result.reason);
     } catch { if (lease.current === viewId) setError('unavailable'); }
-    finally {
-      if (submitted.current === candidate) submitted.current = null;
-      if (lease.current === viewId) { restore.current = true; setCandidate((prior) => prior === candidate ? null : prior); }
-    }
+    finally { finishExternalDecision(candidate, viewId); }
   }
   return { confirmation, handleExternal };
 }
