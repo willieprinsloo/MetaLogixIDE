@@ -54,17 +54,11 @@
  * above. The real guarantee is structural (Agent 1's synchronous handler),
  * not something this suite can observe end-to-end.
  *
- * Selector/contract assumption flagged to the orchestrator: AC3 and AC10's
- * D5 negative case name "the ChatTab composer" as a text-entry target.
- * ChatTab shows a metaproject login card (`mp-login-username` etc.) until
- * `metaproject:status` reports `loggedIn`, and there is no test-mode stub
- * for that login in this codebase (no METAIDE_TEST_MODE handling in
- * ChatTab or main). So the composer textarea is never reachable under
- * `METAIDE_TEST_MODE=1`. This suite substitutes the `mp-login-username`
- * input as the ChatTab-panel text-entry target: it is a genuine <input>,
- * classifies identically under `classifyActiveElement` (text-entry), and
- * exercises the same rule. If a chat-login test stub is added later, this
- * can be swapped for the real composer.
+ * Use the Tasks filter for non-overlay sidebar text entry. Chat now uses
+ * the shared sign-in modal and can remount its composer when the project
+ * changes. The Tasks filter stays mounted across notification-driven
+ * project switches, so it tests text-entry protection separately from
+ * overlay protection without requiring authentication.
  */
 
 import { test, expect, _electron as electron, type Page, type ElectronApplication } from '@playwright/test';
@@ -256,7 +250,7 @@ test('AC2: a non-text control held focus — refocus still moves focus into the 
   }
 });
 
-test('AC3: text-entry elements keep focus across refocus (find input, files editor, chat panel)', async () => {
+test('AC3: text-entry elements keep focus across refocus (find input, files editor, Tasks filter)', async () => {
   const { app, win, cleanup } = await launch(['alpha']);
   try {
     await openProject(win, 'alpha');
@@ -281,15 +275,13 @@ test('AC3: text-entry elements keep focus across refocus (find input, files edit
     await refocus(win);
     await expect(editorTextarea, 'files editor keeps focus').toBeFocused();
 
-    // ChatTab panel text-entry (metaproject login input — see file header:
-    // the real composer is unreachable under METAIDE_TEST_MODE, no login stub).
-    await win.getByTestId('ab-chat').click();
-    const chatInput = win.getByTestId('mp-login-username');
-    await expect(chatInput).toBeVisible({ timeout: 3000 });
-    await chatInput.click();
-    await expect(chatInput).toBeFocused();
+    // A normal sidebar text field, not an overlay.
+    await win.getByTestId('ab-tasks').click();
+    const taskFilter = win.getByPlaceholder('Filter…', { exact: true });
+    await taskFilter.click();
+    await expect(taskFilter).toBeFocused();
     await refocus(win);
-    await expect(chatInput, 'chat panel text-entry keeps focus').toBeFocused();
+    await expect(taskFilter, 'sidebar text-entry keeps focus').toBeFocused();
   } finally {
     await closeApp(app);
     cleanup();
@@ -457,20 +449,13 @@ test('AC10: notification click always switches project/shell, and honours D5 (ov
     await expect.poll(() => terminalActiveIn(win, '[data-testid="shell-tab"]'), { timeout: 3000 }).toBe(true);
 
     // D5 negative #1: a text-entry element held focus at blur time — the
-    // switch still happens, but focus stays on the text-entry. Uses the
-    // ChatTab panel's text-entry (see file header re: mp-login-username),
-    // not the terminal find box: the requested project switch necessarily
-    // unmounts the previously-selected project's ShellTab (and anything
-    // inside it, including its find box), which is existing app behaviour
-    // unrelated to this feature, so the find box cannot be the element that
-    // "keeps focus" across this specific transition. ChatTab is not keyed
-    // by project and stays mounted across the switch.
+    // switch still happens, but focus stays in the Tasks filter. Unlike
+    // the terminal find box, this input is not in the unmounted ShellTab.
     await openProject(win, 'alpha');
-    await win.getByTestId('ab-chat').click();
-    const chatInput = win.getByTestId('mp-login-username');
-    await expect(chatInput).toBeVisible({ timeout: 3000 });
-    await chatInput.click();
-    await expect(chatInput).toBeFocused();
+    await win.getByTestId('ab-tasks').click();
+    const taskFilter = win.getByPlaceholder('Filter…', { exact: true });
+    await taskFilter.click();
+    await expect(taskFilter).toBeFocused();
 
     await app.evaluate(({ BrowserWindow }, payload) => {
       const w = BrowserWindow.getAllWindows()[0]!;
@@ -481,7 +466,7 @@ test('AC10: notification click always switches project/shell, and honours D5 (ov
     }, { projectId: betaId, shellIndex: 0 });
 
     await expect.poll(() => win.title(), { timeout: 8000 }).toContain('beta');
-    await expect(chatInput, 'the switch happens but the pre-existing text-entry keeps focus (D5)').toBeFocused();
+    await expect(taskFilter, 'the switch happens but the pre-existing text-entry keeps focus (D5)').toBeFocused();
 
     // D5 negative #2: an overlay (command palette) is open at blur time.
     // blurToBody forces activeElement away from the palette's own input, so
@@ -489,6 +474,7 @@ test('AC10: notification click always switches project/shell, and honours D5 (ov
     // input's text-entry classification alone would already block focus,
     // leaving the overlay-flag guard unproven (gate finding L3).
     await win.keyboard.press('Escape');
+    await win.getByTestId('ab-projects').click();
     await openProject(win, 'alpha');
     await win.keyboard.press('ControlOrMeta+Shift+P');
     const palette = win.getByTestId(PALETTE_TESTIDS.root);
@@ -528,15 +514,15 @@ test('AC12: focus moves inside an already-focused window never triggers auto-foc
     // not reproducible under Playwright). Force to a text-entry, blur the
     // window, click it (simulating the activating click), then focus the
     // window — the text-entry must still hold focus.
-    await win.getByTestId('ab-chat').click();
-    const chatInput = win.getByTestId('mp-login-username');
-    await expect(chatInput).toBeVisible({ timeout: 3000 });
+    await win.getByTestId('ab-tasks').click();
+    const taskFilter = win.getByPlaceholder('Filter…', { exact: true });
+    await expect(taskFilter).toBeVisible({ timeout: 3000 });
     const handle = await app.browserWindow(win);
     await handle.evaluate((w) => w.blur());
-    await chatInput.click();
-    await expect(chatInput).toBeFocused();
+    await taskFilter.click();
+    await expect(taskFilter).toBeFocused();
     await handle.evaluate((w) => w.focus());
-    await expect(chatInput, 'the activating click keeps its element focused; the terminal does not take it').toBeFocused();
+    await expect(taskFilter, 'the activating click keeps its element focused; the terminal does not take it').toBeFocused();
   } finally {
     await closeApp(app);
     cleanup();

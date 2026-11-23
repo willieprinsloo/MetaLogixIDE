@@ -12,6 +12,7 @@ import type { KeepAwakeDarkenResult, KeepAwakeStartRequest, KeepAwakeStartResult
 import type { PrimarySessionInspection, StopPrimarySessionRequest, StopPrimarySessionResult } from './unload-session-contract';
 import type { FleetEntry, P2PSettings, P2PSettingsView } from './p2p-contract';
 import type { StatAppFileResult, UploadProgressEvent, UploadRequest, UploadResult } from './remote-upload-contract';
+import type { MetaprojectEvents, MetaprojectIpc } from './metaproject-contract';
 
 /**
  * Single-character git status codes we bubble up. The two-position
@@ -32,7 +33,7 @@ export interface GitSideContent {
   skipped?: 'absent' | 'too-large' | 'binary' | 'unavailable';
 }
 
-export interface IpcContract {
+export interface IpcContract extends MetaprojectIpc {
   // roots
   'roots:list':    { request: undefined;                  response: { roots: Root[] } };
   'roots:add':     { request: { path: string };           response: { root: Root } };
@@ -290,37 +291,17 @@ export interface IpcContract {
   'app:reveal-in-folder':   { request: { path: string }; response: { ok: true } };
 
   /* ─── metaproject chat (Flask-SocketIO backed) ─── */
-  'metaproject:login':          { request: { username: string; password: string; remember?: boolean }; response: { userId: number; userName: string } };
-  // Credentials persisted in the OS keychain (Keychain on macOS, libsecret on
-  // Linux, Credential Vault on Windows). Never round-trip through the renderer.
-  'metaproject:credentials-load':  { request: undefined; response: { username: string | null; hasPassword: boolean } };
-  'metaproject:credentials-clear': { request: undefined; response: { ok: true } };
-  'metaproject:auto-login':        { request: undefined; response: { ok: boolean; userName?: string; reason?: string } };
-  'metaproject:status':         { request: undefined; response: { loggedIn: boolean; connected: boolean; userName: string | null; userId: number | null } };
-  'metaproject:logout':         { request: undefined; response: { ok: true } };
-  'metaproject:list-channels':  { request: { projectId: number }; response: { channels: Array<{ id: number; project_id: number; name: string; is_private: boolean }> } };
+  'metaproject:list-channels':  { request: { projectId: number; epoch: number }; response: { channels: Array<{ id: number; project_id: number; name: string; is_private: boolean }> } };
   /**
    * Workspace-scoped channel list. `scope` is either 'all' (every channel the
    * user can see across every project + globals), 'global' (org-wide only),
    * or a project_id number (that project + globals).
    */
-  'metaproject:list-all-channels': { request: { scope: 'all' | 'global' | number }; response: { channels: Array<{ id: number; project_id: number | null; name: string; is_private: boolean }> } };
-  /** Lists metaproject projects the current user can access — used by the "link project" picker. */
-  'metaproject:list-projects':     { request: undefined; response: { projects: Array<{ id: number; name: string; identifier?: string | null }> } };
+  'metaproject:list-all-channels': { request: { scope: 'all' | 'global' | number; epoch: number }; response: { channels: Array<{ id: number; project_id: number | null; name: string; is_private: boolean }> } };
   /** Lists active users — used by the @-mention autocomplete in the composer. */
-  'metaproject:list-users':        { request: undefined; response: { users: Array<{ id: number; username: string; email?: string; avatar_url?: string | null }> } };
-  /** Creates a new metaproject project (kanban by default). */
-  'metaproject:create-project':    { request: { name: string; description?: string; projectType?: 'kanban' | 'sprint' | 'dcad' }; response: { project: { id: number; name: string; identifier?: string | null } } };
-  /**
-   * Sets `project_id: <n>` in the local project's `.metaproject.yaml`. Creates
-   * the file with sensible defaults if it doesn't exist, or does a regex
-   * upsert on the `project_id` line otherwise. Also refreshes the projects
-   * repo so Project.config.linkedMetaprojectProjectId reflects the change
-   * without needing a full root rescan.
-   */
-  'metaproject:link-local-project': { request: { projectId: number; metaprojectProjectId: number }; response: { ok: true } };
+  'metaproject:list-users':     { request: { epoch: number }; response: { users: Array<{ id: number; username: string; email?: string; avatar_url?: string | null }> } };
   'metaproject:list-messages':  {
-    request: { channelId: number; limit?: number; projectId?: number };
+    request: { channelId: number; limit?: number; projectId: number; epoch: number };
     response: {
       messages: Array<{
         id: number;
@@ -332,22 +313,24 @@ export interface IpcContract {
         message: string;
         created_at: string;
         parent_message_id: number | null;
+        is_deleted?: boolean;
         attachments?: Array<{ id: number; filename: string; file_size: number; mime_type?: string | null }>;
       }>;
     };
   };
-  'metaproject:join-channel':   { request: { channelId: number }; response: { ok: true } };
-  'metaproject:send-message':   { request: { channelId: number; message: string; parentMessageId?: number | null }; response: { ok: true } };
-  'metaproject:mark-read':      { request: { channelId: number; lastMessageId: number }; response: { ok: true } };
-  'metaproject:edit-message':   { request: { channelId: number; messageId: number; message: string }; response: { ok: true } };
-  'metaproject:delete-message': { request: { channelId: number; messageId: number }; response: { ok: true } };
+  'metaproject:join-channel':   { request: { channelId: number; epoch: number }; response: { ok: true } };
+  'metaproject:send-message':   { request: { projectId: number; channelId: number; message: string; parentMessageId?: number | null; epoch: number }; response: { ok: true } };
+  'metaproject:send-global-message': { request: { channelId: number; message: string; parentMessageId?: number | null; epoch: number }; response: { submitted: true } };
+  'metaproject:mark-read':      { request: { projectId: number; channelId: number; lastMessageId: number; epoch: number }; response: { ok: true } };
+  'metaproject:edit-message':   { request: { projectId: number; channelId: number; messageId: number; message: string; epoch: number }; response: { ok: true } };
+  'metaproject:delete-message': { request: { projectId: number; channelId: number; messageId: number; epoch: number }; response: { ok: true } };
   /**
    * Downloads a chat message attachment to the user's Downloads folder and
    * returns the absolute path we wrote to. Adds a ` (N)` suffix if the file
    * already exists so we never silently overwrite anything.
    */
   'metaproject:download-attachment': {
-    request: { projectId: number; attachmentId: number; filename: string };
+    request: { projectId: number; attachmentId: number; filename: string; epoch: number };
     response: { path: string };
   };
 
@@ -455,7 +438,7 @@ export type IpcRequest<C extends IpcChannelName>  = IpcContract[C]['request'];
 export type IpcResponse<C extends IpcChannelName> = IpcContract[C]['response'];
 
 // Streaming (main → renderer) event channels — separate from request/response.
-export interface IpcEvents {
+export interface IpcEvents extends MetaprojectEvents {
   'pty:data':               { projectId: number; shellIndex: number; data: string };
   'pty:exit':               { projectId: number; shellIndex: number; code: number | null };
   'pty:input-owner-changed':{ projectId: number; shellIndex: number; ownerWindowId: number };
@@ -463,7 +446,7 @@ export interface IpcEvents {
   'settings:changed':       { key: keyof SettingsMap };
   'alive-shells:changed':   Record<string, never>;
   'popout:changed':         { popped: Array<{ projectId: number; shellIndex: number }> };
-  'metaproject:event':      { event: string; payload: unknown };
+  'metaproject:chat-event': { epoch: number; event: string; payload: unknown };
   'ports:changed':          { projectId: number; shellIndex: number; ports: number[] };
   /** An agent shell changed state; emitted after screen observation. */
   'agent-state:changed': AgentShellStateEntry;

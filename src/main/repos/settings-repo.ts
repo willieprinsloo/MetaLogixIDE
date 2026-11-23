@@ -45,6 +45,16 @@ export const DEFAULT_SETTINGS: SettingsMap = {
   ],
 };
 
+type MetaprojectPrivateKey = 'metaproject_restore_grant_v1' | 'metaproject_legacy_assignments_v1';
+type MetaprojectPrivateChanges = Partial<Record<MetaprojectPrivateKey, unknown>> & {
+  readonly metaproject_base_url?: string;
+};
+
+/** These keys are managed by the main-process Metaproject lifecycle, not generic settings IPC. */
+export function isManagedMetaprojectSetting(key: unknown): boolean {
+  return typeof key === 'string' && key.startsWith('metaproject_');
+}
+
 /**
  * Built-in profiles of harnesses the IDE no longer supports, exactly as earlier builds seeded
  * them. Startup removes an entry only while it still matches, so a user-edited one survives.
@@ -134,6 +144,27 @@ export class SettingsRepo {
     this.db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, JSON.stringify(value));
   }
 
+  readMetaprojectPrivate(key: MetaprojectPrivateKey): unknown {
+    const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+    if (typeof row !== 'object' || row === null || !('value' in row) || typeof row.value !== 'string') return undefined;
+    // Preserve distinction between an absent migration marker and malformed metadata.
+    try { return JSON.parse(row.value) as unknown; } catch { return null; }
+  }
+
+  /** Synchronously commit origin and restore authorization together, with a WAL sync at commit. */
+  writeMetaprojectPrivate(changes: MetaprojectPrivateChanges): void {
+    const update = this.db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
+    const commit = this.db.transaction(() => {
+      for (const [key, value] of Object.entries(changes)) update.run(key, JSON.stringify(value ?? null));
+    });
+    const previous = this.db.pragma('synchronous', { simple: true });
+    if (typeof previous !== 'number' || !Number.isInteger(previous) || previous < 0 || previous > 3) {
+      throw new Error('Could not read SQLite durability setting');
+    }
+    if (previous < 2) this.db.pragma('synchronous = FULL');
+    try { commit(); } finally { if (previous < 2) this.db.pragma(`synchronous = ${previous}`); }
+  }
+
   /**
    * Upserts every entry in one transaction: either all rows are written, or
    * (on any failure, e.g. a value that cannot be JSON-serialized) none are —
@@ -153,6 +184,7 @@ export class SettingsRepo {
     const rows = this.db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
     const result = { ...DEFAULT_SETTINGS };
     for (const row of rows) {
+      if (isManagedMetaprojectSetting(row.key) && !(row.key in DEFAULT_SETTINGS)) continue;
       (result as Record<string, unknown>)[row.key] = JSON.parse(row.value);
     }
     return result;

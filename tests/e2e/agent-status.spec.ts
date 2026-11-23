@@ -159,29 +159,33 @@ test('AC2/AC3: an unrelated Node foreground printing Claude-like prompts stays i
 });
 
 test('AC4: user --settings Claude launch still has working screen status without app hooks', async () => {
-  const h = await launchStatus(['demo']);
+  const h = await test.step('Start the IDE with a fresh profile', () => launchStatus(['demo']));
   try {
-    await openProject(h.win, 'demo');
-    const id = await projectId(h.win, 'demo');
+    const id = await test.step('Open the demo project', async () => {
+      await openProject(h.win, 'demo');
+      return projectId(h.win, 'demo');
+    });
     const settings = join(h.home, 'user-settings.json');
     writeFileSync(settings, JSON.stringify({ hooks: {} }));
-    const index = await launchCli(h.win, id, 'Claude with settings', [
-      h.claude,
-      '--settings',
-      settings,
-    ]);
-    await waitForShell(h.win, id, index, 'mock-claude ready');
-    await sendLine(h.win, id, index, '/hook-argv');
-    await waitForShell(h.win, id, index, `HOOK-ARGV count=1 path=${settings}`);
-    await expectInactiveAgentIdle(h.win, id, index, 'claude');
-    await sendLine(h.win, id, index, '/status-work');
-    await expectAgentDot(tabDot(h.win, index), 'claude', 'busy');
-    await sendLine(h.win, id, index, '/status-approval');
-    await expectAgentDot(tabDot(h.win, index), 'claude', 'blocked');
-    await sendLine(h.win, id, index, '/status-ready');
-    await expectInactiveAgentIdle(h.win, id, index, 'claude');
+    const index = await test.step('Launch Claude with user settings', () =>
+      launchCli(h.win, id, 'Claude with settings', [h.claude, '--settings', settings]),
+    );
+    await test.step('Verify the mock starts and receives exactly the user settings', async () => {
+      await waitForShell(h.win, id, index, 'mock-claude ready');
+      await sendLine(h.win, id, index, '/hook-argv');
+      await waitForShell(h.win, id, index, `HOOK-ARGV count=1 path=${settings}`);
+    });
+    await test.step('Verify idle, busy, blocked, then idle status', async () => {
+      await expectInactiveAgentIdle(h.win, id, index, 'claude');
+      await sendLine(h.win, id, index, '/status-work');
+      await expectAgentDot(tabDot(h.win, index), 'claude', 'busy');
+      await sendLine(h.win, id, index, '/status-approval');
+      await expectAgentDot(tabDot(h.win, index), 'claude', 'blocked');
+      await sendLine(h.win, id, index, '/status-ready');
+      await expectInactiveAgentIdle(h.win, id, index, 'claude');
+    });
   } finally {
-    await h.close();
+    await test.step('Close the IDE and remove the test profile', () => h.close());
   }
 });
 
