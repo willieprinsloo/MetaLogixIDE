@@ -10,3 +10,6 @@ test-results/
 
 # Session-local scratch from Claude Code
 .claude/
+
+# Local worktrees for feature integration
+.worktrees/
