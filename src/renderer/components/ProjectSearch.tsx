@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@renderer/api';
 import { ModalFrame } from '@renderer/components/ModalFrame';
 import { ICON_SIZE, ICON_STROKE } from './icon-size';
+import { Tooltip } from './Tooltip';
 
 interface Match { relPath: string; line: number; col: number; preview: string }
 
@@ -193,17 +194,20 @@ function PreviewLine({ text, query, regex, caseSensitive }: { text: string; quer
 
 function ToolbarToggle({ title, active, onClick, children }: { title: string; active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <button
-      onClick={onClick}
-      title={title}
-      className={`h-6 w-8 flex items-center justify-center rounded text-[11px] font-mono border ${
-        active
-          ? 'bg-[color:var(--accent)] text-[--accent-text] border-transparent'
-          : 'bg-[--panel] text-[--modal-text-muted] border-[--border] hover:text-[--text]'
-      }`}
-    >
-      {children}
-    </button>
+    <Tooltip label={title}>
+      <button
+        onClick={onClick}
+        aria-label={title}
+        aria-pressed={active}
+        className={`h-6 w-8 flex items-center justify-center rounded text-[11px] font-mono border ${
+          active
+            ? 'bg-[color:var(--accent)] text-[--accent-text] border-transparent'
+            : 'bg-[--panel] text-[--modal-text-muted] border-[--border] hover:text-[--text]'
+        }`}
+      >
+        {children}
+      </button>
+    </Tooltip>
   );
 }
 

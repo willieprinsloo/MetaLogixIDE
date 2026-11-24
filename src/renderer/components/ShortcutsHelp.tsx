@@ -3,6 +3,7 @@ import { useDialogFocus } from '@renderer/hooks/useDialogFocus';
 import { MODAL_CLASSES } from '@renderer/modal-glass';
 import { ModalFrame } from './ModalFrame';
 import { XIcon } from './shell-icons';
+import { Tooltip } from './Tooltip';
 import { SHORTCUTS, type ShortcutDef, type ShortcutKeyLike, type ShortcutPlatform } from '@renderer/shortcut-contract';
 import { formatShortcut } from '@renderer/shortcut-format';
 import { useShortcutPlatform } from '@renderer/shortcut-platform';
@@ -122,15 +123,16 @@ function ShortcutsSheet({ onClose }: Pick<ShortcutsHelpProps, 'onClose'>): React
       >
         <div className="px-4 py-3 border-b border-[--modal-hairline] flex items-center justify-between">
           <h2 id={titleId} className="font-semibold text-sm">Keyboard shortcuts</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="w-7 h-7 flex items-center justify-center rounded text-[--modal-text-muted] hover:text-[--text] hover:bg-[--surface-hover]"
-            title="Close (Esc)"
-            aria-label="Close shortcuts"
-          >
-            <XIcon />
-          </button>
+          <Tooltip label="Close shortcuts" shortcut="Esc">
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-7 h-7 flex items-center justify-center rounded text-[--modal-text-muted] hover:text-[--text] hover:bg-[--surface-hover]"
+              aria-label="Close shortcuts"
+            >
+              <XIcon />
+            </button>
+          </Tooltip>
         </div>
         <div className="p-5 grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-4">
           {SHORTCUT_GROUPS.map((g) => (

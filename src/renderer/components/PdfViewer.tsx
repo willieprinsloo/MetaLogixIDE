@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@renderer/api';
 import { useDocumentZoom } from '@renderer/hooks/useDocumentZoom';
+import { Tooltip } from './Tooltip';
 import * as pdfjsLib from 'pdfjs-dist';
 
 // One-time worker wiring. `new URL(..., import.meta.url)` is Vite's native
@@ -258,14 +259,16 @@ function PdfViewerToolbar({
   const pageInput = useMemo(() => String(page), [page]);
   return (
     <div className="px-3 py-1.5 border-b border-[--border] text-[11px] text-[--text-muted] flex items-center gap-2 overflow-hidden">
-      <button
-        onClick={() => onPage(page - 1)}
-        disabled={page <= 1}
-        className="px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong] disabled:opacity-40"
-        title="Previous page (PageUp)"
-      >
-        ‹
-      </button>
+      <Tooltip label="Previous page" shortcut="PageUp">
+        <button
+          onClick={() => onPage(page - 1)}
+          disabled={page <= 1}
+          className="px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong] disabled:opacity-40"
+          aria-label="Previous page"
+        >
+          ‹
+        </button>
+      </Tooltip>
       <span className="font-mono tabular-nums">
         <input
           key={pageInput}
@@ -276,31 +279,41 @@ function PdfViewerToolbar({
         />
         <span className="px-1">/ {total || '—'}</span>
       </span>
-      <button
-        onClick={() => onPage(page + 1)}
-        disabled={total > 0 && page >= total}
-        className="px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong] disabled:opacity-40"
-        title="Next page (PageDown)"
-      >
-        ›
-      </button>
+      <Tooltip label="Next page" shortcut="PageDown">
+        <button
+          onClick={() => onPage(page + 1)}
+          disabled={total > 0 && page >= total}
+          className="px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong] disabled:opacity-40"
+          aria-label="Next page"
+        >
+          ›
+        </button>
+      </Tooltip>
       <div className="flex-1" />
-      <button onClick={onZoomOut} className="px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]" title="Zoom out (⌘-)">−</button>
-      <button
-        onClick={onReset}
-        className="px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong] font-mono tabular-nums min-w-[52px]"
-        title="Reset zoom (⌘0)"
-      >
-        {pct}%
-      </button>
-      <button onClick={onZoomIn} className="px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]" title="Zoom in (⌘=)">+</button>
-      <button
-        onClick={onFullscreenToggle}
-        className="px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]"
-        title={fullscreen ? 'Exit fullscreen (⌘⇧Enter)' : 'Fullscreen (⌘⇧Enter)'}
-      >
-        {fullscreen ? '⤡' : '⤢'}
-      </button>
+      <Tooltip label="Zoom out" shortcut="⌘-">
+        <button onClick={onZoomOut} className="px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]" aria-label="Zoom out">−</button>
+      </Tooltip>
+      <Tooltip label="Reset zoom" shortcut="⌘0">
+        <button
+          onClick={onReset}
+          className="px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong] font-mono tabular-nums min-w-[52px]"
+          aria-label="Reset zoom"
+        >
+          {pct}%
+        </button>
+      </Tooltip>
+      <Tooltip label="Zoom in" shortcut="⌘=">
+        <button onClick={onZoomIn} className="px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]" aria-label="Zoom in">+</button>
+      </Tooltip>
+      <Tooltip label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'} shortcut="⌘⇧Enter">
+        <button
+          onClick={onFullscreenToggle}
+          className="px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]"
+          aria-label={fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+        >
+          {fullscreen ? '⤡' : '⤢'}
+        </button>
+      </Tooltip>
     </div>
   );
 }

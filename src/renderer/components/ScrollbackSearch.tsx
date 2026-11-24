@@ -3,6 +3,7 @@ import { api } from '@renderer/api';
 import { ModalFrame } from '@renderer/components/ModalFrame';
 import { ICON_SIZE } from './icon-size';
 import { XIcon } from './shell-icons';
+import { Tooltip } from './Tooltip';
 
 interface Match {
   projectId: number;
@@ -111,13 +112,15 @@ export function ScrollbackSearch({ open, onClose, onFocus }: Props) {
             <input type="checkbox" checked={regex} onChange={(e) => setRegex(e.target.checked)} className="accent-[color:var(--accent)]" />
             .*
           </label>
-          <button
-            onClick={onClose}
-            className="text-[--modal-text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel]"
-            aria-label="Close"
-          >
-            <XIcon size={ICON_SIZE.md} />
-          </button>
+          <Tooltip label="Close search" shortcut="Esc">
+            <button
+              onClick={onClose}
+              className="text-[--modal-text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel]"
+              aria-label="Close search"
+            >
+              <XIcon size={ICON_SIZE.md} />
+            </button>
+          </Tooltip>
         </div>
         <div className="px-3 py-1 border-b border-[--border] text-[10px] text-[--modal-text-muted] flex gap-3">
           <span>{loading ? 'searching…' : `${matches.length} match${matches.length === 1 ? '' : 'es'} across ${scanned} shell${scanned === 1 ? '' : 's'}`}</span>

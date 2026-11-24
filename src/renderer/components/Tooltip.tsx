@@ -7,6 +7,13 @@ interface Props {
   side?: 'top' | 'bottom' | 'left' | 'right';
   /** Also show while a child has keyboard focus (`:focus-visible`); off by default. */
   focusable?: boolean;
+  /**
+   * Extra classes merged onto the wrapper span. Use this to carry layout
+   * classes (margin, opacity, group-hover modifiers) that would otherwise
+   * stay on the child button but no longer affect sibling spacing once the
+   * wrapper becomes the flex/grid item.
+   */
+  wrapClassName?: string;
   children: React.ReactNode;
 }
 
@@ -26,7 +33,7 @@ const WARM_MS = 400;
 let lastHiddenAt = 0;
 let openCount = 0;
 
-export function Tooltip({ label, shortcut, side = 'bottom', focusable = false, children }: Props) {
+export function Tooltip({ label, shortcut, side = 'bottom', focusable = false, wrapClassName, children }: Props) {
   const wrapRef = useRef<HTMLSpanElement>(null);
   const [pos, setPos] = useState<{ x: number; y: number; instant: boolean } | null>(null);
   const timer = useRef<number | null>(null);
@@ -82,7 +89,7 @@ export function Tooltip({ label, shortcut, side = 'bottom', focusable = false, c
         onFocus={focusable ? onFocus : undefined}
         onBlur={focusable ? onLeave : undefined}
         aria-describedby={pos ? descId : undefined}
-        className="inline-flex"
+        className={wrapClassName ? `inline-flex ${wrapClassName}` : 'inline-flex'}
       >
         {children}
       </span>

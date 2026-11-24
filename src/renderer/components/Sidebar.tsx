@@ -20,6 +20,7 @@ import { SIDEBAR_WIDTH } from '@renderer/sidebar-width';
 import { SidebarHeader } from './SidebarHeader';
 import { PROJECT_SETTINGS_COPY, type ProjectSettingsTarget } from '@renderer/project-settings-contract';
 import { ICON_SIZE, ICON_STROKE } from './icon-size';
+import { Tooltip } from './Tooltip';
 import { ChevronIcon } from './ChevronIcon';
 import { MachineDots } from './MachineDots';
 import { RemoteMachineList } from './RemoteMachineList';
@@ -389,18 +390,20 @@ function ProjectRow({
         <span className="truncate">{project.name}</span>
       </button>
       {primaryAlive && (
-        <button
-          onClick={unload}
-          data-testid="row-unload"
-          className={`w-4 h-4 flex shrink-0 items-center justify-center rounded transition-colors focus-visible:ring-2 focus-visible:ring-[--accent] ${
-            selected
-              ? 'text-[--text-muted] hover:text-[--danger] hover:bg-[--surface-hover] opacity-100'
-              : 'text-[--text-muted] hover:text-[--danger] hover:bg-[--surface-hover] opacity-0 group-hover:opacity-100 focus:opacity-100'
-          }`}
-          title="Unload session (close shell)"
-        >
-          <RowXIcon />
-        </button>
+        <Tooltip label="Unload session (close shell)" wrapClassName="shrink-0">
+          <button
+            onClick={unload}
+            data-testid="row-unload"
+            className={`w-4 h-4 flex items-center justify-center rounded transition-colors focus-visible:ring-2 focus-visible:ring-[--accent] ${
+              selected
+                ? 'text-[--text-muted] hover:text-[--danger] hover:bg-[--surface-hover] opacity-100'
+                : 'text-[--text-muted] hover:text-[--danger] hover:bg-[--surface-hover] opacity-0 group-hover:opacity-100 focus:opacity-100'
+            }`}
+            aria-label="Unload session (close shell)"
+          >
+            <RowXIcon />
+          </button>
+        </Tooltip>
       )}
       <AnimatePresence>
         {menu && (

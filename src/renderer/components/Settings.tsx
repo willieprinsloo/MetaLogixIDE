@@ -10,6 +10,7 @@ import { useDialogFocus } from '@renderer/hooks/useDialogFocus';
 import { APP_ENV_DRAFT_KEY, type EnvDrafts } from '@renderer/hooks/useEnvDrafts';
 import { APP_ENV_COPY } from '@renderer/project-env-copy';
 import { ICON_SIZE, ICON_STROKE } from '@renderer/components/icon-size';
+import { Tooltip } from '@renderer/components/Tooltip';
 
 interface FontDiscoverySession {
   readonly fontDiscovery: FontDiscoveryState;
@@ -165,16 +166,17 @@ function SettingsHeader({
       <h1 id={titleId} className="text-[15px] font-semibold">
         Settings
       </h1>
-      <button
-        type="button"
-        onClick={onClose}
-        className="no-drag flex h-9 w-9 items-center justify-center rounded-[10px] text-[--modal-text-muted] hover:bg-[--surface-hover] hover:text-[--text] focus-visible:rounded-[10px]"
-        title="Close (Esc)"
-        data-testid="settings-close"
-        aria-label="Close settings"
-      >
-        <CloseIcon />
-      </button>
+      <Tooltip label="Close settings" shortcut="Esc">
+        <button
+          type="button"
+          onClick={onClose}
+          className="no-drag flex h-9 w-9 items-center justify-center rounded-[10px] text-[--modal-text-muted] hover:bg-[--surface-hover] hover:text-[--text] focus-visible:rounded-[10px]"
+          data-testid="settings-close"
+          aria-label="Close settings"
+        >
+          <CloseIcon />
+        </button>
+      </Tooltip>
     </div>
   );
 }

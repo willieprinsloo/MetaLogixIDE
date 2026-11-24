@@ -1136,15 +1136,16 @@ function MainApp() {
                     <span className="flex min-w-0 items-center gap-1.5 text-[--text] pl-2 pr-1 py-0.5 rounded-md bg-[--surface-active] text-[11px] max-w-[280px]" title={selected.path}>
                       <StatusDot state={selectedAgentState} />
                       <span className="truncate font-medium">{selected.name}</span>
-                      {primaryAlive && <button
-                        onClick={unloadCurrent}
-                        className="ml-1 text-[--text-muted] hover:text-[--danger] hover:bg-[--panel]/60 w-4 h-4 flex shrink-0 items-center justify-center rounded focus-visible:ring-2 focus-visible:ring-[--accent]"
-                        title="Unload session (close shell)"
-                        aria-label="Unload session (close shell)"
-                        data-testid="unload-current"
-                      >
-                        <XIcon />
-                      </button>}
+                      {primaryAlive && <Tooltip label="Unload session (close shell)" wrapClassName="ml-1 shrink-0">
+                        <button
+                          onClick={unloadCurrent}
+                          className="text-[--text-muted] hover:text-[--danger] hover:bg-[--panel]/60 w-4 h-4 flex items-center justify-center rounded focus-visible:ring-2 focus-visible:ring-[--accent]"
+                          aria-label="Unload session (close shell)"
+                          data-testid="unload-current"
+                        >
+                          <XIcon />
+                        </button>
+                      </Tooltip>}
                     </span>
                     <MetaprojectBoardButton project={selected} onRequestLink={() => setActiveView('chat')} />
                     <Tooltip label="Prompt library" shortcut={SHORTCUT_COPY.promptsShortcut(platform)}>
@@ -1298,15 +1299,16 @@ function MainApp() {
             >
               <div className="shrink-0 flex items-center justify-between pl-3 pr-1.5 py-1 border-b border-[--border] text-[11px] text-[--text-muted]">
                 <span className="uppercase tracking-wide">Agents</span>
-                <button
-                  onClick={() => setAgentsDockOpen(false)}
-                  title="Close Agents pane (⌘J to reopen)"
-                  aria-label="Close Agents pane"
-                  className="w-5 h-5 flex items-center justify-center rounded hover:bg-[--panel-strong] hover:text-[--text]"
-                  data-testid="agents-dock-close"
-                >
-                  ×
-                </button>
+                <Tooltip label="Close Agents pane" shortcut="⌘J to reopen">
+                  <button
+                    onClick={() => setAgentsDockOpen(false)}
+                    aria-label="Close Agents pane"
+                    className="w-5 h-5 flex items-center justify-center rounded hover:bg-[--panel-strong] hover:text-[--text]"
+                    data-testid="agents-dock-close"
+                  >
+                    ×
+                  </button>
+                </Tooltip>
               </div>
               <div className="flex-1 min-h-0">
                 <AgentChatTab projectId={selected.id} selfDevice={selfDeviceName} focusTick={agentsComposerFocusTick} />

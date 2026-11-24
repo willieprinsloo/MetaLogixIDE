@@ -5,6 +5,7 @@ import { TASK_SOURCES, TASKS_COPY, type TaskDef, type TaskNotice } from '@shared
 import { createRequestGate } from '@renderer/diff/diff-load-state';
 import { discoveryFor, filterTasks, groupTasks, NO_DISCOVERY, type ProjectDiscovery } from '@renderer/tasks-view';
 import { ICON_SIZE, ICON_STROKE } from './icon-size';
+import { Tooltip } from './Tooltip';
 
 
 interface Props {
@@ -71,13 +72,15 @@ export function TasksPanel({ projectId, onLaunched }: Props) {
           placeholder="Filter…"
           className="ml-auto w-32 bg-[--panel-strong] border border-[--border] rounded px-2 py-0.5 text-[11px] outline-none focus:ring-1 focus:ring-[--accent]/60"
         />
-        <button
-          onClick={refresh}
-          className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel-strong]"
-          title="Rediscover"
-        >
-          <RefreshIcon />
-        </button>
+        <Tooltip label="Rediscover tasks">
+          <button
+            onClick={refresh}
+            className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel-strong]"
+            aria-label="Rediscover tasks"
+          >
+            <RefreshIcon />
+          </button>
+        </Tooltip>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto py-1 text-xs">
         {loading && tasks.length === 0 && (
