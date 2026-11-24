@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactElement } from 'react';
 import { api } from '@renderer/api';
 import { useAgentChat } from '@renderer/hooks/useAgentChat';
 import { useChatRoster } from '@renderer/hooks/useChatRoster';
+import { useAgentIntent } from '@renderer/hooks/useAgentIntent';
 import { formatMention } from '@shared/chat-mention';
 import { toast } from '@renderer/hooks/useToasts';
 
@@ -19,6 +20,7 @@ import { toast } from '@renderer/hooks/useToasts';
 export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick }: { projectId: number; selfDevice: string; focusTick?: number }) {
   const { entries, send } = useAgentChat(projectId);
   const { rows: liveRoster, selfDevice: rosterSelfDevice } = useChatRoster();
+  const intent = useAgentIntent(projectId);
   // Prefer the roster's canonical self device over the P2P hook: when
   // P2P is off the hook returns '', which never matches `row.device` and
   // leaks a "·device" suffix on every local pill.
@@ -158,6 +160,12 @@ export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick 
             {roster.map((r) => {
               const display = r.nickname ?? r.agent;
               const canRename = r.projectId != null && r.device === selfDevice;
+              // Pull the agent's "what I'm doing" line; only shown for
+              // local, online rows — a stale intent on an offline shell
+              // is noise, and a peer-posted intent isn't bus-wired yet.
+              const intentView = r.online && r.device === selfDevice
+                ? intent.get(`${r.agent}#${r.shell}`)
+                : undefined;
               // Count duplicates of this family on this device — when there are
               // two+ `claude`s, the user NEEDS to nickname at least one, so the
               // pencil stays visible (not hover-only). Same for a nicknamed row
@@ -189,6 +197,16 @@ export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick 
                     <span className={`inline-block w-1.5 h-1.5 rounded-full ${r.online ? 'bg-[--accent]' : 'bg-[--text-muted]'}`} aria-hidden="true" />
                     <span className="truncate max-w-[10rem]">{display}</span>
                     {r.device !== selfDevice && <span className="text-[--text-muted] opacity-80">·{r.device}</span>}
+                    {intentView && (
+                      <span
+                        className={`text-[--text-muted] truncate max-w-[14rem] ${intentView.kind === 'dim' ? 'opacity-60' : ''} ${intentView.kind === 'idle' ? 'opacity-40 italic' : ''}`}
+                        title={intentView.kind === 'idle'
+                          ? `${display} — no update for a while; last said: "${intentView.update.text}"`
+                          : `${display}: ${intentView.update.text}`}
+                      >
+                        · {intentView.display}
+                      </span>
+                    )}
                   </button>
                   {canRename && (
                     <button
@@ -259,7 +277,7 @@ export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick 
               <span className="text-[--accent-soft-text] font-medium">
                 {formatMention({ agent: e.from.agent, device: e.from.device === selfDevice ? undefined : e.from.device })}
               </span>{' '}
-              <span>{e.body}</span>
+              <span>{renderBodyWithMentions(e.body)}</span>
               {e.meta?.cap_held && (
                 <span className="text-[--hue-red] text-xs ml-2" title="The recipient agent is at its concurrent-reply cap; the message is queued and will deliver when it frees up.">· cap held</span>
               )}
@@ -315,6 +333,35 @@ export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick 
       </section>
     </div>
   );
+}
+
+/** Same grammar as shared/chat-mention.ts's MENTION_RE, kept separate so
+ *  the body renderer owns its own matcher (and can keep the regex state
+ *  it needs for split/exec without stomping on parseMentions callers). */
+const BODY_MENTION_RE = /@([a-z][a-z0-9-]*)(?:#(\d+))?(?:@([a-z0-9][a-z0-9.-]*))?/gi;
+
+/** Split a message body into plain-text and highlighted mention nodes so
+ *  `@claude#0`, `@human`, `@codex@laptop` etc. embedded in prose read as
+ *  routing hints, not opaque text. Highlighting matches the sender tag's
+ *  accent-soft-text color but without the font-medium weight — the sender
+ *  (left of the body) stays the strongest visual anchor in the row. */
+function renderBodyWithMentions(body: string) {
+  const out: Array<string | ReactElement> = [];
+  let last = 0;
+  let key = 0;
+  // matchAll works because BODY_MENTION_RE is /g. Each match carries its
+  // index, so slicing between index and index+match[0].length gives the
+  // plain-text runs that frame the mentions.
+  for (const m of body.matchAll(BODY_MENTION_RE)) {
+    const idx = m.index ?? 0;
+    if (idx > last) out.push(body.slice(last, idx));
+    out.push(
+      <span key={key++} className="text-[--accent-soft-text]">{m[0]}</span>,
+    );
+    last = idx + m[0].length;
+  }
+  if (last < body.length) out.push(body.slice(last));
+  return out;
 }
 
 /** Returns true if ≥2 agents share the same family on the same device —

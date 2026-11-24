@@ -252,6 +252,17 @@ export interface IpcContract {
     request: { projectId: number; shellIndex: number; agent: 'claude' | 'codex' | 'opencode' };
     response: { ok: true; appended: boolean; file: string };
   };
+  /**
+   * Snapshot of every live agent intent on a project — one entry per
+   * `(agent, shell)`. The renderer bootstraps with this and then subscribes
+   * to `intent:changed` for deltas. Returns an empty list when the project
+   * hasn't been opened, has no intent file yet, or no agent has written
+   * one this session.
+   */
+  'intent:list': {
+    request: { projectId: number };
+    response: { updates: import('./intent').IntentUpdate[] };
+  };
   'files:list-all':  { request: { projectId: number; limit?: number; filter?: string };     response: { files: Array<{ relPath: string; name: string }>; total: number; truncated: boolean } };
   'files:write':     { request: { projectId: number; relPath: string; content: string };    response: { ok: true; sizeBytes: number } };
   'files:mkdir':     { request: { projectId: number; relPath: string };                     response: { ok: true } };
@@ -558,5 +569,9 @@ export interface IpcEvents {
   'activity:changed': { projectId: number; entry: import('./activity').ActivityEntry };
   /** A new chat entry was appended (or an existing one updated with cap-held delivery metadata). */
   'chat:changed': { projectId: number; entry: import('./chat').ChatEntry };
+  /** A shell's status badge text changed — one entry per shift. The
+   *  renderer keeps the latest-per-(agent,shell) and rolls its own idle
+   *  timers from `update.ts`. */
+  'intent:changed': { projectId: number; update: import('./intent').IntentUpdate };
 }
 export type IpcEventName = keyof IpcEvents;

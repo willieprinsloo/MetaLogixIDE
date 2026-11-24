@@ -13,6 +13,7 @@ import { wireChatInjector } from './chat/inject';
 import { readRecentChat } from './chat/log';
 import { ensureAgentStanza, buildOnboardingNudge, nudgeAgentShell } from './chat/onboard';
 import { startOutboxWatcher } from './chat/outbox-watcher';
+import { startIntentWatcher } from './chat/intent-watcher';
 import { isWorkerWindowId } from './p2p/worker/windowWorker';
 import { buildServices, type Services } from './services';
 import { createCredentialStore } from './credential-store';
@@ -594,6 +595,18 @@ function installNotifications(services: Services): void {
       projects: services.projects.list(),
     });
   }
+
+  // Agent → status badge bus. Tails each project's
+  // `.metaide/intent-outbox.jsonl` and broadcasts `intent:changed` so
+  // the renderer can render a "what I'm doing" line beside each agent.
+  // Independent of the chat injector: intent isn't addressed to anyone;
+  // it's ambient state, so a change fans out and that's it.
+  services.intent = startIntentWatcher({
+    projects: services.projects.list(),
+    onChanged: ({ projectId, update }) => {
+      broadcast('intent:changed', { projectId, update });
+    },
+  });
 }
 
 /** Fanout list used by `wireChatInjector`; populated by `installNotifications`. */

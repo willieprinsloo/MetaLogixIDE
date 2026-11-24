@@ -68,6 +68,9 @@ export interface Services {
   selfDevice?: string;
   /** Tails `.metaide/chat-outbox.jsonl` in every project and routes new lines through `chat.append`. */
   chatOutbox?: import('./chat/outbox-watcher').OutboxWatcher;
+  /** Tails `.metaide/intent-outbox.jsonl` in every project; drives the
+   *  "what each agent is doing" badge in the renderer. */
+  intent?: import('./chat/intent-watcher').IntentWatcher;
   /** safeStorage-backed credential store; attached in createServices once `app` is ready. */
   credentialStore: CredentialStore | null;
 }

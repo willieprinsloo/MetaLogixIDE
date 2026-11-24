@@ -10,9 +10,45 @@ describe('ensureAgentStanza', () => {
     const res = ensureAgentStanza(dir, 'claude');
     expect(res.appended).toBe(true);
     const txt = readFileSync(res.file, 'utf8');
-    expect(txt).toContain('# metaide-chat-bus@v2');
+    expect(txt).toContain('# metaide-chat-bus@v3');
     expect(txt).toContain('[metaide-chat');
     expect(txt).toContain('chat-outbox.jsonl');
+  });
+
+  it('includes the status-badge and writing-style sections', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'onb-'));
+    ensureAgentStanza(dir, 'claude');
+    const txt = readFileSync(join(dir, 'CLAUDE.md'), 'utf8');
+    // The v3 sections — the whole point of the bump.
+    expect(txt).toContain('## Status badge');
+    expect(txt).toContain('intent-outbox.jsonl');
+    expect(txt).toContain('## Writing style');
+    expect(txt).toContain('10th-grade');
+  });
+
+  it('upgrades a v2 stanza by replacing the whole block, not stacking', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'onb-'));
+    const v2Body = [
+      '# user rules',
+      'use tabs',
+      '',
+      '# metaide-chat-bus@v2',
+      '## metaIDE chat bus',
+      'old v2 instructions that should not survive',
+      '',
+    ].join('\n');
+    writeFileSync(join(dir, 'CLAUDE.md'), v2Body);
+    const res = ensureAgentStanza(dir, 'claude');
+    expect(res.appended).toBe(true);
+    const txt = readFileSync(res.file, 'utf8');
+    // User's own content stays.
+    expect(txt).toContain('use tabs');
+    // Old v2 marker + its body are gone.
+    expect(txt).not.toContain('# metaide-chat-bus@v2');
+    expect(txt).not.toContain('old v2 instructions that should not survive');
+    // Fresh v3 marker is present exactly once.
+    expect(txt).toContain('# metaide-chat-bus@v3');
+    expect(txt.split('# metaide-chat-bus@').length - 1).toBe(1);
   });
 
   it('is idempotent — second call does not duplicate', () => {
@@ -41,7 +77,7 @@ describe('ensureAgentStanza', () => {
     const txt = readFileSync(res.file, 'utf8');
     expect(txt).toContain('existing');
     expect(txt).toContain('project-specific rules');
-    expect(txt).toContain('# metaide-chat-bus@v2');
+    expect(txt).toContain('# metaide-chat-bus@v3');
   });
 });
 
@@ -55,8 +91,13 @@ describe('buildOnboardingNudge', () => {
     expect(buildOnboardingNudge('opencode')).toContain('AGENTS.md');
   });
 
-  it('points the agent at the chat-outbox path', () => {
-    expect(buildOnboardingNudge('codex')).toContain('.metaide/chat-outbox.jsonl');
+  it('mentions the intent-outbox path and the writing-style rule', () => {
+    const nudge = buildOnboardingNudge('codex');
+    // The v3 nudge tells the agent what changed since v2 — intent file
+    // and writing-style — so an agent running against the old stanza
+    // knows which section to re-read.
+    expect(nudge).toContain('intent-outbox.jsonl');
+    expect(nudge).toContain('writing-style');
   });
 });
 

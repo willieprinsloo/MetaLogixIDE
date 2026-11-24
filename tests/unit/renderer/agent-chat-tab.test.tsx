@@ -16,6 +16,11 @@ vi.mock('@renderer/api', () => ({
     invoke: vi.fn().mockImplementation((ch: string) => {
       if (ch === 'chat:list') return Promise.resolve({ entries: initial });
       if (ch === 'chat:append') return Promise.resolve({ entry: { id: 'x', ts: '', from: { device: 'laptop', shell: -1, agent: 'human' }, to: [], body: '' } });
+      // These two feed hooks AgentChatTab mounts (useChatRoster + useAgentIntent).
+      // Returning an empty-but-well-shaped object keeps those hooks' consumers
+      // (Map iteration, Array iteration) from blowing up during render.
+      if (ch === 'chat:roster') return Promise.resolve({ rows: [], selfDevice: 'laptop' });
+      if (ch === 'intent:list') return Promise.resolve({ updates: [] });
       return Promise.resolve({});
     }),
     on: vi.fn().mockReturnValue(() => {}),

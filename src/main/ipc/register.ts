@@ -1699,6 +1699,17 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     return { ok: true as const, appended: res.appended, file: res.file };
   },
 
+  /**
+   * Bootstrap list of every live agent intent for the given project.
+   * Returns an empty list before the intent watcher has attached (early
+   * startup) — the renderer handles that the same way as "no agent has
+   * posted yet", so there's no need for a separate not-ready signal.
+   */
+  'intent:list': async (s, { projectId }) => {
+    const updates = s.intent?.list(projectId) ?? [];
+    return { updates };
+  },
+
   ...dropHandlers,
   ...keepAwakeHandlers,
   'usage:get': async (s, req) => {
