@@ -141,6 +141,26 @@ app.on('open-file', (event, path) => {
 // launching a second app. Without this the second launch would open a
 // duplicate metaIDE with its own DB handle, which would corrupt the
 // SQLite WAL.
+
+// Dev escape hatch: setting METAIDE_USERDATA_DIR tells Electron to use a
+// separate userData path, which also moves the single-instance lock out
+// of the way of an installed metaIDE.app running in parallel. The
+// Chromium-level `--user-data-dir` switch is set BEFORE app module is
+// ready so Chromium uses it as the lock key (setPath alone wasn't
+// enough — the lock had already been checked against the default). No-op
+// in production — the env is only set by `pnpm dev:solo` and friends.
+const userDataOverride = process.env.METAIDE_USERDATA_DIR;
+if (userDataOverride && userDataOverride.trim()) {
+  const dir = userDataOverride.trim();
+  app.commandLine.appendSwitch('user-data-dir', dir);
+  app.setPath('userData', dir);
+  // Different app name → separate macOS dock entry and different socket
+  // for the SingletonCookie, so the dev build can't trip over the
+  // installed app's lock even if a future Electron version keys it
+  // differently.
+  app.setName('metaide-dev');
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();

@@ -10,6 +10,7 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
+    "dev:solo": "METAIDE_USERDATA_DIR=/tmp/metaide-dev-userdata electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "rebuild:electron": "electron-rebuild -f -w better-sqlite3 -w node-pty",

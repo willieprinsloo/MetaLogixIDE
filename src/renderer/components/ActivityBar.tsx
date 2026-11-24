@@ -3,8 +3,9 @@ import { SHORTCUT_COPY } from '@renderer/shortcut-copy';
 import { useShortcutPlatform } from '@renderer/shortcut-platform';
 import { CHROME_TESTIDS } from '@renderer/chrome-testids';
 import { ICON_SIZE } from './icon-size';
+import { Tooltip } from './Tooltip';
 
-export type ActivityView = 'projects' | 'chat' | 'agents' | 'git' | 'tasks' | 'fleet';
+export type ActivityView = 'projects' | 'chat' | 'agents' | 'git' | 'tasks' | 'fleet' | 'story';
 
 interface Props {
   active: ActivityView;
@@ -103,6 +104,14 @@ export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, ch
       >
         <FleetIcon />
       </ABButton>
+      <ABButton
+        label="Story — plain-English narration of what the agents did"
+        active={active === 'story'}
+        onClick={() => onSelect('story')}
+        data-testid="ab-story"
+      >
+        <StoryIcon />
+      </ABButton>
       <div aria-hidden className="flex-1" />
       {footer && (
         <div className="flex flex-col items-center gap-2 no-drag" data-testid={CHROME_TESTIDS.titleButtons}>
@@ -110,6 +119,16 @@ export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, ch
         </div>
       )}
     </nav>
+  );
+}
+
+function StoryIcon() {
+  // Open book — reads as "a story to read" at 16 px.
+  return (
+    <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 5.5A1.5 1.5 0 0 1 4.5 4H10a2 2 0 0 1 2 2v13a1.5 1.5 0 0 0-1.5-1.5H3z" />
+      <path d="M21 5.5A1.5 1.5 0 0 0 19.5 4H14a2 2 0 0 0-2 2v13a1.5 1.5 0 0 1 1.5-1.5H21z" />
+    </svg>
   );
 }
 
@@ -136,9 +155,9 @@ export function ABButton({
   badgeTone?: 'accent' | 'orange';
 } & Record<string, unknown>) {
   return (
+    <Tooltip label={label} side="right">
     <button
       onClick={onClick}
-      title={label}
       aria-label={label}
       aria-current={active ? 'page' : undefined}
       {...rest}
@@ -160,6 +179,7 @@ export function ABButton({
         </span>
       )}
     </button>
+    </Tooltip>
   );
 }
 

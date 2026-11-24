@@ -1,10 +1,10 @@
-import { useState, useRef, useEffect } from 'react';
+import { useId, useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 
 interface Props {
   label: string;
   shortcut?: string;
-  side?: 'top' | 'bottom';
+  side?: 'top' | 'bottom' | 'left' | 'right';
   /** Also show while a child has keyboard focus (`:focus-visible`); off by default. */
   focusable?: boolean;
   children: React.ReactNode;
@@ -30,6 +30,10 @@ export function Tooltip({ label, shortcut, side = 'bottom', focusable = false, c
   const wrapRef = useRef<HTMLSpanElement>(null);
   const [pos, setPos] = useState<{ x: number; y: number; instant: boolean } | null>(null);
   const timer = useRef<number | null>(null);
+  // Stable id so the portal tooltip can be referenced by the wrapper's
+  // aria-describedby — otherwise removing `title` from a button strips
+  // its screen-reader description.
+  const descId = useId();
 
   useEffect(() => () => { if (timer.current) window.clearTimeout(timer.current); }, []);
 
@@ -44,11 +48,15 @@ export function Tooltip({ label, shortcut, side = 'bottom', focusable = false, c
     const el = wrapRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    setPos({
-      x: r.left + r.width / 2,
-      y: side === 'bottom' ? r.bottom + 6 : r.top - 6,
-      instant,
-    });
+    let x: number;
+    let y: number;
+    switch (side) {
+      case 'right': x = r.right + 6; y = r.top + r.height / 2; break;
+      case 'left':  x = r.left - 6;  y = r.top + r.height / 2; break;
+      case 'top':   x = r.left + r.width / 2; y = r.top - 6; break;
+      default:      x = r.left + r.width / 2; y = r.bottom + 6; break;
+    }
+    setPos({ x, y, instant });
   }
 
   function onEnter() {
@@ -73,12 +81,14 @@ export function Tooltip({ label, shortcut, side = 'bottom', focusable = false, c
         onMouseDown={onLeave}
         onFocus={focusable ? onFocus : undefined}
         onBlur={focusable ? onLeave : undefined}
+        aria-describedby={pos ? descId : undefined}
         className="inline-flex"
       >
         {children}
       </span>
       {pos && createPortal(
         <div
+          id={descId}
           className="tooltip fixed z-[9999] pointer-events-none select-none px-2 py-1 text-[11px] rounded-md
             bg-[--panel-strong] text-[--text] border border-[--border] shadow-lg"
           style={{ left: pos.x, top: pos.y }}
