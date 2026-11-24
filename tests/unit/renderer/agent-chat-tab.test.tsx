@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import type { ChatEntry } from '@shared/chat';
+import type { GroupView } from '@shared/group-chat';
 
 const initial: ChatEntry[] = [{
   id: 'e1',
@@ -10,6 +11,13 @@ const initial: ChatEntry[] = [{
   to: [],
   body: 'hello',
 }];
+
+/**
+ * Mutable per-test state, so one test can give the dock a running group
+ * without every other test seeing it. The module-level `vi.mock` factory
+ * closes over these so each render re-reads them.
+ */
+let groupsResponse: GroupView[] = [];
 
 vi.mock('@renderer/api', () => ({
   api: {
@@ -21,6 +29,11 @@ vi.mock('@renderer/api', () => ({
       // (Map iteration, Array iteration) from blowing up during render.
       if (ch === 'chat:roster') return Promise.resolve({ rows: [], selfDevice: 'laptop' });
       if (ch === 'intent:list') return Promise.resolve({ updates: [] });
+      // Group-chat hook feeds the Start-round affordance. An empty
+      // groups list keeps the dock in ambient-chat mode for every test
+      // except the one that explicitly exercises round rendering.
+      if (ch === 'groups:list') return Promise.resolve({ groups: groupsResponse });
+      if (ch === 'groups:stop') return Promise.resolve({ group: groupsResponse[0] });
       return Promise.resolve({});
     }),
     on: vi.fn().mockReturnValue(() => {}),
@@ -29,6 +42,7 @@ vi.mock('@renderer/api', () => ({
 
 import { AgentChatTab } from '@renderer/components/AgentChatTab';
 
+beforeEach(() => { groupsResponse = []; });
 afterEach(() => { cleanup(); });
 
 describe('AgentChatTab', () => {
@@ -75,6 +89,72 @@ describe('AgentChatTab', () => {
     fireEvent.keyDown(box, { key: 'Enter' });
     await waitFor(() => {
       expect(api.invoke).toHaveBeenCalledWith('chat:append', expect.objectContaining({ body: '@codex hi' }));
+    });
+  });
+
+  it('renders a running round\'s log inline with the chat thread', async () => {
+    // Round mode is the single-dock UX for Martin's group-chat feature:
+    // formal round messages appear in the SAME scroll region as ambient
+    // chat, distinguished by an R<n> chip and an engine badge, so users
+    // never have to remember which panel they typed in.
+    groupsResponse = [{
+      id: 'g1',
+      projectId: 1,
+      projectName: 'demo',
+      name: 'demo',
+      members: ['m1'],
+      memberInfo: { m1: { name: 'Claude', kind: 'claude-tab', engine: 'claude', model: null, available: true, phase: null } },
+      maxRounds: 4,
+      status: 'running',
+      round: { n: 1, waiting: [], answers: {} },
+      k: 1,
+      seq: 1,
+      held: [],
+      joined: [],
+      log: [
+        // Mid-session timestamp so the row sorts after the chat entry (10:00:00Z).
+        { at: '2026-11-18T10:01:00Z', kind: 'reply', from: 'm1', text: 'thinking out loud', round: 1 },
+      ],
+      createdAt: '2026-11-18T10:00:30Z',
+      updatedAt: '2026-11-18T10:01:00Z',
+    }];
+    render(<AgentChatTab projectId={1} selfDevice="laptop" />);
+    // The running-group banner lives in the pill bar so the user can Stop at any time.
+    expect(await screen.findByText(/Round 1\/4/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Stop/i })).toBeTruthy();
+    // The round log entry renders in the thread — R1 chip, Claude engine badge, body.
+    expect(await screen.findByText('R1')).toBeTruthy();
+    expect(screen.getByText('thinking out loud')).toBeTruthy();
+    // Both Claude engine badges render ("Claude" appears for pill + log row); using getAll*
+    // avoids the "single element" assertion failing on the second.
+    expect(screen.getAllByText('Claude').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('Stop button on a running round fires groups:stop', async () => {
+    const { api } = await import('@renderer/api');
+    groupsResponse = [{
+      id: 'g1',
+      projectId: 1,
+      projectName: 'demo',
+      name: 'demo',
+      members: [],
+      memberInfo: {},
+      maxRounds: 4,
+      status: 'running',
+      round: { n: 1, waiting: [], answers: {} },
+      k: 1,
+      seq: 1,
+      held: [],
+      joined: [],
+      log: [],
+      createdAt: '2026-11-18T10:00:30Z',
+      updatedAt: '2026-11-18T10:00:30Z',
+    }];
+    render(<AgentChatTab projectId={1} selfDevice="laptop" />);
+    const stop = await screen.findByRole('button', { name: /Stop/i });
+    fireEvent.click(stop);
+    await waitFor(() => {
+      expect(api.invoke).toHaveBeenCalledWith('groups:stop', { id: 'g1' });
     });
   });
 });

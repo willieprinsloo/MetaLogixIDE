@@ -3,8 +3,27 @@ import { api } from '@renderer/api';
 import { useAgentChat } from '@renderer/hooks/useAgentChat';
 import { useChatRoster } from '@renderer/hooks/useChatRoster';
 import { useAgentIntent } from '@renderer/hooks/useAgentIntent';
+import { useGroupChat } from '@renderer/hooks/useGroupChat';
 import { formatMention } from '@shared/chat-mention';
+import type { ChatEntry } from '@shared/chat';
+import { ENGINE_LABEL, type GroupView, type LogEntry, type MemberEngine } from '@shared/group-chat';
 import { toast } from '@renderer/hooks/useToasts';
+
+/**
+ * Merged-thread item: either a chat-bus entry or one log line from a
+ * group chat (running or stopped). Sorted by `ts` in the component.
+ */
+type TimelineItem =
+  | { kind: 'chat'; ts: number; chat: ChatEntry }
+  | { kind: 'round'; ts: number; log: LogEntry; group: GroupView };
+
+/** One colour per engine, for the round-transcript left edge and badges. Matches BotOffice. */
+const ENGINE_COLOUR: Readonly<Record<MemberEngine, string>> = {
+  claude: '#d97757',
+  codex: '#10a37f',
+  gemini: '#4285f4',
+  ollama: '#8a8f98',
+};
 
 /**
  * Agents pane. Left column lists every agent you can @-mention: live
@@ -21,6 +40,8 @@ export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick 
   const { entries, send } = useAgentChat(projectId);
   const { rows: liveRoster, selfDevice: rosterSelfDevice } = useChatRoster();
   const intent = useAgentIntent(projectId);
+  const { groups, running: runningGroup } = useGroupChat(projectId);
+  const [roundBusy, setRoundBusy] = useState(false);
   // Prefer the roster's canonical self device over the P2P hook: when
   // P2P is off the hook returns '', which never matches `row.device` and
   // leaks a "·device" suffix on every local pill.
@@ -75,6 +96,72 @@ export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick 
   };
 
   /**
+   * One-click "Start round" — the formal, turn-taking group chat ported from
+   * Martin's `feat/group-chats` branch.
+   *
+   * The dock is the single place users talk to agents. Ambient chat bus is
+   * the default; this button switches into round mode on demand: a prompt
+   * for the opening message, then auto-seeds a new group with every
+   * joinable Claude tab in the project and every ready headless engine
+   * (Codex, Gemini, Ollama). Rounds run in the background; their log
+   * entries render in this same thread, tagged with `R<n>` so they're
+   * clearly round messages and not casual bus chatter.
+   *
+   * Callers of `groups:say` must never block the user's typing in the
+   * composer — this whole function is kicked off from the start button
+   * and awaits locally, only setting `roundBusy` so repeat clicks don't
+   * race. Errors surface through toasts; partial failures (no Claude tabs,
+   * no ready engines) still start a group with whatever is available and
+   * Martin's service handles the degenerate <2-members case cleanly.
+   */
+  const startRound = async () => {
+    if (roundBusy || runningGroup) return;
+    const prompt = window.prompt('What should the agents discuss? (leave empty to cancel)', '');
+    if (prompt === null || prompt.trim() === '') return;
+    setRoundBusy(true);
+    try {
+      const { group } = await api.invoke('groups:create', { projectId });
+      // Add every joinable Claude tab in the project.
+      try {
+        const { tabs } = await api.invoke('groups:joinable', { projectId, id: group.id });
+        for (const t of tabs) {
+          if (t.joinable) {
+            try { await api.invoke('groups:add-claude', { id: group.id, shell: { projectId: t.projectId, shellIndex: t.shellIndex } }); } catch { /* best-effort */ }
+          }
+        }
+      } catch { /* best-effort */ }
+      // Add every ready headless engine, with a sensible display name.
+      try {
+        const engines = await api.invoke('groups:engines', {});
+        for (const engine of ['codex', 'gemini', 'ollama'] as const) {
+          if (engines[engine].ready) {
+            try { await api.invoke('groups:add-headless', { id: group.id, engine, name: ENGINE_LABEL[engine] }); } catch { /* best-effort */ }
+          }
+        }
+      } catch { /* best-effort */ }
+      await api.invoke('groups:say', { id: group.id, text: prompt });
+      toast('Round started', { kind: 'info', timeoutMs: 1500 });
+    } catch (e) {
+      toast('Could not start round', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+    } finally {
+      setRoundBusy(false);
+    }
+  };
+
+  const stopRound = async () => {
+    if (!runningGroup) return;
+    setRoundBusy(true);
+    try {
+      await api.invoke('groups:stop', { id: runningGroup.id });
+      toast('Round stopped', { kind: 'info', timeoutMs: 1500 });
+    } catch (e) {
+      toast('Stop failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+    } finally {
+      setRoundBusy(false);
+    }
+  };
+
+  /**
    * Manual re-onboard for an already-running agent. Writes the stanza
    * (idempotent) and pushes the read-this nudge into the shell. Scoped
    * to local shells running one of the supported CLIs — remote peers and
@@ -96,6 +183,24 @@ export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick 
       toast('Onboard failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
     }
   };
+
+  /**
+   * Merged chronological timeline: ambient chat-bus entries + every
+   * group's log entries (running and past), sorted by timestamp. The
+   * display is the single source of truth for "what happened in this
+   * project" so users don't have to track two threads — round messages
+   * carry an `R<n>` chip and an engine-coloured left edge so it stays
+   * obvious which are formal-round and which are casual-bus.
+   */
+  const timeline = useMemo<TimelineItem[]>(() => {
+    const items: TimelineItem[] = [];
+    for (const e of entries) items.push({ kind: 'chat', ts: new Date(e.ts).getTime(), chat: e });
+    for (const g of groups) {
+      for (const l of g.log) items.push({ kind: 'round', ts: new Date(l.at).getTime(), log: l, group: g });
+    }
+    items.sort((a, b) => a.ts - b.ts);
+    return items;
+  }, [entries, groups]);
 
   // @-autocomplete state. The dropdown is shown whenever the caret sits
   // inside an @word in the draft — same contract as ChatTab's composer.
@@ -241,8 +346,39 @@ export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick 
                 </div>
               );
             })}
+            {/* Round-mode affordance: a single button that flips the dock
+                between the ambient chat bus (default) and Martin's formal
+                round-based group chat. Only one group runs at a time in a
+                project, so the button is either "⚙ Start round" (no group
+                running) or "Round N/M · ■ Stop" (a round is live). */}
+            {runningGroup ? (
+              <div className="ml-auto flex items-center gap-1.5 text-xs shrink-0" title="A formal round-based group chat is running. Agents take turns; the thread below carries round messages tagged R<n>.">
+                <span className="px-2 py-0.5 rounded-full bg-[--accent]/15 text-[--accent-soft-text] font-medium">
+                  Round {runningGroup.k}/{runningGroup.maxRounds}
+                </span>
+                <button
+                  onClick={() => void stopRound()}
+                  disabled={roundBusy}
+                  className="px-2 py-0.5 rounded-full border border-[--border] hover:border-[--hue-red] hover:text-[--hue-red] disabled:opacity-50"
+                  title="Stop this round now. Members finish their current turn; new rounds don't start."
+                >
+                  ■ Stop
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => void startRound()}
+                disabled={roundBusy || roster.length < 2}
+                className="ml-auto px-2 py-0.5 rounded-full border border-[--border] text-xs text-[--text-muted] hover:text-[--text] hover:border-[--accent]/40 disabled:opacity-40 shrink-0"
+                title={roster.length < 2
+                  ? 'Start a round-based group chat (needs at least 2 agents in the project — spawn another shell or run a headless engine)'
+                  : 'Start a round-based group chat. Every joinable Claude tab and every ready headless engine (Codex, Gemini, Ollama) is added; you pose the question, they take turns answering.'}
+              >
+                ⚙ Start round
+              </button>
+            )}
             <span
-              className="ml-auto text-[--text-muted] text-xs cursor-help select-none shrink-0"
+              className="text-[--text-muted] text-xs cursor-help select-none shrink-0"
               title={'Click a pill to drop @mention into your message.\nPress Enter to send — the message appears in that agent\'s shell as a line it can read and reply to.\nRight-click (or hover-✎) to rename a local agent.\nGreen dot = online. Grey = seen before but not running now.'}
               aria-label="Roster help"
             >
@@ -253,7 +389,7 @@ export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick 
       </div>
       <section className="flex-1 flex flex-col min-h-0">
         <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2">
-          {entries.length === 0 ? (
+          {timeline.length === 0 ? (
             <div className="h-full flex items-center justify-center p-6 text-center">
               <div className="max-w-sm text-sm text-[--text-muted] leading-relaxed">
                 <div className="text-[--text] font-medium mb-2">Message your agents</div>
@@ -262,39 +398,21 @@ export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick 
                   to address them, then press <kbd className="px-1 py-0.5 text-[10px] rounded border border-[--border] font-mono">Enter</kbd> to send.
                 </div>
                 <div className="mt-3 opacity-80">
-                  Your message appears in that agent's shell as a line it can read — it can reply the same way.
+                  Your message appears in that agent&apos;s shell as a line it can read — it can reply the same way.
+                </div>
+                <div className="mt-3 opacity-80">
+                  Or use <span className="font-medium text-[--text]">⚙ Start round</span> above to have every agent discuss something together, one turn at a time.
                 </div>
               </div>
             </div>
-          ) : entries.map((e) => (
-            <div
-              key={e.id}
-              className={`text-sm ${e.meta?.cap_held || e.meta?.undelivered || e.meta?.rate_dropped ? 'opacity-60 border-l-2 border-[--hue-red] pl-2' : ''}`}
-            >
-              <span className="text-[--text-muted] text-xs">
-                {new Date(e.ts).toLocaleTimeString()}{' '}
-              </span>
-              <span className="text-[--accent-soft-text] font-medium">
-                {formatMention({ agent: e.from.agent, device: e.from.device === selfDevice ? undefined : e.from.device })}
-              </span>{' '}
-              <span>{renderBodyWithMentions(e.body)}</span>
-              {e.meta?.cap_held && (
-                <span className="text-[--hue-red] text-xs ml-2" title="The recipient agent is at its concurrent-reply cap; the message is queued and will deliver when it frees up.">· cap held</span>
-              )}
-              {e.meta?.undelivered && !e.meta?.cap_held && (
-                <span className="text-[--hue-red] text-xs ml-2" title="No matching agent shell is running right now; the message is in the log but nobody received it.">· not delivered (no matching agent online)</span>
-              )}
-              {e.meta?.rate_dropped && !e.meta?.cap_held && !e.meta?.undelivered && (
-                <span className="text-[--hue-red] text-xs ml-2" title="This agent is posting faster than the per-shell rate limit (3 messages per second); the injector dropped the message to protect the recipient.">· rate-limited (sender over budget)</span>
-              )}
-            </div>
+          ) : timeline.map((item) => (
+            item.kind === 'chat' ? renderChatRow(item.chat, selfDevice) : renderRoundRow(item.log, item.group)
           ))}
         </div>
         <div className="p-3 border-t border-[--border] relative">
           {candidates.length > 0 && mention && (
             <div className="absolute bottom-full left-3 right-3 mb-1 max-h-56 overflow-y-auto rounded-md border border-[--border] bg-[--panel-strong] shadow-xl z-10">
               {candidates.map((r, i) => {
-                const display = r.nickname ?? r.agent;
                 return (
                   <button
                     key={`${r.agent}#${r.shell}@${r.device}`}
@@ -331,6 +449,101 @@ export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick 
           />
         </div>
       </section>
+    </div>
+  );
+}
+
+/**
+ * Chat-bus row renderer — ambient `[metaide-chat …]` traffic. Carries the
+ * same delivery-status badges (cap-held / undelivered / rate-limited) the
+ * chat log tracks; mentions in the body are highlighted so a line's
+ * routing hints stand out from its prose.
+ */
+function renderChatRow(e: ChatEntry, selfDevice: string): ReactElement {
+  const flagged = e.meta?.cap_held || e.meta?.undelivered || e.meta?.rate_dropped;
+  return (
+    <div
+      key={e.id}
+      className={`text-sm ${flagged ? 'opacity-60 border-l-2 border-[--hue-red] pl-2' : ''}`}
+    >
+      <span className="text-[--text-muted] text-xs">
+        {new Date(e.ts).toLocaleTimeString()}{' '}
+      </span>
+      <span className="text-[--accent-soft-text] font-medium">
+        {formatMention({ agent: e.from.agent, device: e.from.device === selfDevice ? undefined : e.from.device })}
+      </span>{' '}
+      <span>{renderBodyWithMentions(e.body)}</span>
+      {e.meta?.cap_held && (
+        <span className="text-[--hue-red] text-xs ml-2" title="The recipient agent is at its concurrent-reply cap; the message is queued and will deliver when it frees up.">· cap held</span>
+      )}
+      {e.meta?.undelivered && !e.meta?.cap_held && (
+        <span className="text-[--hue-red] text-xs ml-2" title="No matching agent shell is running right now; the message is in the log but nobody received it.">· not delivered (no matching agent online)</span>
+      )}
+      {e.meta?.rate_dropped && !e.meta?.cap_held && !e.meta?.undelivered && (
+        <span className="text-[--hue-red] text-xs ml-2" title="This agent is posting faster than the per-shell rate limit (3 messages per second); the injector dropped the message to protect the recipient.">· rate-limited (sender over budget)</span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Group-chat log row renderer — formal, turn-taking rounds from Martin's
+ * `groups.ts`. Meta entries (`start`, `round`, `end`, `member`) render as
+ * centred dividers so they anchor the eye without crowding the thread.
+ * Reply / fail / you entries render like a chat row but with an engine-
+ * coloured left edge and an `R<n>` chip so round messages read at a glance
+ * as different from ambient chat.
+ */
+function renderRoundRow(l: LogEntry, g: GroupView): ReactElement {
+  const key = `g-${g.id}-${l.at}-${l.kind}-${l.from ?? ''}-${l.round ?? ''}`;
+  if (l.kind === 'start' || l.kind === 'round' || l.kind === 'end' || l.kind === 'member') {
+    const label = l.kind === 'round' ? `Round ${l.round} of ${g.maxRounds}` : l.text;
+    return (
+      <div key={key} className="text-[11px] text-[--text-muted] text-center py-1 flex items-center gap-2">
+        <span className="flex-1 border-t border-[--border]" />
+        <span className="px-2 py-0.5 rounded-full bg-[--panel] border border-[--border]" title={`Group chat ${g.name}`}>
+          {label}
+        </span>
+        <span className="flex-1 border-t border-[--border]" />
+      </div>
+    );
+  }
+  // reply / fail / you — render as a chat-like row with engine colour.
+  const info = l.from ? g.memberInfo[l.from] : undefined;
+  const engine = info?.engine ?? 'claude';
+  const name = info?.name ?? l.from ?? 'You';
+  const colour = ENGINE_COLOUR[engine];
+  const engineLabel = ENGINE_LABEL[engine];
+  const isUser = l.kind === 'you';
+  const isFail = l.kind === 'fail';
+  return (
+    <div
+      key={key}
+      className={`text-sm pl-2 ${isFail ? 'opacity-70' : ''}`}
+      style={{ borderLeft: `3px solid ${isUser ? 'var(--accent)' : colour}` }}
+    >
+      <span className="text-[--text-muted] text-xs">
+        {new Date(l.at).toLocaleTimeString()}{' '}
+      </span>
+      {l.round != null && (
+        <span className="px-1 py-0 rounded text-[10px] font-semibold bg-[--accent]/15 text-[--accent-soft-text] mr-1" title={`Round ${l.round} of ${g.maxRounds} in group ${g.name}`}>
+          R{l.round}
+        </span>
+      )}
+      {!isUser && (
+        <span
+          className="px-1 py-0 rounded text-[10px] font-semibold text-white mr-1"
+          style={{ background: colour }}
+          title={`${name} — running on ${engineLabel}`}
+        >
+          {engineLabel}
+        </span>
+      )}
+      <span className={`font-medium ${isUser ? 'text-[--accent-soft-text]' : 'text-[--text]'}`}>
+        {isUser ? 'You' : name}
+      </span>{' '}
+      <span className={isFail ? 'text-[--hue-red]' : ''}>{l.text}</span>
+      {isFail && <span className="text-[--hue-red] text-xs ml-2" title="This member couldn't complete its turn; the round moves on without it.">· failed</span>}
     </div>
   );
 }
