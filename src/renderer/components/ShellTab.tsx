@@ -15,7 +15,7 @@ import { useTerminalDrop } from '@renderer/hooks/useTerminalDrop';
 import { useTerminalPaste } from '@renderer/hooks/useTerminalPaste';
 import { DROP_COPY } from '@shared/terminal-drop-contract';
 import { terminalFocus } from '@renderer/hooks/useWindowTerminalFocus';
-import { detectPaths } from '@shared/detect-paths';
+import { detectPaths, detectBareFilenames } from '@shared/detect-paths';
 import { sanitizeTerminalCopy } from '@shared/sanitize-terminal-copy';
 import { HoverPreview, type HoverPreviewOpen, type HoverPreviewState } from './HoverPreview';
 import { resolvePathClick } from '@renderer/peek-open';
@@ -266,15 +266,40 @@ export function ShellTab({
 
     // File-path link provider: matches things like src/main/index.ts:42
     // in terminal output, shows a hover preview, click opens in Files.
+    //
+    // Two detectors feed this provider:
+    //   - detectPaths()         strict, path-like matches (slashes required).
+    //                           Lit synchronously — the slash is a strong
+    //                           enough signal that false positives are rare.
+    //   - detectBareFilenames() loose, name.ext with no path prefix. Used
+    //                           to catch what Codex / other TUIs print
+    //                           ("Viewed image review.jpg"). English prose
+    //                           looks identical to a reference, so every
+    //                           bare hit is verified against files:peek
+    //                           before it lights up; unresolvable words
+    //                           never appear as links.
+    //
+    // The verification turns `provideLinks` into an async operation. xterm
+    // accepts a delayed callback — it's documented to allow one-shot
+    // callbacks whenever the provider is ready — so the strict hits are
+    // included in the same callback as the verified bare hits, after the
+    // short peek round-trip. Lines with only strict hits incur no latency
+    // (Promise.all([]) resolves on the next microtask).
     const pathLinkProvider: ILinkProvider = {
       provideLinks(bufferLineNumber, callback) {
         const buf = term.buffer.active;
         const rawLine = buf.getLine(bufferLineNumber - 1);
         if (!rawLine) { callback(undefined); return; }
         const text = rawLine.translateToString(true);
-        const hits = detectPaths(text);
-        if (hits.length === 0) { callback(undefined); return; }
-        callback(hits.map((h) => ({
+        const strictHits = detectPaths(text);
+        // Drop any bare hit whose range overlaps a strict hit — the
+        // strict path owns that match and already has better context.
+        const bareHits = detectBareFilenames(text).filter((b) =>
+          !strictHits.some((s) => b.startIndex >= s.startIndex && b.endIndex <= s.endIndex),
+        );
+        if (strictHits.length === 0 && bareHits.length === 0) { callback(undefined); return; }
+
+        const toLink = (h: typeof strictHits[number]) => ({
           range: {
             start: { x: h.startIndex + 1, y: bufferLineNumber } as IBufferCellPosition,
             end:   { x: h.endIndex,       y: bufferLineNumber } as IBufferCellPosition,
@@ -292,7 +317,27 @@ export function ShellTab({
             hoverHold.linkEnter(() => setHover({ x: ev.clientX, y: ev.clientY, projectId, path: h.path, line: h.line }));
           },
           leave: hoverHold.linkLeave,
-        })));
+        });
+
+        void (async () => {
+          // Verify bare hits in parallel. `files:peek` returns
+          // `found: false` for anything not in the project, so prose like
+          // "the readme.md file" doesn't light up unless a real
+          // `readme.md` exists at the project root. `maxLines: 1` keeps
+          // the IPC payload tiny — we only need the `found` flag.
+          const verified = await Promise.all(bareHits.map(async (h) => {
+            try {
+              const res = await api.invoke('files:peek', { projectId, relPath: h.path, maxLines: 1 });
+              return res.found ? h : null;
+            } catch { return null; }
+          }));
+          const allHits = [
+            ...strictHits,
+            ...verified.filter((h): h is NonNullable<typeof h> => h !== null),
+          ];
+          if (allHits.length === 0) { callback(undefined); return; }
+          callback(allHits.map(toLink));
+        })();
       },
     };
     // Remote shells have no local peek/preview (paths belong to the host's filesystem).
