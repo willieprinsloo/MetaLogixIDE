@@ -11,6 +11,7 @@ import { ShellTab } from './components/ShellTab';
 import { FilesTab } from './components/FilesTab';
 import { ActivityTab } from './components/ActivityTab';
 import { FleetView } from './components/FleetView';
+import { StoryTab } from './components/StoryTab';
 import { ChatTab } from './components/ChatTab';
 import { AgentChatTab } from './components/AgentChatTab';
 import { useSelfDeviceName } from './p2p/useSelfDeviceName';
@@ -135,8 +136,9 @@ function readPopout(): PopoutInfo | null {
 /** Views shown in the sidebar column in place of the project list; Fleet takes over the main area instead. */
 function hasSheet(view: ActivityView): boolean {
   // Agents lives in its own right-side dock, not the left sheet — opening
-  // it must NOT replace the project tree. Fleet takes over the main area.
-  return view !== 'projects' && view !== 'fleet' && view !== 'agents';
+  // it must NOT replace the project tree. Fleet and Story both take over
+  // the main area so they get a wide reading / layout column.
+  return view !== 'projects' && view !== 'fleet' && view !== 'agents' && view !== 'story';
 }
 
 export function App() {
@@ -220,7 +222,7 @@ function MainApp() {
   const [activeView, setActiveView] = usePersistedState<ActivityView>(
     'metaide.activeView',
     'projects',
-    (v): v is ActivityView => v === 'projects' || v === 'chat' || v === 'agents' || v === 'git' || v === 'tasks' || v === 'fleet',
+    (v): v is ActivityView => v === 'projects' || v === 'chat' || v === 'agents' || v === 'git' || v === 'tasks' || v === 'fleet' || v === 'story',
   );
   // The Agents chat lives in its own right-side dock — toggled independently
   // of activeView so opening it never hides the project tree.
@@ -1210,7 +1212,11 @@ function MainApp() {
                   onToggleSplit={() => (rightShellIndex != null ? split.closeSplit() : void openSplit())}
                 />
               )}
-              {activeView === 'fleet'
+              {activeView === 'story'
+                ? (selected
+                    ? <StoryTab projectId={selected.id} />
+                    : <div className="flex-1 flex items-center justify-center text-[--text-muted] text-sm p-6 text-center">Open a project to see its story.</div>)
+                : activeView === 'fleet'
                 ? <FleetView
                     localShells={localAliveShells}
                     onOpenLocal={(projectId, shellIndex) => {

@@ -190,6 +190,17 @@ export interface IpcContract {
   'activity:list': { request: { projectId: number; limit?: number }; response: { entries: import('./activity').ActivityEntry[] } };
 
   /**
+   * Story window — plain-English chunks summarising a window of agent
+   * work. `story:list` returns the per-project chunk list for the left
+   * column; `story:read` returns the raw HTML of one chunk for the
+   * webview; `story:generate` writes a new chunk from the last
+   * `windowMinutes` of activity and chat. Live refresh via `story:changed`.
+   */
+  'story:list': { request: { projectId: number }; response: { chunks: import('./story').StoryChunk[] } };
+  'story:read': { request: { projectId: number; file: string }; response: { html: string | null } };
+  'story:generate': { request: { projectId: number; windowMinutes?: number }; response: { chunk: import('./story').StoryChunk } };
+
+  /**
    * Agent chat bus — one entry per human/agent message.
    * `chat:append` serialises writes through the main service so each entry
    * gets a unique id + ts + a fan-out event. `chat:list` paginates from
@@ -589,6 +600,8 @@ export interface IpcEvents {
   'window:fullscreen-changed': { windowId: number; fullscreen: boolean };
   /** A new activity entry was appended to this project's log; renderers that are tailing refresh. */
   'activity:changed': { projectId: number; entry: import('./activity').ActivityEntry };
+  /** A new story chunk was written; the renderer re-fetches the list. */
+  'story:changed': { projectId: number };
   /** A new chat entry was appended (or an existing one updated with cap-held delivery metadata). */
   'chat:changed': { projectId: number; entry: import('./chat').ChatEntry };
   /** A shell's status badge text changed — one entry per shift. The

@@ -63,6 +63,7 @@ import { fileURLToPath } from 'node:url';
 import type { StopPrimarySessionRequest } from '@shared/unload-session-contract';
 import { readRecentActivity } from '@main/activity/log';
 import { ACTIVITY_PAGE_MAX } from '@shared/activity';
+import { generateStoryChunk, listStoryChunks, readStoryHtml } from '@main/story/narrator';
 import { readMetaIdeEnv, readMetaIdeCliProfiles } from '@main/domain/metaide-conf';
 
 const GIT_DIFF_KINDS: ReadonlySet<GitDiffKind> = new Set(['staged', 'unstaged', 'untracked']);
@@ -1694,6 +1695,31 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     const cap = Math.max(1, Math.min(ACTIVITY_PAGE_MAX, limit ?? 100));
     const entries = readRecentActivity(p.path, cap);
     return { entries };
+  },
+
+  'story:list': async (s, { projectId }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    return { chunks: listStoryChunks(p.path) };
+  },
+  'story:read': async (s, { projectId, file }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    return { html: readStoryHtml(p.path, file) };
+  },
+  'story:generate': async (s, { projectId, windowMinutes }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    const { chunk } = generateStoryChunk({
+      projectPath: p.path,
+      projectName: p.name,
+      windowMinutes: windowMinutes ?? 15,
+    });
+    // Tell every open renderer the chunk list changed so the left column refreshes.
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send('story:changed', { projectId });
+    }
+    return { chunk };
   },
 
   'chat:append': async (s, req) => {
