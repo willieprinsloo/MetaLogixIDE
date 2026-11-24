@@ -7,6 +7,9 @@ import type { TerminalFontWeight } from './terminal-font-weight';
 import type { ProjectDefaultAgentRequest, ScopedCliProfile } from './project-default-agent';
 import type { AppFileDragPayload, ClipboardImageResult, ResolveAppFileResult, StageFileRequest, StageResult } from './terminal-drop-contract';
 import type { TasksDiscovery } from './tasks-contract';
+import type { UsageSnapshot } from './usage-contract';
+import type { KeepAwakeDarkenResult, KeepAwakeStartRequest, KeepAwakeStartResult, KeepAwakeState } from './keep-awake-contract';
+import type { PrimarySessionInspection, StopPrimarySessionRequest, StopPrimarySessionResult } from './unload-session-contract';
 import type { FleetEntry, P2PSettings, P2PSettingsView } from './p2p-contract';
 import type { EngineStatus, GroupView, HeadlessEngine } from './group-chat';
 
@@ -101,6 +104,10 @@ export interface IpcContract {
    */
   'shells:set-default-cli':     { request: ProjectDefaultAgentRequest; response: { project: Project } };
   'shells:kill':        { request: { projectId: number; shellIndex: number };   response: { ok: true } };
+  /** One live local shell-zero generation and its recognized agent status; unavailable status rejects. */
+  'shells:inspect-primary': { request: { projectId: number }; response: PrimarySessionInspection };
+  /** Stops only the inspected generation; stale consent cannot stop a replacement or newly reported work. */
+  'shells:stop-primary': { request: StopPrimarySessionRequest; response: StopPrimarySessionResult };
   /** Repair a corrupted Claude session by stripping all thinking blocks from the most recent .jsonl session file. Backs up the original. */
   'claude:repair-session': { request: { projectId: number }; response: { repaired: number; blocksStripped: number; backup: string } | { repaired: 0; blocksStripped: 0; backup: null; reason: string } };
   'shells:resize':      { request: { projectId: number; shellIndex: number; cols: number; rows: number }; response: { ok: true } };
@@ -167,6 +174,96 @@ export interface IpcContract {
   // files (read-only)
   'files:tree':      { request: { projectId: number; relPath?: string };                    response: { entries: Array<{ name: string; isDir: boolean; relPath: string }> } };
   'files:read':      { request: { projectId: number; relPath: string; forceText?: boolean }; response: { content: string; kind: 'text' | 'binary'; sizeBytes: number } };
+  /**
+   * Raw bytes of a project-root file, for binary viewers (image, PDF).
+   * mime is a best-effort content-type derived from extension, used as the
+   * Blob type in the renderer. Capped at 50 MB — above that, an image or
+   * PDF belongs in the native OS viewer.
+   */
+  'files:read-bytes': { request: { projectId: number; relPath: string }; response: { bytes: Uint8Array; mime: string; sizeBytes: number } };
+
+  /**
+   * Shared agent-memory log — one entry per tool call, prompt, notification
+   * or turn-end from a CLI agent running in this project. Reader for the
+   * Activity tab; pairs with `activity:changed` for live tailing.
+   */
+  'activity:list': { request: { projectId: number; limit?: number }; response: { entries: import('./activity').ActivityEntry[] } };
+
+  /**
+   * Agent chat bus — one entry per human/agent message.
+   * `chat:append` serialises writes through the main service so each entry
+   * gets a unique id + ts + a fan-out event. `chat:list` paginates from
+   * the file end for cold opens; the renderer tails via `chat:changed`.
+   */
+  'chat:append': {
+    request: {
+      projectId: number;
+      from: Omit<import('./chat').ChatEntry['from'], 'device'>;
+      to?: import('./chat').ChatMention[];
+      body: string;
+      reply_in?: string;
+    };
+    response: { entry: import('./chat').ChatEntry };
+  };
+  'chat:list': {
+    request: { projectId: number; limit?: number };
+    response: { entries: import('./chat').ChatEntry[] };
+  };
+  /**
+   * Live roster of every agent-running shell (local + paired peers) the
+   * Agents pane can @-mention right now. Rebuilt on each call from
+   * `PtyManager.liveShells()` + agent-status tracker; renderer re-queries
+   * when `alive-shells:changed` or `agent-state:changed` fires.
+   */
+  'chat:roster': {
+    request: Record<string, never>;
+    response: {
+      rows: Array<{
+        projectId: number;
+        device: string;
+        shell: number;
+        agent: string;
+        label: string;
+        state: 'idle' | 'busy' | 'blocked' | null;
+        mention: string;
+        nickname: string | null;
+      }>;
+      /** Canonical device name the main process tags local rows with — use
+       * this (not the P2P hook) to decide "is this a local pill?". */
+      selfDevice: string;
+    };
+  };
+  /**
+   * Set or clear a shell's human-readable nickname. Nickname becomes the
+   * Roster label and `@mention`; pass null/empty to clear. Sanitized to
+   * [a-z0-9_-], max 32 chars. Returns the stored value (or null if cleared).
+   */
+  'shells:set-nickname': {
+    request: { projectId: number; shellIndex: number; nickname: string | null };
+    response: { ok: true; nickname: string | null };
+  };
+  /**
+   * Manual re-onboard for an already-running agent shell. Writes the
+   * chat-bus stanza if missing (idempotent) and pushes the one-line
+   * read-this nudge into the shell's PTY, regardless of the
+   * `chat_auto_onboard` setting — a manual trigger is itself consent.
+   * `appended` reports whether the stanza was newly written.
+   */
+  'chat:onboard-agent': {
+    request: { projectId: number; shellIndex: number; agent: 'claude' | 'codex' | 'opencode' };
+    response: { ok: true; appended: boolean; file: string };
+  };
+  /**
+   * Snapshot of every live agent intent on a project — one entry per
+   * `(agent, shell)`. The renderer bootstraps with this and then subscribes
+   * to `intent:changed` for deltas. Returns an empty list when the project
+   * hasn't been opened, has no intent file yet, or no agent has written
+   * one this session.
+   */
+  'intent:list': {
+    request: { projectId: number };
+    response: { updates: import('./intent').IntentUpdate[] };
+  };
   'files:list-all':  { request: { projectId: number; limit?: number; filter?: string };     response: { files: Array<{ relPath: string; name: string }>; total: number; truncated: boolean } };
   'files:write':     { request: { projectId: number; relPath: string; content: string };    response: { ok: true; sizeBytes: number } };
   'files:mkdir':     { request: { projectId: number; relPath: string };                     response: { ok: true } };
@@ -235,9 +332,22 @@ export interface IpcContract {
 
   // open a URL in the OS default browser (or the file:// path in Finder / xdg-open)
   'app:open-external': { request: { url: string }; response: { ok: true } };
+  'app:resolve-local-file': {
+    request: { url: string };
+    response: { match: { projectId: number; relPath: string } | null };
+  };
 
   /** Set every open window's opacity. percent: 30..100. */
   'app:set-window-opacity': { request: { percent: number }; response: { ok: true } };
+  /**
+   * Toggle the focused BrowserWindow into native fullscreen. Cross-platform:
+   * uses setFullScreen, which is macOS Mission-Control fullscreen on mac and
+   * borderless F11-style fullscreen on Windows/Linux. The renderer also hides
+   * IDE chrome (sidebar + tab strips) while fullscreen is on, driven by the
+   * `window:fullscreen-changed` event so the two stay in sync even when the
+   * user toggles via Ctrl+Cmd+F / F11 / green traffic light.
+   */
+  'window:toggle-fullscreen': { request: undefined; response: { fullscreen: boolean } };
   'settings:set-frost-chrome': { request: { enabled: boolean }; response: { ok: true } | { ok: false; error: 'invalid' } };
   'settings:set-chrome-frost-level': { request: { level: ChromeFrostLevel }; response: { ok: true } | { ok: false; error: 'invalid' } };
   'settings:set-terminal-frost-level': { request: { level: TerminalFrostLevel }; response: { ok: true } | { ok: false; error: 'invalid' } };
@@ -404,6 +514,15 @@ export interface IpcContract {
     };
   };
 
+  // keep-awake (macOS only; off darwin start/darken return 'unsupported')
+  'keep-awake:get':    { request: undefined; response: KeepAwakeState };
+  'keep-awake:start':  { request: KeepAwakeStartRequest; response: KeepAwakeStartResult };
+  'keep-awake:stop':   { request: undefined; response: KeepAwakeState };
+  'keep-awake:darken': { request: undefined; response: KeepAwakeDarkenResult };
+
+  /** Claude and Codex subscription usage; `force` bypasses the 60 s cache. */
+  'usage:get': { request: { force?: boolean } | undefined; response: UsageSnapshot };
+
   /* ─── P2P remote access (fleet) ─── */
   'p2p:fleet-list':         { request: undefined; response: { fleet: FleetEntry[] } };
   'p2p:settings-get':       { request: undefined; response: P2PSettingsView };
@@ -437,7 +556,7 @@ export interface IpcEvents {
   'popout:changed':         { popped: Array<{ projectId: number; shellIndex: number }> };
   'metaproject:event':      { event: string; payload: unknown };
   'ports:changed':          { projectId: number; shellIndex: number; ports: number[] };
-  /** An agent shell changed state; emitted after screen observation or an authenticated OMP report. */
+  /** An agent shell changed state; emitted after screen observation. */
   'agent-state:changed': AgentShellStateEntry;
   /**
    * Fired when the user clicks an OS notification for a live shell — the
@@ -453,9 +572,28 @@ export interface IpcEvents {
    * add the file's parent as a new root if nothing matches.
    */
   'app:open-file-request':  { path: string };
+  /** Keep-awake state changed (start, re-start, stop, expiry, quit); sent to every window. */
+  'keep-awake:changed':     KeepAwakeState;
+  /** Both darken actions (`pmset displaysleepnow`, ScreenSaverEngine) failed; keep-awake stays on. */
+  'keep-awake:darken-failed': Record<string, never>;
   /** Pushed stream events from a remote device (`closed` when the stream or its connection ends). */
   'p2p:rpc-event':          { deviceId: string; streamId: number; data?: unknown; closed?: true; reason?: string };
   /** A group chat in this project changed; the group panel refetches `groups:list`. */
   'groups:changed':         { projectId: number };
+  /**
+   * Fired whenever any BrowserWindow enters or leaves fullscreen — from the
+   * IPC toggle, the OS shortcut (Ctrl+Cmd+F on mac, F11 on Windows/Linux),
+   * or the window chrome. windowId lets the renderer ignore events for
+   * popped-out shell windows it doesn't own.
+   */
+  'window:fullscreen-changed': { windowId: number; fullscreen: boolean };
+  /** A new activity entry was appended to this project's log; renderers that are tailing refresh. */
+  'activity:changed': { projectId: number; entry: import('./activity').ActivityEntry };
+  /** A new chat entry was appended (or an existing one updated with cap-held delivery metadata). */
+  'chat:changed': { projectId: number; entry: import('./chat').ChatEntry };
+  /** A shell's status badge text changed — one entry per shift. The
+   *  renderer keeps the latest-per-(agent,shell) and rolls its own idle
+   *  timers from `update.ts`. */
+  'intent:changed': { projectId: number; update: import('./intent').IntentUpdate };
 }
 export type IpcEventName = keyof IpcEvents;

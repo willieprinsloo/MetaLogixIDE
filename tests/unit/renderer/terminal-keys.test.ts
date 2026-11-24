@@ -46,7 +46,7 @@ describe('routeTerminalKey on other platforms', () => {
     expect(routeTerminalKey(ctrl('R'), 'other')).toBe('shell');
   });
 
-  it.each(['P', 'K', 'O', 'N', 'T', 'F', 'p', 'k', 'o', 'n', 't', 'f'])(
+  it.each(['P', 'K', 'O', 'N', 'T', 'F', 'A', 'p', 'k', 'o', 'n', 't', 'f', 'a'])(
     'routes Ctrl+Shift+%s to the app (AC11)',
     (k) => {
       expect(routeTerminalKey(ctrlShift(k), 'other')).toBe('app');
@@ -77,7 +77,6 @@ describe('routeTerminalKey on other platforms', () => {
     expect(routeTerminalKey(ctrl('['), 'other')).toBe('default');
     expect(routeTerminalKey(ctrl('3'), 'other')).toBe('default');
     expect(routeTerminalKey(ctrl('_', { shiftKey: true }), 'other')).toBe('default');
-    expect(routeTerminalKey(ctrlShift('A'), 'other')).toBe('default');
     expect(routeTerminalKey(ctrlShift('R'), 'other')).toBe('default');
   });
 

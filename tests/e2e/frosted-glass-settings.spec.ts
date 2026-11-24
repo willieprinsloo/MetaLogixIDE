@@ -9,10 +9,13 @@
  * Same home as frosted-chrome.spec.ts: the built Electron app via
  * `_electron.launch`, real Chromium compositor, real React, real
  * frosted-chrome.css / frosted-glass-levels.css / styles.css. Mac-only:
- * every test skips off darwin first (the whole group renders only on mac,
- * GeneralPanel.tsx `platform === 'mac' && <FrostedGlassGroup />`), then
- * re-skips if `data-platform="mac"` was not actually observed (defends
- * against a misconfigured CI runner the same way frosted-chrome.spec.ts does).
+ * every test skips off darwin first (Material, setVibrancy and the mac
+ * first-paint value are macOS-only), then re-skips if frosted chrome
+ * (`isFrostedChrome`, the `data-platform` attribute, which is "mac" on
+ * darwin) was not actually observed (defends against a misconfigured CI
+ * runner the same way frosted-chrome.spec.ts does). Linux coverage of the
+ * shared group lives in linux-frosted-glass.spec.ts
+ * (docs/specs/linux-wayland-frosted-glass.md AC7, AC8, AC12, AC13).
  *
  * Settings persist to `$HOME/.metaide/metaide.db` (services.ts
  * `buildServices`), not to Electron's `--user-data-dir` — every relaunch
@@ -28,7 +31,7 @@ import { promisify } from 'node:util';
 import electronBinaryPath from 'electron';
 import { FROST_ATTR, FROSTED_GLASS_COPY, FROSTED_GLASS_TESTIDS } from '../../src/renderer/frosted-chrome-contract';
 import type { ChromeFrostLevel, TerminalFrostLevel } from '../../src/shared/frosted-glass';
-import { isMacPlatform, resolveColour } from './helpers/chrome-colour';
+import { isFrostedChrome, resolveColour } from './helpers/chrome-colour';
 import { closeApp, guardedLaunch } from './helpers/claude-harness';
 
 const PROJECT = 'glassproj';
@@ -160,7 +163,7 @@ test('AC4: changing each setting reaches the main window and an open popout live
   const l = await launchGlassApp();
   try {
     const { app, win } = l;
-    test.skip(!(await isMacPlatform(win)), 'data-platform="mac" was not set');
+    test.skip(!(await isFrostedChrome(win)), 'data-platform (frosted chrome) was not set');
 
     const [popout] = await Promise.all([
       app.waitForEvent('window'),
@@ -204,7 +207,7 @@ test('AC5: a relaunched window renders the stored chrome/level flags on first pa
   const home = mktempHome();
   const first = await launchGlassApp({ home });
   try {
-    test.skip(!(await isMacPlatform(first.win)), 'data-platform="mac" was not set');
+    test.skip(!(await isFrostedChrome(first.win)), 'data-platform (frosted chrome) was not set');
     await setLevels(first.win, { chrome: 'strong', terminal: 'medium' });
   } finally {
     await first.app.close();
@@ -250,7 +253,7 @@ test('AC8: Frosted chrome OFF then ON restores the previously chosen levels; oth
   const l = await launchGlassApp();
   try {
     const { win } = l;
-    test.skip(!(await isMacPlatform(win)), 'data-platform="mac" was not set');
+    test.skip(!(await isFrostedChrome(win)), 'data-platform (frosted chrome) was not set');
 
     await setLevels(win, { chrome: 'strong', terminal: 'medium' });
     await openSettings(win);
@@ -283,7 +286,7 @@ test('AC9: with Frosted chrome OFF, the level controls are disabled, say why, an
   const l = await launchGlassApp();
   try {
     const { win } = l;
-    test.skip(!(await isMacPlatform(win)), 'data-platform="mac" was not set');
+    test.skip(!(await isFrostedChrome(win)), 'data-platform (frosted chrome) was not set');
 
     await setLevels(win, { chrome: 'medium', terminal: 'strong' });
     await setFrostChrome(win, false);
@@ -318,7 +321,7 @@ test('AC19: changing the material calls setVibrancy exactly once on every open, 
   const l = await launchGlassApp();
   try {
     const { app, win } = l;
-    test.skip(!(await isMacPlatform(win)), 'data-platform="mac" was not set');
+    test.skip(!(await isFrostedChrome(win)), 'data-platform (frosted chrome) was not set');
 
     // Patch every currently-open window's setVibrancy to record calls, and patch future
     // windows (the popout) the same way via browser-window-created.
@@ -368,7 +371,7 @@ test('AC2: an upgrading profile with a stored frost_terminal=true migrates to te
   // First run creates the `settings` table and seeds today's defaults (terminal_frost_level
   // migrates from an absent frost_terminal to 'off', since there is no legacy row yet).
   const boot = await launchGlassApp({ home });
-  test.skip(!(await isMacPlatform(boot.win)), 'data-platform="mac" was not set');
+  test.skip(!(await isFrostedChrome(boot.win)), 'data-platform (frosted chrome) was not set');
   await boot.app.close();
 
   // Simulate "a build that has not yet seen terminal_frost_level": drop the row the first
@@ -404,7 +407,7 @@ test('AC31: switching chrome to Strong with terminal Subtle repaints a running t
   const l = await launchGlassApp();
   try {
     const { win } = l;
-    test.skip(!(await isMacPlatform(win)), 'data-platform="mac" was not set');
+    test.skip(!(await isFrostedChrome(win)), 'data-platform (frosted chrome) was not set');
 
     // D14's lift only applies in catppuccin and rose-pine light at chrome Medium/Strong
     // with a terminal level other than Off. Set through the real Theme/Mode controls

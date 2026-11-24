@@ -21,6 +21,12 @@ export interface HookEvent {
   claudeSessionId?: string | null;
   /** `transcript_path` as sent, unvalidated; check it with `isClaudeTranscriptPath` before reading. */
   transcriptPath?: string | null;
+  /** For PreToolUse / PostToolUse: the tool name (e.g. "Edit", "Write", "Bash", "Read"). */
+  toolName: string | null;
+  /** Best-effort summary of the tool's target: file_path for Edit/Write/Read, command for Bash. */
+  toolTarget: string | null;
+  /** PostToolUse only: whether the tool reported success. null when the field is absent. */
+  toolOk: boolean | null;
 }
 
 /** What a hook event means for notifications. */
@@ -61,7 +67,20 @@ export function parseHookEvent(raw: unknown): HookEvent | null {
   const backgroundTaskCount = Array.isArray(raw.background_tasks) ? raw.background_tasks.length : 0;
   const claudeSessionId = nonEmptyString(raw.session_id);
   const transcriptPath = nonEmptyString(raw.transcript_path);
-  return { hookEventName, notificationType, message, backgroundTaskCount, claudeSessionId, transcriptPath };
+  const toolName = typeof raw.tool_name === 'string' ? raw.tool_name : null;
+  const toolTarget = extractToolTarget(toolName, raw.tool_input);
+  const toolOk = extractToolOk(raw.tool_response);
+  return {
+    hookEventName,
+    notificationType,
+    message,
+    backgroundTaskCount,
+    claudeSessionId,
+    transcriptPath,
+    toolName,
+    toolTarget,
+    toolOk,
+  };
 }
 
 function nonEmptyString(value: unknown): string | null {
@@ -78,6 +97,30 @@ export function isClaudeTranscriptPath(p: string, homeDir: string): boolean {
   const root = resolve(join(homeDir, '.claude', 'projects'));
   const rel = relative(root, resolve(p));
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel) && !rel.split(sep).includes('..');
+}
+
+/**
+ * Best-effort "what did this tool act on" extractor. Covers the built-in
+ * Claude tools whose inputs follow well-known shapes; returns null for any
+ * tool whose input isn't an obvious single-target action.
+ */
+function extractToolTarget(toolName: string | null, input: unknown): string | null {
+  if (!toolName || !isRecord(input)) return null;
+  const field =
+    toolName === 'Bash' ? input.command :
+    toolName === 'Edit' || toolName === 'Write' || toolName === 'Read' || toolName === 'MultiEdit' ? input.file_path :
+    toolName === 'Grep' || toolName === 'Glob' ? (input.path ?? input.pattern) :
+    toolName === 'WebFetch' || toolName === 'WebSearch' ? (input.url ?? input.query) :
+    null;
+  return typeof field === 'string' ? field : null;
+}
+
+/** Peeks at `tool_response` for a success flag; many tools omit it entirely. */
+function extractToolOk(response: unknown): boolean | null {
+  if (!isRecord(response)) return null;
+  if (typeof response.success === 'boolean') return response.success;
+  if (response.error) return false;
+  return null;
 }
 
 /** Maps an event to needs-input (blocking Notification), finished (`Stop`) or ignored (everything else). */

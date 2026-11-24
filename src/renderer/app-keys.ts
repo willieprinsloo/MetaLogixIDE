@@ -22,6 +22,8 @@ const APP_CHORDS: ReadonlyMap<string, AppShortcutAction> = new Map<string, AppSh
   ['/', 'toggle-help'],
   ['t', 'new-terminal'],
   ['shift+t', 'new-terminal-window'],
+  ['j', 'toggle-agents-dock'],
+  ['shift+a', 'focus-agents-composer'],
 ]);
 
 /** The app action for a keydown, or null when the chord is not an app shortcut on `platform`. */

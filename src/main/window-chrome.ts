@@ -6,36 +6,46 @@ import {
   isChromeFrostLevel,
   isTerminalFrostLevel,
   isVibrancyMaterial,
+  toFrostPlatform,
   type ChromeFrostLevel,
   type FrostFlags,
   type TerminalFrostLevel,
   type VibrancyMaterial,
 } from '@shared/frosted-glass';
 
-/** Resolves an untrusted stored or renderer-supplied value to an approved vibrancy material, falling back to `'sidebar'` for anything outside the allow-list (AC18). */
+/**
+ * macOS traffic-light position for the main window: the standard 12pt inset, centred on the 48pt band
+ * above the sidebar and activity-rail icons (the window has no title bar).
+ */
+export const MAIN_TRAFFIC_LIGHTS = { x: 12, y: 16 } as const;
+
+/** Resolves an untrusted stored or renderer-supplied value to an approved vibrancy material, falling back to the default material for anything outside the allow-list (AC18). */
 export function resolveMaterial(material: unknown): VibrancyMaterial {
-  return isVibrancyMaterial(material) ? material : 'sidebar';
+  return isVibrancyMaterial(material) ? material : FROSTED_GLASS_DEFAULTS.vibrancyMaterial;
 }
 
 /**
  * Per-platform BrowserWindow chrome options shared by the main and popout windows. On darwin
- * the material goes flat when the window is inactive (`visualEffectState: 'followWindow'`,
- * AC18); the vibrancy is the resolved material; every other darwin option is the existing
- * baseline. Non-darwin is unchanged and never carries a material (AC20, AC26).
+ * the material goes flat when the window is inactive (`visualEffectState: 'followWindow'`);
+ * the vibrancy is the resolved material. On linux the window is transparent with a fully
+ * transparent background so the compositor can blur behind it; it never carries a material.
+ * Every other platform keeps the baseline of an auto-hidden menu bar only.
  */
 export function platformChrome(platform: NodeJS.Platform, material: unknown): Partial<BrowserWindowConstructorOptions> {
-  return platform === 'darwin'
-    ? {
-        titleBarStyle: 'hiddenInset',
-        // y centres the lights on the 44px title bar shared by the main and popout windows.
-        trafficLightPosition: { x: 12, y: 14 },
-        vibrancy: resolveMaterial(material),
-        visualEffectState: 'followWindow',
-        roundedCorners: true,
-      }
-    // Windows/Linux draw the app menu as an in-window bar above our own title
-    // bar. Hide it until Alt is pressed; its accelerators keep working.
-    : { autoHideMenuBar: true };
+  const frost = toFrostPlatform(platform);
+  if (frost === 'mac') {
+    return {
+      titleBarStyle: 'hiddenInset',
+      // Centred on the popout's 44px title bar; the main window overrides y with MAIN_TRAFFIC_LIGHTS.
+      trafficLightPosition: { x: 12, y: 14 },
+      vibrancy: resolveMaterial(material),
+      visualEffectState: 'followWindow',
+      roundedCorners: true,
+    };
+  }
+  // Windows/Linux draw the app menu as an in-window bar above our own title bar; hide it until Alt.
+  const baseline = { autoHideMenuBar: true };
+  return frost === 'linux' ? { ...baseline, transparent: true, backgroundColor: '#00000000' } : baseline;
 }
 
 export interface VibrancyTarget {
@@ -65,20 +75,18 @@ export interface RendererQueryInput {
 }
 
 /**
- * Query string (without the leading `?`) the renderer reads at first paint. Off darwin, the
- * frosted-glass flags always resolve to the no-effect defaults, so a stored ON value or level
- * has no effect off macOS (AC6). Popout parameters, when present, come first (AC7).
+ * Query string (without the leading `?`) the renderer reads at first paint. On macOS and Linux
+ * the stored flags pass through; elsewhere they always resolve to the no-effect defaults, so a
+ * stored ON value or level has no effect. Popout parameters, when present, come first (AC7).
  */
 export function rendererQuery(input: RendererQueryInput): string {
   const parts: string[] = [];
   if (input.popout) parts.push(`popout=1&projectId=${input.popout.projectId}&shellIndex=${input.popout.shellIndex}`);
-  const mac = input.platform === 'darwin';
-  // Off darwin no mac flag is ever applied regardless of the value sent, so the no-effect
-  // default for frostChrome is `false` here — not FROSTED_GLASS_DEFAULTS.frostChrome (`true`,
-  // the stored default), which would misleadingly claim the flag is on (AC6).
-  const frostChrome = mac ? input.frostChrome : false;
-  const chromeFrost = mac ? input.chromeFrost : FROSTED_GLASS_DEFAULTS.chromeFrostLevel;
-  const terminalFrost = mac ? input.terminalFrost : FROSTED_GLASS_DEFAULTS.terminalFrostLevel;
+  const applies = toFrostPlatform(input.platform) !== null;
+  // The no-effect frostChrome default is `false`, not FROSTED_GLASS_DEFAULTS.frostChrome (the stored default, `true`).
+  const frostChrome = applies ? input.frostChrome : false;
+  const chromeFrost = applies ? input.chromeFrost : FROSTED_GLASS_DEFAULTS.chromeFrostLevel;
+  const terminalFrost = applies ? input.terminalFrost : FROSTED_GLASS_DEFAULTS.terminalFrostLevel;
   parts.push(`${FROSTED_GLASS_QUERY_KEYS.frostChrome}=${frostChrome ? '1' : '0'}`);
   parts.push(`${FROSTED_GLASS_QUERY_KEYS.chromeFrost}=${chromeFrost}`);
   parts.push(`${FROSTED_GLASS_QUERY_KEYS.terminalFrost}=${terminalFrost}`);

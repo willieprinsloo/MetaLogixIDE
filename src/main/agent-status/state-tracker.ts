@@ -1,7 +1,7 @@
 /** Live per-PTY agent identity and dot state, never changed by Claude hooks. */
 import type { AgentKind, AgentShellStateEntry, AgentState } from '@shared/agent-state';
 import type { ShellKey } from '@main/claude-hooks/session-registry';
-import { classifyClaudeScreen } from './claude-screen';
+import { classifyAgentScreen } from './agent-screen';
 
 /** Immutable identity emitted after each PTY spawn, before its first status observation. */
 export interface SpawnIdentity extends ShellKey {
@@ -23,9 +23,8 @@ interface Entry {
   identity: SpawnIdentity;
   agent: AgentKind | null;
   state: AgentState;
-  lastOmpReportAt: number | null;
+  unavailable: boolean;
 }
-const OMP_LEASE_MS = 1500;
 const key = (shell: ShellKey): string => `${shell.projectId}:${shell.shellIndex}`;
 
 /** Publishes only changes and includes recognized idle shells in initial snapshots. */
@@ -36,7 +35,8 @@ export class AgentStatusTracker {
 
   constructor(
     private readonly pty: StatusPtyPort,
-    private readonly observeForeground: (pid: number) => Promise<boolean>,
+    /** The harness in the PTY's foreground job (for shells not launched as one); rejects when evidence is unavailable. */
+    private readonly observeForeground: (pid: number) => Promise<AgentKind | null>,
     private readonly platform: NodeJS.Platform = process.platform,
   ) {}
 
@@ -48,7 +48,7 @@ export class AgentStatusTracker {
       identity,
       agent: identity.agent,
       state: 'idle',
-      lastOmpReportAt: null,
+      unavailable: identity.agent !== null || this.platform !== 'win32',
     });
     if (identity.agent) this.publish(identity, identity.agent, 'idle');
   }
@@ -61,20 +61,6 @@ export class AgentStatusTracker {
     this.publish(identity, null, 'idle');
   }
 
-  /** Accepts an authenticated OMP session state only while its PTY generation is current. */
-  ompReport(shell: ShellKey, generation: string, state: AgentState): void {
-    const current = this.entries.get(key(shell));
-    if (
-      !current ||
-      current.identity.generation !== generation ||
-      current.identity.agent !== 'omp' ||
-      !this.current(current)
-    )
-      return;
-    current.lastOmpReportAt = Date.now();
-    this.set(current, 'omp', state);
-  }
-
   /** Reads a current snapshot including recognized idle shells. */
   list(): AgentShellStateEntry[] {
     return [...this.entries.values()]
@@ -85,6 +71,17 @@ export class AgentStatusTracker {
         agent,
         state,
       }));
+  }
+
+  /** Reads one current PTY generation without interpreting a failed sampler as idle. */
+  readForGuard(projectId: number, shellIndex: number, generation: string): {
+    agent: AgentKind | null;
+    state: AgentState | null;
+  } {
+    const entry = this.entries.get(`${projectId}:${shellIndex}`);
+    if (!entry || entry.identity.generation !== generation || !this.current(entry) || entry.unavailable)
+      throw new Error('agent status unavailable');
+    return { agent: entry.agent, state: entry.agent ? entry.state : null };
   }
 
   /** Subscribes to changed identity/state and returns an unsubscribe function. */
@@ -101,17 +98,6 @@ export class AgentStatusTracker {
       [...this.entries.values()].map(async (entry) => {
         const k = key(entry.identity);
         if (this.pending.has(k)) return;
-        if (entry.identity.agent === 'omp') {
-          if (
-            this.current(entry) &&
-            entry.lastOmpReportAt !== null &&
-            Date.now() - entry.lastOmpReportAt >= OMP_LEASE_MS
-          ) {
-            entry.lastOmpReportAt = null;
-            this.set(entry, 'omp', 'idle');
-          }
-          return;
-        }
         this.pending.add(k);
         try {
           await this.refreshOne(entry);
@@ -124,29 +110,32 @@ export class AgentStatusTracker {
 
   private async refreshOne(entry: Entry): Promise<void> {
     if (!this.current(entry)) return;
-    let recognized = entry.identity.agent === 'claude';
+    let agent: AgentKind | null = entry.identity.agent;
+    let unavailable = false;
     try {
-      if (!recognized && this.platform !== 'win32')
-        recognized = await this.observeForeground(entry.identity.pid);
+      if (!agent && this.platform !== 'win32') agent = await this.observeForeground(entry.identity.pid);
     } catch {
       console.warn('[agent-status] foreground sample unavailable');
-      recognized = false;
+      agent = null;
+      unavailable = true;
     }
     if (!this.current(entry)) return;
     let state: AgentState = 'idle';
-    if (recognized) {
+    if (agent) {
       try {
         const { rows, title } = await this.pty.liveStatus(
           entry.identity.projectId,
           entry.identity.shellIndex,
         );
-        state = classifyClaudeScreen(rows, title);
+        state = classifyAgentScreen(agent, rows, title);
       } catch {
         console.warn('[agent-status] screen sample unavailable');
+        unavailable = true;
       }
     }
     if (!this.current(entry)) return;
-    this.set(entry, recognized ? 'claude' : null, state);
+    entry.unavailable = unavailable;
+    this.set(entry, agent, state);
   }
 
   private current(entry: Entry): boolean {

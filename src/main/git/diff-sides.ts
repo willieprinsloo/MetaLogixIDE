@@ -85,6 +85,11 @@ async function readIndexSide(root: string, path: string, run: GitRunner): Promis
   return skipped('absent');
 }
 
+/** Dedup (path, code) across the process: the diff pane re-reads on every
+ * selection change, so one broken symlink used to warn on every click. */
+const worktreeReadWarnSeen = new Set<string>();
+/** Test-only: clear the diff-sides worktree-read warn dedup set. */
+export function __resetDiffSidesWarnDedupForTests(): void { worktreeReadWarnSeen.clear(); }
 function readWorktreeSide(root: string, path: string, fs: WorktreeFs): GitSideContent {
   const abs = join(root, path);
   try {
@@ -96,7 +101,11 @@ function readWorktreeSide(root: string, path: string, fs: WorktreeFs): GitSideCo
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ENOENT' || code === 'ENOTDIR') return skipped('absent');
-    log.warn('[git:diff-sides] working-tree read failed; highlighting off for this side', { path, code });
+    const sig = `${path}|${code ?? 'unknown'}`;
+    if (!worktreeReadWarnSeen.has(sig)) {
+      worktreeReadWarnSeen.add(sig);
+      log.warn('[git:diff-sides] working-tree read failed; highlighting off for this side', { path, code });
+    }
     return skipped('unavailable');
   }
 }

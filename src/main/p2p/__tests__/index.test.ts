@@ -167,6 +167,8 @@ async function pair(host: Node, viewer: Node) {
 beforeEach(() => { tmps = []; nodes = []; });
 afterEach(async () => {
   for (const n of nodes) await n.p2p.stop().catch(() => {});
+  // Windows refuses to delete an open SQLite file.
+  for (const n of nodes) n.services.db.close();
   for (const d of tmps) rmSync(d, { recursive: true, force: true });
 });
 
@@ -386,6 +388,60 @@ describe('fleet online heuristic', () => {
   });
 });
 
+describe('auto-dial', () => {
+  /** Polls fleetList until the first device's online flag equals `want`. */
+  async function waitOnline(n: Node, want: boolean, timeoutMs = 3000) {
+    const deadline = Date.now() + timeoutMs;
+    while ((await n.p2p.api.fleetList())[0]?.online !== want) {
+      if (Date.now() > deadline) throw new Error(`waitOnline(${want}) timeout`);
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  }
+
+  test('a viewer re-dials a paired host after the host restarts, with no RPC from the UI', async () => {
+    const relay = new FakeRelay();
+    const reg = new TransportRegistry();
+    const host = makeNode(relay, reg, 'host');
+    const viewer = makeNode(relay, reg, 'viewer', { autoDialMs: 20 });
+    await host.p2p.start();
+    await viewer.p2p.start();
+    await viewer.p2p.api.setSettings({ serveEnabled: false });
+    expect((await pair(host, viewer)).result).toEqual({ ok: true });
+    await waitOnline(viewer, true);
+
+    await host.p2p.stop();
+    await waitOnline(viewer, false);
+
+    const again = createP2P(host.services, {
+      homeDir: host.home,
+      createClient: (cfg) => relay.newClient('host2', cfg),
+      createTransport: (role) => new FakeTransport(role, reg) as unknown as WebRtcTransport,
+      appVersion: 't',
+    });
+    try {
+      await again.start();
+      await waitOnline(viewer, true);
+      await expect(viewer.p2p.api.rpcCall(idOf(host), 'device.info', {})).resolves.toMatchObject({ platform: process.platform });
+    } finally {
+      await again.stop();
+    }
+  });
+
+  test('manual reconnect dials a device that has no live link', async () => {
+    const relay = new FakeRelay();
+    const reg = new TransportRegistry();
+    const host = makeNode(relay, reg, 'host');
+    const viewer = makeNode(relay, reg, 'viewer');
+    await host.p2p.start();
+    await viewer.p2p.start();
+    await viewer.p2p.api.setSettings({ serveEnabled: false });
+    expect((await pair(host, viewer)).result).toEqual({ ok: true });
+    expect((await viewer.p2p.api.fleetList())[0]!.online).toBe(false);
+    await viewer.p2p.api.reconnectDevice(idOf(host));
+    expect((await viewer.p2p.api.fleetList())[0]!.online).toBe(true);
+  });
+});
+
 describe('paired sessions', () => {
   async function pairedFleet() {
     const relay = new FakeRelay();
@@ -481,7 +537,7 @@ describe('paired sessions', () => {
       const pty = host.services.ptyManager;
       vi.spyOn(pty, 'isAlive').mockReturnValue(true);
       vi.spyOn(pty, 'getSnapshot').mockResolvedValue('snapshot');
-      const r = (await viewer.p2p.api.rpcCall(idOf(host), 'shells.attach', { projectId: 1, shellIndex: 0 })) as { streamId: number };
+      await viewer.p2p.api.rpcCall(idOf(host), 'shells.attach', { projectId: 1, shellIndex: 0 });
       await waitFor(() => viewer.events.length >= 1);
       viewer.clients.filter((c) => c.cfg.role === 'viewer').at(-1)!.status = status;
       reg.all.find((t) => t.role === 'viewer' && !t.closed)!.emit('close');

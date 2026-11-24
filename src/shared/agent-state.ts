@@ -1,5 +1,8 @@
 /** Public per-shell status sent by main; no terminal content or credentials cross IPC. */
-export type AgentKind = 'claude' | 'omp';
+import type { AgentHarness } from './agent-harness';
+
+/** A recognised agent harness, launched directly or detected in a shell's foreground. Each harness's screen is classified into idle/busy/blocked. */
+export type AgentKind = AgentHarness;
 export type AgentState = 'idle' | 'busy' | 'blocked';
 
 /** `agent` is null only when no recognized live agent owns the shell. */
@@ -18,7 +21,16 @@ export const AGENT_STATE_LABEL: Readonly<Record<AgentKind, Readonly<Record<Agent
       busy: 'Claude is working',
       blocked: 'Claude needs your input',
     },
-    omp: { idle: 'OMP is idle', busy: 'OMP is working', blocked: 'OMP needs your input' },
+    codex: {
+      idle: 'Codex is idle',
+      busy: 'Codex is working',
+      blocked: 'Codex needs your input',
+    },
+    opencode: {
+      idle: 'opencode is idle',
+      busy: 'opencode is working',
+      blocked: 'opencode needs your input',
+    },
   };
 
 export const AGGREGATE_STATE_LABEL: Readonly<Record<AgentState, string>> = {

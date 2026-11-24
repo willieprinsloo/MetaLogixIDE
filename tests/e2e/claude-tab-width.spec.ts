@@ -23,6 +23,7 @@ import { test, expect, _electron as electron, type Page, type ElectronApplicatio
 import { mkdirSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { closeApp, guardedLaunch } from './helpers/claude-harness';
+import { UNLOAD_SESSION_COPY, UNLOAD_SESSION_TESTIDS } from '../../src/renderer/unload-session-copy';
 
 const WIDE = { width: 1600, height: 1000 };
 const NARROW = { width: 900, height: 1000 };
@@ -181,10 +182,14 @@ test('Claude reopened from "+ new shell" after closing its tab starts at the tab
     // First open (sidebar click → pick()) — the tab's size must reach Claude too.
     const atFirstOpen = await ptySize(win, 'demo');
 
-    // Close the Claude tab: the toolbar's unload control (the X beside the
-    // project name — shell 0 has no X in the tab strip) kills shell 0. The
-    // active tab stays index 0, so its ShellTab stays mounted, size cached.
+    // The toolbar now asks before ending shell 0. Its tab stays mounted,
+    // so the original cached-size regression must still be exercised.
     await win.getByTestId('unload-current').click();
+    const confirmation = win.getByTestId(UNLOAD_SESSION_TESTIDS.dialog);
+    await expect(confirmation).toBeVisible();
+    await expect(confirmation.getByTestId(UNLOAD_SESSION_TESTIDS.keep)).toBeFocused();
+    await expect.poll(() => isAlive(win, 'demo')).toBe(true);
+    await confirmation.getByRole('button', { name: UNLOAD_SESSION_COPY.unload }).click();
     await expect.poll(() => isAlive(win, 'demo'), { timeout: 10000 }).toBe(false);
 
     // Open Claude again from the "+ new shell" menu. shells:launch-cli takes

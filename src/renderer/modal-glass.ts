@@ -51,6 +51,7 @@ export const MODAL_SURFACES: readonly ModalSurface[] = [
   { id: 'prompt-library', testId: 'prompt-library', tier: 'modal', motion: 'none', radius: 'dialog' },
   { id: 'scrollback-search', testId: 'scrollback-search', tier: 'modal', motion: 'none', radius: 'compact' },
   { id: 'rename-project', testId: 'rename-project', tier: 'modal', motion: 'none', radius: 'dialog' },
+  { id: 'unload-session', testId: 'unload-session-dialog', tier: 'modal', motion: 'none', radius: 'dialog' },
   { id: 'shortcuts-help', testId: 'shortcuts-help', tier: 'modal', motion: 'none', radius: 'dialog' },
 ];
 

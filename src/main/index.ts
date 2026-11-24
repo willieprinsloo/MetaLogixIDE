@@ -1,35 +1,54 @@
-import { app, BrowserWindow, ipcMain, Menu, Notification, screen, shell } from 'electron';
+import { app, BrowserWindow, crashReporter, ipcMain, Menu, Notification, powerSaveBlocker, screen, shell } from 'electron';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import log from 'electron-log/main';
 import { startP2P, stopP2P } from './p2p';
+import { createChatService } from './chat/service';
+import { createReplyCap } from './chat/cap';
+import { buildRoster, type RemotePeer, type RosterRow } from './chat/roster';
+import { wireChatInjector } from './chat/inject';
+import { readRecentChat } from './chat/log';
+import { ensureAgentStanza, buildOnboardingNudge, nudgeAgentShell } from './chat/onboard';
+import { startOutboxWatcher } from './chat/outbox-watcher';
+import { startIntentWatcher } from './chat/intent-watcher';
+import { isWorkerWindowId } from './p2p/worker/windowWorker';
 import { buildServices, type Services } from './services';
+import { createCredentialStore } from './credential-store';
 import { DROP_MAX_AGE_MS, testModeDropDir } from './drops/staging';
-import { registerIpc } from './ipc/register';
+import { installKeepAwake } from './keep-awake/install';
+import { registerIpc, rememberResumableHarness } from './ipc/register';
 import { buildAppMenu } from './menu';
 import { installClaudeNotifications } from './notifications/install';
 import { installAgentStatus } from './agent-status/install';
 import { createHookFanout, type HookSource } from './claude-hooks/hook-fanout';
 import { installGroupChat, type InstalledGroupChat } from './group-chat/install';
+import { wireActivityLog } from './activity/wire';
 import { rescanRootsAtBoot } from './startup/boot-rescan';
 import { startDoneNotifier } from './startup/done-notifier';
 import { startReceivers } from './startup/receivers';
+import { installCrashObservability } from './startup/crash-observability';
+import { installFseventsNoiseFilter } from './startup/suppress-fsevents-noise';
 import { withoutHookConfirmed } from './notifications/claude-notifier';
 import { resolveLoginShellPath } from './domain/login-shell-path';
 import { computeTileLayout } from './window-tiling';
+import { handleMetafileProtocol, registerMetafileScheme } from './protocol/metafile';
 import {
   FROSTED_GLASS_FALLBACK,
   applyVibrancy,
   platformChrome,
+  MAIN_TRAFFIC_LIGHTS,
   readStoredFrostedGlass,
   rendererQuery,
   type StoredFrostedGlass,
 } from './window-chrome';
 
-// Route console.log/warn/error to a rolling file at
-// `~/Library/Logs/MetaLogix IDE/main.log` (Electron's app.getPath('logs')).
+// Route console.log/warn/error to a rolling `main.log`: on macOS
+// `~/Library/Logs/<app name>/`, on Linux `~/.config/<app name>/logs/`, on
+// Windows `%USERPROFILE%\AppData\Roaming\<app name>\logs\`. The resolved
+// path is written to the log's `[metaide] started` line at every boot.
 // `preload: true` wires renderer console output through IPC into the same
 // file so both sides land in one place — no more "was that a main or a
 // renderer error?" hunt when a user reports a blank screen. transports.file
@@ -38,6 +57,8 @@ log.initialize({ preload: true });
 log.transports.file.level = 'info';
 log.transports.console.level = 'debug';
 Object.assign(console, log.functions);
+installCrashObservability({ log, app, crashReporter, pid: process.pid });
+installFseventsNoiseFilter();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -52,6 +73,19 @@ const popoutWindows = new Map<string, BrowserWindow>(); // key = `${projectId}:$
 // the renderer is up, then flush and broadcast one event per path.
 const pendingFileOpens: string[] = [];
 let rendererReadyForFiles = false;
+
+/**
+ * Collapse any string to the mention-segment grammar
+ * (`^[a-z][a-z0-9-]{0,31}$`) used by the `[metaide-chat …]` injection
+ * header and the `@mention` grammar in the UI. Strips dots, underscores,
+ * and uppercase that would otherwise hit `safeSeg`'s `"unknown"` fallback
+ * for hostnames like `MacBook-Pro.home`.
+ */
+function canonicalDevice(raw: string): string {
+  const slug = raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32);
+  if (!slug) return 'unknown';
+  return /^[a-z]/.test(slug) ? slug : `d-${slug}`.slice(0, 32);
+}
 
 function flushPendingFileOpens(): void {
   if (!rendererReadyForFiles) return;
@@ -113,10 +147,10 @@ if (!gotLock) {
 } else {
   app.on('second-instance', (_event, argv) => {
     scanArgvForFiles(argv);
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show(); mainWindow.focus();
-    }
+    void ensureMainWindow().then((win) => {
+      if (win.isMinimized()) win.restore();
+      win.show(); win.focus();
+    });
   });
 }
 
@@ -161,6 +195,23 @@ function wireExternalLinks(win: BrowserWindow): void {
   });
 }
 
+/**
+ * Broadcasts `window:fullscreen-changed` whenever the window enters or leaves
+ * native fullscreen — from the IPC toggle, Ctrl+Cmd+F / F11, or the green
+ * traffic light. Lets the renderer hide IDE chrome in lock-step. Cross-platform:
+ * Electron fires enter/leave-full-screen on mac, Windows and Linux alike.
+ */
+function wireFullscreenEvents(win: BrowserWindow): void {
+  const notify = (fullscreen: boolean) => {
+    if (win.isDestroyed()) return;
+    const wc = win.webContents;
+    if (!wc || wc.isDestroyed() || wc.isCrashed()) return;
+    try { wc.send('window:fullscreen-changed', { windowId: win.id, fullscreen }); } catch { /* frame disposed */ }
+  };
+  win.on('enter-full-screen', () => notify(true));
+  win.on('leave-full-screen', () => notify(false));
+}
+
 async function createMainWindow(): Promise<BrowserWindow> {
   const win = new BrowserWindow({
     width: 1400,
@@ -168,11 +219,13 @@ async function createMainWindow(): Promise<BrowserWindow> {
     show: false,
     backgroundColor: '#00000000',
     ...platformChrome(process.platform, readFrostedGlass().vibrancyMaterial),
+    ...(process.platform === 'darwin' ? { trafficLightPosition: MAIN_TRAFFIC_LIGHTS } : {}),
     webPreferences: baseWebPreferences(),
   });
   win.once('ready-to-show', () => win.show());
   wireExternalLinks(win);
   applyPersistedOpacity(win);
+  wireFullscreenEvents(win);
   // Detect renderer crashes ("blank screen" symptom) and auto-recover by
   // reloading the window. Without this, an OOM / WebGL context loss / stray
   // exception leaves the user with a blank webview and nothing else to do.
@@ -212,6 +265,7 @@ export async function createPopoutWindow(projectId: number, shellIndex: number):
   });
   wireExternalLinks(win);
   applyPersistedOpacity(win);
+  wireFullscreenEvents(win);
   if (process.env.ELECTRON_RENDERER_URL) await win.loadURL(`${process.env.ELECTRON_RENDERER_URL}?${query}`);
   else await win.loadFile(join(__dirname, '../renderer/index.html'), { search: `?${query}` });
   win.once('ready-to-show', () => {
@@ -249,7 +303,7 @@ export function listPopped(): Array<{ projectId: number; shellIndex: number }> {
  * window in turn and returns how many windows were arranged.
  */
 export function tileAllOurWindows(): number {
-  const wins = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed());
+  const wins = userWindows();
   if (wins.length === 0) return 0;
   const workArea = screen.getPrimaryDisplay().workArea;
   const sorted = [...wins].sort((a, b) => {
@@ -267,6 +321,15 @@ export function tileAllOurWindows(): number {
 }
 
 function broadcast(channel: string, payload: unknown): void {
+  // chat:changed is also fed to the injector so one post travels one
+  // path — renderer tail + PTY stdin injection fan out together.
+  if (channel === 'chat:changed') {
+    for (const cb of chatChangedListeners) {
+      try {
+        cb(payload as { projectId: number; entry: import('@shared/chat').ChatEntry });
+      } catch (err) { console.warn('[chat] injector listener threw', err); }
+    }
+  }
   for (const w of BrowserWindow.getAllWindows()) {
     // The BrowserWindow can be alive while its underlying render frame is
     // transient — during Cmd+R, a renderer crash + auto-respawn, or window
@@ -338,24 +401,54 @@ function registerWindowsAppId(): void {
 
 /** Builds the service graph from the app's install paths and the test-mode drop directory env. */
 function createServices(): Services {
-  const ompExtensionPath = app.isPackaged
-    ? join(process.resourcesPath, 'omp-status-extension.js')
-    : resolve(app.getAppPath(), 'resources/omp-status-extension.js');
-  return buildServices({
+  const services = buildServices({
     migrationsDir: resolve(app.getAppPath(), 'migrations'),
-    ompExtensionPath,
     dropDir: testModeDropDir(process.env, app.getPath('userData')),
   });
+  // safeStorage requires `app` to be ready — attach the credential store here
+  // rather than in buildServices so unit tests do not need to mock Electron.
+  services.credentialStore = createCredentialStore(app.getPath('userData'));
+  return services;
 }
 
 /** Installs the agent-status monitor, publishes its tracker on `services`, and returns the handle for shutdown. */
 function attachAgentStatus(services: Services): ReturnType<typeof installAgentStatus> {
   const agentStatus = installAgentStatus({
     ptyManager: services.ptyManager,
-    receiver: services.ompReceiver,
     broadcast,
   });
   services.agentStatus = agentStatus.tracker;
+  // A harness started by hand in a terminal counts as having run here: the project's next launch of it resumes.
+  // Also seeds the chat-bus stanza into CLAUDE.md / AGENTS.md / ollama-system.md
+  // the first time each supported CLI is detected per project — otherwise the
+  // agent never learns how to post back through `.metaide/chat-outbox.jsonl`.
+  const onboarded = new Set<string>();
+  agentStatus.tracker.onChange((entry) => {
+    if (!entry.agent) return;
+    rememberResumableHarness(services, entry.projectId, entry.agent);
+    if (entry.agent === 'claude' || entry.agent === 'codex' || entry.agent === 'opencode') {
+      const key = `${entry.projectId}:${entry.agent}`;
+      if (onboarded.has(key)) return;
+      onboarded.add(key);
+      const project = services.projects.get(entry.projectId);
+      if (project) {
+        const res = ensureAgentStanza(project.path, entry.agent);
+        if (res.appended) {
+          log.info('[chat] onboarded agent', { cli: entry.agent, file: res.file });
+          // Writing the stanza doesn't help a running agent — it has long
+          // since read its conventions file. Push a one-line read-this
+          // nudge into its PTY (bracketed-paste + CR, same mechanics as
+          // chat delivery), unless the user has turned the auto-nudge off.
+          if (services.settings.get('chat_auto_onboard')) {
+            try {
+              nudgeAgentShell(services.ptyManager, entry.projectId, entry.shellIndex, buildOnboardingNudge(entry.agent));
+              log.info('[chat] nudged agent to read stanza', { cli: entry.agent, shell: entry.shellIndex });
+            } catch (err) { log.warn('[chat] nudge failed', { err: String(err) }); }
+          }
+        }
+      }
+    }
+  });
   return agentStatus;
 }
 
@@ -363,6 +456,18 @@ function attachAgentStatus(services: Services): ReturnType<typeof installAgentSt
 function bindWindowSettings(services: Services): void {
   readWindowOpacity = () => services.settings.get('window_opacity');
   readFrostedGlass = () => readStoredFrostedGlass((key) => services.settings.get(key));
+}
+
+/** Installs the macOS keep-awake timer on `services`; stays null off darwin. */
+function attachKeepAwake(services: Services): void {
+  services.keepAwake = installKeepAwake({
+    platform: process.platform,
+    env: process.env,
+    powerSaveBlocker,
+    execFile,
+    notificationClass: Notification,
+    broadcast,
+  });
 }
 
 /** Registers the renderer IPC surface, with window operations bound to this module's windows. */
@@ -376,7 +481,7 @@ function registerMainIpc(services: Services): void {
   });
 }
 
-/** Wires Claude hook events to OS notifications, resolving target windows from this module's state. */
+/** Wires Claude hook events to OS notifications and the project activity log, resolving target windows from this module's state. */
 function installNotifications(services: Services, hooks: HookSource): void {
   installClaudeNotifications({
     hooks,
@@ -394,7 +499,115 @@ function installNotifications(services: Services, hooks: HookSource): void {
     },
     broadcast,
   });
+  wireActivityLog({
+    hooks,
+    projects: services.projects,
+    broadcast: (projectId, entry) => broadcast('activity:changed', { projectId, entry }),
+  });
+  // Chat service — one serialisation point for every post (local IPC,
+  // remote P2P append, companion CLI). `deviceId` is the P2P deviceName
+  // when p2p has started, else the hostname — stable per machine, good
+  // enough to disambiguate `@claude@mac-mini` in the UI.
+  // Canonicalise to the mention-segment grammar (lowercase, [a-z0-9-],
+  // starts with a letter, ≤32 chars) so `hostname()` outputs like
+  // "MacBook-Pro.home" don't collapse to the literal "unknown" placeholder
+  // the injection line uses when its input fails validation.
+  const selfDevice = canonicalDevice(services.p2p?.api.getSettings().deviceName ?? hostname());
+  services.chat = createChatService({
+    projects: services.projects,
+    deviceId: selfDevice,
+    broadcast,
+  });
+  // Chat → PTY injector. Watches `chat:changed` via the IPC fanout, maps
+  // `to` recipients to local shells through the roster, and writes a
+  // single `[metaide-chat …] <body>\n` line into each. Remote-peer rows
+  // land in the roster once Task 7 wires the P2P cache.
+  const chatCap = createReplyCap();
+  const chatRoster = (): RosterRow[] => {
+    const local = services.ptyManager.liveShells().map((s) => ({
+      projectId: s.projectId,
+      shellIndex: s.shellIndex,
+      model: null,
+      launchArgv: [],
+      startedAt: '',
+      lastActiveAt: '',
+      pinned: false,
+      projectName: '',
+      projectPath: '',
+    }));
+    const agentLabels: Record<number, string> = {};
+    const agentStates: Record<number, 'idle' | 'busy' | 'blocked' | null> = {};
+    for (const row of services.agentStatus?.list() ?? []) {
+      if (!row.agent) continue;
+      agentLabels[row.shellIndex] = row.agent;
+      agentStates[row.shellIndex] = row.state;
+    }
+    const remote: RemotePeer[] = []; // populated by Task 7's P2P cache
+    const nicknames = services.settings.get('shell_nicknames');
+    return buildRoster({ local, remote, agentLabels, agentStates, nicknames, selfDevice });
+  };
+  services.chatRoster = chatRoster;
+  services.selfDevice = selfDevice;
+  wireChatInjector({
+    pty: services.ptyManager,
+    roster: chatRoster,
+    cap: chatCap,
+    selfDevice,
+    onCapHeld: (projectId, entry) =>
+      broadcast('chat:changed', { projectId, entry: { ...entry, meta: { ...(entry.meta ?? {}), cap_held: true } } }),
+    onRateDropped: (projectId, entry) =>
+      broadcast('chat:changed', { projectId, entry: { ...entry, meta: { ...(entry.meta ?? {}), rate_dropped: true } } }),
+    onDelivered: (projectId, entry, delivered) => {
+      // Every mention was offline → flag it so the pane shows "not
+      // delivered". Both branches of this bus are already carrying the
+      // row; this is a metadata update, not a new entry.
+      if (delivered === 0) {
+        broadcast('chat:changed', { projectId, entry: { ...entry, meta: { ...(entry.meta ?? {}), undelivered: true } } });
+      }
+    },
+    // Read a released id back from the project's log so a human post can
+    // replay queued-behind-the-cap messages without a renderer round-trip.
+    lookupEntry: (projectId, id) => {
+      const project = services.projects.get(projectId);
+      if (!project) return null;
+      return readRecentChat(project.path, 500).find((e) => e.id === id) ?? null;
+    },
+    hooks: {
+      onChatChanged: (cb) => {
+        // Reuse the broadcast fanout: whenever `chat:changed` goes out
+        // to renderers, feed it to the injector too. Simpler than a
+        // bespoke pubsub; one call point to serialise.
+        chatChangedListeners.push(cb);
+      },
+    },
+  });
+
+  // Agent → chat-bus outbox: watches each project's
+  // `.metaide/chat-outbox.jsonl`, routes appended lines through
+  // chat.append(). Started once; new projects are added as they open
+  // (see `projects:changed` subscriber below).
+  if (services.chat) {
+    services.chatOutbox = startOutboxWatcher({
+      chat: services.chat,
+      projects: services.projects.list(),
+    });
+  }
+
+  // Agent → status badge bus. Tails each project's
+  // `.metaide/intent-outbox.jsonl` and broadcasts `intent:changed` so
+  // the renderer can render a "what I'm doing" line beside each agent.
+  // Independent of the chat injector: intent isn't addressed to anyone;
+  // it's ambient state, so a change fans out and that's it.
+  services.intent = startIntentWatcher({
+    projects: services.projects.list(),
+    onChanged: ({ projectId, update }) => {
+      broadcast('intent:changed', { projectId, update });
+    },
+  });
 }
+
+/** Fanout list used by `wireChatInjector`; populated by `installNotifications`. */
+const chatChangedListeners: Array<(p: { projectId: number; entry: import('@shared/chat').ChatEntry }) => void> = [];
 
 /** Creates the main window and app menu, then prunes stale drop staging in the background. */
 async function openMainWindow(services: Services): Promise<void> {
@@ -427,14 +640,14 @@ function forwardPortChanges(services: Services): void {
   });
 }
 
-/** Stops group chats, the done poller, the agent-status monitor and both receivers when the app quits. */
+/** Stops group chats, the done poller, keep-awake, the agent-status monitor and both receivers when the app quits. */
 function stopOnQuit(services: Services, donePoll: NodeJS.Timeout, agentStatus: ReturnType<typeof installAgentStatus>, groupChat: InstalledGroupChat): void {
   app.on('before-quit', () => {
     // first, so running headless engine processes are killed and nothing new starts
     groupChat.stop();
     clearInterval(donePoll);
     agentStatus.stop();
-    services.ompReceiver.stop();
+    services.keepAwake?.dispose();
     void services.hookRuntime.stop();
     void stopP2P();
   });
@@ -443,8 +656,8 @@ function stopOnQuit(services: Services, donePoll: NodeJS.Timeout, agentStatus: R
 /**
  * App startup once Electron is ready, in a fixed order: login-shell PATH, cold-launch argv scan
  * (after ready so `existsSync` sees the app-relative CWD), Windows app id, services, receivers,
- * agent status, group chats, boot rescan, window settings, IPC, Claude notifications, main
- * window, done notifier, ports fan-out, quit teardown.
+ * agent status, group chats, boot rescan, window settings, IPC, P2P startup,
+ * Claude notifications, main window, done notifier, ports fan-out, quit teardown.
  */
 async function startApp(): Promise<void> {
   await adoptLoginShellPath();
@@ -458,7 +671,12 @@ async function startApp(): Promise<void> {
   const groupChat = installGroupChat({ services, hooks, broadcast });
   await rescanRootsAtBoot(services);
   bindWindowSettings(services);
+  attachKeepAwake(services);
   registerMainIpc(services);
+  // metafile:// serves project files to the renderer's sandboxed HTML
+  // preview iframe; bridge to the live projects repo so renamed/removed
+  // projects stop serving immediately.
+  handleMetafileProtocol((id) => services.projects.get(id)?.path ?? null);
   // P2P needs the IPC broadcaster (rpc stream events) and must never block or fail app startup.
   void startP2P(services, { emit: broadcast }).catch((err: unknown) => log.warn('[p2p] start failed', err));
   installNotifications(services, hooks);
@@ -470,8 +688,36 @@ async function startApp(): Promise<void> {
 
 const startupReady = app.whenReady().then(startApp);
 
+// Privileged-scheme registration must precede app ready — the metafile://
+// protocol (rendered HTML preview) needs standard/secure/fetch privileges
+// to load inside a sandboxed iframe. No-op if called after ready.
+registerMetafileScheme();
+
+/** Open windows the user can see or close; excludes the hidden p2p worker. */
+function userWindows(): BrowserWindow[] {
+  return BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed() && !isWorkerWindowId(w.id));
+}
+
+/** Returns the live main window, recreating it once startup has finished if it was closed. */
+async function ensureMainWindow(): Promise<BrowserWindow> {
+  await startupReady;
+  if (!mainWindow || mainWindow.isDestroyed()) mainWindow = await createMainWindow();
+  return mainWindow;
+}
+
+// The hidden p2p worker window keeps 'window-all-closed' from ever firing, so quit when the
+// last user window closes instead — otherwise the app lingers headless holding the
+// single-instance lock and every later launch silently exits.
+// This listener is attached before the worker's own 'closed' handler, so the id is still registered.
+app.on('browser-window-created', (_event, win) => {
+  const id = win.id;
+  win.on('closed', () => {
+    if (process.platform === 'darwin' || isWorkerWindowId(id)) return;
+    if (userWindows().length === 0) app.quit();
+  });
+});
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', async () => {
   if (process.platform === 'darwin') await startupReady;
-  if (BrowserWindow.getAllWindows().length === 0) mainWindow = await createMainWindow();
+  if (userWindows().length === 0) mainWindow = await createMainWindow();
 });

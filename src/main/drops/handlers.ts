@@ -56,13 +56,19 @@ export function resolveWithinRoot(root: string, relPath: string): ResolveAppFile
     : { kind: 'failed', reason: 'relPath resolves outside the project' };
 }
 
-/** Logs a non-staged outcome at warn, so failed drops leave a trace without the file contents. */
+/**
+ * Logs a non-staged outcome at debug, so failed drops leave a trace without
+ * the file contents. These are user-driven validation outcomes — invalid
+ * request, unknown project, path outside project, too-large — surfaced to
+ * the renderer as toasts; warn would flood the log on every rejected drop
+ * (logs showed 700+ of these last week).
+ */
 function logged<R extends ClipboardImageResult | ResolveAppFileResult>(
   op: DropChannel,
   result: R,
 ): R {
   if (result.kind === 'failed' || result.kind === 'too-large')
-    log.warn(`[drops] ${op} ${result.kind}`, result);
+    log.debug(`[drops] ${op} ${result.kind}`, result);
   return result;
 }
 
@@ -89,8 +95,13 @@ export const dropHandlers: { [C in DropChannel]: Handler<C> } = {
     try {
       png = s.clipboardImage.readPng();
     } catch (err) {
+      // "clipboard unavailable" is the normal case when nothing clipboard-
+      // worthy is there (or Electron hasn't surfaced it to the renderer
+      // yet); the renderer treats it as "nothing to paste". Keep the trace
+      // for forensic needs but not at error — those were 32 noisy lines a
+      // week for a case that is not a bug.
       const reason = err instanceof Error ? err.message : String(err);
-      log.error('[drops] clipboard image read failed', err);
+      log.debug('[drops] clipboard image read failed', err);
       return { kind: 'failed', reason };
     }
     if (png === null) return { kind: 'no-image' };

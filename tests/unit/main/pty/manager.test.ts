@@ -27,7 +27,41 @@ async function untilData(mgr: PtyManager, projectId: number, match: string, time
   });
 }
 
+/** Logs every SIGWINCH size; with `alt`, switches to the alternate screen first like a full-screen TUI. */
+function winchLaunch(alt: boolean) {
+  const script = `${alt ? "process.stdout.write('\\x1b[?1049h');" : ''} process.stdout.write('READY\\n'); process.on('SIGWINCH', () => process.stdout.write(\`W=\${process.stdout.columns}x\${process.stdout.rows}\\n\`)); setTimeout(() => {}, 5000)`;
+  return { argv: ['node', '-e', script], env: {}, cwd: process.cwd(), variant: 'first' as const };
+}
+
 describe('PtyManager', () => {
+  it('nudges an alternate-screen app to repaint once resizes settle (one row shorter, then back)', async () => {
+    const mgr = new PtyManager();
+    const ready = untilData(mgr, 40, 'READY');
+    await mgr.spawn(40, 0, winchLaunch(true));
+    await ready;
+    const seen = untilData(mgr, 40, 'W=120x39', 3000);
+    mgr.resize(40, 0, 110, 40);
+    mgr.resize(40, 0, 120, 40);
+    let out = await seen;
+    out = out + (await untilData(mgr, 40, 'W=120x40', 3000).catch(() => ''));
+    await mgr.kill(40, 0);
+    expect(out.indexOf('W=120x39')).toBeGreaterThan(-1);
+  });
+
+  it('never nudges a plain (main-screen) shell', async () => {
+    const mgr = new PtyManager();
+    const ready = untilData(mgr, 41, 'READY');
+    await mgr.spawn(41, 0, winchLaunch(false));
+    await ready;
+    let buf = '';
+    mgr.on('data', ({ projectId, data }) => { if (projectId === 41) buf += data; });
+    mgr.resize(41, 0, 120, 40);
+    await new Promise((r) => setTimeout(r, 600));
+    await mgr.kill(41, 0);
+    expect(buf).toContain('W=120x40');
+    expect(buf).not.toContain('W=120x39');
+  });
+
   it('spawns a PTY and receives initial banner', async () => {
     const mgr = new PtyManager();
     const p = untilData(mgr, 1, 'mock-claude ready');
@@ -97,6 +131,91 @@ describe('PtyManager', () => {
     await mgr.spawn(3, 0, launch());
     await mgr.kill(3, 0);
     expect(mgr.list().find(s => s.projectId === 3)).toBeUndefined();
+  });
+
+  it('stops only the inspected generation and never signals a replacement', async () => {
+    const mgr = new PtyManager();
+    await mgr.spawn(35, 0, launch());
+    const oldGeneration = mgr.liveShell(35, 0)?.generation;
+    expect(oldGeneration).toEqual(expect.any(String));
+    await mgr.kill(35, 0);
+    expect(mgr.stopIfGeneration(35, oldGeneration ?? '')).toBe('gone');
+    await mgr.spawn(35, 0, launch());
+    const replacement = mgr.liveShell(35, 0)?.generation;
+    expect(replacement).not.toBe(oldGeneration);
+    expect(mgr.stopIfGeneration(35, oldGeneration ?? '')).toBe('replaced');
+    expect(mgr.liveShell(35, 0)?.generation).toBe(replacement);
+    await mgr.spawn(36, 0, launch());
+    expect(mgr.stopIfGeneration(35, replacement ?? '')).toBe('stopped');
+    expect(mgr.liveShell(35, 0)).toBeNull();
+    expect(mgr.liveShell(36, 0)).not.toBeNull();
+    await mgr.kill(36, 0);
+  });
+
+  it('preserves a replacement spawned during synchronous stop signalling', async () => {
+    const mgr = new PtyManager();
+    await mgr.spawn(37, 0, launch());
+    await untilData(mgr, 37, '> ');
+    const inspected = mgr.liveShell(37, 0)?.generation;
+    const entry = mgr['entries'].get('37:0');
+    expect(entry).toBeDefined();
+    const oldExit = new Promise<void>((resolveExit) => entry?.pty.onExit(() => resolveExit()));
+    const exitEvents: unknown[] = [];
+    mgr.on('exit', (event) => exitEvents.push(event));
+    entry?.pending.push('replacement-during-stop');
+    const replacementSpawns: Array<Promise<{ pid: number }>> = [];
+    mgr.on('data', ({ projectId, data }) => {
+      if (projectId !== 37 || !data.includes('replacement-during-stop')) return;
+      void mgr.kill(37, 0);
+      replacementSpawns.push(mgr.spawn(37, 0, launch()));
+    });
+    expect(mgr.stopIfGeneration(37, inspected ?? '')).toBe('replaced');
+    expect(replacementSpawns).toHaveLength(1);
+    await Promise.all(replacementSpawns);
+    const replacement = mgr.liveShell(37, 0)?.generation;
+    expect(replacement).not.toBe(inspected);
+    expect(mgr.stopIfGeneration(37, inspected ?? '')).toBe('replaced');
+    expect(mgr.liveShell(37, 0)?.generation).toBe(replacement);
+    await oldExit;
+    expect(exitEvents).toEqual([
+      expect.objectContaining({ projectId: 37, shellIndex: 0, generation: inspected }),
+    ]);
+    expect(mgr.liveShell(37, 0)?.generation).toBe(replacement);
+    await mgr.kill(37, 0);
+  });
+
+  it('does not report a successful stop when the old PTY exits during flushing', async () => {
+    const mgr = new PtyManager();
+    await mgr.spawn(38, 0, launch());
+    await untilData(mgr, 38, '> ');
+    const generation = mgr.liveShell(38, 0)?.generation;
+    const entry = mgr['entries'].get('38:0');
+    expect(entry).toBeDefined();
+    entry?.pending.push('old-exits-during-stop');
+    mgr.on('data', ({ projectId, data }) => {
+      if (projectId === 38 && data.includes('old-exits-during-stop'))
+        void mgr.kill(38, 0);
+    });
+    expect(mgr.stopIfGeneration(38, generation ?? '')).toBe('gone');
+    expect(mgr.liveShell(38, 0)).toBeNull();
+  });
+
+  it('retains the primary PTY for retry if neither termination signal can be delivered', async () => {
+    const mgr = new PtyManager();
+    await mgr.spawn(39, 0, launch());
+    const generation = mgr.liveShell(39, 0)?.generation;
+    const entry = mgr['entries'].get('39:0');
+    if (!entry) throw new Error('missing test PTY');
+    const groupKill = vi.spyOn(process, 'kill').mockImplementation(() => { throw new Error('group denied'); });
+    const ptyKill = vi.spyOn(entry.pty, 'kill').mockImplementation(() => { throw new Error('pty denied'); });
+    try {
+      expect(() => mgr.stopIfGeneration(39, generation ?? '')).toThrow('unable to signal primary shell');
+      expect(mgr.liveShell(39, 0)?.generation).toBe(generation);
+    } finally {
+      groupKill.mockRestore();
+      ptyKill.mockRestore();
+      await mgr.kill(39, 0);
+    }
   });
 
   it('clears announced ports when the process exits', async () => {

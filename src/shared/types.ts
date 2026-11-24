@@ -1,3 +1,4 @@
+import type { AgentHarness } from './agent-harness';
 import type { ClaudePermissionMode } from './claude-permission-mode';
 import type { ChromeFrostLevel, TerminalFrostLevel, VibrancyMaterial } from './frosted-glass';
 
@@ -59,6 +60,12 @@ export interface ProjectConfig {
    * take precedence until an explicit default choice replaces them.
    */
   defaultCliName?: string | null;
+  /**
+   * Agent harnesses that have run in this project. A later launch of one of
+   * them resumes its most recent session instead of starting a new one.
+   * Written by the main process when an agent shell spawns.
+   */
+  resumableAgents?: AgentHarness[];
 }
 
 export interface Project {
@@ -125,14 +132,31 @@ export type SettingsMap = {
   'notify_claude_needs_input':     boolean;
   /** Show an OS notification when a Claude shell finishes its turn and waits for the next prompt. */
   'notify_claude_finished':        boolean;
-  /** macOS only: frosted chrome on/off. Write via settings:set-frost-chrome only. */
+  /** Show listening-port chips in the status bar. Default on. */
+  'show_status_bar':               boolean;
+  'show_status_bar_ports':         boolean;
+  /** macOS and Linux: frosted chrome on/off. Write via settings:set-frost-chrome only. */
   'frost_chrome':                  boolean;
-  /** macOS only: chrome frost strength. Write via settings:set-chrome-frost-level only. */
+  /** macOS and Linux: chrome frost strength. Write via settings:set-chrome-frost-level only. */
   'chrome_frost_level':            ChromeFrostLevel;
-  /** macOS only: terminal frost strength. Write via settings:set-terminal-frost-level only. */
+  /** macOS and Linux: terminal frost strength. Write via settings:set-terminal-frost-level only. */
   'terminal_frost_level':          TerminalFrostLevel;
   /** macOS only: native vibrancy material. Write via settings:set-vibrancy-material only. */
   'vibrancy_material':             VibrancyMaterial;
   /** App-wide env variables applied to every spawn; project variables override. Write via settings:set-app-env only. */
   'app_env':                       Record<string, string>;
+  /**
+   * Per-shell human-readable nicknames used by the Agents Roster as the
+   * `@mention` label. Keyed `"<projectId>:<shellIndex>"`; value is the
+   * nickname (never empty — delete the key to clear). Write via
+   * `shells:set-nickname` only.
+   */
+  'shell_nicknames':               Record<string, string>;
+  /**
+   * Inject a one-time nudge into a supported CLI's shell the first time
+   * metaIDE writes the chat-bus stanza into its project memory file. Off
+   * silences the nudge; the stanza is still written so a fresh shell
+   * picks it up on its own.
+   */
+  'chat_auto_onboard':             boolean;
 };

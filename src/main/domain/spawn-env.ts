@@ -5,8 +5,11 @@ import { envNameProblem, envValueProblem } from '@shared/project-env';
 
 /**
  * Inputs for computing a spawn's environment. Precedence, lowest to highest:
- * inherited < app-wide variables < template env < project variables; hook
- * variables are layered on later by the Claude launch decorator.
+ * inherited < app-wide variables < .metaide/env < template env < project
+ * variables; hook variables are layered on later by the Claude launch
+ * decorator. `.metaide/env` is shared project convention (checked into
+ * git), so it sits between app settings (per-user global) and project
+ * settings (per-user override).
  */
 export interface SpawnEnvInput {
   project: Pick<Project, 'path' | 'config'>;
@@ -17,6 +20,8 @@ export interface SpawnEnvInput {
   homeDir: string;
   /** Stored app-wide variables, before validation or interpolation. Required so the compiler finds every caller. */
   appEnv: Record<string, string>;
+  /** Optional overlay loaded from `.metaide/env`. Validated before it arrives here. */
+  metaIdeEnv?: Record<string, string>;
 }
 
 export interface SpawnEnv {
@@ -43,11 +48,15 @@ export function resolveSpawnEnv(input: SpawnEnvInput): SpawnEnv {
     projectName: basename(input.project.path),
   };
   const app = interpolateEnv(validVars(input.appEnv), { ...paths, env: inherited });
+  const metaIde = interpolateEnv(validVars(input.metaIdeEnv), {
+    ...paths,
+    env: { ...inherited, ...app },
+  });
   const project = interpolateEnv(validVars(input.project.config.env), {
     ...paths,
-    env: { ...inherited, ...app, ...input.templateEnv },
+    env: { ...inherited, ...app, ...metaIde, ...input.templateEnv },
   });
-  const env = { ...app, ...input.templateEnv, ...project };
+  const env = { ...app, ...metaIde, ...input.templateEnv, ...project };
   return { env, lookup: { ...inherited, ...env } };
 }
 

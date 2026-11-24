@@ -6,7 +6,7 @@ import type { HookListener, ReceivedHook } from '@main/claude-hooks/receiver';
 const hook = (hookEventName: string): ReceivedHook => ({
   sessionId: 'sess-1',
   shell: { projectId: 1, shellIndex: 0 },
-  event: { hookEventName, notificationType: null, message: null, backgroundTaskCount: 0 },
+  event: { hookEventName, notificationType: null, message: null, backgroundTaskCount: 0, toolName: null, toolTarget: null, toolOk: null },
 });
 
 function fakeReceiver() {
@@ -93,7 +93,7 @@ describe('createHookFanout', () => {
     const receiver = fakeReceiver();
     const fanout = createHookFanout(receiver);
     fanout.onHook(() => { throw new Error('x'); });
-    receiver.deliver({ ...hook('Notification'), sessionId: 'SESSION-SECRET', event: { hookEventName: 'Notification', notificationType: 'permission_prompt', message: 'MESSAGE-SECRET', backgroundTaskCount: 0 } });
+    receiver.deliver({ ...hook('Notification'), sessionId: 'SESSION-SECRET', event: { hookEventName: 'Notification', notificationType: 'permission_prompt', message: 'MESSAGE-SECRET', backgroundTaskCount: 0, toolName: null, toolTarget: null, toolOk: null } });
     const logged = error.mock.calls.map((c) => inspect(c, { depth: 5 })).join('\n');
     expect(logged).not.toContain('SESSION-SECRET');
     expect(logged).not.toContain('MESSAGE-SECRET');

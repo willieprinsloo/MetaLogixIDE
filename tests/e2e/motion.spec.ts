@@ -37,7 +37,7 @@ const SPLIT_TARGETS = {
 };
 const ASIDE = 'aside[data-view="projects"]';
 const SIDEBAR_TARGETS = {
-  fold: `${ASIDE}^^`,
+  fold: `${ASIDE}^^^`,
   aside: ASIDE,
   main: 'main',
   screen: `${LEFT} .xterm-screen`,

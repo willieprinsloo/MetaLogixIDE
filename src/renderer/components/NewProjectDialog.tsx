@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Project, Root } from '@shared/types';
 import { api } from '@renderer/api';
+import { ModalFrame } from '@renderer/components/ModalFrame';
 import { ICON_SIZE, ICON_STROKE } from './icon-size';
 
 interface Props {
@@ -130,11 +131,17 @@ export function NewProjectDialog({ open, roots, defaultRootId, onClose, onCreate
 
   if (!open) return null;
   return (
-    <div className="modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose} data-testid="new-project-dialog">
-      <div className="modal-panel bg-[--panel-strong] w-[560px] max-w-[92vw] rounded-xl shadow-2xl border border-[--border] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+    <ModalFrame
+      testId="new-project-dialog"
+      tier="modal"
+      motion="fade"
+      layerClassName="flex items-center justify-center"
+      onDismiss={onClose}
+    >
+      <div className="modal-panel modal-sheet w-[560px] max-w-[92vw] overflow-hidden">
         <div className="px-5 py-4 border-b border-[--border] flex items-center justify-between">
           <div className="font-semibold">New project</div>
-          <button onClick={onClose} className="text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel]" aria-label="Close">
+          <button onClick={onClose} className="text-[--modal-text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel]" aria-label="Close">
             <XCloseIcon />
           </button>
         </div>
@@ -144,14 +151,14 @@ export function NewProjectDialog({ open, roots, defaultRootId, onClose, onCreate
           <div className="inline-flex rounded-md border border-[--border] p-0.5 bg-[--panel]/50 text-xs">
             <button
               onClick={() => setMode('empty')}
-              className={`px-3 py-1 rounded-md ${mode === 'empty' ? 'bg-[color:var(--accent)] text-[--accent-text]' : 'text-[--text-muted] hover:text-[--text]'}`}
+              className={`px-3 py-1 rounded-md ${mode === 'empty' ? 'bg-[color:var(--accent)] text-[--accent-text]' : 'text-[--modal-text-muted] hover:text-[--text]'}`}
               data-testid="mode-empty"
             >
               Empty folder
             </button>
             <button
               onClick={() => setMode('clone')}
-              className={`px-3 py-1 rounded-md ${mode === 'clone' ? 'bg-[color:var(--accent)] text-[--accent-text]' : 'text-[--text-muted] hover:text-[--text]'}`}
+              className={`px-3 py-1 rounded-md ${mode === 'clone' ? 'bg-[color:var(--accent)] text-[--accent-text]' : 'text-[--modal-text-muted] hover:text-[--text]'}`}
               data-testid="mode-clone"
             >
               Clone git repo
@@ -230,7 +237,7 @@ export function NewProjectDialog({ open, roots, defaultRootId, onClose, onCreate
               otherwise we hide the whole section rather than lie about it. */}
           {mpLoggedIn && (
             <div className="space-y-2 pt-2 border-t border-[--border]">
-              <div className="text-[10px] uppercase tracking-wider font-semibold text-[--text-muted]">Metaproject board</div>
+              <div className="text-[10px] uppercase tracking-wider font-semibold text-[--modal-text-muted]">Metaproject board</div>
               <div className="flex items-center gap-3 text-xs">
                 <RadioPill checked={mpMode === 'none'}   onSelect={() => setMpMode('none')}>None</RadioPill>
                 <RadioPill checked={mpMode === 'link'}   onSelect={() => setMpMode('link')}>Link existing</RadioPill>
@@ -263,7 +270,7 @@ export function NewProjectDialog({ open, roots, defaultRootId, onClose, onCreate
                 </div>
               )}
               {mpMode !== 'none' && (
-                <div className="text-[10px] text-[--text-muted]">
+                <div className="text-[10px] text-[--modal-text-muted]">
                   Writes <code className="font-mono">project_id</code> to <code className="font-mono">.metaproject.yaml</code> so the sidebar Board button and Chat pane light up automatically.
                 </div>
               )}
@@ -277,7 +284,7 @@ export function NewProjectDialog({ open, roots, defaultRootId, onClose, onCreate
 
         <div className="px-5 py-3 border-t border-[--border] bg-[--panel]/50 flex items-center justify-end gap-2">
           {saving && savingStep && (
-            <span className="text-[11px] text-[--text-muted] mr-auto flex items-center gap-2">
+            <span className="text-[11px] text-[--modal-text-muted] mr-auto flex items-center gap-2">
               <span className="mp-spinner" aria-hidden />
               {savingStep}
             </span>
@@ -287,7 +294,7 @@ export function NewProjectDialog({ open, roots, defaultRootId, onClose, onCreate
             onClick={submit}
             disabled={!canSubmit}
             className={`text-sm px-4 py-1.5 rounded-md text-[--accent-text] font-medium ${
-              canSubmit ? 'pressable bg-[color:var(--accent)] hover:brightness-110' : 'bg-[--panel-strong] text-[--text-muted] cursor-not-allowed'
+              canSubmit ? 'pressable bg-[color:var(--accent)] hover:brightness-110' : 'bg-[--panel-strong] text-[--modal-text-muted] cursor-not-allowed'
             }`}
             data-testid="new-project-create"
           >
@@ -295,7 +302,7 @@ export function NewProjectDialog({ open, roots, defaultRootId, onClose, onCreate
           </button>
         </div>
       </div>
-    </div>
+    </ModalFrame>
   );
 }
 
@@ -303,7 +310,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   return (
     <div className="space-y-1">
       <div className="text-sm font-medium">{label}</div>
-      {hint && <div className="text-xs text-[--text-muted]">{hint}</div>}
+      {hint && <div className="text-xs text-[--modal-text-muted]">{hint}</div>}
       {children}
     </div>
   );
@@ -317,10 +324,10 @@ function RadioPill({ checked, onSelect, children }: { checked: boolean; onSelect
       className={`px-2.5 py-1 rounded-md border ${
         checked
           ? 'bg-[color:var(--accent)]/20 border-[color:var(--accent)]/60 text-[--text]'
-          : 'border-[--border] text-[--text-muted] hover:text-[--text] hover:bg-[--panel]'
+          : 'border-[--border] text-[--modal-text-muted] hover:text-[--text] hover:bg-[--panel]'
       }`}
     >
-      <span className={`inline-block w-1.5 h-1.5 rounded-full mr-1.5 ${checked ? 'bg-[color:var(--accent)]' : 'bg-[--text-muted]/50'}`} />
+      <span className={`inline-block w-1.5 h-1.5 rounded-full mr-1.5 ${checked ? 'bg-[color:var(--accent)]' : 'bg-[--modal-text-muted]/50'}`} />
       {children}
     </button>
   );

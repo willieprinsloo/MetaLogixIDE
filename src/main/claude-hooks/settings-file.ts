@@ -18,12 +18,19 @@ export interface HookGroup {
   hooks: HttpHook[];
 }
 
-/** Name of a hook event the app registers. */
 /**
+ * Name of a hook event the app registers.
  * `SessionStart` tells group chats which Claude conversation a tab holds the moment it changes
  * (startup, `/clear`, `/resume`), not only at the next prompt.
+ * `PreToolUse` / `PostToolUse` drive the intent-badge / activity tracking pipeline.
  */
-export type RegisteredHookEvent = 'Notification' | 'SessionStart' | 'Stop' | 'UserPromptSubmit';
+export type RegisteredHookEvent =
+  | 'Notification'
+  | 'SessionStart'
+  | 'Stop'
+  | 'UserPromptSubmit'
+  | 'PreToolUse'
+  | 'PostToolUse';
 
 /** The settings document written to disk. */
 export interface HookSettings {
@@ -56,6 +63,10 @@ export function buildHookSettings(url: string): HookSettings {
       SessionStart: all(),
       Stop: unmatched(),
       UserPromptSubmit: unmatched(),
+      // Mirror every tool call into the activity log — this is the signal
+      // that lets a second shell see what the first agent is actually doing.
+      PreToolUse: all(),
+      PostToolUse: all(),
     },
   };
 }

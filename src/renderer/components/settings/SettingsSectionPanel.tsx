@@ -1,7 +1,4 @@
-/**
- * The Settings dialog's scrolling content area, showing the panel for the
- * active section.
- */
+/** Settings dialog content routes each nav section to its dedicated settings panel. */
 import type { FontDiscoveryState } from '@renderer/components/FontControl';
 import { EnvironmentPanel } from '@renderer/components/settings/EnvironmentPanel';
 import { GeneralPanel } from '@renderer/components/settings/GeneralPanel';
@@ -19,7 +16,7 @@ interface Props {
   readonly onLoadInstalledFonts: () => Promise<void>;
 }
 
-/** Renders the panel for `section`; General gets the session's font discovery, Environment the app-owned `envDrafts`. */
+/** Renders the active section in the settings dialog. */
 export function SettingsSectionPanel({
   section,
   envDrafts,

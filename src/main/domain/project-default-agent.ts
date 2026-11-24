@@ -4,6 +4,7 @@ import type { Project } from '@shared/types';
 import type { ProjectsRepo } from '@main/repos/projects-repo';
 import type { SettingsRepo } from '@main/repos/settings-repo';
 import { findCliProfile } from '@main/domain/launch';
+import { TERMINAL_AGENT_NAME } from '@shared/project-default-agent';
 
 /** Repository capabilities needed to select a default without accessing shell or global-setting mutations. */
 export interface ProjectDefaultAgentDependencies {
@@ -48,7 +49,7 @@ export function setProjectDefaultAgent(
   const { projectId, name } = request;
   const project = projects.get(projectId);
   if (!project) return { ok: false, error: `No project ${projectId}; reopen project settings and try again` };
-  if (name !== null && !findCliProfile(project, settings, name)) {
+  if (name !== null && name !== TERMINAL_AGENT_NAME && !findCliProfile(project, settings, name)) {
     return { ok: false, error: 'Selected CLI profile is unavailable; choose an available profile or Use global default' };
   }
   return { ok: true, project: projects.updateConfig(projectId, { defaultCliName: name, launchCmd: null }) };

@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { isClaudeArgv } from '@main/domain/claude-permission-mode';
-import { isOmpArgv, OMP_SPAWN_ENV } from '@main/agent-status/omp-launch';
+import { harnessOf } from '@shared/agent-harness';
 import type { AgentKind } from '@shared/agent-state';
 import { EventEmitter } from 'node:events';
 import type { IPty } from 'node-pty';
@@ -38,7 +37,14 @@ interface Entry {
   /** Output received but not yet emitted; flushed as one `data` event per OUTPUT_FLUSH_MS. */
   pending: string[];
   flushTimer: ReturnType<typeof setTimeout> | null;
+  /** Pending full-screen repaint nudge after resizes settle; see `scheduleRepaintNudge`. */
+  repaintTimer: ReturnType<typeof setTimeout> | null;
 }
+
+/** Quiet period after the last resize before a full-screen app is nudged to repaint. */
+export const REPAINT_SETTLE_MS = 250;
+/** Gap between the two nudge resizes; well inside opentui's 100 ms resize debounce. */
+const REPAINT_NUDGE_GAP_MS = 30;
 
 const key = (p: number, s: number) => `${p}:${s}`;
 const EARLY_BUFFER_MS = 3000;
@@ -71,6 +77,20 @@ export interface PtyManagerOptions {
 }
 
 /** Owns live PTYs and generation-bound launch identities independent of process labels. */
+/**
+ * Signals the PTY process group or falls back to its PTY; returns false only when neither
+ * could be signalled, including an exited process. Windows uses the PTY directly; never throws.
+ */
+export function signalPty(pty: Pick<IPty, 'kill'>, pid: number, signal: 'SIGTERM' | 'SIGKILL', platform: NodeJS.Platform = process.platform): boolean {
+  try {
+    if (platform === 'win32') { pty.kill(); return true; }
+    try { process.kill(-pid, signal); } catch { pty.kill(signal); }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export class PtyManager extends EventEmitter {
   /** Returns current spawn identity, never the outer Windows cmd.exe process label. */
   liveShell(projectId: number, shellIndex: number): { pid: number; generation: string; agent: AgentKind | null } | null {
@@ -94,10 +114,9 @@ export class PtyManager extends EventEmitter {
   }
 
   /**
-   * Spawn the PTY for (projectId, shellIndex). Size precedence: explicit
-   * `cols`/`rows`, then the last size passed to `resize` for this shell,
-   * then 100x30. The `spawnDecorator`, when set, rewrites the launch just
-   * before spawning; `launch` itself is never modified.
+   * Spawns a PTY for one project shell. Explicit size overrides the last requested size;
+   * otherwise the PTY starts at 100x30. The optional decorator changes only this launch.
+   * Each process emits an internal generation-tagged exit, even after a replacement starts.
    */
   async spawn(projectId: number, shellIndex: number, launch: ResolvedLaunch, cols?: number, rows?: number): Promise<{ pid: number }> {
     const k = key(projectId, shellIndex);
@@ -116,24 +135,27 @@ export class PtyManager extends EventEmitter {
     });
     const entry: Entry = {
       projectId, shellIndex, pty, pid: pty.pid, cols, rows,
-      generation: randomUUID(), agent: isClaudeArgv(launch.argv) ? 'claude' : isOmpArgv(launch.argv) ? 'omp' : null,
+      generation: randomUUID(), agent: harnessOf(launch.argv),
       startedAt: Date.now(), earlyBuffer: '', bufferOpen: true,
       scrollback: new RollingScrollback(), screen: new ScreenMirror(cols, rows),
       cmdStartedAt: null, lastDataAt: Date.now(), cmdNotified: false,
       ports: new Set<number>(),
-      pending: [], flushTimer: null,
+      pending: [], flushTimer: null, repaintTimer: null,
     };
     this.entries.set(k, entry);
     pty.onData((data: string) => this.receive(entry, data));
     setTimeout(() => { entry.bufferOpen = false; entry.earlyBuffer = ''; }, EARLY_BUFFER_MS);
     pty.onExit(({ exitCode }: { exitCode: number }) => {
+      const current = this.entries.get(k);
       const captured = entry.earlyBuffer;
       const uptimeMs = Date.now() - entry.startedAt;
-      this.flushOutput(entry);
-      this.releaseEntry(k, entry);
-      this.emit('exit', { projectId, shellIndex, code: exitCode, uptimeMs, earlyOutput: captured });
+      if (!current || current === entry) {
+        this.flushOutput(entry);
+        this.releaseEntry(k, entry);
+      }
+      this.emit('exit', { projectId, shellIndex, generation: entry.generation, code: exitCode, uptimeMs, earlyOutput: captured });
     });
-    this.emit('spawn', { projectId, shellIndex, pid: pty.pid, generation: entry.generation, agent: entry.agent, ompSpawn: entry.agent === 'omp' ? effective.env[OMP_SPAWN_ENV] : undefined });
+    this.emit('spawn', { projectId, shellIndex, pid: pty.pid, generation: entry.generation, agent: entry.agent });
     return { pid: pty.pid };
   }
 
@@ -307,27 +329,66 @@ export class PtyManager extends EventEmitter {
     e.pty.resize(cols, rows);
     e.screen.resize(cols, rows);
     e.cols = cols; e.rows = rows;
+    this.scheduleRepaintNudge(e);
   }
 
+  /**
+   * Diff-rendering full-screen TUIs (opencode/opentui) debounce SIGWINCH and keep drawing
+   * old-size frames meanwhile, and on open the replayed snapshot may not match their size;
+   * the stale cells then never get repainted. Once resizes settle, briefly shrink the PTY
+   * one row and restore it: a debounced resize that ends at an unchanged size makes such
+   * apps repaint every cell. Only alternate-screen apps are nudged, never a plain shell.
+   */
+  private scheduleRepaintNudge(e: Entry): void {
+    if (e.repaintTimer) clearTimeout(e.repaintTimer);
+    e.repaintTimer = setTimeout(() => {
+      e.repaintTimer = null;
+      const live = this.entries.get(key(e.projectId, e.shellIndex));
+      if (live !== e || e.rows < 3 || !e.screen.isAlternateScreen()) return;
+      const { cols, rows } = e;
+      try { e.pty.resize(cols, rows - 1); } catch { return; }
+      e.repaintTimer = setTimeout(() => {
+        e.repaintTimer = null;
+        if (this.entries.get(key(e.projectId, e.shellIndex)) !== e) return;
+        try { e.pty.resize(e.cols, e.rows); } catch { /* exited between the two resizes */ }
+      }, REPAINT_NUDGE_GAP_MS);
+    }, REPAINT_SETTLE_MS);
+  }
+
+  /** Signals only the current primary launch; missing and replaced generations never reach the PTY. */
+  stopIfGeneration(projectId: number, generation: string): 'stopped' | 'gone' | 'replaced' {
+    const k = key(projectId, 0);
+    const entry = this.entries.get(k);
+    if (!entry) return 'gone';
+    if (entry.generation !== generation) return 'replaced';
+    this.flushOutput(entry);
+    const current = this.entries.get(k);
+    if (!current) return 'gone';
+    if (current !== entry) return 'replaced';
+    this.stopEntry(k, entry, true);
+    return 'stopped';
+  }
+
+  /** Retains the existing index-based stop for individual shell workflows. */
   async kill(projectId: number, shellIndex: number): Promise<void> {
-    const e = this.entries.get(key(projectId, shellIndex));
-    if (!e) return;
-    this.flushOutput(e);
-    // SIGHUP (node-pty default) is ignored by many processes including Claude CLI.
-    // Send SIGTERM to the whole process group so child processes also receive it,
-    // then escalate to SIGKILL after 3 s if the process is still alive.
-    const pid = e.pid;
-    try { process.kill(-pid, 'SIGTERM'); } catch { e.pty.kill('SIGTERM'); }
-    const killTimer = setTimeout(() => {
-      try { process.kill(-pid, 'SIGKILL'); } catch { try { e.pty.kill('SIGKILL'); } catch { /* already gone */ } }
-    }, 3000);
-    // The onExit handler fires when the process actually dies and calls
-    // releaseEntry; if somehow it never fires, clean up anyway.
-    const cleanup = () => { clearTimeout(killTimer); this.releaseEntry(key(projectId, shellIndex), e); };
-    e.pty.onExit(() => cleanup());
-    // Also release immediately from our tracking so isAlive() returns false
-    // and the UI tab disappears without waiting for the OS reap.
-    this.releaseEntry(key(projectId, shellIndex), e);
+    const k = key(projectId, shellIndex);
+    const entry = this.entries.get(k);
+    if (entry) {
+      this.flushOutput(entry);
+      this.stopEntry(k, entry);
+    }
+  }
+
+  private stopEntry(k: string, entry: Entry, guarded = false): void {
+    const pid = entry.pid;
+    if (!signalPty(entry.pty, pid, 'SIGTERM') && guarded)
+      throw new Error('unable to signal primary shell');
+    const killTimer = setTimeout(() => signalPty(entry.pty, pid, 'SIGKILL'), 3000);
+    entry.pty.onExit(() => {
+      clearTimeout(killTimer);
+      this.releaseEntry(k, entry);
+    });
+    this.releaseEntry(k, entry);
   }
 
   /** Records one PTY chunk and schedules its flush; per-chunk work stays O(chunk). */
@@ -386,6 +447,7 @@ export class PtyManager extends EventEmitter {
   /** Drop the entry and its headless terminal, unless a respawn already replaced it. */
   private releaseEntry(k: string, entry: Entry): void {
     if (this.entries.get(k) !== entry) return;
+    if (entry.repaintTimer) { clearTimeout(entry.repaintTimer); entry.repaintTimer = null; }
     entry.screen.dispose();
     this.entries.delete(k);
     this.clearPorts(entry);

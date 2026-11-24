@@ -2,7 +2,8 @@
  * `useFrostedGlassAttributes` keeps the root's frosted-glass attributes in sync with the three
  * stored keys (`frost_chrome`, `chrome_frost_level`, `terminal_frost_level`): it re-reads all
  * three on mount and again on every `settings:changed` for any of them, and ignores changes to
- * other keys. The hook runs under a minimal in-test effect runtime (vitest runs in node, without a
+ * other keys. On Linux the same live path sets and removes `data-platform="linux"` (AC8, unit half),
+ * while the transparent-window marker stays (AC7). The hook runs under a minimal in-test effect runtime (vitest runs in node, without a
  * DOM renderer), mirroring `tests/unit/renderer/use-git-status.test.ts`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -99,6 +100,7 @@ beforeEach(() => {
 
 afterEach(() => {
   rt.unmount();
+  Object.assign(api, { platform: 'darwin' });
 });
 
 describe('useFrostedGlassAttributes', () => {
@@ -153,5 +155,29 @@ describe('useFrostedGlassAttributes', () => {
     await flush();
     rt.unmount();
     expect(offs[0]).toHaveBeenCalled();
+  });
+
+  it('on linux, applies data-platform="linux" live when Frosted chrome turns on, then removes every frost attribute when it turns off', async () => {
+    Object.assign(api, { platform: 'linux' });
+    mockValues(false, 'medium', 'medium');
+    const target = fakeTarget();
+    rt.render(() => useFrostedGlassAttributes(target));
+    await flush();
+    expect(target.set).toEqual({ [FROST_ATTR.transparentWindow]: '' });
+
+    mockValues(true, 'medium', 'medium');
+    listeners[0]?.({ key: FROSTED_GLASS_KEYS.frostChrome });
+    await flush();
+    expect(target.set).toEqual({
+      [FROST_ATTR.platform]: 'linux',
+      [FROST_ATTR.chromeFrost]: 'medium',
+      [FROST_ATTR.terminalFrost]: 'medium',
+      [FROST_ATTR.transparentWindow]: '',
+    });
+
+    mockValues(false, 'medium', 'medium');
+    listeners[0]?.({ key: FROSTED_GLASS_KEYS.frostChrome });
+    await flush();
+    expect(target.set).toEqual({ [FROST_ATTR.transparentWindow]: '' });
   });
 });

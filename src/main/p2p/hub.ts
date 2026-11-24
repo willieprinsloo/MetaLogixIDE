@@ -175,7 +175,7 @@ function attachStream(
   pty.on('data', onData);
   pty.on('exit', onExit);
   // byte-based snapshot (RollingScrollback) is line-boundary-safe and strips dangling escape fragments —
-  // the right primitive for TUI replay (Claude, OMP).
+  // the right primitive for TUI replay (Claude).
   void pty.getSnapshot(projectId, shellIndex).then(
     (snap) => { queue.unshift(...chunks(snap).map((bytes) => ({ kind: 'out', bytes }))); ready = true; flush(); },
     () => { ready = true; flush(); },
@@ -257,7 +257,9 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): void {
 
   on('shells.alive', async () => {
     const { shells } = await handlers['shells:alive-list'](s, undefined as never);
-    return shells.map((r) => ({ ...r }));
+    if (!s.agentStatus) return shells.map((r) => ({ ...r }));
+    const states = new Map(s.agentStatus.list().map((e) => [`${e.projectId}:${e.shellIndex}`, e.state]));
+    return shells.map((r) => ({ ...r, agentState: states.get(`${r.projectId}:${r.shellIndex}`) ?? null }));
   });
 
   // RpcError messages below are fixed strings, safe to send to the peer.
@@ -300,6 +302,30 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): void {
       if (!d.isDirectory()) { try { size = (d.isSymbolicLink() ? lstatSync(join(abs, d.name)) : statSync(join(abs, d.name))).size; } catch { /* raced away */ } }
       return { name: d.name, isDir: d.isDirectory(), ...(size === undefined ? {} : { size }) };
     });
+  });
+
+  on('chat.append', async ({ projectId, entry }) => {
+    if (!s.chat) throw new RpcError('unavailable', 'chat service not ready');
+    // Ingest path: a relayed entry keeps its origin device, id, and ts.
+    // The author path (service.append) is only for NEW local posts.
+    await s.chat.ingest(projectId, entry as unknown as import('@shared/chat').ChatEntry);
+    return { ok: true } as const;
+  });
+
+  on('chat.sync_since', async ({ projectId, since_ts }) => {
+    if (!s.chat) throw new RpcError('unavailable', 'chat service not ready');
+    const { entries } = await s.chat.listSince(projectId, since_ts);
+    // zod's `.passthrough()` shape has a string index signature, which
+    // the plain ChatEntry interface doesn't. Cast through unknown — the
+    // zod parser already validated the shape on both sides of the wire.
+    return { entries: entries as unknown as Result<'chat.sync_since'>['entries'] };
+  });
+
+  on('chat.roster', async (_params) => {
+    // Hub doesn't yet track peer-visible roster; return an empty shape
+    // so the verb is live and callers can degrade gracefully. The
+    // renderer composes its own roster from the P2P fleet already.
+    return { rows: [] };
   });
 
   on('fs.read', async ({ projectId, path }) => {

@@ -1,7 +1,10 @@
 /**
  * Static guards on `frosted-chrome.css` and `frosted-glass-levels.css` (spec macos-frosted-chrome AC12, AC21,
- * AC25a, plan §2.1 and §4; spec macos-frosted-glass-settings AC23, AC29, D14, D15): every selector in both
- * files is gated on `:root[data-platform="mac"]`, the stylesheets key on the exact `FROST_ATTR` strings, no
+ * AC25a, plan §2.1 and §4; spec macos-frosted-glass-settings AC23, AC29, D14, D15; spec linux-wayland-frosted-glass
+ * AC9 to AC11, D3): every selector in both files is gated on the presence of `:root[data-platform]` and no
+ * selector qualifies `data-platform` by value, so macOS and Linux share one cascade and nothing matches where the
+ * attribute is absent (Windows, Frosted chrome off), except the one Linux transparent-window underlay, which
+ * paints only html, only while `data-platform` is absent, over opaque black (AC7); the stylesheets key on the exact `FROST_ATTR` strings, no
  * glass surface adds a `backdrop-filter` or `filter`, each glass surface token has exactly two declarations
  * across both files (the base rule and the Reduce transparency override, which maps it to its solid source
  * and never reads a setting), every palette block and every level block declares its kind's token set, so
@@ -11,7 +14,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { FROST_ATTR, MAC_PLATFORM } from '@renderer/frosted-chrome-contract';
+import { FROST_ATTR } from '@renderer/frosted-chrome-contract';
 
 const read = (file: string): string =>
   readFileSync(resolve(__dirname, '../../../src/renderer', file), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
@@ -65,7 +68,8 @@ function rules(src: string, media: readonly string[] = []): Rule[] {
 const RULES = rules(CSS);
 const FROSTED_RULES = rules(FROSTED);
 const LEVEL_RULES = rules(LEVELS);
-const GATE = `:root[${FROST_ATTR.platform}="${MAC_PLATFORM}"]`;
+const GATE = `:root[${FROST_ATTR.platform}]`;
+const UNDERLAY = `:root[${FROST_ATTR.transparentWindow}]:not([${FROST_ATTR.platform}])`;
 const RT = '(prefers-reduced-transparency: reduce)';
 const GLASS = ['--surface-chrome', '--surface-terminal', '--surface-pane'] as const;
 const SOLID_SOURCE: Record<(typeof GLASS)[number], string> = {
@@ -168,15 +172,28 @@ describe('frosted-chrome.css and frosted-glass-levels.css', () => {
     expect(RULES.length).toBeGreaterThan(5);
   });
 
-  it(`gates every selector on ${GATE} (AC25a)`, () => {
+  it(`gates every selector on ${GATE}, bar the transparent-window underlay (AC25a, linux AC7, AC11)`, () => {
     for (const rule of RULES)
-      // A zero-specificity `:where(<gate> …)` prefix still gates the selector on mac.
-      for (const s of rule.selectors) expect(s.startsWith(GATE) || s.startsWith(`:where(${GATE}`), s).toBe(true);
+      // A zero-specificity `:where(<gate> …)` prefix still gates the selector on the attribute.
+      for (const s of rule.selectors)
+        expect(s.startsWith(GATE) || s.startsWith(`:where(${GATE}`) || s === UNDERLAY, s).toBe(true);
   });
 
-  it('uses only the light colour-scheme and Reduce transparency media queries', () => {
+  it('paints a Linux transparent window with Frosted chrome off as before: html is --bg over opaque black, nothing else changes (linux AC7)', () => {
+    const marked = RULES.filter((r) => r.selectors.some((s) => s.includes(FROST_ATTR.transparentWindow)));
+    expect(marked.map((r) => [r.selectors, r.media, decls(r.body)])).toEqual([
+      [[UNDERLAY], [], [['background', 'linear-gradient(var(--bg), var(--bg)), #000000']]],
+    ]);
+    expect(LEVELS).not.toContain(FROST_ATTR.transparentWindow);
+  });
+
+  it(`never qualifies ${FROST_ATTR.platform} by value, so every frost platform shares one cascade (linux AC9, AC10, D3)`, () => {
+    expect(CSS).not.toMatch(new RegExp(`${FROST_ATTR.platform}\\s*[~|^$*]?=`));
+  });
+
+  it('uses only the light colour-scheme and Reduce transparency (reduce and no-preference) media queries', () => {
     const queries = new Set(RULES.flatMap((r) => r.media));
-    expect([...queries].sort()).toEqual(['(prefers-color-scheme: light)', RT].sort());
+    expect([...queries].sort()).toEqual(['(prefers-color-scheme: light)', '(prefers-reduced-transparency: no-preference)', RT].sort());
   });
 
   it('keys on the exact FROST_ATTR strings and no other data attribute besides theme, palette and the chat view', () => {
@@ -189,6 +206,7 @@ describe('frosted-chrome.css and frosted-glass-levels.css', () => {
         FROST_ATTR.chromeRoot,
         FROST_ATTR.sheetContent,
         FROST_ATTR.overlay,
+        FROST_ATTR.transparentWindow,
         'data-theme',
         'data-palette',
         'data-view',

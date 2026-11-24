@@ -8,8 +8,8 @@ import {
   type AppearanceSectionProps,
 } from '@renderer/components/settings/GeneralPanel';
 import { FROSTED_GLASS_TESTIDS } from '@renderer/frosted-chrome-contract';
-import { ShortcutPlatformContext } from '@renderer/shortcut-platform';
-import type { ShortcutPlatform } from '@renderer/shortcut-contract';
+import { FrostPlatformContext } from '@renderer/frost-platform';
+import type { FrostPlatform } from '@shared/frosted-glass';
 
 const rt = vi.hoisted(() => {
   const slots: unknown[] = [];
@@ -54,7 +54,7 @@ vi.mock('@renderer/components/settings/TerminalFontWeightControl', () => ({
   TerminalBoldWeightControl: () => null,
 }));
 vi.mock('@renderer/components/settings/FrostedGlassGroup', () => ({
-  FrostedGlassGroup: () => <div data-testid={FROSTED_GLASS_TESTIDS.group} />,
+  FrostedGlassGroup: ({ platform }: { platform: string }) => <div data-testid={FROSTED_GLASS_TESTIDS.group} data-platform={platform} />,
 }));
 
 const SECTION_PROPS: AppearanceSectionProps = {
@@ -98,12 +98,12 @@ describe('AppearanceSection — 6-prop contract and children slot (D21, AC26)', 
   });
 });
 
-describe('GeneralPanel — FrostedGlassGroup rendered inside Appearance, mac only (D21, AC25, AC26)', () => {
-  function panel(platform: ShortcutPlatform): string {
+describe('GeneralPanel — FrostedGlassGroup rendered inside Appearance, mac and linux (D21, AC25, AC26)', () => {
+  function panel(platform: FrostPlatform | null): string {
     return renderToStaticMarkup(
-      <ShortcutPlatformContext.Provider value={platform}>
+      <FrostPlatformContext.Provider value={platform}>
         <GeneralPanel fontDiscovery={{ status: 'idle' }} onLoadInstalledFonts={async () => undefined} />
-      </ShortcutPlatformContext.Provider>,
+      </FrostPlatformContext.Provider>,
     );
   }
 
@@ -117,7 +117,7 @@ describe('GeneralPanel — FrostedGlassGroup rendered inside Appearance, mac onl
     const html = panel('mac');
     const sections = html.match(/<section\b.*?<\/section>/g) ?? [];
     const appearance = sections.find((s) => />Appearance<\/h2>/.test(s)) ?? '';
-    const groupTag = `<div data-testid="${FROSTED_GLASS_TESTIDS.group}"`;
+    const groupTag = `<div data-testid="${FROSTED_GLASS_TESTIDS.group}" data-platform="mac"`;
     expect(appearance).toContain('data-testid="window-opacity-slider"');
     expect(appearance).toContain(groupTag);
     const afterSlider = appearance.slice(appearance.indexOf('data-testid="window-opacity-slider"'));
@@ -125,15 +125,25 @@ describe('GeneralPanel — FrostedGlassGroup rendered inside Appearance, mac onl
     expect(betweenRowAndGroup).toMatch(/^(<\/div>)+$/);
   });
 
-  it('omits the group entirely under any other platform', () => {
-    const html = panel('other');
+  it('renders the group under linux, in the Appearance section, with platform="linux"', () => {
+    const html = panel('linux');
+    const appearance = (html.match(/<section\b.*?<\/section>/g) ?? []).find((s) => />Appearance<\/h2>/.test(s)) ?? '';
+    expect(appearance).toContain(`data-testid="${FROSTED_GLASS_TESTIDS.group}" data-platform="linux"`);
+  });
+
+  it('passes platform="mac" under mac', () => {
+    expect(panel('mac')).toContain('data-platform="mac"');
+  });
+
+  it('omits the group entirely when frosted glass does not apply (null)', () => {
+    const html = panel(null);
     expect(html).toContain('data-testid="window-opacity-slider"');
     expect(html).not.toContain(FROSTED_GLASS_TESTIDS.group);
   });
 });
 
-describe('loadBoard — six keys, no frost_terminal (AC34 renderer half)', () => {
-  it('reads exactly the six General board keys', async () => {
+describe('loadBoard — seven keys, no frost_terminal (AC34 renderer half)', () => {
+  it('reads exactly the seven General board keys', async () => {
     const { api } = await import('@renderer/api');
     const seen: string[] = [];
     vi.mocked(api.invoke).mockImplementation(async (_channel: string, req: unknown) => {
@@ -148,6 +158,8 @@ describe('loadBoard — six keys, no frost_terminal (AC34 renderer half)', () =>
       'window_opacity',
       'notify_claude_needs_input',
       'notify_claude_finished',
+      'show_status_bar_ports',
+      'show_status_bar',
     ]);
     expect(seen).not.toContain('frost_terminal');
   });

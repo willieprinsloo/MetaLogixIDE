@@ -57,7 +57,7 @@ describe('buildServices — METAIDE_CLAUDE_PERMISSION_MODE env hook (AC21)', () 
   });
 });
 
-describe('buildServices — Claude hook and OMP receiver startup', () => {
+describe('buildServices — Claude hook startup', () => {
   it('constructs the hook services without opening a socket or writing the settings file', async () => {
     const home = mkdtempSync(join(tmpdir(), 'svc-home-'));
     const services = buildServices({ ...tempOpts(), homeDir: home });
@@ -66,7 +66,6 @@ describe('buildServices — Claude hook and OMP receiver startup', () => {
     expect(services.hookReceiver.boundAddress()).toBeNull();
     expect(services.hookRuntime.settingsPath()).toBeNull();
     expect(services.viewedShells).toBeDefined();
-    expect(services.ompReceiver.boundPort()).toBeNull();
     expect(services.homeDir).toBe(home);
   });
 

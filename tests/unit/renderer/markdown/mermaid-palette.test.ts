@@ -404,9 +404,9 @@ describe.each(THEMES)('mermaidThemeVariables (%s tokens, %s theme)', (block, the
 
 const FROSTED_CSS = readFileSync(resolve(__dirname, '../../../../src/renderer/frosted-chrome.css'), 'utf8');
 const MAC_BLOCKS: Record<TokenBlock, RegExp> = {
-  dark: /:root\[data-platform="mac"\],\s*:root\[data-platform="mac"\]\[data-theme="dark"\]\s*\{([^}]*)\}/,
-  light: /:root\[data-platform="mac"\]\[data-theme="light"\]\s*\{([^}]*)\}/,
-  systemLight: /@media\s*\(prefers-color-scheme:\s*light\)\s*\{\s*:root\[data-platform="mac"\]:not\(\[data-theme\]\)\s*\{([^}]*)\}/,
+  dark: /:root\[data-platform\],\s*:root\[data-platform\]\[data-theme="dark"\]\s*\{([^}]*)\}/,
+  light: /:root\[data-platform\]\[data-theme="light"\]\s*\{([^}]*)\}/,
+  systemLight: /@media\s*\(prefers-color-scheme:\s*light\)\s*\{\s*:root\[data-platform\]:not\(\[data-theme\]\)\s*\{([^}]*)\}/,
 };
 
 function macPreviewSurface(block: TokenBlock): Rgb {

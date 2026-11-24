@@ -1,92 +1,79 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { rootHueVar } from '@renderer/root-hue';
 import { useRoots } from '@renderer/hooks/useRoots';
 import { useProjects } from '@renderer/hooks/useProjects';
 import { useRecents } from '@renderer/hooks/useRecents';
 import { useAliveShellIds } from '@renderer/hooks/useAliveShellIds';
 import { useOverallAgentState, useProjectAgentState } from '@renderer/hooks/useAgentStates';
-import type { AgentState } from '@shared/agent-state';
 import type { Project, Root } from '@shared/types';
+import type { AgentState } from '@shared/agent-state';
 import { api } from '@renderer/api';
 import { toast } from '@renderer/hooks/useToasts';
 import { AnimatePresence } from 'motion/react';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
+import { ModalFrame } from './ModalFrame';
 import { StatusDot } from './StatusDot';
+import { RootFolderGlyph, rootFolderName } from './RootFolderGlyph';
 import { ENV_COPY } from '@renderer/project-env-copy';
-import { SIDEBAR_COPY, SIDEBAR_TESTIDS, SECTION_PERSIST_KEYS } from '@renderer/sidebar-copy';
+import { MACHINE_TESTIDS, SIDEBAR_COPY, SIDEBAR_TESTIDS, SECTION_PERSIST_KEYS } from '@renderer/sidebar-copy';
 import { SIDEBAR_WIDTH } from '@renderer/sidebar-width';
 import { SidebarHeader } from './SidebarHeader';
+import { PROJECT_SETTINGS_COPY, type ProjectSettingsTarget } from '@renderer/project-settings-contract';
 import { ICON_SIZE, ICON_STROKE } from './icon-size';
-import { MachinesSection, type OpenPaneRequest } from './MachinesSection';
+import { ChevronIcon } from './ChevronIcon';
+import { MachineDots } from './MachineDots';
+import { RemoteMachineList } from './RemoteMachineList';
+import { useMachineSwitcher, type MachineSwitcher } from '@renderer/p2p/useMachineSwitcher';
+import type { OpenPaneRequest } from '@renderer/machine-switcher-contract';
+import { filterByName, switcherLayout } from '@renderer/machine-dots';
 
 interface Props {
   selectedProjectId: number | null;
   onSelect: (p: Project) => void;
+  onUnloadSession: (project: Project, opener: HTMLElement) => void;
   onNewProject?: () => void;
   /** Opens the environment variables editor for a project (context menu). */
   onEditEnv: (p: Project) => void;
+  onProjectSettings: (target: ProjectSettingsTarget) => void;
   /** Opens a pane in the main area (used for projects on paired machines). */
   onOpenPane?: (req: OpenPaneRequest) => void;
   width?: number;
 }
 
-export function Sidebar({ selectedProjectId, onSelect, onNewProject, onEditEnv, onOpenPane, width }: Props) {
+/** Callbacks every local project row takes. */
+interface RowActions {
+  onSelect: (p: Project) => void;
+  onUnloadSession: (project: Project, opener: HTMLElement) => void;
+  onRename: (p: Project) => void;
+  onEditEnv: (p: Project) => void;
+  onProjectSettings: (target: ProjectSettingsTarget) => void;
+}
+
+/**
+ * The project sidebar: filter header, then one machine's list at a time — this machine's In use /
+ * Recents / Projects, or a paired machine's `RemoteMachineList` — and, once a machine is paired,
+ * the machine switcher band at the bottom (docs/specs/machine-switcher-dots.md). The local list
+ * stays mounted (hidden) while a remote machine is shown, so its order, collapse state and data
+ * survive a switch. With no paired machine the markup is exactly the pre-switcher sidebar.
+ */
+export function Sidebar({ selectedProjectId, onSelect, onUnloadSession, onNewProject, onEditEnv, onProjectSettings, onOpenPane, width }: Props) {
   const { roots, refresh: refreshRoots } = useRoots();
   const { projects, refresh: refreshProjects } = useProjects();
-  const { recents } = useRecents(10);
-  const { aliveIds } = useAliveShellIds();
-  const overallClaudeState = useOverallAgentState();
   const [filter, setFilter] = useState('');
-
-  // Stable order for the "In use" section: each project keeps the seq
-  // number it was first observed alive with. Clicking a row updates
-  // last_opened_at (which reshuffles the underlying projects list), but
-  // the seq map is not touched, so the visible order stays put. When
-  // a shell exits, its seq is dropped; if it comes back later, it gets
-  // a fresh (higher) seq and lands at the bottom.
-  const inUseSeq = useRef<Map<number, number>>(new Map());
-  const inUseNextSeq = useRef(1);
-  useEffect(() => {
-    const map = inUseSeq.current;
-    for (const id of aliveIds) if (!map.has(id)) map.set(id, inUseNextSeq.current++);
-    for (const id of [...map.keys()]) if (!aliveIds.has(id)) map.delete(id);
-  }, [aliveIds]);
-
-  const inUse = useMemo(() => {
-    const seq = inUseSeq.current;
-    const list = projects.filter((p) => aliveIds.has(p.id));
-    const sorted = list.slice().sort((a, b) => (seq.get(a.id) ?? 0) - (seq.get(b.id) ?? 0));
-    if (filter) return sorted.filter((p) => p.name.toLowerCase().includes(filter.toLowerCase()));
-    return sorted;
-  }, [projects, aliveIds, filter]);
-
-  // Recents excluding the ones already shown in "In use".
-  const recentsShown = useMemo(() => {
-    const skip = new Set(inUse.map((p) => p.id));
-    const list = recents.filter((p) => !skip.has(p.id));
-    if (filter) return list.filter((p) => p.name.toLowerCase().includes(filter.toLowerCase()));
-    return list.slice(0, 6);
-  }, [recents, inUse, filter]);
-
-  const grouped = useMemo(() => {
-    const byRoot = new Map<number, Project[]>();
-    for (const p of projects) {
-      if (filter && !p.name.toLowerCase().includes(filter.toLowerCase())) continue;
-      if (!byRoot.has(p.rootId)) byRoot.set(p.rootId, []);
-      byRoot.get(p.rootId)!.push(p);
-    }
-    return byRoot;
-  }, [projects, filter]);
-
   const [renameTarget, setRenameTarget] = useState<Project | null>(null);
-  const askRename = useCallback((p: Project) => setRenameTarget(p), []);
+  const actions = useMemo<RowActions>(() => ({ onSelect, onUnloadSession, onRename: setRenameTarget, onEditEnv, onProjectSettings }),
+    [onSelect, onUnloadSession, onEditEnv, onProjectSettings]);
+  const switcher = useMachineSwitcher();
+  const { banded, remote, framing, panelProps, listClass } = switcherLayout(switcher);
 
   return (
     <aside
       data-view="projects"
-      className="section-panel h-full flex flex-col gap-7 shrink-0 pt-1 pb-5 pl-2"
+      className="section-panel h-full flex flex-col gap-7 shrink-0 pt-12 pb-5 pl-2"
       style={{ width: width ?? SIDEBAR_WIDTH.default }}
     >
+      {/* The 44px band above the list is where the old title bar sat; it drags the window. */}
+      <div aria-hidden className="drag absolute inset-x-0 top-0 h-11" />
       <div className="pr-4">
         <SidebarHeader
           filter={filter}
@@ -98,56 +85,20 @@ export function Sidebar({ selectedProjectId, onSelect, onNewProject, onEditEnv, 
         />
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden pr-4 flex flex-col gap-7">
-        <MachinesSection onOpenPane={onOpenPane} />
-
-        {inUse.length > 0 && (
-          <Section title="In use" testId="section-in-use" accent dotState={overallClaudeState}>
-            {inUse.map((p) => (
-              <ProjectRow
-                key={p.id}
-                project={p}
-                selected={selectedProjectId === p.id}
-                alive
-                onSelect={onSelect}
-                onRename={askRename}
-                onEditEnv={onEditEnv}
-              />
-            ))}
-          </Section>
-        )}
-
-        {recentsShown.length > 0 && (
-          <Section title="Recents" testId="section-recents">
-            {recentsShown.map((p) => (
-              <ProjectRow
-                key={p.id}
-                project={p}
-                selected={selectedProjectId === p.id}
-                alive={aliveIds.has(p.id)}
-                onSelect={onSelect}
-                onRename={askRename}
-                onEditEnv={onEditEnv}
-              />
-            ))}
-          </Section>
-        )}
-
-        <Section title={SIDEBAR_COPY.projectsHeading} persistKey={SECTION_PERSIST_KEYS.projects} testId={SIDEBAR_TESTIDS.sectionAll}>
-          {roots.map((r) => (
-            <RootBlock
-              key={r.id}
-              root={r}
-              projects={grouped.get(r.id) ?? []}
-              selectedProjectId={selectedProjectId}
-              aliveIds={aliveIds}
-              onSelect={onSelect}
-              onRename={askRename}
-              onEditEnv={onEditEnv}
-            />
-          ))}
-        </Section>
+      <div className={listClass} {...panelProps}>
+        {remote && <RemoteMachineList key={remote.deviceId} machine={remote} filter={filter} aliveProjectIds={switcher.shellsFor(remote.deviceId)} onOpenPane={onOpenPane} />}
+        <LocalProjectList
+          framing={framing}
+          filter={filter}
+          roots={roots}
+          projects={projects}
+          selectedProjectId={selectedProjectId}
+          actions={actions}
+        />
       </div>
+      {/* Empty space below the list (and the gap above it) drags the window. */}
+      <div aria-hidden className="drag flex-1 min-h-0 -mt-7 -mb-5" data-testid="sidebar-drag-fill" />
+      {banded && <MachineBand switcher={switcher} />}
       <RenameProjectDialog
         project={renameTarget}
         onClose={() => setRenameTarget(null)}
@@ -157,39 +108,152 @@ export function Sidebar({ selectedProjectId, onSelect, onNewProject, onEditEnv, 
   );
 }
 
+/**
+ * The machine dots in a tight frosted pill floating over the bottom of the list (AC2, AC8, AC9, AC32):
+ * no layout space, centred on the aside 8px above its bottom edge, a 1px --border outline and no
+ * shadow, hugging the 20px dot buttons up to the aside's width minus 16px (the row scrolls inside
+ * beyond that); only the pill is no-drag.
+ */
+function MachineBand({ switcher }: { switcher: MachineSwitcher }) {
+  return (
+    <div
+      data-testid={MACHINE_TESTIDS.band}
+      className="machine-pill no-drag absolute bottom-2 left-1/2 -translate-x-1/2 z-10 flex max-w-[calc(100%-16px)] rounded-full border border-[--border]"
+    >
+      <MachineDots machines={switcher.machines} activeId={switcher.activeId} onSelect={switcher.select} />
+    </div>
+  );
+}
+
+/**
+ * This machine's In use / Recents / per-root lists, filtered by name. In use keeps a stable order:
+ * each project keeps the sequence number it was first seen alive with, so clicking a row (which
+ * reshuffles `projects` by last-opened time) does not move it; a shell that exits drops its number
+ * and lands at the bottom when it comes back.
+ */
+function useLocalSections(projects: Project[], filter: string) {
+  const { recents } = useRecents(10);
+  const { aliveIds, primaryIds } = useAliveShellIds();
+  const inUseSeq = useRef<Map<number, number>>(new Map());
+  const inUseNextSeq = useRef(1);
+  useEffect(() => {
+    const map = inUseSeq.current;
+    for (const id of aliveIds) if (!map.has(id)) map.set(id, inUseNextSeq.current++);
+    for (const id of [...map.keys()]) if (!aliveIds.has(id)) map.delete(id);
+  }, [aliveIds]);
+
+  const inUse = useMemo(() => {
+    const seq = inUseSeq.current;
+    const sorted = projects.filter((p) => aliveIds.has(p.id)).sort((a, b) => (seq.get(a.id) ?? 0) - (seq.get(b.id) ?? 0));
+    return filterByName(sorted, filter);
+  }, [projects, aliveIds, filter]);
+
+  const grouped = useMemo(() => {
+    const byRoot = new Map<number, Project[]>();
+    for (const p of filterByName(projects, filter)) {
+      if (!byRoot.has(p.rootId)) byRoot.set(p.rootId, []);
+      byRoot.get(p.rootId)!.push(p);
+    }
+    return byRoot;
+  }, [projects, filter]);
+
+  const recentsShown = useMemo(() => {
+    const skip = new Set(inUse.map((p) => p.id));
+    const list = recents.filter((p) => !skip.has(p.id));
+    return filter ? filterByName(list, filter) : list.slice(0, 6);
+  }, [recents, inUse, filter]);
+
+  return { inUse, grouped, recentsShown, aliveIds, primaryIds };
+}
+
+/**
+ * Renders this machine's sections. `framing` is 'bare' with no paired machine (sections sit
+ * directly in the scroll area, as before the switcher), else a `switcher-local-list` wrapper that is
+ * 'shown' or 'hidden' — hidden keeps everything mounted while a remote machine is on screen.
+ */
+function LocalProjectList({ framing, filter, roots, projects, selectedProjectId, actions }: {
+  framing: 'bare' | 'shown' | 'hidden';
+  filter: string;
+  roots: Root[];
+  projects: Project[];
+  selectedProjectId: number | null;
+  actions: RowActions;
+}) {
+  const overallAgentState = useOverallAgentState();
+  const { inUse, grouped, recentsShown, aliveIds, primaryIds } = useLocalSections(projects, filter);
+  const row = (p: Project, alive: boolean) => (
+    <ProjectRow key={p.id} project={p} selected={selectedProjectId === p.id} alive={alive} primaryAlive={primaryIds.has(p.id)} {...actions} />
+  );
+  const sections = (
+    <>
+      {inUse.length > 0 && (
+        <Section title="In use" testId="section-in-use" accent dotState={overallAgentState}>
+          {inUse.map((p) => row(p, true))}
+        </Section>
+      )}
+      {recentsShown.length > 0 && (
+        <Section title="Recents" testId="section-recents">
+          {recentsShown.map((p) => row(p, aliveIds.has(p.id)))}
+        </Section>
+      )}
+      <Section title={SIDEBAR_COPY.projectsHeading} persistKey={SECTION_PERSIST_KEYS.projects} testId={SIDEBAR_TESTIDS.sectionAll}>
+        {roots.map((r) => (
+          <RootBlock
+            key={r.id}
+            root={r}
+            projects={grouped.get(r.id) ?? []}
+            selectedProjectId={selectedProjectId}
+            aliveIds={aliveIds}
+            primaryIds={primaryIds}
+            {...actions}
+          />
+        ))}
+      </Section>
+    </>
+  );
+  if (framing === 'bare') return sections;
+  const hidden = framing === 'hidden';
+  return (
+    <div data-testid={MACHINE_TESTIDS.localList} hidden={hidden} className={hidden ? 'hidden' : 'contents'}>
+      {sections}
+    </div>
+  );
+}
 const SECTION_COLLAPSED_KEY = 'metaide.sectionsCollapsed';
-function readCollapsedSections(): Set<string> {
+function readCollapsedKeys(key: string): Set<string> {
   try {
-    const raw = localStorage.getItem(SECTION_COLLAPSED_KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return new Set();
     const arr = JSON.parse(raw) as string[];
     return new Set(Array.isArray(arr) ? arr : []);
   } catch { return new Set(); }
 }
-function writeCollapsedSections(set: Set<string>): void {
-  localStorage.setItem(SECTION_COLLAPSED_KEY, JSON.stringify([...set]));
+function writeCollapsedKeys(key: string, set: Set<string>): void {
+  localStorage.setItem(key, JSON.stringify([...set]));
 }
 
 function Section({
-  title, persistKey = title, testId, accent = false, dotState, children,
+  title, persistKey = title, testId, accent = false, dotState, status, children,
 }: {
   title: string;
   /** Collapse-state key; defaults to `title`, so a renamed section can keep its stored state. */
   persistKey?: string;
   testId: string;
   accent?: boolean;
-  /** Worst Claude state across the section's shells (D4); only meaningful when `accent` is set. */
+  /** Worst severity among the section's shells, independent of agent identity. */
   dotState?: AgentState;
+  /** Connection status shown at the right of the header, with its text colour class. */
+  status?: { readonly label: string; readonly tone: string };
   children: React.ReactNode;
 }) {
-  const [collapsedSet, setCollapsedSet] = useState<Set<string>>(readCollapsedSections);
+  const [collapsedSet, setCollapsedSet] = useState<Set<string>>(() => readCollapsedKeys(SECTION_COLLAPSED_KEY));
   const collapsed = collapsedSet.has(persistKey);
   function toggle() {
     setCollapsedSet((prev) => {
       const next = new Set(prev);
       if (next.has(persistKey)) next.delete(persistKey);
       else next.add(persistKey);
-      writeCollapsedSections(next);
+      writeCollapsedKeys(SECTION_COLLAPSED_KEY, next);
       return next;
     });
   }
@@ -197,12 +261,19 @@ function Section({
     <div data-testid={testId}>
       <button
         onClick={toggle}
+        aria-label={status ? `${title}, ${status.label.toLowerCase()}` : undefined}
         aria-expanded={!collapsed}
         data-testid={`${testId}-toggle`}
-        className="w-full h-[26px] mb-1 px-0 flex items-center gap-2 text-left text-[11px] uppercase tracking-[0.06em] font-medium text-[--text]"
+        className={`w-full h-[26px] mb-1 ${status ? 'focus-visible:ring-2 focus-visible:ring-[--accent]' : ''} px-0 flex items-center gap-2 text-left text-[11px] uppercase tracking-[0.06em] font-medium text-[--text]`}
       >
         {accent && <StatusDot state={dotState ?? 'idle'} />}
         <span className={`flex-1 ${accent ? '' : 'text-[--text-muted]'}`}>{title}</span>
+        {status && (
+          <span className={`flex items-center gap-1.5 text-[11px] normal-case tracking-normal ${status.tone}`}>
+            <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />
+            {status.label}
+          </span>
+        )}
         <ChevronIcon collapsed={collapsed} />
       </button>
       {!collapsed && children}
@@ -214,26 +285,31 @@ function ProjectRow({
   project,
   selected,
   alive,
+  primaryAlive,
+  onUnloadSession,
   onSelect,
   onRename,
   onEditEnv,
+  onProjectSettings,
   indent = 0,
 }: {
   project: Project;
   selected: boolean;
   alive: boolean;
+  primaryAlive: boolean;
+  onUnloadSession: (project: Project, opener: HTMLElement) => void;
   onSelect: (p: Project) => void;
   /** Lifted so the Rename dialog lives at Sidebar level and stays open across rerenders. */
   onRename: (p: Project) => void;
   onEditEnv: (p: Project) => void;
+  onProjectSettings: (target: ProjectSettingsTarget) => void;
   indent?: number;
 }) {
-  const claudeState = useProjectAgentState(project.id);
+  const agentState = useProjectAgentState(project.id);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
-  async function unload(e: React.MouseEvent) {
+  function unload(e: React.MouseEvent<HTMLButtonElement>) {
     e.stopPropagation();
-    try { await api.invoke('shells:kill', { projectId: project.id, shellIndex: 0 }); }
-    catch (err) { console.error(err); }
+    onUnloadSession(project, e.currentTarget);
   }
   async function revealInFinder() {
     try { await api.invoke('files:reveal', { projectId: project.id, relPath: '' }); }
@@ -265,10 +341,20 @@ function ProjectRow({
     e.stopPropagation();
     setMenu({ x: e.clientX, y: e.clientY });
   }
+  function openKeyboardMenu(event: React.KeyboardEvent<HTMLButtonElement>): void {
+    if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    setMenu({ x: bounds.left, y: bounds.bottom });
+  }
   const menuItems: ContextMenuItem[] = [
     { label: 'Start fresh Claude session', onClick: () => void startFresh(), separatorAfter: true },
     { label: 'Rename folder…',  onClick: () => onRename(project) },
     { label: ENV_COPY.contextMenuItem, onClick: () => onEditEnv(project) },
+    { label: PROJECT_SETTINGS_COPY.contextMenuItem, onClick: () => {
+      onProjectSettings({ id: project.id, name: project.name, path: project.path });
+    } },
     { label: 'Reveal in Finder', onClick: () => void revealInFinder(), separatorAfter: true },
     { label: 'Copy full path',   onClick: () => void copyPath() },
   ];
@@ -276,34 +362,37 @@ function ProjectRow({
     <div
       onContextMenu={onContextMenu}
       title={`${project.path}\n(right-click for options)`}
-      className={`group w-full h-[34px] flex items-center gap-2.5 px-2.5 text-sm rounded-lg transition-colors ${
+      className={`group w-full h-7 flex items-center gap-2.5 px-2 text-sm rounded-lg transition-colors ${
         selected ? 'bg-[--accent-soft] text-[--text] font-medium' : 'hover:bg-[--surface-hover]'
       }`}
     >
       <button
+        onKeyDown={openKeyboardMenu}
+        aria-haspopup="menu"
+        aria-expanded={menu !== null}
         onClick={() => onSelect(project)}
         data-testid="project-row"
         data-alive={alive ? '1' : '0'}
-        className="flex-1 min-w-0 h-full flex items-center gap-2.5 text-left"
+        className="flex-1 min-w-0 h-full flex items-center gap-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent-mark,var(--accent))] rounded-lg"
         style={{ paddingLeft: indent }}
       >
         {alive ? (
-          <StatusDot state={claudeState} className="shrink-0" />
+          <StatusDot state={agentState} className="shrink-0" />
         ) : (
           <span
             aria-hidden
             className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
-              selected ? 'bg-[color:var(--accent)]' : 'bg-[--surface-active]'
+              selected ? 'bg-[color:var(--accent-mark,var(--accent))]' : 'bg-[--surface-active]'
             }`}
           />
         )}
         <span className="truncate">{project.name}</span>
       </button>
-      {alive && (
+      {primaryAlive && (
         <button
           onClick={unload}
           data-testid="row-unload"
-          className={`w-4 h-4 flex items-center justify-center rounded transition-colors ${
+          className={`w-4 h-4 flex shrink-0 items-center justify-center rounded transition-colors focus-visible:ring-2 focus-visible:ring-[--accent] ${
             selected
               ? 'text-[--text-muted] hover:text-[--danger] hover:bg-[--surface-hover] opacity-100'
               : 'text-[--text-muted] hover:text-[--danger] hover:bg-[--surface-hover] opacity-0 group-hover:opacity-100 focus:opacity-100'
@@ -315,7 +404,7 @@ function ProjectRow({
       )}
       <AnimatePresence>
         {menu && (
-          <ContextMenu key="context-menu" x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
+          <ContextMenu key="context-menu" x={menu.x} y={menu.y} items={menuItems} autoFocus onClose={() => setMenu(null)} />
         )}
       </AnimatePresence>
     </div>
@@ -349,17 +438,23 @@ function RootBlock({
   projects,
   selectedProjectId,
   aliveIds,
+  primaryIds,
+  onUnloadSession,
   onSelect,
   onRename,
   onEditEnv,
+  onProjectSettings,
 }: {
   root: Root;
   projects: Project[];
   selectedProjectId: number | null;
   aliveIds: Set<number>;
   onSelect: (p: Project) => void;
+  primaryIds: Set<number>;
+  onUnloadSession: (project: Project, opener: HTMLElement) => void;
   onRename: (p: Project) => void;
   onEditEnv: (p: Project) => void;
+  onProjectSettings: (target: ProjectSettingsTarget) => void;
 }) {
   const [collapsed, setCollapsedState] = useState<Set<number>>(readCollapsed);
   const open = !collapsed.has(root.id);
@@ -379,7 +474,7 @@ function RootBlock({
         onClick={toggle}
         aria-expanded={open}
         data-testid="root-toggle"
-        className="w-full text-left px-2.5 py-1 text-xs text-[--text-muted] hover:text-[--text] flex items-center gap-2.5"
+        className="w-full text-left px-2 py-0.5 text-xs text-[--text-muted] hover:text-[--text] flex items-center gap-2.5"
       >
         <RootFolderGlyph color={rootHueVar(root.path)} />
         <span className="truncate flex-1" title={root.path}>{rootFolderName(root.path)}</span>
@@ -395,8 +490,11 @@ function RootBlock({
           selected={selectedProjectId === p.id}
           alive={aliveIds.has(p.id)}
           onSelect={onSelect}
+          primaryAlive={primaryIds.has(p.id)}
+          onUnloadSession={onUnloadSession}
           onRename={onRename}
           onEditEnv={onEditEnv}
+          onProjectSettings={onProjectSettings}
           indent={12}
         />
       ))}
@@ -409,13 +507,13 @@ function RootBlock({
  * that live shells will be killed and the git working dir path changes.
  * Focus is auto-set to the input; ⏎ submits, Esc dismisses.
  */
-function RenameProjectDialog({
+export function RenameProjectDialog({
   project, onClose, onDone,
 }: {
   project: Project | null;
   onClose: () => void;
   onDone: () => void | Promise<void>;
-}) {
+}): React.JSX.Element | null {
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -450,14 +548,17 @@ function RenameProjectDialog({
     }
   }
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose} data-testid="rename-project">
-      <div
-        className="bg-[--panel-strong] w-[440px] max-w-[92vw] rounded-xl shadow-2xl border border-[--border] overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <ModalFrame
+      testId="rename-project"
+      tier="modal"
+      motion="none"
+      layerClassName="flex items-center justify-center"
+      onDismiss={onClose}
+    >
+      <div className="modal-sheet w-[440px] max-w-[92vw] overflow-hidden">
         <div className="px-4 py-3 border-b border-[--border]">
           <div className="font-semibold text-sm">Rename project folder</div>
-          <div className="text-[11px] text-[--text-muted] truncate mt-0.5" title={project.path}>{project.path}</div>
+          <div className="text-[11px] text-[--modal-text-muted] truncate mt-0.5" title={project.path}>{project.path}</div>
         </div>
         <div className="p-4 space-y-3">
           <input
@@ -468,7 +569,7 @@ function RenameProjectDialog({
             placeholder="New folder name"
             className="w-full bg-[--panel] border border-[--border] rounded-md px-2.5 py-1.5 text-sm outline-none focus:ring-1 focus:ring-[--accent]/60"
           />
-          <div className="text-[11px] text-[--text-muted] leading-relaxed">
+          <div className="text-[11px] text-[--modal-text-muted] leading-relaxed">
             Renames the folder on disk and updates every reference here. Any
             live shells for this project will be closed first (the pty holds
             the old path). If this is a git repo, the working tree moves with
@@ -478,7 +579,7 @@ function RenameProjectDialog({
         <div className="px-4 py-3 border-t border-[--border] flex justify-end gap-2">
           <button
             onClick={onClose}
-            className="text-xs px-3 py-1.5 rounded-md border border-[--border] text-[--text-muted] hover:text-[--text] hover:bg-[--panel]"
+            className="text-xs px-3 py-1.5 rounded-md border border-[--border] text-[--modal-text-muted] hover:text-[--text] hover:bg-[--panel]"
           >
             Cancel
           </button>
@@ -491,48 +592,6 @@ function RenameProjectDialog({
           </button>
         </div>
       </div>
-    </div>
-  );
-}
-
-/** Collapse chevron for section and root-group toggles: points down when open, right when collapsed. */
-function ChevronIcon({ collapsed }: { collapsed: boolean }) {
-  return (
-    <svg
-      aria-hidden
-      width={ICON_SIZE.sm}
-      height={ICON_SIZE.sm}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={ICON_STROKE.outline}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="shrink-0 text-[--text-muted] transition-transform duration-150"
-      style={{ transform: collapsed ? 'rotate(-90deg)' : 'none' }}
-    >
-      <path d="M6 9l6 6 6-6" />
-    </svg>
-  );
-}
-
-/** Human-friendly folder name for a root — the trailing segment of the path.
- * Dropping the `~/D/` prefix: single-letter parent abbreviations plus CSS
- * truncation made the row read as "~/D/Pro" / "~/D/my" / etc. which users
- * perceived as weird-char noise. The full absolute path still lives in the
- * row's `title=` tooltip for anyone who wants to see where it points. */
-function rootFolderName(path: string): string {
-  const sep = path.includes('\\') && !path.includes('/') ? '\\' : '/';
-  const trimmed = path.length > 1 ? path.replace(/[\\/]+$/u, '') : path;
-  const last = trimmed.split(sep).pop();
-  return last && last.length > 0 ? last : trimmed;
-}
-
-/** Folder glyph tinted with the root's stable hue (see root-hue.ts). */
-function RootFolderGlyph({ color }: { color: string }) {
-  return (
-    <svg aria-hidden data-testid="root-hue" width={ICON_SIZE.sm} height={ICON_SIZE.sm} viewBox="0 0 24 24" fill={color} fillOpacity={0.25} stroke={color} strokeWidth="1.8" strokeLinejoin="round" className="shrink-0">
-      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-    </svg>
+    </ModalFrame>
   );
 }

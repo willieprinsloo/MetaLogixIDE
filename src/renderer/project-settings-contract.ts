@@ -6,11 +6,12 @@ export type ProjectSettingsTarget = Readonly<Pick<Project, 'id' | 'name' | 'path
 /** Shared accessible copy for project settings and the existing default-star shortcut. */
 export const PROJECT_SETTINGS_COPY = {
   contextMenuItem: 'Project settings…',
-  title: 'Project settings',
-  tab: 'Project settings',
+  title: 'Settings',
+  tab: 'Settings',
   noProject: 'Select a project to edit its settings.',
   defaultAgentLabel: 'Default agent',
   globalDefault: 'Use global default',
+  terminalAgent: 'Terminal (login shell)',
   nextLaunchNotice: 'Changes apply to the next automatic launch. Running shells are not changed.',
   customCommandsNotice: 'Custom launch commands are active. Choosing or applying a default replaces both custom launch commands and affects only the next automatic launch.',
   replaceCustomCommands: 'Replace custom commands with this default',

@@ -4,6 +4,7 @@ import { api } from '@renderer/api';
 import {
   applyDelta,
   applySnapshot,
+  machineSnapshotGetter,
   overallSnapshotGetter,
   projectSnapshotGetter,
   shellSnapshotGetter,
@@ -87,4 +88,14 @@ export function useProjectAgentState(projectId: number): AgentState {
 /** Returns generic worst severity across all live projects for the In use indicator. */
 export function useOverallAgentState(): AgentState {
   return useSyncExternalStore(subscribe, overallSnapshotGetter(getMap));
+}
+
+/** Returns this machine's worst agent state, or null when no agent runs, for the machine switcher dot. */
+export function useMachineAgentState(): AgentState | null {
+  return useSyncExternalStore(subscribe, machineSnapshotGetter(getMap));
+}
+
+/** The whole per-shell identity map, for views that label shells by the agent running in them. */
+export function useAgentStateMap(): AgentStateMap {
+  return useSyncExternalStore(subscribe, getMap);
 }

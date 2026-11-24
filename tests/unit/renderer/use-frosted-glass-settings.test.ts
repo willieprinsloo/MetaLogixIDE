@@ -104,12 +104,12 @@ describe('useFrostedGlassSettings — load on mount', () => {
     void api;
   });
 
-  it('AC18: an unknown stored material falls back to sidebar', async () => {
+  it('AC18: an unknown stored material falls back to under-window', async () => {
     mockLoad(false, 'subtle', 'off', 'not-a-real-material');
     rt.render(() => useFrostedGlassSettings());
     await flush();
     const after = rt.render(() => useFrostedGlassSettings());
-    expect(after.values.vibrancyMaterial).toBe('sidebar');
+    expect(after.values.vibrancyMaterial).toBe('under-window');
   });
 
   it('AC34: never reads the legacy frost_terminal key', async () => {

@@ -33,7 +33,7 @@ function setup(opts: { supported?: boolean; viewing?: (s: ShellKey) => boolean }
 /** A confirmed hook with its notification-history transition. */
 function applied(shell: ShellKey, event: Partial<HookEvent> & { hookEventName: string }, from: AgentState, to: AgentState): AppliedHook {
   const sessionId = shell === WEB2 ? 'sess-web' : 'sess-api';
-  return { hook: { sessionId, shell, event: { notificationType: null, message: null, backgroundTaskCount: 0, ...event } }, from, to };
+  return { hook: { sessionId, shell, event: { notificationType: null, message: null, backgroundTaskCount: 0, toolName: null, toolTarget: null, toolOk: null, ...event } as HookEvent }, from, to };
 }
 
 /** A Notification history applied; by default it left the shell blocked. */

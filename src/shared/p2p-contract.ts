@@ -16,8 +16,46 @@ export const Project = z.object({ id: z.number().int().positive(), name: z.strin
 export const Root = z.object({ id: z.number().int().positive(), path: z.string() }).passthrough();
 
 export const ShellInfo = z
-  .object({ projectId: z.number().int().positive(), shellIndex: z.number() })
+  .object({
+    projectId: z.number().int().positive(),
+    shellIndex: z.number(),
+    /** Host's agent state for this shell; absent from older hosts or hosts without the tracker, null when no recognised agent runs. */
+    agentState: z.enum(['idle', 'busy', 'blocked']).nullable().optional(),
+    /** Agent family running the shell ("claude", "codex", "ollama", …); absent on older hosts, null when no recognised agent runs. */
+    agent: z.string().nullable().optional(),
+  })
   .passthrough();
+export type ShellInfoT = z.infer<typeof ShellInfo>;
+
+/** Agent chat bus entry. Loose by design: schema `.passthrough()`s so newer
+ * writers can carry extra fields without breaking older readers. */
+export const ChatEntryZ = z.object({
+  id: z.string(),
+  ts: z.string(),
+  from: z.object({
+    device: z.string(),
+    shell: z.number(),
+    agent: z.string(),
+    label: z.string().optional(),
+  }).passthrough(),
+  to: z.array(z.object({
+    device: z.string().optional(),
+    shell: z.number().optional(),
+    agent: z.string().optional(),
+  }).passthrough()),
+  body: z.string(),
+  reply_in: z.string().optional(),
+  meta: z.object({ cap_held: z.boolean().optional() }).passthrough().optional(),
+}).passthrough();
+
+export const RosterRowZ = z.object({
+  device: z.string(),
+  shell: z.number(),
+  agent: z.string(),
+  label: z.string(),
+  state: z.enum(['idle', 'busy', 'blocked']).nullable(),
+  mention: z.string(),
+});
 
 export const Dirent = z.object({
   name: z.string(),
@@ -61,6 +99,23 @@ export const RpcMethods = {
   'fs.read': {
     params: z.object({ projectId: z.number().int().positive(), path: z.string() }),
     result: z.object({ content: z.string(), encoding: z.enum(['utf8']) }),
+  },
+
+  /**
+   * Agent chat bus. The three verbs mirror what the local IPC already
+   * does: push one entry, pull entries newer than ts, read the roster.
+   */
+  'chat.append': {
+    params: z.object({ projectId: z.number().int().positive(), entry: ChatEntryZ }),
+    result: z.object({ ok: z.literal(true) }),
+  },
+  'chat.sync_since': {
+    params: z.object({ projectId: z.number().int().positive(), since_ts: z.string() }),
+    result: z.object({ entries: z.array(ChatEntryZ) }),
+  },
+  'chat.roster': {
+    params: z.object({ projectId: z.number().int().positive() }),
+    result: z.object({ rows: z.array(RosterRowZ) }),
   },
 } as const;
 

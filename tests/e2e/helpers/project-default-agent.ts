@@ -263,7 +263,7 @@ export async function enterSettingsTab(win: Page, target: Project, fromRow = fal
 
 export async function leaveSettingsTab(
   win: Page,
-  tab: 'Shell' | 'Files' | 'Env' = 'Shell',
+  tab: 'Shell' | 'Files' = 'Shell',
 ): Promise<void> {
   await win.getByRole('button', { name: tab, exact: true }).click();
   await expect(settingsView(win)).toHaveCount(0);
@@ -411,6 +411,8 @@ interface TransportGate {
   readonly projectId: number | null;
   release: (() => void) | null;
   completed: number;
+  /** Matching invocations to pass through before the single hold applies. */
+  skip: number;
 }
 
 declare global {
@@ -424,6 +426,7 @@ export async function installGate(
   channel: FeatureChannel,
   mode: TransportGate['mode'],
   projectId: number | null = null,
+  skip = 0,
 ): Promise<void> {
   await app.evaluate(
     ({ ipcMain }, args) => {
@@ -445,6 +448,7 @@ export async function installGate(
         projectId: args.projectId,
         release: null,
         completed: 0,
+        skip: args.skip,
       };
       gates.set(args.channel, gate);
       handlers.set(args.channel, async (event: unknown, request: unknown) => {
@@ -456,7 +460,8 @@ export async function installGate(
             request.projectId === gate.projectId);
         gate.requests.push(request);
         if (matches && gate.mode === 'fail') throw new Error(gate.message);
-        if (matches && gate.mode === 'hold') {
+        if (matches && gate.mode === 'hold' && gate.skip > 0) gate.skip--;
+        else if (matches && gate.mode === 'hold') {
           gate.mode = 'pass'; // Hold one invocation only; B can load/save while A waits.
           await new Promise<void>((resolve) => {
             gate.release = resolve;
@@ -467,7 +472,7 @@ export async function installGate(
         return result;
       });
     },
-    { channel, mode, projectId },
+    { channel, mode, projectId, skip },
   );
 }
 

@@ -13,9 +13,9 @@
 import type { Locator, Page } from '@playwright/test';
 import type { EffectiveTheme } from '../../../src/renderer/markdown/contract';
 import { REFERENCE_MATERIALS } from '../../../src/renderer/markdown/mermaid/paletteContract';
-import { contrast, isMacPlatform, mustParse, over, readReferenceBackgrounds, resolveColour, toHex, type Rgb, type Rgba } from './mermaid-palette';
+import { contrast, isFrostedChrome, mustParse, over, readReferenceBackgrounds, resolveColour, toHex, type Rgb, type Rgba } from './mermaid-palette';
 
-export { isMacPlatform, resolveColour };
+export { isFrostedChrome, resolveColour };
 
 /** Resolved `background-color` alpha (0-1) of an element, through the canvas oracle. */
 export async function backgroundAlpha(win: Page, el: Locator): Promise<number> {
@@ -68,14 +68,17 @@ export interface BadgeContrast {
 const ENVELOPE_STEPS = 18;
 
 /**
- * What the window shows under the chrome root. Non-mac: the theme's reference
- * backgrounds (`readReferenceBackgrounds`, which stand for the `--bg` that
- * `<html>` and `<body>` paint). macOS: `<html>` and `<body>` are transparent,
- * so the chrome sits straight on the vibrancy material, sampled across the
- * black-to-white `REFERENCE_MATERIALS` envelope (frosted-chrome AC15, AC17).
+ * What the window shows under the chrome root. Frosted chrome off: the theme's
+ * reference backgrounds (`readReferenceBackgrounds`, which stand for the `--bg`
+ * that `<html>` and `<body>` paint). Frosted chrome on: `<html>` and `<body>`
+ * are transparent, so the chrome sits straight on whatever is behind the
+ * window (the vibrancy material on macOS, the compositor-blurred desktop on
+ * Linux), sampled across the black-to-white `REFERENCE_MATERIALS` envelope
+ * (frosted-chrome AC15, AC17). The envelope bounds any backdrop, so it holds
+ * on Linux unchanged.
  */
 async function windowBackdrops(win: Page, theme: EffectiveTheme): Promise<readonly Rgb[]> {
-  if (!(await isMacPlatform(win))) return readReferenceBackgrounds(win, theme);
+  if (!(await isFrostedChrome(win))) return readReferenceBackgrounds(win, theme);
   const [loHex, hiHex] = REFERENCE_MATERIALS[theme];
   const lo = mustParse(loHex, `REFERENCE_MATERIALS.${theme}`);
   const hi = mustParse(hiHex, `REFERENCE_MATERIALS.${theme}`);

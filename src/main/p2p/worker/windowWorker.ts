@@ -6,15 +6,28 @@ import type { WorkerCommand, WorkerEvent } from './peerEngine';
 
 const here = typeof __dirname === 'string' ? __dirname : dirname(fileURLToPath(import.meta.url));
 
+const workerWindowIds = new Set<number>();
+
+/** True for the hidden worker window, so app lifecycle checks don't count it as a user window. */
+export function isWorkerWindowId(id: number): boolean {
+  return workerWindowIds.has(id);
+}
+
 /**
  * Spawns a hidden BrowserWindow hosting p2pWorker.html and returns a
  * TransportWorker that drives it over IPC (p2p:worker:cmd / reply / event).
  * Replies and events are accepted only from this window's webContents.
  */
 export function createWindowWorker(): TransportWorker {
+  // The worker is a hidden runtime, not a user window. `show: false` keeps it
+  // off-screen, but without `skipTaskbar` macOS still lists it in the app's
+  // Window menu and the ⌘` cycle — one stray click reveals a blank frame.
+  // `type: 'panel'` on darwin additionally keeps it out of Mission Control.
   const win = new BrowserWindow({
     show: false,
+    skipTaskbar: true,
     autoHideMenuBar: true,
+    ...(process.platform === 'darwin' ? { type: 'panel' as const } : {}),
     webPreferences: {
       preload: join(here, '../preload/p2pWorker.js'),
       contextIsolation: true,
@@ -23,6 +36,9 @@ export function createWindowWorker(): TransportWorker {
       backgroundThrottling: false,
     },
   });
+  const winId = win.id;
+  workerWindowIds.add(winId);
+  win.on('closed', () => workerWindowIds.delete(winId));
   const wc = win.webContents;
   wc.on('will-navigate', (e) => e.preventDefault());
   wc.setWindowOpenHandler(() => ({ action: 'deny' }));

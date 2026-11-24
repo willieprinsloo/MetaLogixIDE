@@ -1,7 +1,22 @@
 /**
- * Contract for the macOS frosted-glass settings: levels, materials, settings keys, defaults and
- * first-paint query keys, shared by main and the renderer.
+ * Contract for the frosted-glass settings (macOS and Linux): platforms, levels, materials,
+ * settings keys, defaults and first-paint query keys, shared by main and the renderer.
  */
+
+/** Platforms where frosted glass applies. The value is what `data-platform` carries on the root. */
+export const FROST_PLATFORMS = ['mac', 'linux'] as const;
+export type FrostPlatform = (typeof FROST_PLATFORMS)[number];
+
+/**
+ * Maps a Node platform string to the frosted-glass platform: `darwin` → `'mac'`, `linux` →
+ * `'linux'`, anything else (including a missing value) → `null`, meaning frosted glass does not
+ * apply. Every "does frosted glass apply here" decision in main and the renderer goes through this.
+ */
+export function toFrostPlatform(platform: string | null | undefined): FrostPlatform | null {
+  if (platform === 'darwin') return 'mac';
+  if (platform === 'linux') return 'linux';
+  return null;
+}
 export const CHROME_FROST_LEVELS = ['subtle', 'medium', 'strong'] as const;
 export type ChromeFrostLevel = (typeof CHROME_FROST_LEVELS)[number];
 
@@ -21,9 +36,9 @@ export const FROSTED_GLASS_KEYS = {
 
 export const FROSTED_GLASS_DEFAULTS = {
   frostChrome: true,
-  chromeFrostLevel: 'subtle',
+  chromeFrostLevel: 'strong',
   terminalFrostLevel: 'off',
-  vibrancyMaterial: 'sidebar',
+  vibrancyMaterial: 'under-window',
 } as const satisfies {
   frostChrome: boolean;
   chromeFrostLevel: ChromeFrostLevel;

@@ -13,8 +13,8 @@ describe('resolveMaterial (AC18)', () => {
     expect(resolveMaterial(material)).toBe(material);
   });
 
-  it.each(['window', '', 'content', undefined, null, 42])('falls back to sidebar for %j', (material) => {
-    expect(resolveMaterial(material)).toBe('sidebar');
+  it.each(['window', '', 'content', undefined, null, 42])('falls back to under-window for %j', (material) => {
+    expect(resolveMaterial(material)).toBe('under-window');
   });
 });
 
@@ -29,12 +29,18 @@ describe('platformChrome (AC19, AC20, AC26)', () => {
     });
   });
 
-  it('darwin: an unknown stored material falls back to sidebar', () => {
-    expect(platformChrome('darwin', 'window').vibrancy).toBe('sidebar');
+  it('darwin: an unknown stored material falls back to under-window', () => {
+    expect(platformChrome('darwin', 'window').vibrancy).toBe('under-window');
   });
 
-  it.each(['win32', 'linux'] as const)('%s: deep-equals the baseline, unchanged by material', (platform) => {
-    expect(platformChrome(platform, 'hud')).toEqual({ autoHideMenuBar: true });
+  it.each(['sidebar', 'hud', 'window', undefined] as const)('linux: transparent window, no vibrancy, for material %j (AC1, AC5)', (material) => {
+    const chrome = platformChrome('linux', material);
+    expect(chrome).toEqual({ autoHideMenuBar: true, transparent: true, backgroundColor: '#00000000' });
+    expect(chrome).not.toHaveProperty('vibrancy');
+  });
+
+  it('win32: deep-equals the baseline, unchanged by material (AC3)', () => {
+    expect(platformChrome('win32', 'hud')).toEqual({ autoHideMenuBar: true });
   });
 });
 
@@ -59,10 +65,10 @@ describe('applyVibrancy (AC19, AC20)', () => {
     expect(destroyed.setVibrancy).not.toHaveBeenCalled();
   });
 
-  it('darwin: resolves an unknown material to sidebar before calling setVibrancy', () => {
+  it('darwin: resolves an unknown material to under-window before calling setVibrancy', () => {
     const live = fakeWindow(false);
     applyVibrancy([live], 'window', 'darwin');
-    expect(live.setVibrancy).toHaveBeenCalledWith('sidebar');
+    expect(live.setVibrancy).toHaveBeenCalledWith('under-window');
   });
 
   it.each(['win32', 'linux'] as const)('%s: never calls setVibrancy', (platform) => {
@@ -83,9 +89,19 @@ describe('rendererQuery (AC5, AC6)', () => {
       .toBe('frostChrome=0&chromeFrost=subtle&terminalFrost=off');
   });
 
-  it.each(['win32', 'linux'] as const)('%s: always resolves to the no-effect defaults (AC6)', (platform) => {
+  it.each(['win32', 'freebsd'] as const)('%s: always resolves to the no-effect defaults (AC3, AC4)', (platform) => {
     expect(rendererQuery({ platform, frostChrome: true, chromeFrost: 'strong', terminalFrost: 'strong' }))
-      .toBe('frostChrome=0&chromeFrost=subtle&terminalFrost=off');
+      .toBe('frostChrome=0&chromeFrost=strong&terminalFrost=off');
+  });
+
+  it('linux: passes stored values through, on/strong/medium (AC1)', () => {
+    expect(rendererQuery({ platform: 'linux', frostChrome: true, chromeFrost: 'strong', terminalFrost: 'medium' }))
+      .toBe('frostChrome=1&chromeFrost=strong&terminalFrost=medium');
+  });
+
+  it('linux: passes stored values through, off/medium/strong (AC1)', () => {
+    expect(rendererQuery({ platform: 'linux', frostChrome: false, chromeFrost: 'medium', terminalFrost: 'strong' }))
+      .toBe('frostChrome=0&chromeFrost=medium&terminalFrost=strong');
   });
 
   it('popout params come first, ahead of the frosted-glass flags', () => {

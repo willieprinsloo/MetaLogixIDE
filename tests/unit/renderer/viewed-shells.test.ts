@@ -17,8 +17,8 @@ describe('viewedShellsFor', () => {
     expect(viewedShellsFor({ ...base, mainTab: 'files' })).toEqual([]);
   });
 
-  it('returns empty when the Env tab is showing', () => {
-    expect(viewedShellsFor({ ...base, mainTab: 'env', rightShellIndex: 2 })).toEqual([]);
+  it('returns empty when the Settings tab is showing', () => {
+    expect(viewedShellsFor({ ...base, mainTab: 'settings', rightShellIndex: 2 })).toEqual([]);
   });
 
   it('returns empty when the Diff tab is showing', () => {

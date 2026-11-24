@@ -15,13 +15,15 @@ const expectedHook = {
 };
 
 describe('buildHookSettings', () => {
-  it('registers notification, turn-confirmation and session-start events', () => {
+  it('registers notification, turn-confirmation, session-start and tool-use events', () => {
     expect(buildHookSettings(URL)).toEqual({
       hooks: {
         Notification: [{ matcher: '', hooks: [expectedHook] }],
         SessionStart: [{ matcher: '', hooks: [expectedHook] }],
         Stop: [{ hooks: [expectedHook] }],
         UserPromptSubmit: [{ hooks: [expectedHook] }],
+        PreToolUse: [{ matcher: '', hooks: [expectedHook] }],
+        PostToolUse: [{ matcher: '', hooks: [expectedHook] }],
       },
     });
   });
@@ -29,7 +31,7 @@ describe('buildHookSettings', () => {
   it('registers nothing else (user settings stay in charge of everything but these hooks)', () => {
     const settings = buildHookSettings(URL);
     expect(Object.keys(settings)).toEqual(['hooks']);
-    expect(Object.keys(settings.hooks).sort()).toEqual(['Notification', 'SessionStart', 'Stop', 'UserPromptSubmit']);
+    expect(Object.keys(settings.hooks).sort()).toEqual(['Notification', 'PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'UserPromptSubmit']);
   });
 });
 

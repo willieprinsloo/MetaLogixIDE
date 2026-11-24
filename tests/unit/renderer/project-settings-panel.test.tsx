@@ -48,8 +48,8 @@ describe('project settings presentation', () => {
   it('uses noncolliding option values even when profile names resemble inheritance copy or encoding', () => {
     const html = render(ready({ confirmedName: 'inherit:', pendingName: 'inherit:' }));
     const values = [...html.matchAll(/<option\b[^>]*value="([^"]*)"/g)].map((match) => match[1]);
-    expect(values).toHaveLength(4);
-    expect(new Set(values).size).toBe(4);
+    expect(values).toHaveLength(5); // global, Terminal, three profiles
+    expect(new Set(values).size).toBe(5);
     expect(html).toMatch(/<option[^>]*selected=""[^>]*>inherit:<\/option>/);
     expect(html).toContain('Use global default</option>');
   });
@@ -57,7 +57,7 @@ describe('project settings presentation', () => {
   it('keeps global inheritance enabled for an empty successful catalog', () => {
     const html = render(ready({ profiles: [], confirmedName: null, pendingName: null }));
     expect(select(html)).not.toMatch(/\sdisabled(?:=|\s|>)/);
-    expect(html.match(/<option\b/g)).toHaveLength(1);
+    expect(html.match(/<option\b/g)).toHaveLength(2); // global default and the built-in Terminal
     expect(html).toMatch(/<option[^>]*selected=""[^>]*>Use global default<\/option>/);
     expect(html).not.toContain(COPY.loadFailed);
   });
@@ -138,5 +138,21 @@ describe('project settings presentation', () => {
     expect(html).not.toContain('<Agent>');
     expect(html).not.toContain('secret-command');
     expect(html).not.toContain('secret-token');
+  });
+});
+
+describe('built-in Terminal choice', () => {
+  it('offers Terminal after the global default and shows it selected without an unavailable warning', () => {
+    const html = render(ready({ confirmedName: 'Terminal', pendingName: 'Terminal' }));
+    expect(html).toContain(`<option value="profile:Terminal" selected="">${COPY.terminalAgent}</option>`);
+    expect(html).not.toContain(COPY.unavailableProfile('Terminal'));
+  });
+
+  it('is not duplicated when a CLI profile is already named Terminal', () => {
+    const base = ready();
+    if (base.status !== 'ready') throw new Error('ready snapshot expected');
+    const html = render({ ...base, profiles: [...base.profiles, { name: 'Terminal', argv: ['fish'], scope: 'project' }] });
+    expect(html).not.toContain(COPY.terminalAgent);
+    expect(html.match(/value="profile:Terminal"/g)).toHaveLength(1);
   });
 });

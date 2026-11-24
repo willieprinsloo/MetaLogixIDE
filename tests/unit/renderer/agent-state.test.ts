@@ -4,14 +4,14 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { StatusDot } from '@renderer/components/StatusDot';
 import {
-  applyDelta, applySnapshot, keyFor, overallSnapshotGetter, overallStateOf,
-  projectSnapshotGetter, projectStateOf, shellSnapshotGetter, shellStateOf,
+  applyDelta, applySnapshot, keyFor, machineAgentState, machineSnapshotGetter, overallSnapshotGetter, overallStateOf,
+  projectSnapshotGetter, projectStateOf, readAgentState, shellSnapshotGetter, shellStateOf,
 } from '@renderer/agent-state';
 import type { AgentShellStateEntry } from '@shared/agent-state';
 
 const claudeBusy: AgentShellStateEntry = { projectId: 1, shellIndex: 0, agent: 'claude', state: 'busy' };
-const ompBlocked: AgentShellStateEntry = { projectId: 1, shellIndex: 1, agent: 'omp', state: 'blocked' };
-const otherBusy: AgentShellStateEntry = { projectId: 11, shellIndex: 0, agent: 'omp', state: 'busy' };
+const secondBlocked: AgentShellStateEntry = { projectId: 1, shellIndex: 1, agent: 'claude', state: 'blocked' };
+const otherBusy: AgentShellStateEntry = { projectId: 11, shellIndex: 0, agent: 'claude', state: 'busy' };
 
 describe('agent state snapshots and deltas (AC8, AC10)', () => {
   it('keeps identity for idle agents but treats absent/non-agent shells as idle', () => {
@@ -23,9 +23,9 @@ describe('agent state snapshots and deltas (AC8, AC10)', () => {
   });
 
   it('retains two agents in one project and prioritizes blocked over busy over idle', () => {
-    const map = applySnapshot([claudeBusy, ompBlocked, otherBusy]);
+    const map = applySnapshot([claudeBusy, secondBlocked, otherBusy]);
     expect(shellStateOf(map, 1, 0)).toEqual({ agent: 'claude', state: 'busy' });
-    expect(shellStateOf(map, 1, 1)).toEqual({ agent: 'omp', state: 'blocked' });
+    expect(shellStateOf(map, 1, 1)).toEqual({ agent: 'claude', state: 'blocked' });
     expect(projectStateOf(map, 1)).toBe('blocked');
     expect(projectStateOf(map, 11)).toBe('busy');
     expect(projectStateOf(map, 2)).toBe('idle');
@@ -34,7 +34,7 @@ describe('agent state snapshots and deltas (AC8, AC10)', () => {
   });
 
   it('replaces stale shells on a fresh snapshot for a new window', () => {
-    const stale = applySnapshot([ompBlocked]);
+    const stale = applySnapshot([secondBlocked]);
     const refreshed = applySnapshot([claudeBusy]);
     expect(shellStateOf(stale, 1, 1).state).toBe('blocked');
     expect(shellStateOf(refreshed, 1, 1)).toEqual({ agent: null, state: 'idle' });
@@ -42,13 +42,13 @@ describe('agent state snapshots and deltas (AC8, AC10)', () => {
   });
 
   it('applies idle/exit deltas to one shell only', () => {
-    const before = applySnapshot([claudeBusy, ompBlocked]);
-    const idled = applyDelta(before, { ...ompBlocked, state: 'idle' });
-    expect(shellStateOf(idled, 1, 1)).toEqual({ agent: 'omp', state: 'idle' });
+    const before = applySnapshot([claudeBusy, secondBlocked]);
+    const idled = applyDelta(before, { ...secondBlocked, state: 'idle' });
+    expect(shellStateOf(idled, 1, 1)).toEqual({ agent: 'claude', state: 'idle' });
     expect(projectStateOf(idled, 1)).toBe('busy');
     const exited = applyDelta(idled, { ...claudeBusy, agent: null, state: 'idle' });
     expect(shellStateOf(exited, 1, 0)).toEqual({ agent: null, state: 'idle' });
-    expect(shellStateOf(exited, 1, 1).agent).toBe('omp');
+    expect(shellStateOf(exited, 1, 1).agent).toBe('claude');
     expect(projectStateOf(exited, 1)).toBe('idle');
   });
 
@@ -64,12 +64,12 @@ describe('agent state snapshots and deltas (AC8, AC10)', () => {
     const missing = shellSnapshotGetter(() => map, 4, 0);
     const original = shell();
     const missingOriginal = missing();
-    map = applyDelta(map, ompBlocked);
+    map = applyDelta(map, secondBlocked);
     expect(shell()).toBe(original);
     expect(missing()).toBe(missingOriginal);
-    map = applyDelta(map, { ...claudeBusy, agent: 'omp' });
+    map = applyDelta(map, { ...claudeBusy, state: 'blocked' });
     expect(shell()).not.toBe(original);
-    expect(shell().agent).toBe('omp');
+    expect(shell().state).toBe('blocked');
   });
 
   it('keeps aggregate snapshots primitive and stable until severity changes', () => {
@@ -79,10 +79,10 @@ describe('agent state snapshots and deltas (AC8, AC10)', () => {
     map = applyDelta(map, otherBusy);
     expect(project()).toBe('busy');
     expect(global()).toBe('busy');
-    map = applyDelta(map, ompBlocked);
+    map = applyDelta(map, secondBlocked);
     expect(project()).toBe('blocked');
     expect(global()).toBe('blocked');
-    map = applyDelta(map, { ...ompBlocked, agent: null, state: 'idle' });
+    map = applyDelta(map, { ...secondBlocked, agent: null, state: 'idle' });
     expect(project()).toBe('busy');
     expect(global()).toBe('busy');
     expect(keyFor(1, 0)).not.toBe(keyFor(11, 0));
@@ -120,11 +120,11 @@ describe('live IPC selectors (AC10)', () => {
       const { useShellAgentState, useProjectAgentState, useOverallAgentState } = await import('@renderer/hooks/useAgentStates');
       expect(useShellAgentState(1, 0)).toEqual({ agent: null, state: 'idle' });
       expect(responses).toHaveLength(1);
-      handlers.get('agent-state:changed')?.(ompBlocked);
+      handlers.get('agent-state:changed')?.(secondBlocked);
       responses[0]?.({ shells: [claudeBusy] });
       await Promise.resolve();
       expect(useShellAgentState(1, 0)).toEqual({ agent: 'claude', state: 'busy' });
-      expect(useShellAgentState(1, 1)).toEqual({ agent: 'omp', state: 'blocked' });
+      expect(useShellAgentState(1, 1)).toEqual({ agent: 'claude', state: 'blocked' });
       expect(useProjectAgentState(1)).toBe('blocked');
       expect(useOverallAgentState()).toBe('blocked');
       const beforeUnrelated = renders;
@@ -132,14 +132,77 @@ describe('live IPC selectors (AC10)', () => {
       expect(renders).toBe(beforeUnrelated);
       handlers.get('alive-shells:changed')?.(claudeBusy);
       expect(responses).toHaveLength(2);
-      responses[1]?.({ shells: [ompBlocked] });
+      responses[1]?.({ shells: [secondBlocked] });
       await Promise.resolve();
       expect(useShellAgentState(1, 0)).toEqual({ agent: null, state: 'idle' });
-      expect(useShellAgentState(1, 1)).toEqual({ agent: 'omp', state: 'blocked' });
-      handlers.get('agent-state:changed')?.({ ...ompBlocked, state: 'idle' });
-      expect(useShellAgentState(1, 1)).toEqual({ agent: 'omp', state: 'idle' });
+      expect(useShellAgentState(1, 1)).toEqual({ agent: 'claude', state: 'blocked' });
+      handlers.get('agent-state:changed')?.({ ...secondBlocked, state: 'idle' });
+      expect(useShellAgentState(1, 1)).toEqual({ agent: 'claude', state: 'idle' });
       expect(useProjectAgentState(1)).toBe('idle');
       expect(useOverallAgentState()).toBe('idle');
+    } finally {
+      for (const unsubscribe of unsubs) unsubscribe();
+      vi.doUnmock('@renderer/api');
+      vi.doUnmock('react');
+      vi.resetModules();
+    }
+  });
+});
+
+describe('machine aggregate selector (machine switcher AC34)', () => {
+  it('derives null with no agent, else the worst state, as a primitive snapshot', () => {
+    let map: ReturnType<typeof applySnapshot> = new Map();
+    const get = machineSnapshotGetter(() => map);
+    expect(get()).toBeNull();
+    map = applySnapshot([{ ...claudeBusy, state: 'idle' }], map);
+    expect(get()).toBe('idle');
+    map = applyDelta(applyDelta(map, otherBusy), secondBlocked);
+    expect(get()).toBe('blocked');
+    map = applyDelta(map, { ...secondBlocked, agent: null, state: 'idle' });
+    expect(get()).toBe('busy');
+  });
+
+  it('useMachineAgentState notifies React only when the machine aggregate changes', async () => {
+    const responses: Array<(value: { shells: AgentShellStateEntry[] }) => void> = [];
+    const handlers = new Map<string, (entry: AgentShellStateEntry) => void>();
+    const unsubs: Array<() => void> = [];
+    let renders = 0;
+    vi.doMock('@renderer/api', () => ({
+      api: {
+        invoke: () => new Promise<{ shells: AgentShellStateEntry[] }>((resolve) => { responses.push(resolve); }),
+        on: (channel: string, cb: (entry: AgentShellStateEntry) => void) => {
+          handlers.set(channel, cb);
+          return () => { handlers.delete(channel); };
+        },
+      },
+    }));
+    vi.doMock('react', () => ({
+      useSyncExternalStore: (subscribe: (listener: () => void) => () => void, getSnapshot: () => unknown) => {
+        let last = getSnapshot();
+        unsubs.push(subscribe(() => {
+          const next = getSnapshot();
+          if (!Object.is(last, next)) renders++;
+          last = next;
+        }));
+        return getSnapshot();
+      },
+    }));
+    try {
+      const { useMachineAgentState } = await import('@renderer/hooks/useAgentStates');
+      expect(useMachineAgentState()).toBeNull();
+      responses[0]?.({ shells: [claudeBusy] });
+      await Promise.resolve();
+      expect(useMachineAgentState()).toBe('busy');
+      const afterSnapshot = renders;
+      const subscribers = unsubs.length;
+      handlers.get('agent-state:changed')?.(otherBusy);
+      handlers.get('agent-state:changed')?.({ ...otherBusy, state: 'idle' });
+      expect(renders).toBe(afterSnapshot);
+      handlers.get('agent-state:changed')?.(secondBlocked);
+      expect(useMachineAgentState()).toBe('blocked');
+      expect(renders).toBe(afterSnapshot + subscribers);
+      for (const e of [claudeBusy, secondBlocked, otherBusy]) handlers.get('agent-state:changed')?.({ ...e, agent: null, state: 'idle' });
+      expect(useMachineAgentState()).toBeNull();
     } finally {
       for (const unsubscribe of unsubs) unsubscribe();
       vi.doUnmock('@renderer/api');
@@ -154,9 +217,6 @@ describe('status dot accessibility (AC9, AC13)', () => {
     ['claude', 'idle', 'Claude is idle'],
     ['claude', 'busy', 'Claude is working'],
     ['claude', 'blocked', 'Claude needs your input'],
-    ['omp', 'idle', 'OMP is idle'],
-    ['omp', 'busy', 'OMP is working'],
-    ['omp', 'blocked', 'OMP needs your input'],
     [null, 'idle', 'Idle'],
   ] as const)('names %s / %s without leaking session text', (agent, state, label) => {
     const html = renderToStaticMarkup(createElement(StatusDot, { agent, state }));
@@ -172,12 +232,11 @@ describe('status dot accessibility (AC9, AC13)', () => {
     const html = renderToStaticMarkup(createElement(StatusDot, { state }));
     expect(html).toContain(`aria-label="${label}"`);
     expect(html).toContain(`title="${label}"`);
-    expect(html).not.toMatch(/Claude|OMP/);
+    expect(html).not.toMatch(/Claude/);
   });
 
   it.each([
     ['claude', 'Claude is idle'],
-    ['omp', 'OMP is idle'],
   ] as const)('keeps inactive %s idle tab gray and static without suppressing its identity', (agent, label) => {
     const idle = renderToStaticMarkup(createElement(StatusDot, { agent, state: 'idle', inactiveWhenIdle: true }));
     expect(idle).toContain(`aria-label="${label}"`);
@@ -191,18 +250,16 @@ describe('status dot accessibility (AC9, AC13)', () => {
   });
 
   it('escapes caller class markup and derives labels only from the shared contract', () => {
-    const html = renderToStaticMarkup(createElement(StatusDot, { agent: 'omp', state: 'blocked', className: '"><script>alert(1)</script>' }));
+    const html = renderToStaticMarkup(createElement(StatusDot, { agent: 'claude', state: 'blocked', className: '"><script>alert(1)</script>' }));
     expect(html).not.toContain('<script>');
-    expect(html).toContain('aria-label="OMP needs your input"');
+    expect(html).toContain('aria-label="Claude needs your input"');
   });
 });
 
 describe('status dot consumers (AC8, AC9)', () => {
   it.each([
     ['claude', false, 'Claude is idle'],
-    ['omp', false, 'OMP is idle'],
     ['claude', true, 'Claude is idle'],
-    ['omp', true, 'OMP is idle'],
   ] as const)('names the %s shell in %s tab without changing inactive state', async (agent, isActive, label) => {
     const shellState = vi.fn(() => ({ agent, state: 'idle' as const }));
     vi.doMock('@renderer/hooks/useAgentStates', () => ({ useShellAgentState: shellState }));
@@ -232,10 +289,12 @@ describe('status dot consumers (AC8, AC9)', () => {
     vi.doMock('@renderer/hooks/useRoots', () => ({ useRoots: () => ({ roots: [], refresh: vi.fn() }) }));
     vi.doMock('@renderer/hooks/useProjects', () => ({ useProjects: () => ({ projects: [project], refresh: vi.fn() }) }));
     vi.doMock('@renderer/hooks/useRecents', () => ({ useRecents: () => ({ recents: [] }) }));
-    vi.doMock('@renderer/hooks/useAliveShellIds', () => ({ useAliveShellIds: () => ({ aliveIds: new Set([7]) }) }));
+    vi.doMock('@renderer/hooks/useAliveShellIds', () => ({ useAliveShellIds: () => ({ aliveIds: new Set([7]), primaryIds: new Set([7]) }) }));
     vi.doMock('@renderer/hooks/useAgentStates', () => ({
       useOverallAgentState: overallState,
       useProjectAgentState: projectState,
+      useAgentStateMap: () => new Map(),
+      useMachineAgentState: () => null,
     }));
     vi.stubGlobal('localStorage', { getItem: () => null });
     try {
@@ -243,14 +302,15 @@ describe('status dot consumers (AC8, AC9)', () => {
       const { createElement: h } = await import('react');
       const { renderToStaticMarkup: render } = await import('react-dom/server');
       const html = render(h(Sidebar, {
-        selectedProjectId: 7, onSelect: vi.fn(), onEditEnv: vi.fn(), onProjectSettings: vi.fn(),
+        selectedProjectId: 7,
+        onSelect: vi.fn(), onUnloadSession: vi.fn(), onEditEnv: vi.fn(), onProjectSettings: vi.fn(),
       }));
       expect(html).toContain('In use');
       expect(projectState).toHaveBeenCalledWith(7);
       expect(overallState).toHaveBeenCalled();
       expect(html).toContain('aria-label="Needs input"');
       expect(html).toContain('aria-label="Idle"');
-      expect(html).not.toMatch(/aria-label="(?:Claude|OMP) is idle"/);
+      expect(html).not.toMatch(/aria-label="Claude is idle"/);
     } finally {
       vi.unstubAllGlobals();
       for (const path of [
@@ -264,8 +324,8 @@ describe('status dot consumers (AC8, AC9)', () => {
 });
 
 describe('popout shell status (AC9)', () => {
-  it('exposes an idle OMP identity in the actual popout header', async () => {
-    const shellState = vi.fn(() => ({ agent: 'omp' as const, state: 'idle' as const }));
+  it('exposes an idle Claude identity in the actual popout header', async () => {
+    const shellState = vi.fn(() => ({ agent: 'claude' as const, state: 'idle' as const }));
     vi.stubGlobal('window', { location: { search: '?popout=1&projectId=7&shellIndex=2' } });
     vi.doMock('@renderer/api', () => ({ api: { invoke: vi.fn() } }));
     vi.doMock('@renderer/fonts/use-apply-ui-font', () => ({ useApplyUiFont: vi.fn() }));
@@ -285,8 +345,8 @@ describe('popout shell status (AC9)', () => {
       const { renderToStaticMarkup: render } = await import('react-dom/server');
       const html = render(h(App));
       expect(shellState).toHaveBeenCalledWith(7, 2);
-      expect(html).toContain('aria-label="OMP is idle"');
-      expect(html).toContain('title="OMP is idle"');
+      expect(html).toContain('aria-label="Claude is idle"');
+      expect(html).toContain('title="Claude is idle"');
       expect(html).toContain('Shell 2');
     } finally {
       vi.unstubAllGlobals();
@@ -297,5 +357,32 @@ describe('popout shell status (AC9)', () => {
       ]) vi.doUnmock(path);
       vi.resetModules();
     }
+  });
+});
+
+describe('readAgentState (untrusted peer value, machine switcher AC34)', () => {
+  it.each(['idle', 'busy', 'blocked'] as const)('passes %j through', (v) => {
+    expect(readAgentState(v)).toBe(v);
+  });
+  it.each([undefined, null, 1, 'BUSY', 'weird', '', {}, ['busy'], 'idle ', 'constructor', 'toString'])('turns %j into null', (v) => {
+    expect(readAgentState(v)).toBeNull();
+  });
+});
+
+describe('machineAgentState (machine switcher AC34)', () => {
+  it('ranks blocked over busy over idle', () => {
+    expect(machineAgentState(['idle', 'blocked', 'busy'])).toBe('blocked');
+    expect(machineAgentState(['busy', 'idle'])).toBe('busy');
+    expect(machineAgentState(['idle', 'busy', null])).toBe('busy');
+  });
+  it('is null when no shell has a recognised agent', () => {
+    expect(machineAgentState([])).toBeNull();
+    expect(machineAgentState([null, undefined, null])).toBeNull();
+  });
+  it('is idle for a single idle agent among non-agent shells', () => {
+    expect(machineAgentState([null, 'idle', undefined])).toBe('idle');
+  });
+  it('accepts any iterable', () => {
+    expect(machineAgentState(new Set(['busy'] as const).values())).toBe('busy');
   });
 });

@@ -865,7 +865,7 @@ function LoginCard({ onLoggedIn, onDismiss }: { onLoggedIn: () => void; onDismis
   }, [onDismiss]);
 
   return (
-    <div className="h-full flex items-center justify-center p-6">
+    <div className="chat-signin h-full flex items-center justify-center p-6">
       <div className="relative w-[360px] space-y-4 bg-[--panel-strong] border border-[--border] rounded-xl p-6 shadow-xl">
         {onDismiss && (
           <button

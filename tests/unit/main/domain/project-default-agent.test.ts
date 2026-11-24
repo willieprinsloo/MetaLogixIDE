@@ -126,3 +126,12 @@ describe('setProjectDefaultAgent', () => {
     expect(r.project.config).toStrictEqual({ defaultCliName: 'old' });
   });
 });
+
+describe('built-in Terminal default agent', () => {
+  it('saves Terminal without a matching CLI profile', () => {
+    const { projects, settings } = rig();
+    const result = setProjectDefaultAgent({ projects, settings }, { projectId: 7, name: 'Terminal' });
+    expect(result.ok).toBe(true);
+    expect(projects.updateConfig).toHaveBeenCalledWith(7, { defaultCliName: 'Terminal', launchCmd: null });
+  });
+});

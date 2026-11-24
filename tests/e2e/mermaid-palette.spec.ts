@@ -71,7 +71,7 @@ import {
   type RoleSelector,
   type TextPair,
 } from './helpers/mermaid-palette';
-import { colourDistance, fmtColour, isMacPlatform, resolveToken } from './helpers/chrome-colour';
+import { colourDistance, fmtColour, isFrostedChrome, resolveToken } from './helpers/chrome-colour';
 
 const THEMES: EffectiveTheme[] = ['dark', 'light'];
 
@@ -431,7 +431,9 @@ test.describe('mermaid app palette', () => {
       const win = ide.win;
       await setTheme(win, theme);
       const sheet = await resolveToken(win, '--surface-sheet');
-      if (await isMacPlatform(win)) {
+      // Frosted chrome on, macOS or Linux: the opaque sheet is cascade, shared
+      // by both (docs/specs/linux-wayland-frosted-glass.md AC21).
+      if (await isFrostedChrome(win)) {
         // docs/specs/macos-frosted-chrome.md AC29: markdown (the Files tab)
         // sits on the opaque macOS sheet (MAC_PREVIEW_SURFACE = '--sheet-solid'
         // in paletteContract.ts) rather than a translucent --surface-sheet —

@@ -23,7 +23,7 @@ interface StrokeException {
 
 const STROKE_EXCEPTIONS: StrokeException[] = [
   { file: 'components/shell-icons.tsx', component: 'StarFilledIcon', value: '1.5' },
-  { file: 'components/Sidebar.tsx', component: 'RootFolderGlyph', value: '1.8' },
+  { file: 'components/RootFolderGlyph.tsx', component: 'RootFolderGlyph', value: '1.8' },
 ];
 
 const CHECK_ICON_FILE = 'components/CheckIcon.tsx';

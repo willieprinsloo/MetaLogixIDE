@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Terminal } from '@xterm/headless';
 import { PtyManager } from '@main/pty/manager';
 import { ScreenMirror } from '@main/pty/screen-mirror';
+import { TERMINAL_SCROLLBACK_LINES } from '@shared/terminal-scrollback';
 import { classifyClaudeScreen } from '@main/agent-status/claude-screen';
 
 const COLS = 80;
@@ -133,7 +134,7 @@ async function render(
   rows: number,
   ...steps: Array<string | { cols: number; rows: number }>
 ): Promise<Terminal> {
-  const term = new Terminal({ cols, rows, scrollback: 5000, allowProposedApi: true });
+  const term = new Terminal({ cols, rows, scrollback: TERMINAL_SCROLLBACK_LINES, allowProposedApi: true });
   for (const step of steps) {
     if (typeof step === 'string') await new Promise<void>((r) => term.write(step, r));
     else term.resize(step.cols, step.rows);
@@ -315,6 +316,10 @@ describe('PtyManager.getSnapshot', () => {
 
   it('keeps a respawned shell and its terminal when the killed predecessor exits late', async () => {
     const oldExit = exitOf(mgr, 109);
+    const exits: Array<{ projectId: number; shellIndex: number; generation: string }> = [];
+    mgr.on('exit', (event: { projectId: number; shellIndex: number; generation: string }) => {
+      if (event.projectId === 109) exits.push(event);
+    });
     const first = collect(mgr, 109);
     await mgr.spawn(
       109,
@@ -323,6 +328,8 @@ describe('PtyManager.getSnapshot', () => {
         'process.on("SIGHUP", () => setTimeout(() => process.exit(0), 400)); process.stdout.write("FIRST-LIFE"); setTimeout(() => {}, 20000)',
       ),
     );
+    const oldGeneration = mgr.liveShell(109, 0)?.generation;
+    expect(oldGeneration).toEqual(expect.any(String));
     await first.until('FIRST-LIFE');
     await mgr.kill(109, 0);
     const out = collect(mgr, 109);
@@ -332,6 +339,10 @@ describe('PtyManager.getSnapshot', () => {
       nodeLaunch('process.stdout.write("SECOND-LIFE"); setTimeout(() => {}, 20000)'),
     );
     await oldExit;
+    expect(exits).toEqual([
+      expect.objectContaining({ projectId: 109, shellIndex: 0, generation: oldGeneration }),
+    ]);
+    expect(mgr.liveShell(109, 0)?.generation).not.toBe(oldGeneration);
     await out.until('SECOND-LIFE');
     expect(mgr.isAlive(109, 0)).toBe(true);
     expect(await mgr.getSnapshot(109, 0)).toContain('SECOND-LIFE');
@@ -370,12 +381,13 @@ describe('ScreenMirror', () => {
     expect(() => m.dispose()).not.toThrow();
   });
 
-  it('keeps at most 5000 lines of scrollback', async () => {
+  it('keeps as much scrollback as the live terminal, so a remount loses no history', async () => {
+    expect(TERMINAL_SCROLLBACK_LINES).toBe(10_000);
     const m = new ScreenMirror(20, 5);
-    m.write(Array.from({ length: 6000 }, (_, i) => `L${i}`).join('\r\n'));
+    m.write(Array.from({ length: 11_000 }, (_, i) => `L${i}`).join('\r\n'));
     const replay = await render(20, 5, await m.snapshot());
     const buf = replay.buffer.active;
-    expect(buf.length).toBe(5005);
+    expect(buf.length).toBe(10_005);
     expect(buf.getLine(0)?.translateToString(true)).toBe('L995');
     m.dispose();
   });

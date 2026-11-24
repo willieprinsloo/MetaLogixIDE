@@ -1,7 +1,10 @@
 import type { ReactNode } from 'react';
+import { SHORTCUT_COPY } from '@renderer/shortcut-copy';
+import { useShortcutPlatform } from '@renderer/shortcut-platform';
+import { CHROME_TESTIDS } from '@renderer/chrome-testids';
 import { ICON_SIZE } from './icon-size';
 
-export type ActivityView = 'projects' | 'chat' | 'group' | 'git' | 'tasks';
+export type ActivityView = 'projects' | 'chat' | 'agents' | 'git' | 'tasks' | 'fleet';
 
 interface Props {
   active: ActivityView;
@@ -10,20 +13,35 @@ interface Props {
   sidebarOpen: boolean;
   /** Unread chat count, rendered as a badge on the Chat icon. */
   chatUnread?: number;
+  /** Unread agent-bus messages waiting for the human; pip on the Agents icon. */
+  agentsUnread?: number;
+  /** True when the right-side Agents dock is open — the Agents button reads
+   *  as pressed independently of `active`, because the dock is a sibling
+   *  column, not a left-sheet replacement. */
+  agentsOpen?: boolean;
   /** Dirty-file count from the git panel; shows a subtle pip on the icon. */
   gitDirty?: number;
   /** Discovered task count for the tiny "N" pip on the Tasks icon. */
   taskCount?: number;
+  /** Number of paired devices currently online (self excluded). Shows a pip when > 0. */
+  fleetOnline?: number;
+  /** Utility buttons (theme, tile, settings) pinned to the bottom of the rail. */
+  footer?: ReactNode;
 }
 
-export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, chatUnread, gitDirty, taskCount }: Props) {
+/** The far-left icon rail: sidebar toggle, project tools, and fleet access. */
+export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, chatUnread, agentsUnread, agentsOpen, gitDirty, taskCount, fleetOnline, footer }: Props) {
+  const agentsPressed = agentsOpen ?? active === 'agents';
+  const platform = useShortcutPlatform();
   return (
     <nav
-      className="w-14 shrink-0 h-full flex flex-col items-center pt-1 pb-3 gap-1.5"
+      className="drag w-20 shrink-0 h-full flex flex-col items-center pb-3 gap-2"
       data-testid="activity-bar"
     >
+      {/* Room for the traffic lights; sized so the sidebar toggle (44px) centres on the sidebar's 36px filter field, which starts 48px down. */}
+      <div aria-hidden className={`${platform === 'mac' ? 'drag' : ''} h-9 w-full shrink-0`} data-testid="ab-drag-region" />
       <ABButton
-        label="Toggle sidebar (⌘B)"
+        label={SHORTCUT_COPY.toggleSidebarLabel(platform)}
         onClick={onToggleSidebar}
         active={false}
         data-testid="ab-toggle-sidebar"
@@ -49,14 +67,6 @@ export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, ch
         <ChatIcon />
       </ABButton>
       <ABButton
-        label="Group chat — your agents talking together"
-        active={active === 'group'}
-        onClick={() => onSelect('group')}
-        data-testid="ab-group"
-      >
-        <GroupIcon />
-      </ABButton>
-      <ABButton
         label={gitDirty ? `Git — ${gitDirty} changed` : 'Git'}
         active={active === 'git'}
         onClick={() => onSelect('git')}
@@ -75,11 +85,46 @@ export function ActivityBar({ active, onSelect, onToggleSidebar, sidebarOpen, ch
       >
         <TasksIcon />
       </ABButton>
+      <ABButton
+        label={agentsUnread ? `${SHORTCUT_COPY.agentsDockLabel(platform)} — ${agentsUnread} unread` : SHORTCUT_COPY.agentsDockLabel(platform)}
+        active={agentsPressed}
+        onClick={() => onSelect('agents')}
+        data-testid="ab-agents"
+        badge={agentsPressed ? 0 : agentsUnread}
+      >
+        <AgentsIcon />
+      </ABButton>
+      <ABButton
+        label={fleetOnline ? `Fleet — ${fleetOnline} paired machines online` : 'Fleet'}
+        active={active === 'fleet'}
+        onClick={() => onSelect('fleet')}
+        data-testid="ab-fleet"
+        badge={active === 'fleet' ? 0 : fleetOnline}
+      >
+        <FleetIcon />
+      </ABButton>
+      <div aria-hidden className="flex-1" />
+      {footer && (
+        <div className="flex flex-col items-center gap-2 no-drag" data-testid={CHROME_TESTIDS.titleButtons}>
+          {footer}
+        </div>
+      )}
     </nav>
   );
 }
 
-function ABButton({
+function FleetIcon() {
+  // Three stacked tiles — reads as "many machines" at 16 px.
+  return (
+    <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3"  y="4"  width="8" height="7" rx="1.5" />
+      <rect x="13" y="4"  width="8" height="7" rx="1.5" />
+      <rect x="8"  y="13" width="8" height="7" rx="1.5" />
+    </svg>
+  );
+}
+
+export function ABButton({
   children, label, onClick, active, badge, badgeTone = 'accent', ...rest
 }: {
   children: ReactNode;
@@ -95,8 +140,9 @@ function ABButton({
       onClick={onClick}
       title={label}
       aria-label={label}
+      aria-current={active ? 'page' : undefined}
       {...rest}
-      className={`relative w-9 h-9 flex items-center justify-center rounded-[10px] pressable ${
+      className={`relative w-11 h-11 flex items-center justify-center rounded-[10px] pressable ${
         active
           ? 'bg-[--accent-soft] text-[--accent-soft-text]'
           : 'text-[--text-muted] hover:text-[--text] hover:bg-[--surface-hover]'
@@ -137,20 +183,20 @@ function GitBranchIcon() {
   );
 }
 
-/** Two overlapping speech bubbles: agents talking together. */
-function GroupIcon() {
-  return (
-    <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M15 10a2 2 0 0 1-2 2H6l-3 3V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z" />
-      <path d="M18 8h1a2 2 0 0 1 2 2v11l-3-3h-6a2 2 0 0 1-2-2v-1" />
-    </svg>
-  );
-}
-
 function ChatIcon() {
   return (
     <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  );
+}
+
+function AgentsIcon() {
+  // Two overlapping speech bubbles — reads as "agents talking to each other".
+  return (
+    <svg width={ICON_SIZE.lg} height={ICON_SIZE.lg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H9l-3 3v-3H6a2 2 0 0 1-2-2z" />
+      <path d="M10 13v-1h4a3 3 0 0 0 3-3V8h1a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-1l-3 3v-3h-4" />
     </svg>
   );
 }

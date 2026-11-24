@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { findForegroundClaude, PosixForegroundObserver } from '@main/agent-status/foreground-posix';
+import { findForegroundClaude, findForegroundHarness, PosixForegroundObserver } from '@main/agent-status/foreground-posix';
 
 const ps = '100 1 100 203 zsh /bin/zsh -l\n201 100 203 203 node claude /app/mock-claude.mjs\n202 100 202 203 other unrelated\n203 100 203 203 claude /usr/bin/claude\n900 1 203 203 claude /usr/bin/claude';
 
@@ -31,5 +31,14 @@ describe('POSIX foreground ownership', () => {
     expect(await observer.hasClaude(100)).toBe(false);
     expect(await observer.hasClaude(100)).toBe(true);
     expect(sample).toHaveBeenCalledTimes(2);
+  });
+
+  it('names the foreground harness: native Codex and opencode binaries, by path or argv[0]', () => {
+    const shell = '100 1 100 300 zsh /bin/zsh\n';
+    expect(findForegroundHarness(shell + '300 100 300 300 codex /Users/u/.local/bin/codex resume --last', 100)).toBe('codex');
+    expect(findForegroundHarness(shell + '300 100 300 300 /opt/homebrew/Ce /opt/homebrew/Cellar/opencode/2.2.6/bin/opencode', 100)).toBe('opencode');
+    expect(findForegroundHarness(shell + '300 100 300 300 claude claude --continue', 100)).toBe('claude');
+    expect(findForegroundHarness(shell + '300 100 300 300 vim vim notes.md', 100)).toBeNull();
+    expect(findForegroundHarness('100 1 100 100 zsh /bin/zsh\n300 100 300 100 opencode opencode serve', 100), 'a background job is not detected').toBeNull();
   });
 });

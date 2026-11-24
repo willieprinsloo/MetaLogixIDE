@@ -6,9 +6,7 @@
  */
 import { Terminal } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
-
-/** Scrollback lines kept by each headless terminal. */
-export const MIRROR_SCROLLBACK_LINES = 5000;
+import { TERMINAL_SCROLLBACK_LINES } from '@shared/terminal-scrollback';
 
 /**
  * Headless terminal mirroring one PTY. Writes are queued and parsed off the
@@ -27,7 +25,7 @@ export class ScreenMirror {
     this.term = new Terminal({
       cols,
       rows,
-      scrollback: MIRROR_SCROLLBACK_LINES,
+      scrollback: TERMINAL_SCROLLBACK_LINES,
       allowProposedApi: true,
     });
     this.term.loadAddon(this.serializer);
@@ -40,6 +38,11 @@ export class ScreenMirror {
   write(data: string): void {
     if (this.disposed) return;
     this.term.write(data);
+  }
+
+  /** True while the app shows its alternate screen (full-screen TUIs like opencode or vim). */
+  isAlternateScreen(): boolean {
+    return !this.disposed && this.term.buffer.active.type === 'alternate';
   }
 
   /** Resize the headless terminal to match the live PTY. */

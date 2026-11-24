@@ -1,8 +1,6 @@
-import { test, expect, type Page } from '@playwright/test';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { test, expect } from '@playwright/test';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AGENT_DOT } from '../../src/shared/agent-state';
-import { PALETTE_TESTIDS } from '../../src/renderer/command-palette-contract';
 import {
   launchStatus,
   openProject,
@@ -16,7 +14,6 @@ import {
   tabDot,
   rowDot,
   chipDot,
-  inUseDot,
   expectAgentDot,
   expectInactiveAgentIdle,
   expectAggregate,
@@ -27,18 +24,8 @@ import {
   postRawHook,
   installNotificationSpy,
   notifications,
-  type Api,
 } from './helpers/claude-harness';
 
-async function paletteDot(win: Page, project: string) {
-  await win.keyboard.press('ControlOrMeta+k');
-  const palette = win.getByTestId(PALETTE_TESTIDS.root);
-  await expect(palette).toBeVisible();
-  return palette
-    .getByRole('option')
-    .filter({ has: win.getByText(project, { exact: true }) })
-    .getByTestId(AGENT_DOT.testId);
-}
 
 test('AC1/AC4/AC12/AC13: undecorated app-launched Claude follows its screen through five states, not contradictory hooks', async () => {
   const h = await launchStatus(['demo'], { unavailableHooks: true });
@@ -238,7 +225,7 @@ test('AC1/AC12: authenticated contradictory Claude notification hooks never beco
   }
 });
 
-test('AC11/AC12: disabling both Claude notification toggles leaves Claude and OMP dots live', async () => {
+test('AC11/AC12: disabling both Claude notification toggles leaves Claude dots live', async () => {
   const h = await launchStatus(['demo', 'other']);
   try {
     await installNotificationSpy(h.app);
@@ -258,10 +245,6 @@ test('AC11/AC12: disabling both Claude notification toggles leaves Claude and OM
     await expectAgentDot(tabDot(h.win, 0), 'claude', 'busy');
     await sendLine(h.win, id, 0, '/status-approval');
     await expectAgentDot(tabDot(h.win, 0), 'claude', 'blocked');
-    const omp = await launchCli(h.win, id, 'OMP', [h.omp]);
-    await waitForShell(h.win, id, omp, 'mock-omp ready');
-    await sendLine(h.win, id, omp, '/start');
-    await expectAgentDot(tabDot(h.win, omp), 'omp', 'busy');
     await expectAggregate(rowDot(h.win, 'demo'), 'blocked');
     await openProject(h.win, 'other'); // Linux Xvfb has no window manager to minimize a window
     expect(
@@ -310,256 +293,6 @@ test('AC11/AC12: disabling both Claude notification toggles leaves Claude and OM
     await expect
       .poll(() => notifications(h.app))
       .toContainEqual(expect.objectContaining({ body: 'unmuted' }));
-  } finally {
-    await h.close();
-  }
-});
-
-test('AC5/AC6/AC13: app-loaded OMP reports lifecycle despite inherited OMPCODE=1 from its parent app', async () => {
-  const h = await launchStatus(['demo'], { defaultAgent: 'omp', inheritedOmp: true });
-  try {
-    expect(
-      await h.app.evaluate(() => process.env.OMPCODE),
-      'parent app inherited an OMP environment',
-    ).toBe('1');
-    await installNotificationSpy(h.app);
-    await openProject(h.win, 'demo');
-    const id = await projectId(h.win, 'demo');
-    await waitForShell(h.win, id, 0, 'mock-omp ready');
-    await sendLine(h.win, id, 0, '/env');
-    await waitForShell(h.win, id, 0, 'mock-omp integration=loaded');
-    await expectAgentDot(tabDot(h.win, 0), 'omp', 'idle');
-    await sendLine(h.win, id, 0, '/start');
-    await waitForShell(h.win, id, 0, 'mock-omp turn started');
-    await expectAgentDot(tabDot(h.win, 0), 'omp', 'busy', 500);
-    await sendLine(h.win, id, 0, '/approval');
-    await waitForShell(h.win, id, 0, 'mock-omp approval requested');
-    await expectAgentDot(tabDot(h.win, 0), 'omp', 'blocked', 500);
-    await sendLine(h.win, id, 0, '/resolve');
-    await waitForShell(h.win, id, 0, 'mock-omp approval resolved');
-    await expectAgentDot(tabDot(h.win, 0), 'omp', 'busy', 500);
-    await sendLine(h.win, id, 0, '/ask');
-    await waitForShell(h.win, id, 0, 'mock-omp question open');
-    await expectAgentDot(tabDot(h.win, 0), 'omp', 'blocked', 500);
-    await sendLine(h.win, id, 0, '/answer');
-    await waitForShell(h.win, id, 0, 'mock-omp question answered');
-    await expectAgentDot(tabDot(h.win, 0), 'omp', 'busy', 500);
-    await sendLine(h.win, id, 0, '/end');
-    await waitForShell(h.win, id, 0, 'mock-omp turn settled');
-    await expectAgentDot(tabDot(h.win, 0), 'omp', 'idle', 500);
-    await sendLine(h.win, id, 0, '/start');
-    await expectAgentDot(tabDot(h.win, 0), 'omp', 'busy');
-    await sendLine(h.win, id, 0, '/switch');
-    await expectAgentDot(tabDot(h.win, 0), 'omp', 'idle');
-    await sendLine(h.win, id, 0, '/start');
-    await expectAgentDot(tabDot(h.win, 0), 'omp', 'busy');
-    expect(
-      await notifications(h.app),
-      'OMP lifecycle generates no native notification',
-    ).toHaveLength(0);
-    // A decorated Claude shell on the same app is the positive control for
-    // the spy and notifier; its alert must not be attributed to OMP.
-    const claude = await launchCli(h.win, id, 'Claude', [h.claude]);
-    await waitForShell(h.win, id, claude, 'mock-claude ready');
-    const creds = await hookCredentials(h.win, h.home, id, claude);
-    await h.app.evaluate(({ BrowserWindow }) => {
-      BrowserWindow.getAllWindows()[0]!.minimize();
-    });
-    expect(
-      (
-        await postRawHook(creds, {
-          hook_event_name: 'Notification',
-          notification_type: 'permission_prompt',
-          message: 'Claude alone',
-        })
-      ).status,
-    ).toBe(204);
-    await expect
-      .poll(() => notifications(h.app))
-      .toContainEqual(
-        expect.objectContaining({ title: `demo — shell ${claude}`, body: 'Claude alone' }),
-      );
-    expect(await notifications(h.app)).toHaveLength(1);
-  } finally {
-    await h.close();
-  }
-});
-
-test('AC5/AC7: an alive OMP shell loses its working dot when reports stop and regains it on heartbeat', async () => {
-  const h = await launchStatus(['demo'], { defaultAgent: 'omp' });
-  try {
-    await openProject(h.win, 'demo');
-    const id = await projectId(h.win, 'demo');
-    await waitForShell(h.win, id, 0, 'mock-omp ready');
-    await sendLine(h.win, id, 0, '/start');
-    await expectAgentDot(tabDot(h.win, 0), 'omp', 'busy'); // positive: accepted report
-    await expectAggregate(rowDot(h.win, 'demo'), 'busy');
-
-    await sendLine(h.win, id, 0, '/pause-reports');
-    await waitForShell(h.win, id, 0, 'mock-omp reports paused');
-    await expectAgentDot(tabDot(h.win, 0), 'omp', 'idle', 4000);
-    await expectAggregate(rowDot(h.win, 'demo'), 'idle');
-    await expect
-      .poll(async () =>
-        (await statusSnapshot(h.win)).find(
-          (entry) => entry.projectId === id && entry.shellIndex === 0,
-        ),
-      )
-      .toEqual(expect.objectContaining({ agent: 'omp', state: 'idle' }));
-
-    await waitForShell(h.win, id, 0, 'mock-omp reports resumed');
-    await expectAgentDot(tabDot(h.win, 0), 'omp', 'busy'); // positive: same live session recovers
-    await expectAggregate(rowDot(h.win, 'demo'), 'busy');
-  } finally {
-    await h.close();
-  }
-});
-
-test('AC6/AC7: unavailable OMP integration stays runnable and idle; late report after exit cannot revive it', async () => {
-  const h = await launchStatus(['demo']);
-  try {
-    await openProject(h.win, 'demo');
-    const id = await projectId(h.win, 'demo');
-    const absent = await launchCli(h.win, id, 'OMP without integration', [
-      h.omp,
-      '--trusted-extension',
-      'missing',
-    ]);
-    await waitForShell(h.win, id, absent, 'mock-omp ready');
-    await sendLine(h.win, id, absent, '/env');
-    await waitForShell(h.win, id, absent, 'mock-omp integration=absent');
-    await sendLine(h.win, id, absent, '/start');
-    await waitForShell(h.win, id, absent, 'mock-omp turn started');
-    await expectShellState(h.win, id, absent, 'idle');
-    await expectAgentDot(tabDot(h.win, 0), 'claude', 'idle'); // active transport and comparison shell
-
-    const live = await launchCli(h.win, id, 'OMP', [h.omp]);
-    await waitForShell(h.win, id, live, 'mock-omp ready');
-    await sendLine(h.win, id, live, '/start');
-    await expectAgentDot(tabDot(h.win, live), 'omp', 'busy'); // reporter positive control
-    const marker = join(h.home, 'send-after-exit');
-    await sendLine(h.win, id, live, `/late-report ${marker}`);
-    await waitForShell(h.win, id, live, 'mock-omp late report armed');
-    await kill(h.win, id, live);
-    await expect
-      .poll(async () =>
-        (await statusSnapshot(h.win)).some((s) => s.projectId === id && s.shellIndex === live),
-      )
-      .toBe(false);
-    writeFileSync(marker, 'go');
-    await expect.poll(() => existsSync(`${marker}.done`), { timeout: 5000 }).toBe(true);
-    await expect
-      .poll(() => readFileSync(`${marker}.done`, 'utf8'), {
-        timeout: 5000,
-        message: 'receiver rejects post-exit report',
-      })
-      .toBe('no');
-    await expect
-      .poll(async () =>
-        (await statusSnapshot(h.win)).some((s) => s.projectId === id && s.shellIndex === live),
-      )
-      .toBe(false);
-    await expectAgentDot(tabDot(h.win, 0), 'claude', 'idle'); // same project remains operational
-    await sendLine(h.win, id, absent, '/env');
-    await waitForShell(h.win, id, absent, 'mock-omp integration=absent');
-  } finally {
-    await h.close();
-  }
-});
-
-test('AC8/AC9/AC10/AC13: mixed Claude and OMP preserve per-shell names, generic rollups and popout/reload snapshot', async () => {
-  const h = await launchStatus(['alpha', 'beta']);
-  try {
-    await openProject(h.win, 'alpha');
-    const alpha = await projectId(h.win, 'alpha');
-    const omp = await launchCli(h.win, alpha, 'OMP', [h.omp]);
-    await waitForShell(h.win, alpha, omp, 'mock-omp ready');
-    await sendLine(h.win, alpha, 0, '/status-work');
-    await expectAgentDot(tabDot(h.win, 0), 'claude', 'busy');
-    await sendLine(h.win, alpha, omp, '/start');
-    await expectAgentDot(tabDot(h.win, omp), 'omp', 'busy');
-    await sendLine(h.win, alpha, omp, '/approval');
-    await expectAgentDot(tabDot(h.win, omp), 'omp', 'blocked');
-    await expectAgentDot(tabDot(h.win, 0), 'claude', 'busy');
-    await expectAggregate(chipDot(h.win), 'blocked');
-    await expectAggregate(rowDot(h.win, 'alpha'), 'blocked');
-    await expectAggregate(inUseDot(h.win), 'blocked');
-    const palette = await paletteDot(h.win, 'alpha');
-    await expectAggregate(palette, 'blocked');
-    await h.win.keyboard.press('Escape');
-
-    await h.win.locator(`[data-testid="shell-tab-button"][data-shell-index="${omp}"]`).click();
-    const [popout] = await Promise.all([
-      h.app.waitForEvent('window'),
-      h.win.getByTestId('popout-shell').click(),
-    ]);
-    await popout.waitForLoadState('domcontentloaded');
-    const popDot = popout.getByTestId(AGENT_DOT.testId).first();
-    await expectAgentDot(popDot, 'omp', 'blocked');
-    await popout.reload();
-    await expectAgentDot(popout.getByTestId(AGENT_DOT.testId).first(), 'omp', 'blocked');
-    await h.win.reload();
-    await expectAggregate(rowDot(h.win, 'alpha'), 'blocked');
-    await expectAggregate(inUseDot(h.win), 'blocked');
-    await sendLine(h.win, alpha, omp, '/resolve');
-    await expectAgentDot(popout.getByTestId(AGENT_DOT.testId).first(), 'omp', 'busy', 500);
-    await expectAggregate(rowDot(h.win, 'alpha'), 'busy', 500);
-
-    await openProject(h.win, 'beta');
-    await expectAggregate(rowDot(h.win, 'beta'), 'idle'); // positive control: beta has a live idle shell
-    await expectAggregate(inUseDot(h.win), 'busy');
-    // The global busy rollup above can come from OMP alone. Prove Claude's
-    // *current* live screen still says working after remount/project change,
-    // immediately before OMP ends, to isolate this shell transition.
-    await expectShellState(h.win, alpha, 0, 'busy');
-    // Request narrow PTY geometry through IPC; later layout changes may resize it again.
-    const resized: unknown = await h.win.evaluate(
-      (projectId: number) =>
-        (window as unknown as { api: Api }).api.invoke('shells:resize', {
-          projectId,
-          shellIndex: 0,
-          cols: 9,
-          rows: 11,
-        }),
-      alpha,
-    );
-    expect(resized).toEqual({ ok: true });
-    // Force a real idle → working redraw at the narrow size so a cached
-    // pre-resize busy value cannot make the assertion below vacuous.
-    await sendLine(h.win, alpha, 0, '/status-ready');
-    await expectShellState(h.win, alpha, 0, 'idle');
-    await expectAgentDot(popout.getByTestId(AGENT_DOT.testId).first(), 'omp', 'busy');
-    await sendLine(h.win, alpha, 0, '/status-work');
-    await expect
-      .poll(
-        async () => {
-          const output = await h.win.evaluate(async (projectId: number) => {
-            const { output } = await (
-              window as unknown as {
-                api: {
-                  invoke: (
-                    channel: string,
-                    request: { projectId: number; shellIndex: number },
-                  ) => Promise<{ output: string }>;
-                };
-              }
-            ).api.invoke('shells:snapshot', { projectId, shellIndex: 0 });
-            return output;
-          }, alpha);
-          return output.slice(-80);
-        },
-        { message: 'Claude PTY redraws its working screen after narrow resize' },
-      )
-      .toMatch(/✻ Thinking…\s+Esc to interrupt/);
-    await expectShellState(h.win, alpha, 0, 'busy');
-    await sendLine(h.win, alpha, omp, '/end');
-    await expectAgentDot(popout.getByTestId(AGENT_DOT.testId).first(), 'omp', 'idle', 500);
-    await expectShellState(h.win, alpha, 0, 'busy');
-    await expectAggregate(rowDot(h.win, 'alpha'), 'busy'); // Claude still working
-    await expectAggregate(inUseDot(h.win), 'busy');
-    await sendLine(h.win, alpha, 0, '/status-ready');
-    await expectAggregate(rowDot(h.win, 'alpha'), 'idle');
-    await expectAggregate(inUseDot(h.win), 'idle');
   } finally {
     await h.close();
   }

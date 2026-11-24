@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '@renderer/api';
+import { harnessOf, HARNESS_LABEL, type AgentHarness } from '@shared/agent-harness';
+import { useAgentStateMap } from './useAgentStates';
+import { keyFor } from '@renderer/agent-state';
 
 interface AliveShell {
   projectId: number;
@@ -7,8 +10,10 @@ interface AliveShell {
   pinned: boolean;
   startedAt: string | null;
   lastActiveAt: string | null;
-  /** argv[0], stripped to basename — used to label the tab. */
+  /** argv[0], stripped to basename — used to label the tab; a harness detected running in the shell takes over. */
   launchName: string;
+  /** The harness the shell was launched as, if any. */
+  launchHarness?: AgentHarness | null;
 }
 
 /**
@@ -37,6 +42,7 @@ export function useProjectShells(projectId: number | null): AliveShell[] {
           startedAt: r.startedAt ?? null,
           lastActiveAt: r.lastActiveAt ?? null,
           launchName,
+          launchHarness: harnessOf(r.launchArgv ?? []),
         };
       }));
     } catch { /* main not up yet */ }
@@ -48,8 +54,14 @@ export function useProjectShells(projectId: number | null): AliveShell[] {
     return () => { off(); };
   }, [refresh]);
 
+  const agents = useAgentStateMap();
   return useMemo(() => {
     if (projectId == null) return [];
-    return all.filter((s) => s.projectId === projectId).sort((a, b) => a.shellIndex - b.shellIndex);
-  }, [all, projectId]);
+    return all.filter((s) => s.projectId === projectId).sort((a, b) => a.shellIndex - b.shellIndex)
+      .map((s) => {
+        // A terminal where the user started Claude, Codex or opencode is labelled as that agent while it runs.
+        const detected = agents.get(keyFor(s.projectId, s.shellIndex))?.agent ?? null;
+        return detected && detected !== s.launchHarness ? { ...s, launchName: HARNESS_LABEL[detected] } : s;
+      });
+  }, [all, projectId, agents]);
 }

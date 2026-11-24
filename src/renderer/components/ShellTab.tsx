@@ -7,6 +7,7 @@ import { SearchAddon } from '@xterm/addon-search';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { api } from '@renderer/api';
+import { openSafeHyperlink } from '@renderer/terminal-hyperlinks';
 import { FROST_ATTR } from '@renderer/frosted-chrome-contract';
 import { openRemoteShell, type RemoteShellHandle } from '@renderer/p2p/remoteShellBridge';
 import { useShellStream } from '@renderer/hooks/useShellStream';
@@ -14,7 +15,7 @@ import { useTerminalDrop } from '@renderer/hooks/useTerminalDrop';
 import { useTerminalPaste } from '@renderer/hooks/useTerminalPaste';
 import { DROP_COPY } from '@shared/terminal-drop-contract';
 import { terminalFocus } from '@renderer/hooks/useWindowTerminalFocus';
-import { detectPaths } from '@shared/detect-paths';
+import { detectPaths, detectBareFilenames } from '@shared/detect-paths';
 import { sanitizeTerminalCopy } from '@shared/sanitize-terminal-copy';
 import { HoverPreview, type HoverPreviewOpen, type HoverPreviewState } from './HoverPreview';
 import { resolvePathClick } from '@renderer/peek-open';
@@ -37,6 +38,7 @@ import type { TerminalWeights } from '@shared/terminal-font-weight';
 import { stepTerminalFontSize } from '@shared/terminal-font-size';
 import { buildFontFamilyStack } from '@renderer/fonts/font-family';
 import { TERMINAL_FONT_FALLBACK, type FontFamilyPreference } from '@shared/font-settings';
+import { TERMINAL_SCROLLBACK_LINES } from '@shared/terminal-scrollback';
 import {
   createTerminalFontUpdater,
   createTerminalGeometrySynchronizer,
@@ -106,6 +108,9 @@ export function ShellTab({
   const platformRef = useRef(platform);
   platformRef.current = platform;
   const containerRef = useRef<HTMLDivElement>(null);
+  // Whether a full-screen app (opencode, vim, …) shows the alternate screen; entering or
+  // leaving it refits, so the terminal reclaims the scrollbar strip only while nothing scrolls.
+  const [altScreen, setAltScreen] = useState(false);
   const termHostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
@@ -113,13 +118,6 @@ export function ShellTab({
   const geometrySyncRef = useRef<TerminalGeometrySynchronizer | null>(null);
   const fontUpdaterRef = useRef<TerminalFontUpdater | null>(null);
   const appliedFontFamilyRef = useRef<FontFamilyPreference>(null);
-  // Ordering guard for the "snapshot vs live" race on remount. Live PTY
-  // data can arrive between term.open() and the snapshot HTTP round-trip
-  // resolving; if we wrote it straight to xterm and then also wrote the
-  // snapshot, we'd get a splice like [live delta][full scrollback again].
-  // Instead we buffer live in `pendingLive` until the snapshot lands,
-  // then flush the buffer. `snapshotReady` flips to true after either
-  // path completes so live writes go direct from then on.
   const snapshotReady = useRef(false);
   const pendingLive = useRef('');
   const [searchOpen, setSearchOpen] = useState(false);
@@ -194,8 +192,27 @@ export function ShellTab({
 
   useEffect(() => {
     if (!termHostRef.current) return;
+    termHostRef.current.style.visibility = 'hidden';
     const term = new Terminal({
-      scrollback: 10000,
+      // OSC-8 hyperlinks (ESC ] 8 ; ; URL BEL text ESC ] 8 ; ; BEL) render
+      // as styled text out of the box, but clicks only dispatch when a
+      // linkHandler is set. Routes through the same scheme-guarded helper
+      // + app:open-external path as plain-text URLs.
+      linkHandler: {
+        activate: (_ev, text) => {
+          void openSafeHyperlink(text, {
+            invokeOpenExternal: (url) => api.invoke('app:open-external', { url }),
+            invokeResolveLocal: (url) => api.invoke('app:resolve-local-file', { url }),
+            openInIde: (projectId, relPath) => {
+              // Broadcast to App.tsx, which owns the route switch and
+              // openInFiles state. CustomEvent avoids threading a callback
+              // through every shell host.
+              window.dispatchEvent(new CustomEvent('metaide:open-in-files', { detail: { projectId, relPath } }));
+            },
+          });
+        },
+      },
+      scrollback: TERMINAL_SCROLLBACK_LINES,
       // Explicit SF Mono stack — first match wins. Falls back through
       // common developer monospace fonts. `ui-monospace` alone can pick
       // Menlo bitmap fallback on some setups and looks pixelated.
@@ -207,6 +224,9 @@ export function ShellTab({
       cursorBlink: true,
       cursorStyle: 'bar',
       theme: buildTheme(),
+      // Right-click selects the word under the cursor (and then the custom
+      // context menu offers Copy with it already selected).
+      rightClickSelectsWord: true,
       allowProposedApi: true,
       // screenReaderMode is intentionally off — the hidden mirror element
       // it injects into the DOM can drift out of sync during a fast
@@ -221,7 +241,13 @@ export function ShellTab({
     term.loadAddon(unicode11);
     term.unicode.activeVersion = '11';
     term.loadAddon(new WebLinksAddon((_ev: MouseEvent, url: string) => {
-      void api.invoke('app:open-external', { url }).catch((e) => console.error(e));
+      void openSafeHyperlink(url, {
+        invokeOpenExternal: (u) => api.invoke('app:open-external', { url: u }),
+        invokeResolveLocal: (u) => api.invoke('app:resolve-local-file', { url: u }),
+        openInIde: (projectId, relPath) => {
+          window.dispatchEvent(new CustomEvent('metaide:open-in-files', { detail: { projectId, relPath } }));
+        },
+      });
     }));
     const search = new SearchAddon();
     term.loadAddon(search);
@@ -240,15 +266,40 @@ export function ShellTab({
 
     // File-path link provider: matches things like src/main/index.ts:42
     // in terminal output, shows a hover preview, click opens in Files.
+    //
+    // Two detectors feed this provider:
+    //   - detectPaths()         strict, path-like matches (slashes required).
+    //                           Lit synchronously — the slash is a strong
+    //                           enough signal that false positives are rare.
+    //   - detectBareFilenames() loose, name.ext with no path prefix. Used
+    //                           to catch what Codex / other TUIs print
+    //                           ("Viewed image review.jpg"). English prose
+    //                           looks identical to a reference, so every
+    //                           bare hit is verified against files:peek
+    //                           before it lights up; unresolvable words
+    //                           never appear as links.
+    //
+    // The verification turns `provideLinks` into an async operation. xterm
+    // accepts a delayed callback — it's documented to allow one-shot
+    // callbacks whenever the provider is ready — so the strict hits are
+    // included in the same callback as the verified bare hits, after the
+    // short peek round-trip. Lines with only strict hits incur no latency
+    // (Promise.all([]) resolves on the next microtask).
     const pathLinkProvider: ILinkProvider = {
       provideLinks(bufferLineNumber, callback) {
         const buf = term.buffer.active;
         const rawLine = buf.getLine(bufferLineNumber - 1);
         if (!rawLine) { callback(undefined); return; }
         const text = rawLine.translateToString(true);
-        const hits = detectPaths(text);
-        if (hits.length === 0) { callback(undefined); return; }
-        callback(hits.map((h) => ({
+        const strictHits = detectPaths(text);
+        // Drop any bare hit whose range overlaps a strict hit — the
+        // strict path owns that match and already has better context.
+        const bareHits = detectBareFilenames(text).filter((b) =>
+          !strictHits.some((s) => b.startIndex >= s.startIndex && b.endIndex <= s.endIndex),
+        );
+        if (strictHits.length === 0 && bareHits.length === 0) { callback(undefined); return; }
+
+        const toLink = (h: typeof strictHits[number]) => ({
           range: {
             start: { x: h.startIndex + 1, y: bufferLineNumber } as IBufferCellPosition,
             end:   { x: h.endIndex,       y: bufferLineNumber } as IBufferCellPosition,
@@ -260,11 +311,33 @@ export function ShellTab({
             void openPeekedPathRef.current(h.path, h.line);
           },
           hover: (ev: MouseEvent) => {
-            hoverHold.linkEnter();
-            setHover({ x: ev.clientX, y: ev.clientY, projectId, path: h.path, line: h.line });
+            // Dwell: the card opens only after the pointer rests on the
+            // path, so sweeping the mouse across output never pops a card
+            // over text the user is about to select.
+            hoverHold.linkEnter(() => setHover({ x: ev.clientX, y: ev.clientY, projectId, path: h.path, line: h.line }));
           },
           leave: hoverHold.linkLeave,
-        })));
+        });
+
+        void (async () => {
+          // Verify bare hits in parallel. `files:peek` returns
+          // `found: false` for anything not in the project, so prose like
+          // "the readme.md file" doesn't light up unless a real
+          // `readme.md` exists at the project root. `maxLines: 1` keeps
+          // the IPC payload tiny — we only need the `found` flag.
+          const verified = await Promise.all(bareHits.map(async (h) => {
+            try {
+              const res = await api.invoke('files:peek', { projectId, relPath: h.path, maxLines: 1 });
+              return res.found ? h : null;
+            } catch { return null; }
+          }));
+          const allHits = [
+            ...strictHits,
+            ...verified.filter((h): h is NonNullable<typeof h> => h !== null),
+          ];
+          if (allHits.length === 0) { callback(undefined); return; }
+          callback(allHits.map(toLink));
+        })();
       },
     };
     // Remote shells have no local peek/preview (paths belong to the host's filesystem).
@@ -294,7 +367,7 @@ export function ShellTab({
     const focusReg = terminalFocus.register({
       key: { projectId, shellIndex },
       primary: primaryRef.current,
-      isOpen: () => opened,
+      isOpen: () => opened && snapshotReady.current,
       focus: () => term.focus(),
     });
 
@@ -309,6 +382,14 @@ export function ShellTab({
       resize: (cols, rows) => {
         if (remote) remote.resize(cols, rows);
         else void api.invoke('shells:resize', { projectId, shellIndex, cols, rows });
+      },
+      fullWidthCols: () => {
+        if (term.buffer.active.type !== 'alternate') return null;
+        const host = termHostRef.current;
+        const screen = host?.querySelector<HTMLElement>('.xterm-screen');
+        // The screen is exactly cols × cell width, so it yields the cell width.
+        const cellWidth = screen && term.cols > 0 ? screen.getBoundingClientRect().width / term.cols : 0;
+        return host && cellWidth > 0 ? Math.floor(host.clientWidth / cellWidth) : null;
       },
     });
     geometrySyncRef.current = synchronizeGeometry;
@@ -330,23 +411,67 @@ export function ShellTab({
     let cachedSnapshot: string | null = null;
     // Remote: the hub replays scrollback as the first stream events, so there is no snapshot to fetch.
     const snapshotPromise = (remote ? Promise.resolve({ output: '' }) : api.invoke('shells:snapshot', { projectId, shellIndex }))
-      .then(({ output }) => { cachedSnapshot = output; })
+      .then(({ output }) => {
+        cachedSnapshot = output;
+        // Existing output means the process already started — an idle Claude
+        // prompt emits nothing, so don't wait for live data to drop the overlay.
+        if (output && !disposed) {
+          if (startingTimerRef.current) { clearTimeout(startingTimerRef.current); startingTimerRef.current = null; }
+          setShowStarting(false);
+        }
+      })
       .catch(() => { cachedSnapshot = ''; });
 
     function writeSnapshotAndFlush() {
       if (termRef.current !== term || disposed) return;
       const output = cachedSnapshot ?? '';
-      if (output) {
-        term.reset();
-        // Main serializes complete terminal state, so write it verbatim — it
-        // also restores the live SGR state the next PTY bytes continue from.
-        term.write(output);
-      }
-      if (pendingLive.current) term.write(pendingLive.current);
-      snapshotReady.current = true;
+      if (output) term.reset();
+
+      const settleReplay = () => {
+        if (termRef.current !== term || disposed) return;
+        term.scrollToBottom();
+        // xterm synchronizes the DOM scroll area in a later animation frame.
+        // Keep the host hidden until that scroll area and scrollTop agree with
+        // the parsed buffer, so no intermediate viewport can be painted.
+        const revealWhenSettled = () => {
+          if (termRef.current !== term || disposed) return;
+          const host = termHostRef.current;
+          const viewport = host?.querySelector<HTMLElement>('.xterm-viewport');
+          const maximum = viewport ? viewport.scrollHeight - viewport.clientHeight : 0;
+          if (!host || !viewport || viewport.clientHeight === 0 ||
+            (term.buffer.active.baseY > 0 && (maximum <= 0 || viewport.scrollTop < maximum - 1))) {
+            requestAnimationFrame(revealWhenSettled);
+            return;
+          }
+          snapshotReady.current = true;
+          host.style.visibility = '';
+          focusReg.opened();
+          requestAnimationFrame(() => synchronizeGeometry());
+        };
+        requestAnimationFrame(revealWhenSettled);
+      };
+      const finishReplay = () => {
+        if (termRef.current !== term || disposed) return;
+        const live = pendingLive.current;
+        pendingLive.current = '';
+        if (live) {
+          snapshotReady.current = true;
+          term.write(live, settleReplay);
+        } else {
+          settleReplay();
+        }
+      };
+
+      const live = pendingLive.current;
       pendingLive.current = '';
-      // One last fit + refresh once xterm has processed the write queue.
-      requestAnimationFrame(() => synchronizeGeometry());
+      if (output && live) {
+        term.write(output);
+        term.write(live, finishReplay);
+      } else if (output || live) {
+        term.write(output || live, finishReplay);
+      } else {
+        finishReplay();
+      }
     }
 
     /**
@@ -390,7 +515,6 @@ export function ShellTab({
       } catch (e) { console.warn('[metaide] webgl renderer unavailable, falling back to DOM', e); }
       opened = true;
       term.textarea?.addEventListener('focus', () => focusReg.used());
-      focusReg.opened();
       // First fit AFTER open so xterm has an element to measure.
       synchronizeGeometry();
       // Snapshot may already be back — write it into the correctly-sized
@@ -412,6 +536,7 @@ export function ShellTab({
 
     const ro = new ResizeObserver(passiveSync);
     if (containerRef.current) ro.observe(containerRef.current);
+    const bufferChange = term.buffer.onBufferChange((buffer) => setAltScreen(buffer.type === 'alternate'));
 
     // Intercept every copy from the terminal (Cmd+C, right-click Copy,
     // browser Edit menu) and replace the clipboard payload with a
@@ -448,6 +573,7 @@ export function ShellTab({
       window.removeEventListener('focus', passiveSync);
       offHoldRelease();
       ro.disconnect();
+      bufferChange.dispose();
       media.removeEventListener('change', onScheme);
       themeObserver.disconnect();
       copyHost?.removeEventListener('copy', onCopy);
@@ -473,6 +599,11 @@ export function ShellTab({
     if (!q || !searchRef.current) return;
     searchRef.current.findPrevious(q, { caseSensitive: false, wholeWord: false, regex: false });
   }, []);
+
+  // Entering or leaving the alternate screen changes the usable width (scrollbar strip); refit.
+  useEffect(() => {
+    geometrySyncRef.current?.();
+  }, [altScreen]);
 
   // Push font-size changes into the running instance and immediately remeasure its geometry.
   useEffect(() => {
@@ -539,14 +670,14 @@ export function ShellTab({
     (c) => streamHandlersRef.current.exit(c),
   );
 
-  // After an exit we always restart with the "first" launch parameters —
-  // whatever broke the previous session (bad --continue, corrupt state, auth
-  // drift) is most reliably avoided by a clean start.
+  // After an exit, relaunch the normal way so the agent resumes its session.
+  // A missing session falls back to a fresh start in main; a corrupted one has
+  // its own overlay (repair / start fresh).
   const relaunch = useCallback(async () => {
     if (relaunching) return;
     setRelaunching(true);
     try {
-      await api.invoke('shells:launch', { projectId, forceFirst: true });
+      await api.invoke('shells:launch', { projectId });
       setExitInfo(null);
     } catch (e) {
       toast('Re-launch failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
@@ -595,9 +726,8 @@ export function ShellTab({
   }, [projectId, shellIndex, relaunching]);
 
   // Kill the currently running (but stuck) shell then re-launch it, optionally with a specific profile.
-  // The default-path relaunch forces the "first" variant: if the shell is stuck
-  // it's almost always because --continue picked up a bad session, so starting
-  // clean is the recovery that works.
+  // The default-path relaunch resumes the session like any other launch; the
+  // corrupted-session overlay offers repair or a fresh start when that is the cause.
   const killAndRelaunch = useCallback(async (profileName?: string) => {
     if (relaunching) return;
     setRelaunching(true);
@@ -608,7 +738,7 @@ export function ShellTab({
       if (profileName) {
         await api.invoke('shells:launch-cli', { projectId, profileName, argv: [], env: {}, save: false });
       } else {
-        await api.invoke('shells:launch', { projectId, forceFirst: true });
+        await api.invoke('shells:launch', { projectId });
       }
     } catch (e) {
       toast('Re-launch failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
@@ -625,6 +755,15 @@ export function ShellTab({
       data-testid="shell-tab"
       tabIndex={-1}
       {...dropHandlers}
+      // Any selection attempt clears a stuck peek card — the card is
+      // pointer-events-auto beside the cursor, so left alone it would
+      // swallow the mousedown and block the drag. Clicks ON the card are
+      // excluded: they open the file, and must not dismiss it first.
+      onMouseDown={(e) => {
+        if ((e.target as HTMLElement).closest('[data-testid="hover-preview"]')) return;
+        hoverHold.dispose();
+        setHover(null);
+      }}
       onContextMenu={(e) => {
         // Only intercept when the click is inside the terminal viewport.
         // Anything else (search bar, drop overlay) uses default browser menu.
@@ -632,11 +771,12 @@ export function ShellTab({
         e.preventDefault();
         setMenu({ x: e.clientX, y: e.clientY });
       }}
-      className="relative w-full h-full min-h-0 px-3 pt-2 pb-3 bg-transparent focus:outline-none"
+      data-alt-screen={altScreen || undefined}
+      className="relative w-full h-full min-h-0 px-3 pt-2 pb-1 bg-transparent focus:outline-none"
     >
       {/* `isolate` keeps xterm's internal z-indexes (e.g. its link layer) inside the
           host, so the exit overlay, drop hint and search bar always paint above it. */}
-      <div ref={termHostRef} className="w-full h-full isolate" />
+      <div ref={termHostRef} className="w-full h-full isolate" style={{ visibility: 'hidden' }} />
       {!remoteDeviceId && sessionCorrupted && (
         <div className="absolute inset-x-0 top-3 flex items-center justify-center pointer-events-none">
           <div className="pointer-events-auto flex items-center gap-3 bg-[--danger]/15 border border-[--danger]/40 rounded-md shadow-xl px-3 py-2 text-xs text-[--text] max-w-[720px]">
@@ -854,7 +994,7 @@ export function ShellTab({
               onClick: () => { termRef.current?.clearSelection(); },
             },
           ];
-          return <ContextMenu key="context-menu" x={menu.x} y={menu.y} items={items} onClose={() => setMenu(null)} />;
+          return <ContextMenu key="context-menu" x={menu.x} y={menu.y} items={items} onClose={() => { setMenu(null); termRef.current?.focus(); }} />;
         })()}
       </AnimatePresence>
     </div>

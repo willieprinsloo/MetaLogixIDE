@@ -16,15 +16,17 @@ import { ClaudeHookReceiver } from './claude-hooks/receiver';
 import { ClaudeHookRuntime } from './claude-hooks/runtime';
 import { createLaunchDecorator } from './claude-hooks/launch-decorator';
 import { ViewedShells } from './notifications/viewed-shells';
-import { OmpReceiver } from './agent-status/omp-receiver';
-import { createOmpLaunchDecorator } from './agent-status/omp-launch';
 import { ClaudeHookHistory } from './notifications/claude-hook-history';
 import type { AgentStatusTracker } from './agent-status/state-tracker';
 import type { GroupChatService } from './group-chat/service';
 import { createDropStaging, defaultDropDir, type DropStaging } from './drops/staging';
 import { createClipboardImage, type ClipboardImage } from './drops/clipboard-image';
 import { listMiseTasks, type MiseLister } from './domain/mise-cli';
+import type { KeepAwakeController } from './keep-awake/port';
+import type { UsageService } from './usage/service';
 import type { P2PServices } from './p2p/types';
+import type { ChatService } from './chat/service';
+import type { CredentialStore } from './credential-store';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -43,8 +45,6 @@ export interface Services {
   hookReceiver: ClaudeHookReceiver;
   hookRuntime: ClaudeHookRuntime;
   hookHistory: ClaudeHookHistory;
-  /** Loopback receiver for app-launched OMP reports. */
-  ompReceiver: OmpReceiver;
   /** Installed before the renderer can spawn a shell. */
   agentStatus: AgentStatusTracker | null;
   /** Group chats between agents; attached by `installGroupChat` at startup. */
@@ -55,10 +55,27 @@ export interface Services {
   clipboardImage: ClipboardImage;
   /** Lists a project's mise tasks; injected so tests run without a mise binary. */
   listMise: MiseLister;
+  /** macOS keep-awake timer; installed after startup, null off darwin. */
+  keepAwake: KeepAwakeController | null;
   homeDir: string;
   migrationsDir: string;
+  /** Subscription usage meters; created on first `usage:get`. */
+  usage?: UsageService;
   /** Attached by `startP2P`; absent until the P2P lifecycle has started. */
   p2p?: P2PServices;
+  /** Agent chat bus; attached once broadcast is available (post-window setup). */
+  chat?: ChatService;
+  /** Live roster snapshot for `chat:roster` IPC — set alongside `chat`. */
+  chatRoster?: () => import('./chat/roster').RosterRow[];
+  /** Canonical self device name (the one `buildRoster` tags local rows with). */
+  selfDevice?: string;
+  /** Tails `.metaide/chat-outbox.jsonl` in every project and routes new lines through `chat.append`. */
+  chatOutbox?: import('./chat/outbox-watcher').OutboxWatcher;
+  /** Tails `.metaide/intent-outbox.jsonl` in every project; drives the
+   *  "what each agent is doing" badge in the renderer. */
+  intent?: import('./chat/intent-watcher').IntentWatcher;
+  /** safeStorage-backed credential store; attached in createServices once `app` is ready. */
+  credentialStore: CredentialStore | null;
 }
 
 /**
@@ -92,7 +109,7 @@ function lastOutputAt(ptyManager: PtyManager, shell: ShellKey): number | null {
  * `dropDir` overrides the drop staging directory, which is otherwise resolved
  * here once from the OS temp directory and the current uid.
  */
-export function buildServices(opts: { dbPath?: string; migrationsDir?: string; homeDir?: string; ompExtensionPath?: string | null; dropDir?: string } = {}): Services {
+export function buildServices(opts: { dbPath?: string; migrationsDir?: string; homeDir?: string; dropDir?: string } = {}): Services {
   const home = opts.homeDir ?? homedir();
   const dbPath = opts.dbPath ?? join(home, '.metaide', 'metaide.db');
   const migrationsDir = opts.migrationsDir ?? resolve(process.cwd(), 'migrations');
@@ -109,16 +126,10 @@ export function buildServices(opts: { dbPath?: string; migrationsDir?: string; h
   const hookSessions = new SessionRegistry();
   const hookReceiver = new ClaudeHookReceiver(hookSessions);
   const hookRuntime = new ClaudeHookRuntime({ receiver: hookReceiver, homeDir: home });
-  const ompReceiver = new OmpReceiver();
   const claudeDecorator = createLaunchDecorator({ sessions: hookSessions, settingsPath: () => hookRuntime.settingsPath() });
-  const ompDecorator = createOmpLaunchDecorator({
-    receiver: ompReceiver,
-    extensionPath: opts.ompExtensionPath ?? resolve(process.cwd(), 'resources/omp-status-extension.js'),
-    port: () => ompReceiver.boundPort(),
-  });
   const ptyManager = new PtyManager({
     spawnDecorator: (projectId, shellIndex, launch) =>
-      ompDecorator(projectId, shellIndex, claudeDecorator(projectId, shellIndex, launch)),
+      claudeDecorator(projectId, shellIndex, launch),
   });
   const watcher = new RootWatcher({ cap: settings.get('max_watched_paths') });
   const metaproject = new MetaprojectClient();
@@ -135,7 +146,8 @@ export function buildServices(opts: { dbPath?: string; migrationsDir?: string; h
   });
   return {
     db, roots, projects, shells, settings, prompts, ptyManager, watcher, metaproject,
-    hookSessions, hookReceiver, hookRuntime, hookHistory, ompReceiver, agentStatus: null, groupChat: null,
-    viewedShells: new ViewedShells(), dropStaging, clipboardImage: createClipboardImage(), listMise: listMiseTasks, homeDir: home, migrationsDir,
+    hookSessions, hookReceiver, hookRuntime, hookHistory, agentStatus: null, groupChat: null,
+    viewedShells: new ViewedShells(), dropStaging, clipboardImage: createClipboardImage(), listMise: listMiseTasks, keepAwake: null, homeDir: home, migrationsDir,
+    credentialStore: null,
   };
 }
