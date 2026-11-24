@@ -3,6 +3,7 @@ import { SHORTCUT_COPY } from '@renderer/shortcut-copy';
 import { useShortcutPlatform } from '@renderer/shortcut-platform';
 import { CHROME_TESTIDS } from '@renderer/chrome-testids';
 import { ICON_SIZE } from './icon-size';
+import { Tooltip } from './Tooltip';
 
 export type ActivityView = 'projects' | 'chat' | 'agents' | 'git' | 'tasks' | 'fleet' | 'story';
 
@@ -154,9 +155,9 @@ export function ABButton({
   badgeTone?: 'accent' | 'orange';
 } & Record<string, unknown>) {
   return (
+    <Tooltip label={label} side="right">
     <button
       onClick={onClick}
-      title={label}
       aria-label={label}
       aria-current={active ? 'page' : undefined}
       {...rest}
@@ -178,6 +179,7 @@ export function ABButton({
         </span>
       )}
     </button>
+    </Tooltip>
   );
 }
 

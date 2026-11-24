@@ -66,7 +66,7 @@ export function renderStoryHtml(t: StoryTemplate): string {
       --k-turn-end: #999;
     }
     @media (prefers-color-scheme: dark) {
-      :root {
+      :root:not([data-theme="light"]) {
         --bg: #0e0e0d;
         --fg: #ebe9e6;
         --muted: #8a8a85;
@@ -74,6 +74,16 @@ export function renderStoryHtml(t: StoryTemplate): string {
         --accent: #f97316;
         --panel: #181816;
       }
+    }
+    /* Explicit override — the IDE stamps data-theme on <html> so the chunk
+       matches the surrounding window even when the system is set otherwise. */
+    :root[data-theme="dark"] {
+      --bg: #0e0e0d;
+      --fg: #ebe9e6;
+      --muted: #8a8a85;
+      --rule: #2a2a28;
+      --accent: #f97316;
+      --panel: #181816;
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }

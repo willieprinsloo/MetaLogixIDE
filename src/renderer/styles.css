@@ -661,17 +661,22 @@ input::placeholder, textarea::placeholder {
 }
 
 /* Tooltip: grows from the edge nearest its trigger. `data-instant` skips the
- * animation when the user is already sweeping across a toolbar. */
+ * animation when the user is already sweeping across a toolbar. Top/bottom
+ * centre horizontally; left/right centre vertically — the ActivityBar on the
+ * far left uses `right` so labels appear beside each icon. */
 .tooltip {
+  --tooltip-x: -50%;
   --tooltip-y: 0%;
-  transform: translate(-50%, var(--tooltip-y));
+  transform: translate(var(--tooltip-x), var(--tooltip-y));
   transform-origin: top center;
   transition: opacity 125ms var(--ease-out), transform 125ms var(--ease-out);
 }
 .tooltip[data-side="top"] { --tooltip-y: -100%; transform-origin: bottom center; }
+.tooltip[data-side="right"] { --tooltip-x: 0%; --tooltip-y: -50%; transform-origin: center left; }
+.tooltip[data-side="left"]  { --tooltip-x: -100%; --tooltip-y: -50%; transform-origin: center right; }
 .tooltip[data-instant] { transition: none; }
 @starting-style {
-  .tooltip { opacity: 0; transform: translate(-50%, var(--tooltip-y)) scale(0.97); }
+  .tooltip { opacity: 0; transform: translate(var(--tooltip-x), var(--tooltip-y)) scale(0.97); }
 }
 
 /* Toasts rise from below the stack; exit is quicker than entry. Transitions
@@ -740,7 +745,7 @@ input::placeholder, textarea::placeholder {
   .pressable:not(:disabled):active { transform: none; }
   @starting-style {
     .modal-panel, .popover, .toast, .fleet-peer { transform: none; }
-    .tooltip { transform: translate(-50%, var(--tooltip-y)); }
+    .tooltip { transform: translate(var(--tooltip-x), var(--tooltip-y)); }
   }
   .toast[data-leaving] { transform: none; }
 }

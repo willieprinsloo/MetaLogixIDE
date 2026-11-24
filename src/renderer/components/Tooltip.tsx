@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 interface Props {
   label: string;
   shortcut?: string;
-  side?: 'top' | 'bottom';
+  side?: 'top' | 'bottom' | 'left' | 'right';
   /** Also show while a child has keyboard focus (`:focus-visible`); off by default. */
   focusable?: boolean;
   children: React.ReactNode;
@@ -44,11 +44,15 @@ export function Tooltip({ label, shortcut, side = 'bottom', focusable = false, c
     const el = wrapRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    setPos({
-      x: r.left + r.width / 2,
-      y: side === 'bottom' ? r.bottom + 6 : r.top - 6,
-      instant,
-    });
+    let x: number;
+    let y: number;
+    switch (side) {
+      case 'right': x = r.right + 6; y = r.top + r.height / 2; break;
+      case 'left':  x = r.left - 6;  y = r.top + r.height / 2; break;
+      case 'top':   x = r.left + r.width / 2; y = r.top - 6; break;
+      default:      x = r.left + r.width / 2; y = r.bottom + 6; break;
+    }
+    setPos({ x, y, instant });
   }
 
   function onEnter() {

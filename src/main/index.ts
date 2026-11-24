@@ -141,6 +141,15 @@ app.on('open-file', (event, path) => {
 // launching a second app. Without this the second launch would open a
 // duplicate metaIDE with its own DB handle, which would corrupt the
 // SQLite WAL.
+// Dev escape hatch: setting METAIDE_USERDATA_DIR tells Electron to use a
+// separate userData path, which also moves the single-instance lock out
+// of the way of an installed metaIDE.app running in parallel. No-op in
+// production — the env is only set by `pnpm dev:story` and friends.
+const userDataOverride = process.env.METAIDE_USERDATA_DIR;
+if (userDataOverride && userDataOverride.trim()) {
+  app.setPath('userData', userDataOverride.trim());
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();

@@ -10,8 +10,9 @@
  * the last 15 minutes of activity; `story:changed` refreshes the list.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '@renderer/api';
+import { useTheme } from '@renderer/hooks/useTheme';
 import type { StoryChunk } from '@shared/story';
 
 interface Props {
@@ -19,6 +20,7 @@ interface Props {
 }
 
 export function StoryTab({ projectId }: Props) {
+  const { effective: theme } = useTheme();
   const [chunks, setChunks] = useState<StoryChunk[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [html, setHtml] = useState<string | null>(null);
@@ -128,7 +130,7 @@ export function StoryTab({ projectId }: Props) {
           </div>
         )}
         {html ? (
-          <ChunkFrame html={html} />
+          <ChunkFrame html={html} theme={theme} />
         ) : (
           <div className="flex-1 flex items-center justify-center text-[--text-muted] text-sm">
             {selected ? 'loading…' : 'Select a chunk on the left.'}
@@ -139,25 +141,41 @@ export function StoryTab({ projectId }: Props) {
   );
 }
 
-function ChunkFrame({ html }: { html: string }) {
-  const ref = useRef<HTMLIFrameElement>(null);
-  // Blob URL keeps document isolation (no base URL leaks, no parent window
-  // access) while letting the iframe navigate its own inline anchors.
-  const blobUrl = useMemo(() => {
-    const blob = new Blob([html], { type: 'text/html' });
-    return URL.createObjectURL(blob);
-  }, [html]);
-  useEffect(() => () => URL.revokeObjectURL(blobUrl), [blobUrl]);
+function ChunkFrame({ html, theme }: { html: string; theme: 'light' | 'dark' }) {
+  // Stamp the IDE's current theme onto the chunk's root so the page
+  // matches the surrounding window — the CSS reads `:root[data-theme=...]`
+  // first, falling back to prefers-color-scheme when the attribute is
+  // absent (which is how the file looks when opened standalone).
+  const themed = useMemo(() => withDataTheme(html, theme), [html, theme]);
+  // srcDoc keeps document isolation without needing a blob URL — avoids
+  // Electron CSP edge cases that were showing a blank white iframe.
   return (
     <iframe
-      ref={ref}
-      src={blobUrl}
+      srcDoc={themed}
       sandbox="allow-same-origin"
       className="w-full h-full border-0"
       data-testid="story-frame"
       title="Story chunk"
     />
   );
+}
+
+function withDataTheme(html: string, theme: 'light' | 'dark'): string {
+  // Stamp data-theme on the <html> element (new template reads it) AND
+  // inject a last-wins :root override so chunks generated before the
+  // template update still match the IDE theme.
+  const overrideVars = theme === 'dark'
+    ? '--bg:#0e0e0d;--fg:#ebe9e6;--muted:#8a8a85;--rule:#2a2a28;--accent:#f97316;--panel:#181816;'
+    : '--bg:#fafaf9;--fg:#1a1a1a;--muted:#666;--rule:#e5e5e5;--accent:#c2410c;--panel:#f3f3f2;';
+  const override = `<style data-ide-theme-override="1">:root{${overrideVars}}</style>`;
+  const withTheme = html.replace(/<html\b([^>]*)>/i, (_, attrs) => {
+    const cleaned = String(attrs).replace(/\sdata-theme="[^"]*"/gi, '');
+    return `<html${cleaned} data-theme="${theme}">`;
+  });
+  // Injected right before </head> so it overrides earlier :root blocks.
+  return withTheme.includes('</head>')
+    ? withTheme.replace('</head>', `${override}</head>`)
+    : withTheme + override;
 }
 
 function formatWhen(iso: string): string {
