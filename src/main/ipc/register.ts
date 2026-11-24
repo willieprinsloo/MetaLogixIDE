@@ -602,6 +602,7 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     // "Start fresh Claude session" and the corrupted-session overlay). Earlier
     // sessions stay on disk untouched: plain `claude` never resumes one, and
     // `claude --resume` must still be able to list them.
+    const project = forceFirst ? { ...projectRow, firstLaunchedAt: null } : projectRow;
     // Coalesce concurrent launches for the same slot: the `isAlive` check
     // below is synchronous, but the `spawn` it fronts is awaited, so a
     // second IPC arriving in that gap used to trip "already spawned: N:0"

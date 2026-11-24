@@ -49,7 +49,7 @@ function setup() {
     broadcast: (ch, payload) => { events.push({ ch, payload }); },
   });
   const hook = (event: Partial<ReceivedHook['event']>, shellIndex = 0) => {
-    const h: ReceivedHook = { sessionId: 'hook-1', shell: { projectId: project.id, shellIndex }, event: { hookEventName: 'UserPromptSubmit', notificationType: null, message: null, backgroundTaskCount: 0, ...event } };
+    const h: ReceivedHook = { sessionId: 'hook-1', shell: { projectId: project.id, shellIndex }, event: { hookEventName: 'UserPromptSubmit', notificationType: null, message: null, backgroundTaskCount: 0, toolName: null, toolTarget: null, toolOk: null, ...event } };
     for (const l of listeners) void l(h);
   };
   return { home, project, pty, states, events, installed, svc: installed.service, hook };
