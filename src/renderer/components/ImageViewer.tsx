@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '@renderer/api';
 import { useDocumentZoom, ZOOM_DEFAULT } from '@renderer/hooks/useDocumentZoom';
+import { Tooltip } from './Tooltip';
 
 /**
  * Themed image viewer: fit-to-window default, wheel-zoom, drag-pan when
@@ -163,31 +164,44 @@ function ImageViewerToolbar({
         {natural ? `${natural.w} × ${natural.h}` : '—'}
       </span>
       <div className="flex-1" />
-      <ToolbarButton onClick={onZoomOut} title="Zoom out (⌘-)">−</ToolbarButton>
-      <button
-        onClick={onReset}
-        className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong] font-mono tabular-nums min-w-[52px]"
-        title="Reset zoom (⌘0)"
+      <ToolbarButton onClick={onZoomOut} label="Zoom out" shortcut="⌘-">−</ToolbarButton>
+      <Tooltip label="Reset zoom" shortcut="⌘0">
+        <button
+          onClick={onReset}
+          className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong] font-mono tabular-nums min-w-[52px]"
+          aria-label="Reset zoom"
+        >
+          {pct}%
+        </button>
+      </Tooltip>
+      <ToolbarButton onClick={onZoomIn} label="Zoom in" shortcut="⌘=">+</ToolbarButton>
+      <ToolbarButton onClick={onFitToWindow} label="Fit to window">Fit</ToolbarButton>
+      <ToolbarButton
+        onClick={onFullscreenToggle}
+        label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+        shortcut="⌘⇧Enter"
       >
-        {pct}%
-      </button>
-      <ToolbarButton onClick={onZoomIn} title="Zoom in (⌘=)">+</ToolbarButton>
-      <ToolbarButton onClick={onFitToWindow} title="Fit to window">Fit</ToolbarButton>
-      <ToolbarButton onClick={onFullscreenToggle} title={fullscreen ? 'Exit fullscreen (⌘⇧Enter)' : 'Fullscreen (⌘⇧Enter)'}>
         {fullscreen ? '⤡' : '⤢'}
       </ToolbarButton>
     </div>
   );
 }
 
-function ToolbarButton({ onClick, title, children }: { onClick: () => void; title: string; children: React.ReactNode }) {
+function ToolbarButton({ onClick, label, shortcut, children }: {
+  onClick: () => void;
+  label: string;
+  shortcut?: string;
+  children: React.ReactNode;
+}) {
   return (
-    <button
-      onClick={onClick}
-      className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]"
-      title={title}
-    >
-      {children}
-    </button>
+    <Tooltip label={label} shortcut={shortcut}>
+      <button
+        onClick={onClick}
+        className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]"
+        aria-label={label}
+      >
+        {children}
+      </button>
+    </Tooltip>
   );
 }

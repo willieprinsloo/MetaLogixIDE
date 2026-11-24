@@ -5,6 +5,7 @@ import { ResizeHandle } from './ResizeHandle';
 import { ICON_SIZE, ICON_STROKE } from './icon-size';
 import { AnimatePresence } from 'motion/react';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
+import { Tooltip } from './Tooltip';
 import { MarkdownPreview } from './MarkdownPreview';
 import { ImageViewer } from './ImageViewer';
 import { PdfViewer } from './PdfViewer';
@@ -321,18 +322,19 @@ function FileTabBar({
           >
             <FileIcon isDir={false} name={name} />
             <span className="truncate max-w-[160px]">{name}</span>
-            <button
-              onClick={(e) => { e.stopPropagation(); onClose(f.relPath); }}
-              className={`w-4 h-4 flex items-center justify-center rounded transition-colors ${
-                active
-                  ? 'text-[--text-muted] hover:text-[--danger] hover:bg-[--panel]'
-                  : 'text-[--text-muted] opacity-0 group-hover:opacity-100 hover:text-[--danger]'
-              }`}
-              title="Close tab"
-              aria-label={`Close ${name}`}
-            >
-              {dirty ? <span className="w-1.5 h-1.5 rounded-full bg-[--text]" aria-hidden /> : <TabXIcon />}
-            </button>
+            <Tooltip label={dirty ? `Close ${name} — unsaved changes` : `Close ${name}`}>
+              <button
+                onClick={(e) => { e.stopPropagation(); onClose(f.relPath); }}
+                className={`w-4 h-4 flex items-center justify-center rounded transition-colors ${
+                  active
+                    ? 'text-[--text-muted] hover:text-[--danger] hover:bg-[--panel]'
+                    : `text-[--text-muted] hover:text-[--danger] ${dirty ? '' : 'opacity-0 group-hover:opacity-100'}`
+                }`}
+                aria-label={`Close ${name}`}
+              >
+                {dirty ? <span className="w-1.5 h-1.5 rounded-full bg-[--text]" aria-hidden /> : <TabXIcon />}
+              </button>
+            </Tooltip>
           </div>
         );
       })}
@@ -505,13 +507,15 @@ function FileTreePane({
         className="px-2 py-1 text-[11px] text-[--text-muted] font-mono flex items-center flex-wrap gap-x-0.5 gap-y-0.5"
         title={dir ?? '/'}
       >
-        <button
-          onClick={() => onNavigate(undefined)}
-          className="hover:text-[--text] hover:underline px-0.5 rounded"
-          title="Go to project root"
-        >
-          /
-        </button>
+        <Tooltip label="Go to project root">
+          <button
+            onClick={() => onNavigate(undefined)}
+            className="hover:text-[--text] hover:underline px-0.5 rounded"
+            aria-label="Go to project root"
+          >
+            /
+          </button>
+        </Tooltip>
         {segments.map((seg, i) => {
           const segPath = segments.slice(0, i + 1).join('/');
           const isLast = i === segments.length - 1;
@@ -534,14 +538,16 @@ function FileTreePane({
         })}
       </div>
       {dir && (
-        <button
-          onClick={() => onNavigate(parentDir)}
-          className="w-full text-left px-2 py-1 rounded-md hover:bg-[--panel-strong] text-[--text-muted] flex items-center gap-2"
-          title={parentDir ? `Up to ${parentDir}` : 'Up to project root'}
-        >
-          <span>↰</span>
-          <span className="truncate">..</span>
-        </button>
+        <Tooltip label={parentDir ? `Up to ${parentDir}` : 'Up to project root'} wrapClassName="w-full">
+          <button
+            onClick={() => onNavigate(parentDir)}
+            className="w-full text-left px-2 py-1 rounded-md hover:bg-[--panel-strong] text-[--text-muted] flex items-center gap-2"
+            aria-label={parentDir ? `Up to ${parentDir}` : 'Up to project root'}
+          >
+            <span>↰</span>
+            <span className="truncate">..</span>
+          </button>
+        </Tooltip>
       )}
       <ul>
         {entries.map((e) => {
@@ -673,18 +679,26 @@ export function FilePreview({
         </div>
         {isMd && (
           <>
-            <button onClick={mdZoomOut} className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]" title="Zoom out (⌘-)">−</button>
-            <button onClick={mdResetZoom} className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong] font-mono tabular-nums min-w-[52px]" title="Reset zoom (⌘0)">{Math.round(mdZoom * 100)}%</button>
-            <button onClick={mdZoomIn} className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]" title="Zoom in (⌘=)">+</button>
+            <Tooltip label="Zoom out" shortcut="⌘-">
+              <button onClick={mdZoomOut} className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]" aria-label="Zoom out">−</button>
+            </Tooltip>
+            <Tooltip label="Reset zoom" shortcut="⌘0">
+              <button onClick={mdResetZoom} className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong] font-mono tabular-nums min-w-[52px]" aria-label="Reset zoom">{Math.round(mdZoom * 100)}%</button>
+            </Tooltip>
+            <Tooltip label="Zoom in" shortcut="⌘=">
+              <button onClick={mdZoomIn} className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]" aria-label="Zoom in">+</button>
+            </Tooltip>
           </>
         )}
-        <button
-          onClick={onFullscreenToggle}
-          className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]"
-          title={isFullscreen ? 'Exit fullscreen (⌘⇧Enter)' : 'Fullscreen (⌘⇧Enter)'}
-        >
-          {isFullscreen ? '⤡' : '⤢'}
-        </button>
+        <Tooltip label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'} shortcut="⌘⇧Enter">
+          <button
+            onClick={onFullscreenToggle}
+            className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]"
+            aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+          >
+            {isFullscreen ? '⤡' : '⤢'}
+          </button>
+        </Tooltip>
         {editable && (
           <>
             <button

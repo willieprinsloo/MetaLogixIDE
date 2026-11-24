@@ -23,6 +23,7 @@ import { createHoverHold } from '@renderer/hover-hold';
 import { AnimatePresence } from 'motion/react';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 import { XIcon } from './shell-icons';
+import { Tooltip } from './Tooltip';
 import { ICON_SIZE } from './icon-size';
 import { isTerminalGeometryHeld, onTerminalGeometryRelease } from '@renderer/terminal-geometry-hold';
 import { toast } from '@renderer/hooks/useToasts';
@@ -799,13 +800,15 @@ export function ShellTab({
             >
               Start fresh
             </button>
-            <button
-              onClick={() => setSessionCorrupted(false)}
-              title="Dismiss"
-              className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel]"
-            >
-              ✕
-            </button>
+            <Tooltip label="Dismiss this warning">
+              <button
+                onClick={() => setSessionCorrupted(false)}
+                aria-label="Dismiss this warning"
+                className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel]"
+              >
+                ✕
+              </button>
+            </Tooltip>
           </div>
         </div>
       )}
@@ -890,14 +893,16 @@ export function ShellTab({
                 Fix launch command
               </button>
             )}
-            <button
-              onClick={() => setExitInfo(null)}
-              title="Dismiss"
-              className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel]"
-              data-testid="shell-exit-dismiss"
-            >
-              <XIcon size={ICON_SIZE.sm} />
-            </button>
+            <Tooltip label="Dismiss exit notice">
+              <button
+                onClick={() => setExitInfo(null)}
+                aria-label="Dismiss exit notice"
+                className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel]"
+                data-testid="shell-exit-dismiss"
+              >
+                <XIcon size={ICON_SIZE.sm} />
+              </button>
+            </Tooltip>
           </div>
         </div>
       )}
@@ -922,15 +927,21 @@ export function ShellTab({
             placeholder="Find…"
             className="bg-transparent text-sm px-2 py-0.5 outline-none placeholder:text-[--text-muted] w-40"
           />
-          <button onClick={() => findPrev(searchQuery)} title={SHORTCUT_COPY.searchPrevTitle(platform)} className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel]">↑</button>
-          <button onClick={() => findNext(searchQuery)} title={SHORTCUT_COPY.searchNextTitle(platform)} className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel]">↓</button>
-          <button
-            onClick={() => { setSearchOpen(false); setSearchQuery(''); searchRef.current?.clearDecorations(); termRef.current?.focus(); }}
-            title="Close (Esc)"
-            className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel]"
-          >
-            <XIcon size={ICON_SIZE.sm} />
-          </button>
+          <Tooltip label={SHORTCUT_COPY.searchPrevTitle(platform)}>
+            <button onClick={() => findPrev(searchQuery)} aria-label="Previous match" className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel]">↑</button>
+          </Tooltip>
+          <Tooltip label={SHORTCUT_COPY.searchNextTitle(platform)}>
+            <button onClick={() => findNext(searchQuery)} aria-label="Next match" className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel]">↓</button>
+          </Tooltip>
+          <Tooltip label="Close search" shortcut="Esc">
+            <button
+              onClick={() => { setSearchOpen(false); setSearchQuery(''); searchRef.current?.clearDecorations(); termRef.current?.focus(); }}
+              aria-label="Close search"
+              className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel]"
+            >
+              <XIcon size={ICON_SIZE.sm} />
+            </button>
+          </Tooltip>
         </div>
       )}
       <HoverPreview

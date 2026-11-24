@@ -193,41 +193,44 @@ export function NewShellMenu({
               {isDefault && <span className="text-[9px] uppercase text-[color:var(--accent)] px-1 py-0.5 rounded bg-[color:var(--accent)]/15 border border-[color:var(--accent)]/40">auto</span>}
               {p.scope === 'project' && !isDefault && <span className="text-[9px] uppercase text-[--text-muted] px-1 py-0.5 rounded bg-[--panel] border border-[--border]">saved</span>}
             </button>
-            <button
-              disabled={savingDefault}
-              className={`px-2 flex items-center transition-colors disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--accent] ${isDefault
-                ? 'text-[color:var(--accent)] opacity-100'
-                : 'opacity-0 group-hover:opacity-60 focus:opacity-100 hover:opacity-100 text-[--text-muted] hover:text-[color:var(--accent)]'}`}
-              onClick={async () => {
-                if (savingDefault) return;
-                setSavingDefault(true);
-                try {
-                  if (remoteMenu) await remoteMenu.setDefault(isDefault ? null : p.name);
-                  else {
-                    const { project } = await api.invoke('shells:set-default-cli', { projectId, name: isDefault ? null : p.name });
-                    if (project.id !== projectId) return;
-                    onDefaultChanged?.(project);
-                  }
-                  toast(isDefault ? `Cleared folder default` : `${p.name} will auto-launch in this folder`, { kind: 'success', timeoutMs: 1400 });
-                } catch (e) {
-                  toast('Could not set default', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
-                } finally {
-                  setSavingDefault(false);
-                }
-              }}
-              title={isDefault ? 'Clear folder default (fall back to global)' : `Make ${p.name} the auto-launch for this folder`}
-              aria-label={isDefault ? 'Clear folder default' : `Set ${p.name} as folder default`}
-            >
-              {isDefault ? <StarFilledIcon /> : <StarIcon />}
-            </button>
-            {p.scope === 'project' && (
+            <Tooltip label={isDefault ? 'Clear folder default (fall back to global)' : `Make ${p.name} the auto-launch for this folder`}>
               <button
-                className="px-2 opacity-0 group-hover:opacity-60 hover:opacity-100 hover:text-[--danger] flex items-center"
-                onClick={() => removeProfile(p.name)}
-                title="Remove from this project"
+                disabled={savingDefault}
+                className={`px-2 flex items-center transition-colors disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[--accent] ${isDefault
+                  ? 'text-[color:var(--accent)] opacity-100'
+                  : 'opacity-0 group-hover:opacity-60 focus:opacity-100 hover:opacity-100 text-[--text-muted] hover:text-[color:var(--accent)]'}`}
+                onClick={async () => {
+                  if (savingDefault) return;
+                  setSavingDefault(true);
+                  try {
+                    if (remoteMenu) await remoteMenu.setDefault(isDefault ? null : p.name);
+                    else {
+                      const { project } = await api.invoke('shells:set-default-cli', { projectId, name: isDefault ? null : p.name });
+                      if (project.id !== projectId) return;
+                      onDefaultChanged?.(project);
+                    }
+                    toast(isDefault ? `Cleared folder default` : `${p.name} will auto-launch in this folder`, { kind: 'success', timeoutMs: 1400 });
+                  } catch (e) {
+                    toast('Could not set default', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+                  } finally {
+                    setSavingDefault(false);
+                  }
+                }}
+                aria-label={isDefault ? 'Clear folder default' : `Set ${p.name} as folder default`}
               >
-                <XIcon size={ICON_SIZE.sm} />
+                {isDefault ? <StarFilledIcon /> : <StarIcon />}
               </button>
+            </Tooltip>
+            {p.scope === 'project' && (
+              <Tooltip label="Remove from this project">
+                <button
+                  className="px-2 opacity-0 group-hover:opacity-60 hover:opacity-100 hover:text-[--danger] flex items-center"
+                  onClick={() => removeProfile(p.name)}
+                  aria-label={`Remove ${p.name} from this project`}
+                >
+                  <XIcon size={ICON_SIZE.sm} />
+                </button>
+              </Tooltip>
             )}
           </div>
         );
@@ -312,14 +315,15 @@ export function ShellTabsBar({
             >
               {renderDot ? renderDot(s, isActive) : <ShellTabDot projectId={projectId} shellIndex={s.shellIndex} isActive={isActive} />}
               <span className={`${isActive ? 'text-[--text] font-medium' : 'text-[--text-muted]'}`}>{label}</span>
-              <button
-                onClick={(e) => { e.stopPropagation(); onClose(s.shellIndex); }}
-                className="ml-0.5 opacity-0 group-hover:opacity-70 hover:opacity-100 hover:text-[--danger] w-4 h-4 flex items-center justify-center rounded"
-                title={`Close ${label}`}
-                aria-label={`Close ${label}`}
-              >
-                <XIcon />
-              </button>
+              <Tooltip label={`Close ${label}`} wrapClassName="ml-0.5 opacity-0 group-hover:opacity-70 hover:opacity-100">
+                <button
+                  onClick={(e) => { e.stopPropagation(); onClose(s.shellIndex); }}
+                  className="hover:text-[--danger] w-4 h-4 flex items-center justify-center rounded"
+                  aria-label={`Close ${label}`}
+                >
+                  <XIcon />
+                </button>
+              </Tooltip>
             </div>
           );
         })}

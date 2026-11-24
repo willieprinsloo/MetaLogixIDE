@@ -4,6 +4,7 @@ import { useToasts, type Toast, type ToastKind } from '@renderer/hooks/useToasts
 import { TOAST_Z } from '@renderer/modal-glass';
 import { ICON_SIZE, ICON_STROKE } from './icon-size';
 import { XIcon } from './shell-icons';
+import { Tooltip } from './Tooltip';
 
 // Matches `.toast[data-leaving]` in styles.css.
 const EXIT_MS = 180;
@@ -73,14 +74,15 @@ export function ToastStack() {
               <div className="text-sm font-medium truncate">{t.title}</div>
               {t.detail && <div className="text-xs text-[--text-muted] mt-0.5 whitespace-pre-wrap break-words">{t.detail}</div>}
             </div>
-            <button
-              onClick={() => dismiss(t.id)}
-              className="text-[--text-muted] hover:text-[--text] w-5 h-5 flex items-center justify-center rounded shrink-0"
-              title="Dismiss"
-              aria-label="Dismiss notification"
-            >
-              <XIcon size={ICON_SIZE.sm} />
-            </button>
+            <Tooltip label="Dismiss notification" wrapClassName="shrink-0">
+              <button
+                onClick={() => dismiss(t.id)}
+                className="text-[--text-muted] hover:text-[--text] w-5 h-5 flex items-center justify-center rounded"
+                aria-label="Dismiss notification"
+              >
+                <XIcon size={ICON_SIZE.sm} />
+              </button>
+            </Tooltip>
           </div>
         );
       })}

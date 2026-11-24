@@ -9,6 +9,7 @@ import { unstagePaths } from '@renderer/git-unstage-paths';
 import { DIFF_COPY } from '@renderer/diff-tab-copy';
 import { createRequestGate } from '@renderer/diff/diff-load-state';
 import { ICON_SIZE, ICON_STROKE } from './icon-size';
+import { Tooltip } from './Tooltip';
 import type { GitChangeEntry } from '@shared/ipc-contract';
 
 type FileEntry = GitChangeEntry;
@@ -142,14 +143,16 @@ export function GitPanel({ projectId }: { projectId: number | null }) {
         <span className="text-sm font-medium truncate flex-1" title={status.branch ?? ''}>{status.branch ?? 'detached'}</span>
         {status.ahead  > 0 && <span className="text-[10px] font-mono text-[color:var(--git-added,#34d399)] px-1 rounded bg-[color:var(--git-ahead-chip,rgb(52_211_153/0.1))]">↑{status.ahead}</span>}
         {status.behind > 0 && <span className="text-[10px] font-mono text-[color:var(--git-deleted,#fb7185)] px-1 rounded bg-[color:var(--git-behind-chip,rgb(251_113_133/0.1))]">↓{status.behind}</span>}
-        <button
-          onClick={refresh}
-          className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel-strong]"
-          title="Refresh"
-          data-testid="git-refresh"
-        >
-          <RefreshIcon />
-        </button>
+        <Tooltip label="Refresh git status">
+          <button
+            onClick={refresh}
+            className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel-strong]"
+            aria-label="Refresh git status"
+            data-testid="git-refresh"
+          >
+            <RefreshIcon />
+          </button>
+        </Tooltip>
       </div>
 
       <div className="flex-1 overflow-y-auto min-h-0 px-2 py-2 space-y-3 text-xs">
@@ -275,14 +278,16 @@ function Row({ projectId, file, onAction, action, busy, staged, untracked }: {
           <span className={`text-[--text-muted] transition-transform inline-block w-2 ${open ? 'rotate-90' : ''}`}>▸</span>
           <span className="truncate">{file.path}</span>
         </button>
-        <button
-          onClick={onAction}
-          disabled={busy}
-          className="opacity-0 group-hover:opacity-100 disabled:opacity-40 w-5 h-5 flex items-center justify-center rounded text-[--text-muted] hover:text-[--text] hover:bg-[--panel] text-xs"
-          title={action === '+' ? 'Stage' : 'Unstage'}
-        >
-          {busy ? '…' : action}
-        </button>
+        <Tooltip label={action === '+' ? 'Stage this file' : 'Unstage this file'} wrapClassName="opacity-0 group-hover:opacity-100">
+          <button
+            onClick={onAction}
+            disabled={busy}
+            className="disabled:opacity-40 w-5 h-5 flex items-center justify-center rounded text-[--text-muted] hover:text-[--text] hover:bg-[--panel] text-xs"
+            aria-label={action === '+' ? 'Stage this file' : 'Unstage this file'}
+          >
+            {busy ? '…' : action}
+          </button>
+        </Tooltip>
       </div>
       {open && (
         <div className="ml-6 mr-1 mb-1 rounded border border-[--border] bg-[--panel] max-h-[240px] overflow-auto text-[10px] font-mono">

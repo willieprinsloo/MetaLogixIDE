@@ -3,6 +3,7 @@ import type { Project, Root } from '@shared/types';
 import { api } from '@renderer/api';
 import { ModalFrame } from '@renderer/components/ModalFrame';
 import { ICON_SIZE, ICON_STROKE } from './icon-size';
+import { Tooltip } from './Tooltip';
 
 interface Props {
   open: boolean;
@@ -141,9 +142,11 @@ export function NewProjectDialog({ open, roots, defaultRootId, onClose, onCreate
       <div className="modal-panel modal-sheet w-[560px] max-w-[92vw] overflow-hidden">
         <div className="px-5 py-4 border-b border-[--border] flex items-center justify-between">
           <div className="font-semibold">New project</div>
-          <button onClick={onClose} className="text-[--modal-text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel]" aria-label="Close">
-            <XCloseIcon />
-          </button>
+          <Tooltip label="Close new-project dialog" shortcut="Esc">
+            <button onClick={onClose} className="text-[--modal-text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel]" aria-label="Close new-project dialog">
+              <XCloseIcon />
+            </button>
+          </Tooltip>
         </div>
 
         {/* Mode segmented control */}

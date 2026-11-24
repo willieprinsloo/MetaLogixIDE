@@ -13,6 +13,7 @@ import type { KeepAwakeControls } from '@renderer/hooks/useKeepAwake';
 import { KeepAwakeChip } from './KeepAwakeChip';
 import { XIcon } from './shell-icons';
 import { ICON_SIZE } from './icon-size';
+import { Tooltip } from './Tooltip';
 
 interface LiveShell {
   projectId: number; shellIndex: number; projectName: string; pid: number;
@@ -190,13 +191,15 @@ function ShellsChip({ aliveCount }: { aliveCount: number }) {
           <div className="px-3 py-2 border-b border-[--border] flex items-center gap-2">
             <span className="font-semibold text-[--text]">Alive shells</span>
             <span className="text-[--text-muted]">·  refresh every 2s</span>
-            <button
-              onClick={() => setOpen(false)}
-              className="ml-auto text-[--text-muted] hover:text-[--text] w-5 h-5 flex items-center justify-center rounded hover:bg-[--panel]"
-              title="Close"
-            >
-              <XIcon size={ICON_SIZE.sm} />
-            </button>
+            <Tooltip label="Close shell list" wrapClassName="ml-auto">
+              <button
+                onClick={() => setOpen(false)}
+                className="text-[--text-muted] hover:text-[--text] w-5 h-5 flex items-center justify-center rounded hover:bg-[--panel]"
+                aria-label="Close shell list"
+              >
+                <XIcon size={ICON_SIZE.sm} />
+              </button>
+            </Tooltip>
           </div>
           {shells.length === 0 && (
             <div className="px-3 py-4 text-center text-[--text-muted]">No live shells.</div>
