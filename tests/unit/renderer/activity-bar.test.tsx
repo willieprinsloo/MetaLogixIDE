@@ -32,7 +32,8 @@ describe('ActivityBar geometry (AC10)', () => {
   });
   it('every rail button offers a 44px touch target with 10px radius', () => {
     const bs = buttons(render());
-    expect(bs).toHaveLength(7);
+    // sidebar toggle, projects, chat, git, tasks, agents, fleet, story.
+    expect(bs).toHaveLength(8);
     for (const b of bs) {
       expect(classesOf(b)).toEqual(expect.arrayContaining(['w-11', 'h-11', 'rounded-[10px]']));
       expect(classesOf(b)).not.toContain('w-8');
@@ -40,7 +41,8 @@ describe('ActivityBar geometry (AC10)', () => {
   });
   it('every icon is 16x16', () => {
     const icons = svgs(render());
-    expect(icons).toHaveLength(7);
+    // sidebar toggle, projects, chat, git, tasks, agents, fleet, story.
+    expect(icons).toHaveLength(8);
     for (const s of icons) {
       expect(s).toContain('width="16"');
       expect(s).toContain('height="16"');
