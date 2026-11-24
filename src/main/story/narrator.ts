@@ -63,12 +63,20 @@ export function generateStoryChunk(opts: GenerateOptions): GenerateResult {
   const html = renderStoryHtml(built);
 
   const dir = storyDir(opts.projectPath);
-  mkdirSync(dir, { recursive: true });
   const stamp = filenameTimestamp(now.toISOString());
   const slug = slugify(built.title).slice(0, 48) || 'chunk';
   const file = `${stamp}--${slug}.html`;
   const absPath = storyFile(opts.projectPath, file);
-  writeFileSync(absPath, html, 'utf8');
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(absPath, html, 'utf8');
+  } catch (err) {
+    // ENOSPC / EACCES / EROFS all surface here; wrap so the caller (IPC
+    // handler) can report a chunk-aware message to the renderer instead
+    // of a raw errno trace.
+    const code = (err as NodeJS.ErrnoException).code;
+    throw new Error(`could not write story chunk to ${absPath}${code ? ` (${code})` : ''}`);
+  }
 
   return {
     chunk: {
@@ -274,13 +282,18 @@ function pickSubtitle(inp: BuildInput): string {
   return `${timeFrom}–${timeTo} · ${span} min window · ${inp.activity.length} events · ${inp.chat.length} chat`;
 }
 
+/** Chat entries ride on the ActivityEntry union so we can merge-sort by
+ *  ts, but they need their own display colour in the timeline — otherwise
+ *  the `--k-chat` purple is dead CSS and chat rows read as prompts. We
+ *  mark them with `tool: 'chat'` so `kindFor` can pick them out. */
 function chatToActivityLike(c: ChatEntry): ActivityEntry {
   return {
     id: c.id,
     ts: c.ts,
     agent: c.from.agent,
     shellIndex: c.from.shell,
-    kind: 'prompt',
+    kind: 'tool',
+    tool: 'chat',
     text: c.body,
   };
 }
@@ -298,6 +311,7 @@ function toTimelineRow(e: ActivityEntry): TimelineRow {
 
 function kindFor(e: ActivityEntry): string {
   if (e.kind !== 'tool') return e.kind;
+  if (e.tool === 'chat') return 'chat';
   if (isEditTool(e)) return 'edit';
   if (isTestLike(e)) return 'test';
   return 'tool';
@@ -308,10 +322,15 @@ function isEditTool(e: ActivityEntry): boolean {
   return e.kind === 'tool' && !!e.tool && EDIT_TOOLS.has(e.tool);
 }
 
+/** True when a tool invocation looks test-y. Match path SEGMENTS (not
+ *  substrings) so `latest.ts` / `inspector.ts` / `src/inspect.ts` don't
+ *  get miscoloured. Bash `pnpm test …` still qualifies. */
 function isTestLike(e: ActivityEntry): boolean {
   if (e.kind !== 'tool') return false;
   const target = (e.target ?? '').toLowerCase();
-  return target.includes('test') || target.includes('spec') || (e.tool === 'Bash' && target.startsWith('pnpm test'));
+  if (e.tool === 'Bash') return /\bpnpm (test|vitest)\b|\bnpm test\b|\bvitest\b/.test(target);
+  const segments = target.split(/[/\\.]/);
+  return segments.includes('test') || segments.includes('tests') || segments.includes('spec') || segments.includes('specs') || /\.test\.|\.spec\./.test(target);
 }
 
 function shortFile(path?: string): string {

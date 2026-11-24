@@ -145,6 +145,60 @@ describe('StoryTab', () => {
     expect(screen.queryByText('Elsewhere')).toBeNull();
   });
 
+  it('clears the selected chunk when the projectId changes', async () => {
+    // Project A has chunks; auto-select picks the newest.
+    chunks = [{ file: 'a.html', ts: '2026-11-24T14:00:00Z', title: 'A chunk', blurb: 'now' }];
+    chunkHtmlById['a.html'] = SAMPLE_HTML;
+    const { rerender } = await mount(1);
+    await waitFor(() => screen.getByText('A chunk'));
+
+    // Switch to project B — stash a new list before the re-render.
+    chunks = [{ file: 'b.html', ts: '2026-11-24T14:30:00Z', title: 'B chunk', blurb: 'now' }];
+    chunkHtmlById['b.html'] = SAMPLE_HTML;
+    const { StoryTab } = await import('@renderer/components/StoryTab');
+    rerender(<StoryTab projectId={2} />);
+
+    // The new chunk must show; the stale "A chunk" from project 1 must be gone.
+    await waitFor(() => {
+      expect(screen.getByText('B chunk')).toBeTruthy();
+      expect(screen.queryByText('A chunk')).toBeNull();
+    });
+  });
+
+  it('clears the error banner when a later chunk reads successfully', async () => {
+    chunks = [
+      { file: 'bad.html', ts: '2026-11-24T14:00:00Z', title: 'Bad', blurb: '' },
+      { file: 'good.html', ts: '2026-11-24T13:00:00Z', title: 'Good', blurb: '' },
+    ];
+    chunkHtmlById['bad.html'] = null;
+    chunkHtmlById['good.html'] = SAMPLE_HTML;
+    // story:read returns `html: null` when the file is missing — that's not
+    // an exception, but the empty-right-pane shows and no error. We need an
+    // ACTUAL throw to stage the sticky-error scenario, so stub one chunk to
+    // reject via the invoke mock on the first call only.
+    const api = (await import('@renderer/api')).api as unknown as { invoke: ReturnType<typeof vi.fn> };
+    const original = api.invoke.getMockImplementation()!;
+    let firstReadFailed = false;
+    api.invoke.mockImplementation(async (ch: string, req: unknown) => {
+      if (ch === 'story:read' && (req as { file: string }).file === 'bad.html' && !firstReadFailed) {
+        firstReadFailed = true;
+        throw new Error('corrupt chunk');
+      }
+      return original(ch, req);
+    });
+
+    await mount();
+    // "Bad" auto-selected, read throws → error banner visible.
+    await waitFor(() => expect(screen.getByText(/corrupt chunk/)).toBeTruthy());
+
+    // Click "Good" — read succeeds, the banner must clear.
+    fireEvent.click(screen.getByText('Good'));
+    await waitFor(() => expect(screen.queryByText(/corrupt chunk/)).toBeNull());
+
+    // Restore.
+    api.invoke.mockImplementation(original);
+  });
+
   it('isolates the chunk via iframe sandbox so page scripts cannot escape', async () => {
     chunks = [{ file: 'a.html', ts: '2026-11-24T14:00:00Z', title: 'A', blurb: '' }];
     chunkHtmlById['a.html'] = SAMPLE_HTML;

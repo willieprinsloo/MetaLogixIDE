@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useId, useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 
 interface Props {
@@ -30,6 +30,10 @@ export function Tooltip({ label, shortcut, side = 'bottom', focusable = false, c
   const wrapRef = useRef<HTMLSpanElement>(null);
   const [pos, setPos] = useState<{ x: number; y: number; instant: boolean } | null>(null);
   const timer = useRef<number | null>(null);
+  // Stable id so the portal tooltip can be referenced by the wrapper's
+  // aria-describedby — otherwise removing `title` from a button strips
+  // its screen-reader description.
+  const descId = useId();
 
   useEffect(() => () => { if (timer.current) window.clearTimeout(timer.current); }, []);
 
@@ -77,12 +81,14 @@ export function Tooltip({ label, shortcut, side = 'bottom', focusable = false, c
         onMouseDown={onLeave}
         onFocus={focusable ? onFocus : undefined}
         onBlur={focusable ? onLeave : undefined}
+        aria-describedby={pos ? descId : undefined}
         className="inline-flex"
       >
         {children}
       </span>
       {pos && createPortal(
         <div
+          id={descId}
           className="tooltip fixed z-[9999] pointer-events-none select-none px-2 py-1 text-[11px] rounded-md
             bg-[--panel-strong] text-[--text] border border-[--border] shadow-lg"
           style={{ left: pos.x, top: pos.y }}

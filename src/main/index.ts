@@ -141,6 +141,7 @@ app.on('open-file', (event, path) => {
 // launching a second app. Without this the second launch would open a
 // duplicate metaIDE with its own DB handle, which would corrupt the
 // SQLite WAL.
+
 // Dev escape hatch: setting METAIDE_USERDATA_DIR tells Electron to use a
 // separate userData path, which also moves the single-instance lock out
 // of the way of an installed metaIDE.app running in parallel. The

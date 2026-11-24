@@ -39,6 +39,15 @@ export function StoryTab({ projectId }: Props) {
     }
   }, [projectId]);
 
+  // Clear selection when projectId changes — otherwise the html effect
+  // reads a filename from the previous project and the reader shows
+  // "loading…" forever while story:read returns null.
+  useEffect(() => {
+    setSelected(null);
+    setHtml(null);
+    setError(null);
+  }, [projectId]);
+
   useEffect(() => { void refreshList(); }, [refreshList]);
 
   useEffect(() => {
@@ -56,7 +65,11 @@ export function StoryTab({ projectId }: Props) {
     (async () => {
       try {
         const { html } = await api.invoke('story:read', { projectId, file: selected });
-        if (!cancelled) setHtml(html);
+        if (cancelled) return;
+        setHtml(html);
+        // A successful read clears any error from a previous failed read —
+        // otherwise the red banner hangs around while a good chunk displays.
+        setError(null);
       } catch (err) {
         if (!cancelled) setError(String(err));
       }
@@ -161,6 +174,7 @@ function ChunkFrame({ html, theme }: { html: string; theme: 'light' | 'dark' }) 
 }
 
 function withDataTheme(html: string, theme: 'light' | 'dark'): string {
+  if (!html) return '';
   // Stamp data-theme on the <html> element (new template reads it) AND
   // inject a last-wins override so chunks generated before the template
   // update still match the IDE theme AND use the newer layout density.

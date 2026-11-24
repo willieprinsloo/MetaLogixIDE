@@ -11,11 +11,13 @@ describe('story paths', () => {
     expect(storyFile('/tmp/proj', 'foo.html')).toBe(`/tmp/proj/${STORY_DIR}/foo.html`);
   });
 
-  it('turns an ISO timestamp into a filesystem-safe prefix', () => {
-    expect(filenameTimestamp('2026-11-24T14:30:00.123Z')).toBe('2026-11-24T14-30-00');
+  it('turns an ISO timestamp into a filesystem-safe prefix including milliseconds', () => {
+    expect(filenameTimestamp('2026-11-24T14:30:00.123Z')).toBe('2026-11-24T14-30-00-123');
   });
 
-  it('drops the sub-second portion', () => {
-    expect(filenameTimestamp('2026-01-02T03:04:05.999Z')).toBe('2026-01-02T03-04-05');
+  it('produces different prefixes for same-second timestamps', () => {
+    // Prevents the "double Catch-me-up click clobbers the first chunk" bug.
+    expect(filenameTimestamp('2026-01-02T03:04:05.100Z'))
+      .not.toBe(filenameTimestamp('2026-01-02T03:04:05.900Z'));
   });
 });

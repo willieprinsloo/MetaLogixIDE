@@ -143,6 +143,49 @@ describe('generateStoryChunk', () => {
     expect(html).toContain('You said');
     expect(html).toContain('please add dark mode');
   });
+
+  it('colour-codes chat rows with the "chat" kind in the timeline', () => {
+    seedActivity(tmp, []);
+    seedChat(tmp, [
+      {
+        id: 'c1', ts: '2026-11-24T14:05:00.000Z',
+        from: { device: 'dev', shell: 0, agent: 'human' },
+        to: [{ agent: 'claude' }],
+        body: 'hey',
+      },
+    ]);
+    const { absPath } = generateStoryChunk({ projectPath: tmp, projectName: 'proj', now: fixedNow });
+    const html = readFileSync(absPath, 'utf8');
+    // Chat should route through the --k-chat CSS class, not --k-prompt.
+    expect(html).toContain('class="k k-chat"');
+    expect(html).not.toContain('class="k k-prompt"');
+  });
+
+  it('does not classify a Read of latest.ts as a test run', () => {
+    seedActivity(tmp, [
+      // path SEGMENT match: "test"/"spec" should not fire on substring matches
+      // like latest.ts, inspector.ts, src/inspect.ts.
+      { id: '1', ts: '2026-11-24T14:05:00.000Z', agent: 'claude', shellIndex: 0, kind: 'tool', tool: 'Read', target: 'src/latest.ts' },
+      { id: '2', ts: '2026-11-24T14:06:00.000Z', agent: 'claude', shellIndex: 0, kind: 'tool', tool: 'Read', target: 'src/inspector.ts' },
+    ]);
+    const { absPath } = generateStoryChunk({ projectPath: tmp, projectName: 'proj', now: fixedNow });
+    const html = readFileSync(absPath, 'utf8');
+    expect(html).not.toContain('class="k k-test"');
+  });
+
+  it('wraps a filesystem write failure in a chunk-aware error', () => {
+    // Point the project at a path whose parent is NOT writable — the
+    // mkdir+write inside generateStoryChunk should throw with a message
+    // that names the chunk location, not a bare errno.
+    const bad = join(tmp, 'readonly-root');
+    try {
+      // Create as a regular file, so mkdir(bad/.metaide/story, recursive) fails.
+      writeFileSync(bad, 'blocking');
+      seedActivity(bad, []);
+    } catch { /* noop — we don't actually seed */ }
+    expect(() => generateStoryChunk({ projectPath: bad, projectName: 'proj', now: fixedNow }))
+      .toThrow(/could not write story chunk/);
+  });
 });
 
 describe('listStoryChunks', () => {
