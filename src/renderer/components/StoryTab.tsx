@@ -162,12 +162,18 @@ function ChunkFrame({ html, theme }: { html: string; theme: 'light' | 'dark' }) 
 
 function withDataTheme(html: string, theme: 'light' | 'dark'): string {
   // Stamp data-theme on the <html> element (new template reads it) AND
-  // inject a last-wins :root override so chunks generated before the
-  // template update still match the IDE theme.
+  // inject a last-wins override so chunks generated before the template
+  // update still match the IDE theme AND use the newer layout density.
   const overrideVars = theme === 'dark'
     ? '--bg:#0e0e0d;--fg:#ebe9e6;--muted:#8a8a85;--rule:#2a2a28;--accent:#f97316;--panel:#181816;'
     : '--bg:#fafaf9;--fg:#1a1a1a;--muted:#666;--rule:#e5e5e5;--accent:#c2410c;--panel:#f3f3f2;';
-  const override = `<style data-ide-theme-override="1">:root{${overrideVars}}</style>`;
+  const override = `<style data-ide-theme-override="1">
+    :root{${overrideVars}}
+    main{max-width:60rem !important;padding:1.75rem 2rem 3rem !important;}
+    header{padding-bottom:1rem !important;margin-bottom:1.5rem !important;}
+    h1{font-size:1.6rem !important;margin:0 0 0.4rem !important;}
+    details{margin-top:2rem !important;padding-top:1rem !important;}
+  </style>`;
   const withTheme = html.replace(/<html\b([^>]*)>/i, (_, attrs) => {
     const cleaned = String(attrs).replace(/\sdata-theme="[^"]*"/gi, '');
     return `<html${cleaned} data-theme="${theme}">`;

@@ -92,14 +92,14 @@ export function renderStoryHtml(t: StoryTemplate): string {
       -webkit-font-smoothing: antialiased;
     }
     main {
-      max-width: 44rem;
+      max-width: 60rem;
       margin: 0 auto;
-      padding: 3rem 1.5rem 6rem;
+      padding: 1.75rem 2rem 3rem;
     }
     header {
       border-bottom: 1px solid var(--rule);
-      padding-bottom: 1.25rem;
-      margin-bottom: 2rem;
+      padding-bottom: 1rem;
+      margin-bottom: 1.5rem;
     }
     .project {
       font: 500 11px/1 ui-sans-serif, system-ui, sans-serif;
@@ -109,8 +109,8 @@ export function renderStoryHtml(t: StoryTemplate): string {
       margin-bottom: 0.75rem;
     }
     h1 {
-      font: 700 2rem/1.2 ui-serif, Georgia, serif;
-      margin: 0 0 0.5rem;
+      font: 700 1.6rem/1.2 ui-serif, Georgia, serif;
+      margin: 0 0 0.4rem;
       color: var(--fg);
       letter-spacing: -0.015em;
     }
@@ -122,9 +122,9 @@ export function renderStoryHtml(t: StoryTemplate): string {
       margin: 0 0 1.15rem;
     }
     details {
-      margin-top: 3rem;
+      margin-top: 2rem;
       border-top: 1px solid var(--rule);
-      padding-top: 1.5rem;
+      padding-top: 1rem;
     }
     summary {
       cursor: pointer;
