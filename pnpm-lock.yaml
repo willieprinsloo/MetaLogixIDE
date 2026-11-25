@@ -87,6 +87,12 @@ importers:
       '@electron/rebuild':
         specifier: ^4.2.0
         version: 4.2.0(supports-color@7.2.0)
+      '@gespenst/core':
+        specifier: 0.2.0
+        version: 0.2.0
+      '@gespenst/xterm':
+        specifier: 0.2.0
+        version: 0.2.0
       '@playwright/test':
         specifier: ^1.47.0
         version: 1.61.1
@@ -527,6 +533,14 @@ packages:
   '@eslint/plugin-kit@0.4.1':
     resolution: {integrity: sha512-43/qtrDUokr7LJqoF2c3+RInu/t4zfrpYdoSDfYyhg52rwLV6TnOvdG4fXm7IkSB3wErkcmJS9iEhjVtOSEjjA==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+
+  '@gespenst/core@0.2.0':
+    resolution: {integrity: sha512-jya8ug60fdzv3n7vzrFT0zVIa7ftsqLtHlJri5F41+kqxHDTQJWo3QOjS9VMtVcFQ2xAdSyGfj4AaYmz3PyuGg==}
+    engines: {node: ^20.19.0 || >=22.12.0}
+
+  '@gespenst/xterm@0.2.0':
+    resolution: {integrity: sha512-ozfFF9BYrvnHw2KcCnTE6W9sJF1d8lDyrOC31VZGELIZgIwDscWi3GsNoLumvXaTs5iYZcJGgkKnU6aseqfF+Q==}
+    engines: {node: ^20.19.0 || >=22.12.0}
 
   '@humanfs/core@0.19.2':
     resolution: {integrity: sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==}
@@ -4267,6 +4281,12 @@ snapshots:
     dependencies:
       '@eslint/core': 0.17.0
       levn: 0.4.1
+
+  '@gespenst/core@0.2.0': {}
+
+  '@gespenst/xterm@0.2.0':
+    dependencies:
+      '@gespenst/core': 0.2.0
 
   '@humanfs/core@0.19.2':
     dependencies:

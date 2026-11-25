@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "gespenst": {
+    "repository": "https://github.com/tobilg/gespenst",
+    "version": "0.2.0",
+    "sourceCommit": "1d812611c5a73224666c696c718c443d13d5eda6",
+    "workflow": ".github/workflows/release.yml@refs/tags/v0.2.0",
+    "run": "https://github.com/tobilg/gespenst/actions/runs/40649707686",
+    "packages": {
+      "@gespenst/core": {
+        "archiveSha256": "d29cd3bac61676a915170ebd94e6751b29827274866968c8311bf0b25c79ffe6",
+        "integrity": "sha512-jya8ug60fdzv3n7vzrFT0zVIa7ftsqLtHlJri5F41+kqxHDTQJWo3QOjS9VMtVcFQ2xAdSyGfj4AaYmz3PyuGg==",
+        "patchSha256": "df91de4daaa1c8734ace8dfac723efe9a84a1d384cc3c9a21b0aca9860a5492f"
+      },
+      "@gespenst/xterm": {
+        "archiveSha256": "cb987a95fd3a0dca061cc307430785879fa7e6d48b20dd8788dff5c868b4f5a7",
+        "integrity": "sha512-ozfFF9BYrvnHw2KcCnTE6W9sJF1d8lDyrOC31VZGELIZgIwDscWi3GsNoLumvXaTs5iYZcJGgkKnU6aseqfF+Q==",
+        "patchSha256": "89e7747ab4ab8dc26ac0cb4342848e1476f7d32abf1065b8357e881507aa8477"
+      }
+    }
+  },
+  "wasm": {
+    "vt": {
+      "sha256": "e40fe5d53319c4d9ab9283802e2844ded9ca86eba52894f865fc67a849620166",
+      "sourceCommit": "919dca5c848d43a489a4cb2e1feade016f0fa2db",
+      "upstreamAsset": "https://tip.files.ghostty.org/919dca5c848d43a489a4cb2e1feade016f0fa2db/ghostty-vt.wasm",
+      "verification": "Ghostty Minisign; commit-addressed tip, not stable libghostty-vt 1.0.1"
+    },
+    "callbacks": {
+      "sha256": "b1469aa7900b0c10f272bcb150d5c815def2cd536bf734d9e46ac6c50eea2edb",
+      "verification": "Gespenst npm attestation and reviewed release-tree source; not Ghostty-signed"
+    }
+  },
+  "scope": "Registry attestations authenticate the original archives, not MetaLogix IDE's patches, build transforms or final application package."
+}
