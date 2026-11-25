@@ -158,6 +158,51 @@ async function seedRows(home: string, rows: Array<{ key: string; value: unknown 
 
 /* ─────────────────────────────── AC4: live apply, main + popout, no reload ─────────────────────────────── */
 
+test('Custom terminal frost changes the background live, saves, and resets without reopening the terminal', async () => {
+  test.skip(process.platform !== 'darwin' && process.platform !== 'linux', 'frost is a desktop macOS/Linux feature');
+  const { app, win, cleanup } = await launchGlassApp();
+  try {
+    const host = await win.getByTestId('shell-tab').elementHandle();
+    const alpha = async () => {
+      const color = await win.locator('main[data-sheet-content="shell"]').evaluate(el => getComputedStyle(el).backgroundColor);
+      return (await resolveColour(win, color)).a;
+    };
+    await openSettings(win);
+    await levelRadio(win, FROSTED_GLASS_TESTIDS.terminalFrost, 'Custom').click({ timeout: 3000 });
+    const opacity = win.getByRole('slider', { name: 'Terminal background opacity' });
+    await expect(opacity).toHaveValue('70');
+    await opacity.evaluate(el => {
+      if (!(el instanceof HTMLInputElement)) throw new Error('Missing opacity input');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(el, '35');
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await expect.poll(alpha).toBeCloseTo(0.35, 2);
+    await opacity.dispatchEvent('change');
+    await expect.poll(() => storedValue(win, 'terminal_frost_opacity')).toBe(35);
+    await closeSettings(win);
+    await expect.poll(alpha).toBeCloseTo(0.35, 2);
+    expect(await host?.evaluate(el => el.isConnected && getComputedStyle(el).opacity === '1')).toBe(true);
+    await openSettings(win);
+    await expect(opacity).toHaveValue('35');
+    await win.getByRole('button', { name: 'Reset terminal background opacity' }).click();
+    await expect.poll(() => storedValue(win, 'terminal_frost_opacity')).toBe(70);
+    await expect.poll(alpha).toBeCloseTo(0.70, 2);
+    const cdp = await win.context().newCDPSession(win);
+    try {
+      await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-transparency', value: 'reduce' }] });
+      await expect(opacity).toBeDisabled();
+      await expect.poll(alpha).toBe(1);
+      expect(await storedValue(win, 'terminal_frost_opacity')).toBe(70);
+    } finally {
+      await cdp.send('Emulation.setEmulatedMedia', { features: [] });
+      await cdp.detach();
+    }
+  } finally {
+    await closeApp(app);
+    cleanup();
+  }
+});
+
 test('AC4: changing each setting reaches the main window and an open popout live, with no reload', async () => {
   test.skip(process.platform !== 'darwin', 'mac-only settings group');
   const l = await launchGlassApp();

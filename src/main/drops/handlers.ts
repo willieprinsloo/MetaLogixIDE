@@ -5,10 +5,13 @@
  * failures come back as typed result values; nothing here throws to the
  * renderer, because Electron strips thrown errors of their identity.
  */
-import { isAbsolute, resolve } from 'node:path';
+import { stat } from 'node:fs/promises';
+import { basename, isAbsolute, resolve } from 'node:path';
 import log from 'electron-log/main';
 import type { Handler } from '@main/ipc/register';
 import { isInsideRoot } from '@main/domain/path-containment';
+import type { Services } from '@main/services';
+import type { StatAppFileResult } from '@shared/remote-upload-contract';
 import type {
   AppFileDragPayload,
   ClipboardImageResult,
@@ -16,7 +19,16 @@ import type {
   StageFileRequest,
 } from '@shared/terminal-drop-contract';
 
-type DropChannel = 'drops:resolve-app-file' | 'drops:stage-file' | 'drops:stage-clipboard-image';
+type DropChannel =
+  | 'drops:resolve-app-file'
+  | 'drops:stage-file'
+  | 'drops:stage-clipboard-image'
+  | 'drops:stat-app-file';
+
+/** A located Files-tree file: `StatAppFileResult` plus the absolute path, for main-process readers only. */
+export type LocatedAppFile =
+  | { readonly kind: 'ok'; readonly path: string; readonly name: string; readonly size: number; readonly isDirectory: boolean }
+  | { readonly kind: 'failed'; readonly reason: string };
 
 const MAX_NAME_CHARS = 1024;
 const MAX_MIME_CHARS = 255;
@@ -57,13 +69,33 @@ export function resolveWithinRoot(root: string, relPath: string): ResolveAppFile
 }
 
 /**
+ * Resolves a Files-tree drag payload with the same containment as
+ * `drops:resolve-app-file` and stats it (symlinks followed, as a read would).
+ * The absolute path never goes back to the renderer; the upload client uses it
+ * to read the file in main (AC-D2).
+ */
+export async function locateAppFile(s: Pick<Services, 'projects'>, req: unknown): Promise<LocatedAppFile> {
+  if (!isAppFilePayload(req)) return { kind: 'failed', reason: 'invalid request' };
+  const project = s.projects.get(req.projectId);
+  if (!project) return { kind: 'failed', reason: `unknown project ${req.projectId}` };
+  const resolved = resolveWithinRoot(project.path, req.relPath);
+  if (resolved.kind === 'failed') return resolved;
+  try {
+    const st = await stat(resolved.path);
+    return { kind: 'ok', path: resolved.path, name: basename(resolved.path), size: st.size, isDirectory: st.isDirectory() };
+  } catch (err) {
+    return { kind: 'failed', reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
  * Logs a non-staged outcome at debug, so failed drops leave a trace without
  * the file contents. These are user-driven validation outcomes — invalid
  * request, unknown project, path outside project, too-large — surfaced to
  * the renderer as toasts; warn would flood the log on every rejected drop
- * (logs showed 700+ of these last week).
+ * (logs showed 700+ of these last week, kept at debug deliberately).
  */
-function logged<R extends ClipboardImageResult | ResolveAppFileResult>(
+function logged<R extends ClipboardImageResult | ResolveAppFileResult | StatAppFileResult>(
   op: DropChannel,
   result: R,
 ): R {
@@ -106,5 +138,10 @@ export const dropHandlers: { [C in DropChannel]: Handler<C> } = {
     }
     if (png === null) return { kind: 'no-image' };
     return logged('drops:stage-clipboard-image', await s.dropStaging.stagePastedImage(png));
+  },
+  'drops:stat-app-file': async (s, req) => {
+    const located = await locateAppFile(s, req);
+    if (located.kind === 'failed') return logged('drops:stat-app-file', located);
+    return { kind: 'ok', name: located.name, size: located.size, isDirectory: located.isDirectory };
   },
 };

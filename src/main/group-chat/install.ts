@@ -91,7 +91,14 @@ export function installGroupChat(o: {
 
   const service = new GroupChatService({
     repo: new GroupsRepo(services.db),
-    userName: () => services.metaproject?.currentUserName?.() || 'You',
+    // Metaproject is no longer a declared field on Services (Frits PR #16 moved it into the shared session
+    // service). We still read a `currentUserName()` here when it's been injected (unit tests do), so the group
+    // chat's "Martin: …" turn label works. In production the shared session will eventually feed the display
+    // name through; for now we fall back to 'You'.
+    userName: () => {
+      const injected = (services as unknown as { metaproject?: { currentUserName?: () => string | null } }).metaproject;
+      return injected?.currentUserName?.() || 'You';
+    },
     projectName: (id) => services.projects.get(id)?.name ?? `project ${id}`,
     projectPath: (id) => services.projects.get(id)?.path ?? process.cwd(),
     claudeSessionOf,

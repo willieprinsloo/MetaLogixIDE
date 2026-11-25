@@ -6,7 +6,7 @@ with the IDE layer they've been missing: a shared project view, live file
 editor, structured activity log across shells, P2P discovery of your other
 dev machines, and a built-in bridge to [metaproject].
 
-Built on Electron 32 + React 18 + TypeScript.
+Built on Electron 43, React 18, and TypeScript. The desktop app requires macOS 12 or later on Mac.
 
 ## What it does
 
@@ -14,12 +14,18 @@ Built on Electron 32 + React 18 + TypeScript.
 - Multi-tab shells per project, each running Claude, OpenAI Codex or
   opencode, or a custom command you save per-project. Agent shells resume
   their last session in the project when reopened.
+- On desktop, Settings → General → Terminal lets you choose xterm.js
+  (the default) or Ghostty (WASM). The choice applies when you open or
+  reopen a terminal view. If Ghostty fails, the view falls back to
+  xterm.js without restarting the shell.
 - Project switcher, file finder, prompt library, cross-shell scrollback
   search, port detection, hot/hanging shell watchdog.
 - Shared agent memory: every CLI tool call, user prompt, and turn-end is
   appended to `<project>/.metaide/activity.jsonl` so multiple shells on
   one project see each other's work in a single live timeline. Tail it
-  from any terminal with `tail -f .metaide/activity.jsonl`.
+  from any terminal with `tail -f .metaide/activity.jsonl`. On by default;
+  turn it off with Settings > General > Workspace > "Record agent activity",
+  which stops new log lines and hides the Activity tab (existing logs are kept).
 
 ### Rich file viewers
 - Markdown editor + preview with `⌘+` / `⌘-` / `⌘0` zoom and
@@ -42,11 +48,30 @@ and shell, the remote ones open a remote pane.
 - Long-lasting connections: known devices are dialled eagerly on startup
   with exponential backoff; one side revoking is an explicit `peer_revoked`
   wire message.
+- Agent notifications follow you. When Claude needs input or finishes on one
+  machine, the notification appears on the paired machine you used most
+  recently, and clicking it opens that remote shell.
+- Remote terminals behave like local ones for the clipboard. Text a program
+  copies (OSC 52, as Claude Code does on Linux) lands on your clipboard, and
+  Option+drag selects while a program tracks the mouse. Dropping a file or
+  pasting an image sends it to that machine (up to 50 MB; files over 10 MB
+  ask first) and types its path there.
 
-### metaproject integration
-First-class bridge to the MetaLogix metaproject board: project linking,
-chat pane fed by the metaproject socket, status-bar badges for the active
-project.
+### Mobile companion
+A React Native app in [`mobile/`](mobile/README.md) pairs with your machines as a
+viewer by scanning a QR code. Swipe between machines, see each one's active
+projects, tap a project to open its terminal, and dictate into it by voice.
+
+### Metaproject integration
+
+1. Open **Project Settings** for the local folder. Under **Metaproject assignment**, select a project and save the link.
+2. Select **Board** to open the Metaproject web Board in the IDE. Use **Open in Browser** for the same project in your default browser. The browser has its own sign-in.
+
+Board, Chat, and the assignment picker use one IDE sign-in. Select **Remember me** to restore it on restart through the OS credential store. Without it, access ends when you quit the IDE. Old saved passwords require re-entry. **Sign out and forget** in Metaproject settings clears local access even when the service is offline.
+
+If startup cannot reach the service, choose **Retry remembered sign-in** once you are back online. If the IDE cannot remove the saved sign-in, it still signs you out locally and reports the storage problem. Retry forgetting before relying on the next restart to stay signed out.
+
+You can replace or remove the assignment in Project Settings. Removal changes only the local `.metaproject.yaml`; it does not delete the remote project. A link belongs to the service where you saved it. Changing the service signs you out and does not transfer the link to the new service.
 
 ### `.metaide/` project convention
 Check into git to make the project "just work" on every teammate's machine:
@@ -55,7 +80,7 @@ Check into git to make the project "just work" on every teammate's machine:
 <project-root>/.metaide/
 ├── env                    # dotenv overlay merged into every shell spawn
 ├── cli-profiles.json      # per-project CLI catalog (JSON array of {name, argv, env?, icon?})
-└── activity.jsonl         # written by the IDE — append-only, agent-shared timeline
+└── activity.jsonl         # written by the IDE — append-only, agent-shared timeline (unless turned off in Settings)
 ```
 
 Precedence: `inherited env < app settings < .metaide/env < template env <
@@ -64,18 +89,22 @@ globals and are shadowed by per-user project profiles.
 
 ## Development
 
+Use Node.js 24 and pnpm 11. The install step downloads Electron and prepares its native modules.
+
 ```bash
 pnpm install            # one-time
 pnpm dev                # dev + HMR
 pnpm typecheck          # TypeScript check across node + web
 pnpm test               # vitest
-pnpm dist:mac           # package a signed DMG + zip (arm64 + x64)
+pnpm dist:mac           # package a DMG and ZIP (arm64 and x64)
 ```
 
-If better-sqlite3 complains about `NODE_MODULE_VERSION`:
-- `pnpm rebuild better-sqlite3` — for CLI node (tests)
-- `pnpm postinstall` or `./node_modules/.bin/electron-rebuild -f -w better-sqlite3`
-  — for Electron (dev + packaging)
+SQLite uses the platform binary included in `better-sqlite3`. Run `pnpm rebuild:electron`
+to rebuild `node-pty` for the installed Electron version.
+
+The macOS packaging step ad-hoc signs the app bundle so macOS can accept native
+notifications. It does not use a Developer ID certificate, sign the DMG, or
+notarize the artifacts.
 
 ## Project layout
 
@@ -90,7 +119,7 @@ src/
 │   ├── drops/             # Drag-and-drop staging
 │   ├── git/               # Git integration
 │   ├── ipc/register.ts    # IPC channel wiring
-│   ├── metaproject/       # metaproject client
+│   ├── metaproject/       # Shared web session, assignment, Chat and hosted Board
 │   ├── notifications/     # OS notifications for Claude needs-input / finished
 │   ├── p2p/               # Relay client + RPC + WebRTC worker
 │   ├── pty/               # node-pty management, keep-alive, scrollback

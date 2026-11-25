@@ -285,7 +285,7 @@ test('switching the sidebar view animates the column to that view\'s width; drag
   await win.waitForTimeout(300); // the reset width animates; let it land before the next test measures
 });
 
-test('the status bar sits under the main sheet only (not the sidebar), with no top border; shown it rounds and insets the sheet, hidden the sheet runs square to the edges', async () => {
+test('hiding the status bar restores the bottom inset without changing the top, sides, or rounding', async () => {
   const setStatusBar = (value: boolean) => win.evaluate(async (v: boolean) => {
     const api = (window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<unknown> } }).api;
     await api.invoke('settings:set', { key: 'show_status_bar', value: v });
@@ -294,6 +294,9 @@ test('the status bar sits under the main sheet only (not the sidebar), with no t
   const main = win.locator('main').first();
   const height = await win.evaluate(() => window.innerHeight);
   const column = await box(win.getByTestId('main-column'));
+  const header = win.getByTestId(DIFF_TESTIDS.tabBar);
+  const headerBounds = await box(header);
+  expect.soft([await css(header, 'padding-top'), await css(header, 'padding-bottom')], 'equal vertical spacing around the toolbar controls').toEqual(['6px', '6px']);
   await expect(main.getByTestId('status-bar'), 'not inside the main sheet').toHaveCount(0);
   const m = await box(main);
   const bar = await box(win.getByTestId('status-bar'));
@@ -301,10 +304,15 @@ test('the status bar sits under the main sheet only (not the sidebar), with no t
   expect(bar.x, 'starts right of the sidebar').toBeGreaterThan(80);
   expect(await css(win.getByTestId('status-bar'), 'border-top-width'), 'no top border').toBe('0px');
   expect(Math.round(bar.y + bar.height), 'at the bottom of the window').toBe(height);
-  expect(Math.round(m.y + m.height), 'the sheet ends where the status bar starts').toBe(Math.round(bar.y));
-  expect(await radii(main), 'rounded while the status bar shows').toEqual(['14px', '14px', '14px', '14px']);
-  expect([await css(main, 'margin-top'), await css(main, 'margin-right')], 'inset while the status bar shows').toEqual(['8px', '8px']);
-  expect(await css(main, 'transition-property'), 'margin and rounding animate').toContain('border-radius');
+  async function expectSheet(bottom: number) {
+    expect.soft(await css(main, 'margin-bottom'), 'bottom inset').toBe(`${bottom}px`);
+    expect.soft(await radii(main), '14px radius at every corner').toEqual(['14px', '14px', '14px', '14px']);
+    const sheet = await box(main);
+    expect.soft([sheet.x, sheet.y, sheet.width], 'the sheet starts below the header without a second inset').toEqual([column.x + 8, headerBounds.y + headerBounds.height, column.width - 16]);
+    expect.soft(await css(main, 'border-top-width'), 'terminal outline stays visible').toBe('1px');
+  }
+  expect.soft(Math.round(m.y + m.height), '2px between the sheet and status bar').toBe(Math.round(bar.y) - 2);
+  await expectSheet(2);
   /** Largest document overflow (px) seen while the bar folds; any overflow shows window scrollbars. */
   const maxOverflowDuring = (value: boolean) => win.evaluate(async (v: boolean) => {
     const api = (window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<unknown> } }).api;
@@ -323,15 +331,17 @@ test('the status bar sits under the main sheet only (not the sidebar), with no t
   try {
     expect(await maxOverflowDuring(false), 'hiding never overflows the window (no scrollbars)').toBe(0);
     await expect(win.getByTestId('status-bar')).toHaveCount(0);
-    await expect.poll(async () => { const b = await box(main); return Math.round(b.y + b.height); }).toBe(height);
-    await expect.poll(() => radii(main), 'square on every window edge').toEqual(['0px', '0px', '0px', '0px']);
-    await expect.poll(async () => [await css(main, 'margin-top'), await css(main, 'margin-right')]).toEqual(['0px', '0px']);
+    const hidden = await box(main);
+    expect.soft(Math.round(hidden.y + hidden.height), '8px between the sheet and window bottom').toBe(height - 8);
+    expect.soft(Math.round(hidden.height - m.height), 'the sheet gains the status bar height less the restored inset').toBe(bar.height - (8 - 2));
+    await expectSheet(8);
     expect(await maxOverflowDuring(true), 'showing never overflows the window (no scrollbars)').toBe(0);
   } finally {
     await setStatusBar(true);
   }
   await expect(win.getByTestId('status-bar')).toBeVisible();
-  await win.waitForTimeout(300);
+  await expect.poll(async () => (await box(main)).height, 'showing the bar restores the original sheet height').toBeCloseTo(m.height, 0);
+  await expectSheet(2);
 });
 
 test('the project name and branch still show in the status bar and the OS window title', async () => {
@@ -468,12 +478,12 @@ test('AC1/AC3/AC10–AC13/AC15/AC25–AC28: chrome dimensions, badges and branch
 
         // AC25
         const main = win.locator('main').first();
-        expect(await radii(main), `${at} sheet radius (rounded while the status bar shows)`).toEqual(['14px', '14px', '14px', '14px']);
+        expect(await radii(main), `${at} sheet radius`).toEqual(['14px', '14px', '14px', '14px']);
         expect(await css(main, 'margin-right'), `${at} sheet right margin`).toBe('8px');
 
         // AC26: compact tabs (28px, 8px side padding) with more room around and between them.
         const tabBar = win.getByTestId(DIFF_TESTIDS.tabBar);
-        expect([await css(tabBar, 'padding-top'), await css(tabBar, 'padding-left'), await css(tabBar, 'column-gap')], `${at} tab bar spacing`).toEqual(['10px', '12px', '6px']);
+        expect([await css(tabBar, 'padding-top'), await css(tabBar, 'padding-bottom'), await css(tabBar, 'padding-left'), await css(tabBar, 'column-gap')], `${at} tab bar spacing`).toEqual(['6px', '6px', '12px', '6px']);
         for (const [label, tab] of [
           ['Shell', tabBar.getByRole('button', { name: 'Shell', exact: true })],
           ['Files', tabBar.getByRole('button', { name: 'Files', exact: true })],

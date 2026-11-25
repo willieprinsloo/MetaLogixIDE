@@ -21,9 +21,19 @@ const FROST_PLATFORMS = [
   ['linux', 'linux'],
 ] as const;
 const NO_FROST_PLATFORMS = ['win32', 'freebsd', '', undefined];
-const FROST_ATTRS = [FROST_ATTR.platform, FROST_ATTR.chromeFrost, FROST_ATTR.terminalFrost];
+const FROST_ATTRS = [FROST_ATTR.platform, FROST_ATTR.chromeFrost, FROST_ATTR.terminalFrost, FROST_ATTR.terminalOpacity];
 const ALL_ATTRS = [...FROST_ATTRS, FROST_ATTR.transparentWindow];
 const LINUX_WINDOW = { [FROST_ATTR.transparentWindow]: '' };
+
+it('restores a validated Custom opacity at first paint, and clears it outside Custom mode', () => {
+  const el = fakeTarget();
+  const custom = parseFrostQuery('?terminalFrost=custom&terminalOpacity=35');
+  applyRootFlags(el, { platform: 'darwin', ...custom });
+  expect(el.set[FROST_ATTR.terminalOpacity]).toBe('35');
+  expect(parseFrostQuery('?terminalFrost=custom&terminalOpacity=200').terminalOpacity).toBe(70);
+  applyRootFlags(el, { platform: 'darwin', ...custom, terminalFrost: 'strong' });
+  expect(el.set[FROST_ATTR.terminalOpacity]).toBeUndefined();
+});
 
 describe('applyRootFlags — platform', () => {
   it.each(FROST_PLATFORMS)('sets data-platform to the frost platform on %s with frost chrome on', (platform, value) => {

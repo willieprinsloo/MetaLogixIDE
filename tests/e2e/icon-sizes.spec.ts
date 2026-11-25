@@ -265,9 +265,6 @@ test('AC6: every 20-24px icon button renders a 12x12 glyph; every 16px micro clo
   await expectIconSize(tasksRefresh.locator('svg'), 12, 'tasks refresh icon');
   await win.getByTestId('ab-projects').click();
 
-  // Current-project unload chip (16px micro control).
-  await expectIconSize(win.getByTestId('unload-current').locator('svg'), 10, 'current-project unload icon');
-
   // Sidebar row unload (16px micro control): hover the row so the control
   // is in the DOM with a real box (it is opacity-0 but still laid out for
   // the selected row, per Sidebar.tsx — the selected row keeps opacity-100).
@@ -407,8 +404,8 @@ test('AC13: icon-only buttons in AC4-AC6 keep their icon centred (±0.5px) in th
   // AC6: a 24px icon button and a 16px micro control.
   const newShell = win.getByTestId('tabbar-new-shell');
   await expectCentred(newShell.locator('svg'), newShell, 'tabbar-new-shell icon');
-  const unloadCurrent = win.getByTestId('unload-current');
-  await expectCentred(unloadCurrent.locator('svg'), unloadCurrent, 'unload-current icon');
+  const rowUnload = win.getByTestId('section-in-use').getByTestId('row-unload');
+  await expectCentred(rowUnload.locator('svg'), rowUnload, 'sidebar row-unload icon');
 
   // AC5: a 28px dialog close and the 36px Settings close.
   await win.getByTestId('sidebar-add-btn').click();

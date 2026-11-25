@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20.0.0",
-    "pnpm": ">=9.0.0"
+    "node": "24.x",
+    "pnpm": "11.x"
   },
   "main": "out/main/index.js",
   "scripts": {
@@ -13,11 +13,12 @@
     "dev:solo": "METAIDE_USERDATA_DIR=/tmp/metaide-dev-userdata electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite preview",
-    "rebuild:electron": "electron-rebuild -f -w better-sqlite3 -w node-pty",
+    "rebuild:electron": "electron-rebuild -f -o node-pty",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "lint": "eslint . --ext .ts,.tsx",
     "format": "prettier --write .",
     "test": "ELECTRON_RUN_AS_NODE=1 electron node_modules/vitest/vitest.mjs run",
+    "test:terminal-artifacts": "node --test tests/packaging/check-desktop-terminal-artifacts.mjs",
     "test:watch": "ELECTRON_RUN_AS_NODE=1 electron node_modules/vitest/vitest.mjs",
     "test:e2e": "playwright test",
     "test:e2e:full": "electron-vite build && playwright test",
@@ -28,11 +29,12 @@
     "dist:linux": "electron-vite build && electron-builder --linux --x64 && pnpm rebuild:electron",
     "dist:all": "node scripts/dist-all.mjs && pnpm rebuild:electron",
     "gen:icons": "node scripts/gen-icons.mjs",
-    "postinstall": "(test -d node_modules/node-pty/prebuilds/darwin-arm64 && chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper || true) && electron-rebuild -f -w better-sqlite3 -w node-pty"
+    "postinstall": "install-electron && (test -d node_modules/node-pty/prebuilds/darwin-arm64 && chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper || true) && pnpm rebuild:electron"
   },
   "build": {
     "appId": "com.metalogix.metaide",
     "productName": "MetaLogix IDE",
+    "afterPack": "scripts/sign-macos-bundle.mjs",
     "directories": {
       "output": "dist"
     },
@@ -44,6 +46,8 @@
     ],
     "files": [
       "out/**/*",
+      "resources/ghostty/**/*",
+      "resources/claude-hooks/**/*",
       "migrations/**/*",
       "package.json",
       "!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,test,__tests__,tests,powered-test,example,examples,*.d.ts,tsconfig*.json}",
@@ -153,17 +157,19 @@
     "@xterm/addon-webgl": "^0.18.0",
     "@xterm/headless": "^5.5.0",
     "@xterm/xterm": "^5.5.0",
-    "better-sqlite3": "^11.0.0",
+    "better-sqlite3": "13.2.0",
     "chokidar": "^3.6.0",
     "electron-log": "^5.4.4",
     "fuse.js": "^7.0.0",
     "highlight.js": "^11.11.1",
     "katex": "0.16.47",
+    "keytar": "^7.9.0",
     "markdown-it": "^14.3.0",
     "mermaid": "11.17.2",
     "motion": "14.0.0",
     "node-pty": "^1.0.0",
     "pdfjs-dist": "^6.5.438",
+    "qrcode-generator": "^2.0.4",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "socket.io-client": "^4.8.3",
@@ -171,6 +177,9 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
+    "@gespenst/core": "0.2.0",
+    "@gespenst/xterm": "0.2.0",
+    "@noble/hashes": "^2.4.0",
     "@playwright/test": "^1.47.0",
     "@roamhq/wrtc": "^0.10.0",
     "@testing-library/dom": "^10.4.2",
@@ -186,7 +195,8 @@
     "@vitest/coverage-v8": "2.1.9",
     "@vitest/ui": "^2.0.0",
     "autoprefixer": "^10.4.0",
-    "electron": "^32.0.0",
+    "effect": "^4.1.4",
+    "electron": "43.8.12",
     "electron-builder": "^24.0.0",
     "electron-vite": "^2.3.0",
     "eslint": "^9.0.0",

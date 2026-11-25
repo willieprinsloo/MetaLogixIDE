@@ -2,7 +2,7 @@
 import type { ShellKey } from '@main/claude-hooks/session-registry';
 import type { HookSource } from '@main/claude-hooks/hook-fanout';
 import type { ClaudeHookHistory } from './claude-hook-history';
-import { ClaudeNotifier, type ClaudeNotifyToggle } from './claude-notifier';
+import { ClaudeNotifier, type ClaudeNotice, type ClaudeNotifyToggle } from './claude-notifier';
 import { OsNotifications, type NotificationConstructor } from './os-notifications';
 import type { ViewedShells, WindowView } from './viewed-shells';
 
@@ -44,6 +44,8 @@ export interface InstallDeps {
   notificationClass: NotificationConstructor;
   windows: AppWindows;
   broadcast(channel: 'shell:focus-request', payload: ShellKey): void;
+  /** Hands a notice to the fleet's active IDE instance; true skips the local notification. */
+  forwardToFleet?: (shell: ShellKey, notice: ClaudeNotice) => boolean;
 }
 
 const live = (w: NavWindow | null): NavWindow | null => (w && !w.isDestroyed() ? w : null);
@@ -57,6 +59,15 @@ export function liveWindowView(windows: AppWindows): WindowView {
   };
 }
 
+/** Restores, shows and focuses the main window when it is still open. */
+export function raiseMain(windows: Pick<AppWindows, 'main'>): void {
+  const main = live(windows.main());
+  if (!main) return;
+  if (main.isMinimized()) main.restore();
+  main.show();
+  main.focus();
+}
+
 /**
  * Notification-click navigation: a popped-out shell's popout is shown and
  * focused (AC12); otherwise main is restored, shown and focused, and the
@@ -67,12 +78,7 @@ export function createNavigation(deps: NavigationDeps): (shell: ShellKey) => voi
   return (shell) => {
     const popout = live(deps.windows.popout(shell));
     if (popout) { popout.show(); popout.focus(); return; }
-    const main = live(deps.windows.main());
-    if (main) {
-      if (main.isMinimized()) main.restore();
-      main.show();
-      main.focus();
-    }
+    raiseMain(deps.windows);
     if (deps.isAlive(shell)) deps.broadcast('shell:focus-request', { ...shell });
   };
 }
@@ -87,6 +93,7 @@ export function installClaudeNotifications(deps: InstallDeps): ClaudeNotifier {
     navigate: createNavigation({ windows: deps.windows, isAlive, broadcast: deps.broadcast }),
     settings: deps.settings,
     projectName: (id) => deps.projects.get(id)?.name ?? null,
+    forward: deps.forwardToFleet ?? (() => false),
   });
   deps.hooks.onHook((hook) => deps.history.handle(hook));
   deps.history.onHookApplied((applied) => notifier.handle(applied));

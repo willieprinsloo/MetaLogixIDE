@@ -1,0 +1,16 @@
+{
+  // The protocol core is platform-free and is also run by the repo root's vitest, where the Expo
+  // packages (and so `expo/tsconfig.base`, which ../../tsconfig.json extends) are not installed.
+  // This standalone config is the nearest one for files here, so that run never needs Expo.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true
+  },
+  "include": ["./**/*.ts"]
+}

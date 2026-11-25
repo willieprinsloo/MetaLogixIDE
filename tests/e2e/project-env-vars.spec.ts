@@ -151,7 +151,7 @@ test('Env tab journey: empty state, notices, save, tab switch, plain shell sees 
   // AC1: there is no separate Env tab; the editor is a section of the Settings tab, with no header button or modal.
   await expect(win.getByRole('button', { name: 'Shell', exact: true })).toBeVisible();
   await expect(win.getByRole('button', { name: 'Files', exact: true })).toBeVisible();
-  await expect(envTab(win)).toHaveText(PROJECT_SETTINGS_COPY.tab);
+  await expect(envTab(win)).toHaveAccessibleName(PROJECT_SETTINGS_COPY.tab);
   await expect(win.getByRole('button', { name: 'Env', exact: true })).toHaveCount(0);
   await expect(win.getByTestId(ENV_TESTIDS.panel)).toHaveCount(0);
   await expect(win.getByRole('dialog')).toHaveCount(0);

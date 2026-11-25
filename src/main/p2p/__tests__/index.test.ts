@@ -1,17 +1,18 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 vi.mock('electron', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  app: { getVersion: () => '9.9.9-test' },
+  app: { getVersion: () => '9.9.9-test', getPath: (name: string) => join(tmps.at(-1) ?? '', `electron-${name}`) },
   clipboard: { readImage: () => ({ isEmpty: () => true }) },
 }));
 
 import { createP2P, parseSessionToken, ONLINE_GRACE_MS, type ClientCfg, type P2PHandle, type SignalingClient } from '../index';
 import { buildServices, type Services } from '../../services';
+import { handlers } from '../../ipc/register';
 import { loadKnownDevices, addKnownDevice, canonicalPubHex } from '../identity';
 import { doNoiseXxHandshake, pairingPrologue } from '../pairing';
 import { loadHostIdentity } from '../host-identity';
@@ -40,6 +41,8 @@ class FakeRelay {
   sessions = new Map<string, { host: FakeClient; viewer: FakeClient }>();
   seq = 0;
   codeSeq = 0;
+  /** As mrsignald does: one session per host, so a new request closes that host's previous session at both ends. */
+  supersede = false;
   sent: Array<{ from: string; env: Envelope }> = [];
 
   newClient(name: string, cfg: ClientCfg): FakeClient {
@@ -60,6 +63,15 @@ class FakeRelay {
       case 'session_request': {
         const host = d.code ? this.hosts.get(d.code) : undefined;
         if (!host || host.status !== 'connected') return deliver(from, { type: 'session_denied', data: { host: d.code, reason: 'host offline' } });
+        if (this.supersede) {
+          for (const [old, s] of [...this.sessions]) {
+            if (s.host !== host) continue;
+            this.sessions.delete(old);
+            const close = { type: 'session_close', data: { session: old, reason: 'superseded by a new connection' } };
+            deliver(s.host, close);
+            deliver(s.viewer, close);
+          }
+        }
         const session = `s${++this.seq}`;
         this.sessions.set(session, { host, viewer: from });
         deliver(host, { type: 'session_invite', data: { session, operator: 'op-1', requires_key: false, ice_servers: [], token } });
@@ -146,7 +158,7 @@ function makeNode(relay: FakeRelay, reg: TransportRegistry, name: string, extra:
     appVersion: '9.9.9-test',
     ...extra,
   });
-  const node = { name, home, services, p2p, client: () => clients.find((c) => c.cfg.role === 'host'), clients, events };
+  const node = { name, home: extra.homeDir ?? home, services, p2p, client: () => clients.find((c) => c.cfg.role === 'host'), clients, events };
   nodes.push(node);
   return node;
 }
@@ -155,13 +167,40 @@ const idOf = (n: Node) => canonicalPubHex(n.services.p2p!.deviceKey.pub);
 const identityFile = (n: Node) => join(n.home, '.metaide', 'host-identity.json');
 /** Resolves once the node's host connection has been minted a code and persisted it. */
 const hostCode = async (n: Node) => { await waitFor(() => existsSync(identityFile(n))); return loadHostIdentity(identityFile(n))!.code; };
-const known = (n: Node) => loadKnownDevices(join(n.home, '.metaide', 'known_devices.json'));
+const knownFile = (n: Node) => join(n.home, '.metaide', 'known_devices.json');
+const known = (n: Node) => loadKnownDevices(knownFile(n));
 
 /** Pairs viewer -> host (host trusts viewer, viewer trusts host). */
 async function pair(host: Node, viewer: Node) {
   await hostCode(host);
   const { code } = host.p2p.api.generatePairCode();
   return { code, result: await viewer.p2p.api.redeemPairCode(code) };
+}
+
+/** Change only the first pairing metadata frame; the relay, Noise identities and hub stay real to this fixture. */
+async function pairWithMetadata(host: Node, viewer: Node, metadata: { viewer?: true; workspaceAccess?: true }): ReturnType<typeof pair> {
+  const hello = viewer.p2p.api.getSettings().deviceName;
+  const send = SecureTransport.prototype.send;
+  const hook = vi.spyOn(SecureTransport.prototype, 'send').mockImplementation(function (this: SecureTransport, bytes) {
+    const frame = new TextDecoder().decode(bytes);
+    if (frame.startsWith(`{"hello":${JSON.stringify(hello)}`)) {
+      send.call(this, new TextEncoder().encode(JSON.stringify({ hello, ...metadata })));
+    } else {
+      send.call(this, bytes);
+    }
+  });
+  try {
+    return await pair(host, viewer);
+  } finally {
+    hook.mockRestore();
+  }
+}
+
+function workspaceProject(host: Node): number {
+  const path = join(host.home, 'workspace-project');
+  mkdirSync(path);
+  writeFileSync(join(path, 'fixture.txt'), 'host file');
+  return host.services.projects.upsert(host.services.roots.add(host.home).id, path, 'Workspace').id;
 }
 
 beforeEach(() => { tmps = []; nodes = []; });
@@ -286,6 +325,93 @@ describe('pairing over the full stack', () => {
     expect((await host.p2p.api.fleetList())[0]).toMatchObject({ deviceId: idOf(viewer), name: 'Laptop' });
   });
 
+  test('two viewers of one host both stay connected when the relay supersedes the older session', async () => {
+    const relay = new FakeRelay();
+    relay.supersede = true;
+    const reg = new TransportRegistry();
+    const host = makeNode(relay, reg, 'host');
+    const laptop = makeNode(relay, reg, 'laptop');
+    const phone = makeNode(relay, reg, 'phone');
+    for (const n of [host, laptop, phone]) await n.p2p.start();
+    await laptop.p2p.api.setSettings({ serveEnabled: false });
+    await phone.p2p.api.setSettings({ serveEnabled: false });
+    expect((await pair(host, laptop)).result).toEqual({ ok: true });
+    expect((await pair(host, phone)).result).toEqual({ ok: true });
+
+    const dials = (n: Node) => n.clients.filter((c) => c.cfg.role === 'viewer').length;
+    await laptop.p2p.api.rpcCall(idOf(host), 'device.info', {});
+    const laptopDials = dials(laptop);
+    // The phone asks for the same host: the relay closes the laptop's session at both ends.
+    await phone.p2p.api.rpcCall(idOf(host), 'device.info', {});
+    const phoneDials = dials(phone);
+    await waitFor(() => relay.sent.length > 0 && [...relay.sessions.values()].length === 1);
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Neither link was torn down: both keep answering over the connection they already had.
+    for (let i = 0; i < 3; i++) {
+      await expect(laptop.p2p.api.rpcCall(idOf(host), 'device.info', {})).resolves.toBeDefined();
+      await expect(phone.p2p.api.rpcCall(idOf(host), 'device.info', {})).resolves.toBeDefined();
+    }
+    expect(dials(laptop)).toBe(laptopDials);
+    expect(dials(phone)).toBe(phoneDials);
+    expect((await host.p2p.api.fleetList()).every((d) => d.online)).toBe(true);
+  });
+
+  test('an agent notice goes to the paired machine in use, and stays on the host once the host is used again', async () => {
+    const relay = new FakeRelay();
+    const reg = new TransportRegistry();
+    const host = makeNode(relay, reg, 'host');
+    const notices: unknown[] = [];
+    let viewerIdle: number | null = 0;
+    const viewer = makeNode(relay, reg, 'viewer', { localIdleMs: () => viewerIdle, onNotice: (n) => notices.push(n) });
+    await host.p2p.start();
+    await viewer.p2p.start();
+    await host.p2p.api.setSettings({ deviceName: 'Tower' });
+    expect((await pair(host, viewer)).result).toEqual({ ok: true });
+    await viewer.p2p.api.rpcCall(idOf(host), 'device.info', {});
+
+    const notice = { kind: 'finished', projectId: 3, shellIndex: 1, projectName: 'api', body: 'Claude finished and is waiting for you' } as const;
+    const router = host.services.noticeRouter!;
+    // The host IDE has not been used in this run; the viewer subscribed on connect and reported it is in use.
+    await waitFor(() => router.route(notice));
+    await waitFor(() => notices.length >= 1);
+    expect(notices[0]).toEqual({ ...notice, deviceId: idOf(host), deviceName: 'Tower' });
+
+    // Someone sits down at the host: it was used after the viewer last reported.
+    await new Promise((r) => setTimeout(r, 5));
+    host.services.activity!.sample(true, 0, Date.now());
+    const before = notices.length;
+    expect(router.route(notice)).toBe(false);
+
+    // Back at the viewer: a focus change is reported at once, and the next notice follows.
+    await new Promise((r) => setTimeout(r, 5));
+    viewer.p2p.api.presenceChanged();
+    await waitFor(() => router.route(notice));
+    await waitFor(() => notices.length > before);
+
+    // A viewer that says it was never used is passed over.
+    viewerIdle = null;
+    viewer.p2p.api.presenceChanged();
+    await waitFor(() => !router.route(notice));
+
+    // A renderer cannot reach either method through the generic RPC bridge.
+    await expect(viewer.p2p.api.rpcCall(idOf(host), 'presence.set', { idleMs: 0 })).rejects.toThrow('unknown_method');
+    await expect(viewer.p2p.api.rpcCall(idOf(host), 'notices.subscribe', {})).rejects.toThrow('unknown_method');
+  });
+
+  test('a viewer given no activity source asks for no notices', async () => {
+    const relay = new FakeRelay();
+    const reg = new TransportRegistry();
+    const host = makeNode(relay, reg, 'host');
+    const viewer = makeNode(relay, reg, 'viewer');
+    await host.p2p.start();
+    await viewer.p2p.start();
+    expect((await pair(host, viewer)).result).toEqual({ ok: true });
+    await viewer.p2p.api.rpcCall(idOf(host), 'device.info', {});
+    await new Promise((r) => setTimeout(r, 30));
+    expect(host.services.noticeRouter!.route({ kind: 'finished', projectId: 1, shellIndex: 0, projectName: null, body: 'x' })).toBe(false);
+  });
+
   test('a viewer that does not serve still pairs; the host just has no code to dial back', async () => {
     const relay = new FakeRelay();
     const reg = new TransportRegistry();
@@ -297,6 +423,12 @@ describe('pairing over the full stack', () => {
     expect((await pair(host, viewer)).result).toEqual({ ok: true });
     await waitFor(() => known(host).length === 1);
     expect(known(host)[0]!.code).toBeUndefined();
+    // Nothing can dial it, so it is listed as a viewer (revocable) rather than a fleet machine.
+    expect(await host.p2p.api.fleetList()).toEqual([
+      expect.objectContaining({ deviceId: idOf(viewer), name: 'Laptop', viewer: true, workspaceAccess: false }),
+    ]);
+    // The machine it joined is dialable, so on its side that one is an ordinary fleet machine.
+    expect((await viewer.p2p.api.fleetList())[0]!.viewer).toBeUndefined();
   });
 
   test('the pair modal code is the host code: joining your own code is refused, unknown codes are denied by the relay', async () => {
@@ -443,14 +575,14 @@ describe('auto-dial', () => {
 });
 
 describe('paired sessions', () => {
-  async function pairedFleet() {
+  async function pairedFleet(serveEnabled = false, hostOpts: Parameters<typeof createP2P>[1] = {}) {
     const relay = new FakeRelay();
     const reg = new TransportRegistry();
-    const host = makeNode(relay, reg, 'host', { auditLogPath: undefined });
+    const host = makeNode(relay, reg, 'host', hostOpts);
     const viewer = makeNode(relay, reg, 'viewer');
     await host.p2p.start();
     await viewer.p2p.start();
-    await viewer.p2p.api.setSettings({ serveEnabled: false });
+    await viewer.p2p.api.setSettings({ serveEnabled });
     const { result } = await pair(host, viewer);
     expect(result).toEqual({ ok: true });
     await waitFor(() => known(host).length === 1);
@@ -462,6 +594,163 @@ describe('paired sessions', () => {
     await expect(viewer.p2p.api.rpcCall(idOf(host), 'shells.list', { projectId: 1 })).resolves.toEqual([]);
     await expect(viewer.p2p.api.rpcCall(idOf(host), 'device.info', {})).resolves.toMatchObject({ platform: process.platform });
     expect((await viewer.p2p.api.fleetList())[0]!.online).toBe(true);
+  });
+
+  test.each([true, false])('workspace permission is independent of peer serving (%s) and tracked on the live hub', async (serving) => {
+    const { host, viewer, relay } = await pairedFleet(serving);
+    const deviceId = idOf(viewer);
+    const projectId = workspaceProject(host);
+    const read = () => viewer.p2p.api.rpcCall(idOf(host), 'workspace.fileRead', { projectId, relPath: 'fixture.txt' });
+    const set = (allowed: boolean) => handlers['p2p:set-workspace-access'](host.services, { deviceId, allowed });
+    const dialCount = () => relay.sent.filter(({ env }) => env.type === 'session_request').length;
+
+    expect((await host.p2p.api.fleetList())[0]?.workspaceAccess).toBe(false);
+    expect(Boolean(known(host)[0]?.code)).toBe(serving);
+    await expect(read()).rejects.toMatchObject({ code: 'forbidden' });
+    const dials = dialCount();
+    await expect(set(true)).resolves.toEqual({ ok: true });
+    expect((await host.p2p.api.fleetList())[0]?.workspaceAccess).toBe(true);
+    expect(known(host)[0]?.workspaceAccess).toBe(true);
+    await expect(read()).resolves.toMatchObject({ content: 'host file' });
+
+    await expect(set(false)).resolves.toEqual({ ok: true });
+    expect((await host.p2p.api.fleetList())[0]?.workspaceAccess).toBe(false);
+    await expect(read()).rejects.toMatchObject({ code: 'forbidden' });
+    await expect(viewer.p2p.api.rpcCall(idOf(host), 'shells.list', { projectId })).resolves.toEqual([]);
+    expect(dialCount()).toBe(dials);
+  });
+
+  test('wires an overridden runtime identity location through the established workspace boundary', async () => {
+    const homeDir = mkdtempSync(join(tmpdir(), 'p2p-runtime-'));
+    const logDir = mkdtempSync(join(tmpdir(), 'p2p-configured-audit-'));
+    tmps.push(homeDir, logDir);
+    const { host, viewer } = await pairedFleet(false, { homeDir, auditLogPath: join(logDir, 'custom-audit.log') });
+    expect(host.services.homeDir).not.toBe(homeDir);
+    expect(known(host)).toContainEqual(expect.objectContaining({ pub: idOf(viewer) }));
+    await expect(handlers['p2p:set-workspace-access'](host.services, { deviceId: idOf(viewer), allowed: true }))
+      .resolves.toEqual({ ok: true });
+
+    const safeId = workspaceProject(host);
+    const root = host.services.roots.add(host.services.homeDir);
+    const runtimeId = host.services.projects.upsert(root.id, join(homeDir, '.metaide'), 'Runtime storage').id;
+    const auditId = host.services.projects.upsert(root.id, logDir, 'Audit home').id;
+    const info = (projectId: number) => viewer.p2p.api.rpcCall(idOf(host), 'workspace.info', { projectId });
+    const denied = { code: 'forbidden', message: 'this project is not available through remote workspace' };
+    await expect(info(runtimeId)).rejects.toMatchObject(denied);
+    await expect(info(auditId)).rejects.toMatchObject(denied);
+    await expect(info(safeId)).resolves.toEqual({ activityEnabled: true });
+    await expect(viewer.p2p.api.rpcCall(idOf(host), 'shells.list', { projectId: runtimeId })).resolves.toEqual([]);
+  });
+
+  test('protects injected diagnostic directories outside userData on an authorized runtime link', async () => {
+    const external = mkdtempSync(join(tmpdir(), 'p2p-diagnostics-'));
+    tmps.push(external);
+    const logDir = join(external, 'diagnostic-logs');
+    const crashDumps = join(external, 'crash-dumps');
+    const dumpChild = join(crashDumps, 'completed');
+    mkdirSync(logDir);
+    mkdirSync(dumpChild, { recursive: true });
+    const logFile = join(logDir, 'main.log');
+    writeFileSync(logFile, 'diagnostic fixture');
+    writeFileSync(join(logDir, 'main.old.log'), 'rotation fixture');
+
+    const { host, viewer } = await pairedFleet(false, { workspaceDiagnosticPaths: () => ({ logFile, crashDumps }) });
+    await host.p2p.api.setWorkspaceAccess(idOf(viewer), true);
+    const safeId = workspaceProject(host);
+    const root = host.services.roots.add(external);
+    const logId = host.services.projects.upsert(root.id, logDir, 'Diagnostic logs').id;
+    const dumpId = host.services.projects.upsert(root.id, dumpChild, 'Crash dump child').id;
+    const info = (projectId: number) => viewer.p2p.api.rpcCall(idOf(host), 'workspace.info', { projectId });
+    const denied = { code: 'forbidden', message: 'this project is not available through remote workspace' };
+    await expect(info(logId)).rejects.toMatchObject(denied);
+    await expect(info(dumpId)).rejects.toMatchObject(denied);
+    await expect(viewer.p2p.api.rpcCall(idOf(host), 'workspace.fileRead', { projectId: safeId, relPath: 'fixture.txt' }))
+      .resolves.toMatchObject({ content: 'host file' });
+  });
+
+  test('pairing metadata cannot grant workspace access and explicit mobile viewers are ineligible', async () => {
+    const relay = new FakeRelay();
+    const reg = new TransportRegistry();
+    const host = makeNode(relay, reg, 'host');
+    const phone = makeNode(relay, reg, 'phone');
+    await host.p2p.start();
+    await phone.p2p.start();
+    await host.p2p.api.setSettings({ deviceName: 'Tower' });
+    await phone.p2p.api.setSettings({ deviceName: 'Mobile', serveEnabled: false });
+    const projectId = workspaceProject(host);
+    const deviceId = idOf(phone);
+
+    expect((await pairWithMetadata(host, phone, { viewer: true, workspaceAccess: true })).result).toEqual({ ok: true });
+    await waitFor(() => known(host).length === 1);
+    expect((await host.p2p.api.fleetList())[0]).toMatchObject({ deviceId, viewer: true });
+    expect((await host.p2p.api.fleetList())[0]).not.toHaveProperty('workspaceAccess');
+    await expect(host.p2p.api.setWorkspaceAccess(deviceId, true)).rejects.toThrow('Viewer-only');
+    await expect(phone.p2p.api.rpcCall(idOf(host), 'workspace.info', { projectId })).rejects.toMatchObject({ code: 'forbidden' });
+    await expect(phone.p2p.api.rpcCall(idOf(host), 'shells.list', { projectId })).resolves.toEqual([]);
+
+    await phone.p2p.api.setSettings({ deviceName: 'Mobile renamed' });
+    expect((await pair(host, phone)).result).toEqual({ ok: true });
+    await waitFor(() => known(host)[0]?.name === 'Mobile renamed');
+    expect((await host.p2p.api.fleetList())[0]).not.toHaveProperty('workspaceAccess');
+    expect(known(host)[0]?.viewer).toBe(true);
+  });
+
+  test('re-pairing keeps host grants, and unpairing removes them', async () => {
+    const { host, viewer } = await pairedFleet();
+    const deviceId = idOf(viewer);
+    await host.p2p.api.setSettings({ deviceName: 'Tower' });
+    await viewer.p2p.api.setSettings({ deviceName: 'Peer' });
+    expect((await pairWithMetadata(host, viewer, { workspaceAccess: true })).result).toEqual({ ok: true });
+    await waitFor(() => known(host)[0]?.name === 'Peer');
+    expect((await host.p2p.api.fleetList())[0]?.workspaceAccess).toBe(false);
+
+    await host.p2p.api.setWorkspaceAccess(deviceId, true);
+    await viewer.p2p.api.setSettings({ deviceName: 'Peer renamed' });
+    expect((await pair(host, viewer)).result).toEqual({ ok: true });
+    await waitFor(() => known(host)[0]?.name === 'Peer renamed');
+    expect(known(host)[0]?.workspaceAccess).toBe(true);
+
+    await host.p2p.api.revokeDevice(deviceId);
+    expect(known(host)).toEqual([]);
+    expect((await pair(host, viewer)).result).toEqual({ ok: true });
+    await waitFor(() => known(host).length === 1);
+    expect((await host.p2p.api.fleetList())[0]?.workspaceAccess).toBe(false);
+  });
+
+  test('an explicit viewer-only classification removes a prior grant on an open connection', async () => {
+    const { host, viewer } = await pairedFleet();
+    await host.p2p.api.setSettings({ deviceName: 'Tower' });
+    await viewer.p2p.api.setSettings({ deviceName: 'Viewer' });
+    await host.p2p.api.setWorkspaceAccess(idOf(viewer), true);
+    const projectId = workspaceProject(host);
+    const info = () => viewer.p2p.api.rpcCall(idOf(host), 'workspace.info', { projectId });
+    await expect(info()).resolves.toMatchObject({ activityEnabled: expect.any(Boolean) });
+    expect((await pairWithMetadata(host, viewer, { viewer: true })).result).toEqual({ ok: true });
+    await waitFor(() => known(host)[0]?.viewer === true);
+    expect(known(host)[0]).not.toHaveProperty('workspaceAccess');
+    await expect(info()).rejects.toMatchObject({ code: 'forbidden' });
+  });
+
+  test('a live session fails closed if its persisted grant cannot be read', async () => {
+    const { host, viewer } = await pairedFleet();
+    await host.p2p.api.setWorkspaceAccess(idOf(viewer), true);
+    const projectId = workspaceProject(host);
+    const info = () => viewer.p2p.api.rpcCall(idOf(host), 'workspace.info', { projectId });
+    await expect(info()).resolves.toMatchObject({ activityEnabled: expect.any(Boolean) });
+    writeFileSync(knownFile(host), '{');
+    await expect(info()).rejects.toMatchObject({ code: 'forbidden' });
+  });
+
+  test('the local permission API rejects invalid and unknown devices without changing grants', async () => {
+    const { host, viewer } = await pairedFleet();
+    const deviceId = idOf(viewer);
+    const set = host.p2p.api.setWorkspaceAccess;
+    for (const args of [[undefined, true], ['invalid', true], [deviceId, 'true'], [deviceId, undefined]]) {
+      const result: unknown = Reflect.apply(set, undefined, args);
+      await expect(result).rejects.toThrow('Invalid workspace access request');
+    }
+    await expect(set(idOf(host), true)).rejects.toThrow('Unknown paired device');
+    expect((await host.p2p.api.fleetList())[0]?.workspaceAccess).toBe(false);
   });
 
   test('audit log records invalid_params rejections (onCall hook)', async () => {

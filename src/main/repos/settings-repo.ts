@@ -1,5 +1,7 @@
 import type { Database } from 'better-sqlite3';
 import type { SettingsMap } from '@shared/types';
+import { DEFAULT_TERMINAL_ENGINE, TERMINAL_ENGINE_KEY, isTerminalEngine } from '@shared/terminal-engine';
+import { isTerminalPaddingKey, isTerminalPaddingValue, TERMINAL_PADDING_KEYS } from '@shared/terminal-padding';
 import { withPermissionMode } from '@main/domain/claude-permission-mode';
 
 export const DEFAULT_SETTINGS: SettingsMap = {
@@ -13,6 +15,9 @@ export const DEFAULT_SETTINGS: SettingsMap = {
   'scrollback_lines':              10000,
   'max_watched_paths':             500,
   'theme':                         'dark',
+  [TERMINAL_ENGINE_KEY]:           DEFAULT_TERMINAL_ENGINE,
+  [TERMINAL_PADDING_KEYS.horizontal]: null,
+  [TERMINAL_PADDING_KEYS.vertical]:   null,
   'ui_font_family':                null,
   'terminal_font_family':          null,
   'terminal_font_size':            null,
@@ -26,9 +31,11 @@ export const DEFAULT_SETTINGS: SettingsMap = {
   'notify_claude_finished':        true,
   'show_status_bar':               true,
   'show_status_bar_ports':         true,
+  'activity_log_enabled':          true,
   'frost_chrome':                  true,
   'chrome_frost_level':            'subtle',
   'terminal_frost_level':          'off',
+  'terminal_frost_opacity':        70,
   'vibrancy_material':             'sidebar',
   'app_env':                       {},
   // Seeded named CLIs the "+ new shell" menu shows out of the box. The bare
@@ -45,6 +52,16 @@ export const DEFAULT_SETTINGS: SettingsMap = {
   'shell_nicknames':               {},
   'chat_auto_onboard':             true,
 };
+
+type MetaprojectPrivateKey = 'metaproject_restore_grant_v1' | 'metaproject_legacy_assignments_v1';
+type MetaprojectPrivateChanges = Partial<Record<MetaprojectPrivateKey, unknown>> & {
+  readonly metaproject_base_url?: string;
+};
+
+/** These keys are managed by the main-process Metaproject lifecycle, not generic settings IPC. */
+export function isManagedMetaprojectSetting(key: unknown): boolean {
+  return typeof key === 'string' && key.startsWith('metaproject_');
+}
 
 /**
  * Built-in profiles of harnesses the IDE no longer supports, exactly as earlier builds seeded
@@ -65,6 +82,18 @@ const RETIRED_CLI_PROFILES: readonly { name: string; argv: readonly string[] }[]
 
 function isRetiredProfile(p: { name: string; argv: readonly string[] }): boolean {
   return RETIRED_CLI_PROFILES.some((r) => r.name === p.name && r.argv.length === p.argv.length && r.argv.every((a, i) => a === p.argv[i]));
+}
+
+function parseStoredSetting(key: string, raw: string): unknown {
+  if (key !== TERMINAL_ENGINE_KEY && !isTerminalPaddingKey(key)) return JSON.parse(raw);
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (isTerminalPaddingKey(key)) return isTerminalPaddingValue(value) ? value : null;
+    return isTerminalEngine(value) ? value : DEFAULT_TERMINAL_ENGINE;
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    return DEFAULT_SETTINGS[key];
+  }
 }
 
 export class SettingsRepo {
@@ -128,11 +157,32 @@ export class SettingsRepo {
   get<K extends keyof SettingsMap>(key: K): SettingsMap[K] {
     const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
     if (!row) return DEFAULT_SETTINGS[key];
-    return JSON.parse(row.value) as SettingsMap[K];
+    return parseStoredSetting(key, row.value) as SettingsMap[K];
   }
 
   set<K extends keyof SettingsMap>(key: K, value: SettingsMap[K]): void {
     this.db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, JSON.stringify(value));
+  }
+
+  readMetaprojectPrivate(key: MetaprojectPrivateKey): unknown {
+    const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+    if (typeof row !== 'object' || row === null || !('value' in row) || typeof row.value !== 'string') return undefined;
+    // Preserve distinction between an absent migration marker and malformed metadata.
+    try { return JSON.parse(row.value) as unknown; } catch { return null; }
+  }
+
+  /** Synchronously commit origin and restore authorization together, with a WAL sync at commit. */
+  writeMetaprojectPrivate(changes: MetaprojectPrivateChanges): void {
+    const update = this.db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
+    const commit = this.db.transaction(() => {
+      for (const [key, value] of Object.entries(changes)) update.run(key, JSON.stringify(value ?? null));
+    });
+    const previous = this.db.pragma('synchronous', { simple: true });
+    if (typeof previous !== 'number' || !Number.isInteger(previous) || previous < 0 || previous > 3) {
+      throw new Error('Could not read SQLite durability setting');
+    }
+    if (previous < 2) this.db.pragma('synchronous = FULL');
+    try { commit(); } finally { if (previous < 2) this.db.pragma(`synchronous = ${previous}`); }
   }
 
   /**
@@ -154,7 +204,8 @@ export class SettingsRepo {
     const rows = this.db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
     const result = { ...DEFAULT_SETTINGS };
     for (const row of rows) {
-      (result as Record<string, unknown>)[row.key] = JSON.parse(row.value);
+      if (isManagedMetaprojectSetting(row.key) && !(row.key in DEFAULT_SETTINGS)) continue;
+      (result as Record<string, unknown>)[row.key] = parseStoredSetting(row.key, row.value);
     }
     return result;
   }

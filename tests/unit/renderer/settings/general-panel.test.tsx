@@ -110,7 +110,7 @@ describe('GeneralPanel — FrostedGlassGroup rendered inside Appearance, mac and
   it('renders the group under the mac platform, inside the same section as Window opacity', () => {
     const html = panel('mac');
     expect(html).toContain(`data-testid="${FROSTED_GLASS_TESTIDS.group}"`);
-    expect(html.match(/<section/g)).toHaveLength(4);
+    expect(html.match(/<section/g)).toHaveLength(5);
   });
 
   it('places the group inside the Appearance <section>, directly after the Window opacity row (AC26)', () => {
@@ -142,8 +142,8 @@ describe('GeneralPanel — FrostedGlassGroup rendered inside Appearance, mac and
   });
 });
 
-describe('loadBoard — seven keys, no frost_terminal (AC34 renderer half)', () => {
-  it('reads exactly the seven General board keys', async () => {
+describe('loadBoard — nine keys, no frost_terminal (AC34 renderer half)', () => {
+  it('reads exactly the nine General board keys', async () => {
     const { api } = await import('@renderer/api');
     const seen: string[] = [];
     vi.mocked(api.invoke).mockImplementation(async (_channel: string, req: unknown) => {
@@ -160,6 +160,7 @@ describe('loadBoard — seven keys, no frost_terminal (AC34 renderer half)', () 
       'notify_claude_finished',
       'show_status_bar_ports',
       'show_status_bar',
+      'activity_log_enabled',
     ]);
     expect(seen).not.toContain('frost_terminal');
   });
@@ -204,5 +205,62 @@ describe('renderer source scan — nothing reads frost_terminal or sets the lega
     const fs = await import('node:fs');
     const src = fs.readFileSync(new URL(`../../../../src/renderer/${relPath}`, import.meta.url), 'utf8');
     for (const token of LEGACY_TOKENS) expect(src).not.toContain(token);
+  });
+});
+
+describe('GeneralPanel — activity log switch (AC2)', () => {
+  const html = () => renderToStaticMarkup(
+    <FrostPlatformContext.Provider value={null}>
+      <GeneralPanel fontDiscovery={{ status: 'idle' }} onLoadInstalledFonts={async () => undefined} />
+    </FrostPlatformContext.Provider>,
+  );
+  const workspace = () => (html().match(/<section\b.*?<\/section>/g) ?? []).find((x) => />Workspace<\/h2>/.test(x)) ?? '';
+
+  it('puts a labelled switch with the exact hint in Workspace, after the status-bar switches and before the number rows', () => {
+    const w = workspace();
+    expect(w).toContain('data-testid="activity-log-toggle"');
+    expect(w).toContain('aria-label="Record agent activity"');
+    expect(w).toContain('Off stops writing .metaide/activity.jsonl in your projects and hides the Activity tab. Existing logs are kept.');
+    const at = w.indexOf('data-testid="activity-log-toggle"');
+    expect(at).toBeGreaterThan(w.indexOf('data-testid="show-status-bar-ports-toggle"'));
+    expect(at).toBeLessThan(w.indexOf('Keep-alive cap'));
+  });
+
+  it('is checked until settings load', () => {
+    const input = workspace().match(/<input[^>]*data-testid="activity-log-toggle"[^>]*>/)?.[0] ?? '';
+    expect(input).toContain('checked=""');
+  });
+});
+
+describe('useBoardSettings — activity_log_enabled (AC2)', () => {
+  beforeEach(() => { rt.reset(); });
+
+  it('update saves through settings:set with that key and value', async () => {
+    const { api } = await import('@renderer/api');
+    vi.mocked(api.invoke).mockReset();
+    vi.mocked(api.invoke).mockResolvedValue({ value: null });
+    const board = rt.render(() => useBoardSettings());
+    board.update('activity_log_enabled', false);
+    expect(api.invoke).toHaveBeenCalledWith('settings:set', { key: 'activity_log_enabled', value: false });
+  });
+
+  it('loadBoard falls back to on when the stored value is missing', async () => {
+    const { api } = await import('@renderer/api');
+    vi.mocked(api.invoke).mockResolvedValue({ value: null });
+    expect(await loadBoard()).toMatchObject({ activityLog: true });
+  });
+
+  it.each([0, '', 'no'])('loadBoard reads a non-boolean stored value %j as on, matching main (AC13)', async (stored) => {
+    const { api } = await import('@renderer/api');
+    vi.mocked(api.invoke).mockImplementation((async (_ch: string, req: { key?: string }) =>
+      ({ value: req?.key === 'activity_log_enabled' ? stored : null })) as never);
+    expect(await loadBoard()).toMatchObject({ activityLog: true });
+  });
+
+  it('loadBoard reads a stored false as off', async () => {
+    const { api } = await import('@renderer/api');
+    vi.mocked(api.invoke).mockImplementation((async (_ch: string, req: { key?: string }) =>
+      ({ value: req?.key === 'activity_log_enabled' ? false : null })) as never);
+    expect(await loadBoard()).toMatchObject({ activityLog: false });
   });
 });

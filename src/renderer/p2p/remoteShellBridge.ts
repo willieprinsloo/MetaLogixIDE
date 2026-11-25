@@ -1,4 +1,6 @@
 import { api } from '../api';
+import { errMessage } from './err-message';
+import { createInputQueue, type InputError } from './input-queue';
 
 /** Handle for one attached remote shell. Mirrors what ShellTab needs from the local IPC path. */
 export interface RemoteShellHandle {
@@ -7,6 +9,8 @@ export interface RemoteShellHandle {
   onExit(cb: (code: number | null) => void): void;
   /** Stream ended: `'closed'` (local close()), the server's reason (e.g. `'remote_ended'`), `'reconnecting'` when the link dropped, or `'attach_failed: ...'`. */
   onClose(cb: (reason: string) => void): void;
+  /** Input or resize delivery failed (including input typed after the stream ended, unless `close()` was called) or a paste was refused as too large. Never fires after `close()`. */
+  onInputError(cb: (e: InputError) => void): void;
   send(bytes: string): void;
   resize(cols: number, rows: number): void;
   close(): void;
@@ -29,8 +33,11 @@ export function openRemoteShell(deviceId: string, projectId: number, shellIndex:
   const dataCbs: Array<(d: string) => void> = [];
   const exitCbs: Array<(c: number | null) => void> = [];
   const closeCbs: Array<(r: string) => void> = [];
+  const inputErrCbs: Array<(e: InputError) => void> = [];
+  const reportInputError = (e: InputError) => { if (closeRequested) return; for (const cb of inputErrCbs) cb(e); };
   let streamId: number | null = null;
   let finished = false;
+  let endReason = 'closed';
   let closeRequested = false;
   // Events can land before the attach response resolves; hold them until the stream id is known.
   let early: RpcEvent[] = [];
@@ -38,6 +45,7 @@ export function openRemoteShell(deviceId: string, projectId: number, shellIndex:
   const finish = (reason: string) => {
     if (finished) return;
     finished = true;
+    endReason = reason;
     off();
     early = [];
     for (const cb of closeCbs) cb(reason);
@@ -68,23 +76,35 @@ export function openRemoteShell(deviceId: string, projectId: number, shellIndex:
       return id;
     })
     .catch((err: unknown) => {
-      finish(`attach_failed: ${err instanceof Error ? err.message : String(err)}`);
+      finish(`attach_failed: ${errMessage(err)}`);
       return null;
     });
 
-  const call = (method: string, params: Record<string, unknown>) => {
-    void ready.then((id) => {
-      if (id === null || finished) return;
-      return api.invoke('p2p:rpc-call', { deviceId, method, params: { stream: id, ...params } }).catch(() => { /* link gone: onClose handles it */ });
+  const call = (method: string, params: Record<string, unknown>): Promise<unknown> =>
+    ready.then((id) => {
+      if (closeRequested) return undefined;
+      if (id === null || finished) throw new Error(`remote shell is not connected (${endReason})`);
+      return api.invoke('p2p:rpc-call', { deviceId, method, params: { stream: id, ...params } });
     });
-  };
+
+  const inputQueue = createInputQueue({
+    send: (text) => call('shells.input', { bytes: toBase64(text) }),
+    onError: reportInputError,
+  });
 
   return {
     onData: (cb) => { dataCbs.push(cb); },
     onExit: (cb) => { exitCbs.push(cb); },
     onClose: (cb) => { closeCbs.push(cb); },
-    send: (bytes) => call('shells.input', { bytes: toBase64(bytes) }),
-    resize: (cols, rows) => call('shells.resize', { cols, rows }),
+    onInputError: (cb) => { inputErrCbs.push(cb); },
+    send: (bytes) => inputQueue.push(bytes),
+    resize: (cols, rows) => {
+      if (finished) return;
+      call('shells.resize', { cols, rows }).catch((err: unknown) => {
+        if (finished) return;
+        reportInputError({ kind: 'failed', message: errMessage(err) });
+      });
+    },
     close: () => {
       if (closeRequested) return;
       closeRequested = true;

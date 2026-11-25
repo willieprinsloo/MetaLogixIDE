@@ -22,6 +22,19 @@ export type ChromeFrostLevel = (typeof CHROME_FROST_LEVELS)[number];
 
 export const TERMINAL_FROST_LEVELS = ['off', 'subtle', 'medium', 'strong'] as const;
 export type TerminalFrostLevel = (typeof TERMINAL_FROST_LEVELS)[number];
+export const TERMINAL_FROST_MODES = [...TERMINAL_FROST_LEVELS, 'custom'] as const;
+export type TerminalFrostMode = (typeof TERMINAL_FROST_MODES)[number];
+
+export const TERMINAL_FROST_OPACITY = { min: 10, max: 100, default: 70 } as const;
+export const TERMINAL_FROST_OPACITY_KEY = 'terminal_frost_opacity';
+
+export function isTerminalFrostOpacity(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= TERMINAL_FROST_OPACITY.min && value <= TERMINAL_FROST_OPACITY.max;
+}
+
+export function isTerminalFrostMode(value: unknown): value is TerminalFrostMode {
+  return value === 'custom' || isTerminalFrostLevel(value);
+}
 
 /** Approved native vibrancy materials (spec D7), in display order. */
 export const VIBRANCY_MATERIALS = ['sidebar', 'under-window', 'hud', 'menu', 'popover'] as const;
@@ -51,13 +64,15 @@ export const FROSTED_GLASS_QUERY_KEYS = {
   frostChrome: 'frostChrome',
   chromeFrost: 'chromeFrost',
   terminalFrost: 'terminalFrost',
+  terminalOpacity: 'terminalOpacity',
 } as const;
 
 /** Values the renderer applies as root flags. */
 export interface FrostFlags {
   frostChrome: boolean;
   chromeFrost: ChromeFrostLevel;
-  terminalFrost: TerminalFrostLevel;
+  terminalFrost: TerminalFrostMode;
+  terminalOpacity?: number;
 }
 
 export function isChromeFrostLevel(v: unknown): v is ChromeFrostLevel {

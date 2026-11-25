@@ -1,7 +1,7 @@
 /**
  * Local shell-0 unload (approved AC1–AC7). Real Electron, main-process IPC,
  * node-pty and mock Claude; only the two race/failure tests gate an IPC handler.
- * The other journeys drive the actual row, header and palette controls.
+ * The other journeys drive the actual row and palette controls.
  */
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import {
@@ -29,7 +29,7 @@ import { ipcLog, recordIpc } from './helpers/frames';
 
 type Api = { invoke: (channel: string, request: unknown) => Promise<unknown> };
 type Handler = (event: unknown, ...args: unknown[]) => unknown;
-type Entry = 'row' | 'header' | 'palette';
+type Entry = 'row' | 'palette';
 
 const dialog = (win: Page) => win.getByTestId(IDS.dialog);
 const warning = (win: Page) => dialog(win).getByTestId(IDS.warning);
@@ -108,7 +108,6 @@ async function expectLive(win: Page, id: number, expected: number[]): Promise<vo
 
 async function openUnload(win: Page, entry: Entry, name: string): Promise<void> {
   if (entry === 'row') await rowUnload(win, name).click();
-  else if (entry === 'header') await win.getByTestId('unload-current').click();
   else {
     await win.keyboard.press('ControlOrMeta+Shift+P');
     const palette = win.getByTestId(PALETTE_TESTIDS.root);
@@ -184,7 +183,7 @@ async function gateStop(
   };
 }
 
-for (const entry of ['row', 'header', 'palette'] as const) {
+for (const entry of ['row', 'palette'] as const) {
   test(`AC1/AC2/AC5: ${entry} keeps the named primary alive on cancel, then stops only that primary after confirmation`, async () => {
     await withApp(['alpha', 'beta'], async ({ app, win }) => {
       await openProject(win, 'alpha');
@@ -252,12 +251,12 @@ test('AC2: Escape and backdrop dismiss, restore focus, and background cannot be 
     await openProject(win, 'alpha');
     const id = await projectId(win, 'alpha');
     const first = await generation(win, id);
-    const trigger = win.getByTestId('unload-current');
-    await openUnload(win, 'header', 'alpha');
+    const trigger = rowUnload(win, 'alpha');
+    await openUnload(win, 'row', 'alpha');
     await win.keyboard.press('Escape');
     await expect(dialog(win)).toHaveCount(0);
     await expect(trigger).toBeFocused();
-    await openUnload(win, 'header', 'alpha');
+    await openUnload(win, 'row', 'alpha');
     await expect(dialog(win).getByRole('dialog', { name: COPY.title })).toHaveAttribute(
       'aria-modal',
       'true',
@@ -292,20 +291,20 @@ test('AC3: busy and blocked primary warn even when Files is selected; another pr
     await expectShellState(win, alpha, 0, 'busy');
     await openProject(win, 'beta');
     const beta = await projectId(win, 'beta');
-    await openUnload(win, 'header', 'beta');
+    await openUnload(win, 'row', 'beta');
     await expect(warning(win), 'beta must not inherit alpha busy state').not.toContainText(
       COPY.workWarning,
     );
     await keep(win).click();
     await openProject(win, 'alpha');
     await win.getByRole('button', { name: 'Files', exact: true }).click();
-    await openUnload(win, 'header', 'alpha');
+    await openUnload(win, 'row', 'alpha');
     await expect(warning(win)).toContainText(COPY.workWarning);
     await expect(warning(win)).not.toContainText(COPY.visibleWarning);
     await keep(win).click();
     await sendLine(win, alpha, 0, '/status-approval');
     await expectShellState(win, alpha, 0, 'blocked');
-    await openUnload(win, 'header', 'alpha');
+    await openUnload(win, 'row', 'alpha');
     await expect(warning(win)).toContainText(COPY.inputWarning);
     await expect(warning(win)).not.toContainText(COPY.visibleWarning);
     await keep(win).click();
@@ -325,7 +324,7 @@ test('AC3/AC4: a busy nonzero sibling does not claim primary work; hidden shell 
     await sendLine(win, id, sibling, '/status-work');
     await expectShellState(win, id, sibling, 'busy');
     await expectShellState(win, id, 0, 'idle');
-    await openUnload(win, 'header', 'alpha');
+    await openUnload(win, 'row', 'alpha');
     await expect(warning(win), 'idle hidden primary has no busy or visible warning').toHaveCount(0);
     await confirm(win).click();
     await expectLive(win, id, [sibling]);
@@ -339,7 +338,7 @@ test('AC4: idle shell 0 visible as the active tab warns of the terminal being st
     const id = await projectId(win, 'alpha');
     await expectShellState(win, id, 0, 'idle');
     await expect(win.locator('.split-left [data-testid="shell-tab"] .xterm-screen')).toBeVisible();
-    await openUnload(win, 'header', 'alpha');
+    await openUnload(win, 'row', 'alpha');
     await expect(warning(win)).toContainText(COPY.visibleWarning);
     await expect(warning(win)).not.toContainText(COPY.workWarning);
     await keep(win).click();
@@ -370,14 +369,14 @@ test('AC4: a restored split showing shell 0 in the right pane warns despite anot
     await expect.poll(async () => (await splitState(win, id))?.rightShellIndex).toBe(0);
     await expect(win.getByTestId(SPLIT_TESTIDS.right).locator('.xterm-screen')).toBeVisible();
     await expectLive(win, id, [0, sibling]);
-    await openUnload(win, 'header', 'alpha');
+    await openUnload(win, 'row', 'alpha');
     await expect(warning(win)).toContainText(COPY.visibleWarning);
     await keep(win).click();
     await expectLive(win, id, [0, sibling]);
   });
 });
 
-test('AC1/AC5: no primary disables row, header and palette unload despite live sibling retaining In use', async () => {
+test('AC1/AC5: no primary disables row and palette unload despite live sibling retaining In use', async () => {
   await withApp(['alpha'], async ({ win }) => {
     await openProject(win, 'alpha');
     const id = await projectId(win, 'alpha');
@@ -387,7 +386,6 @@ test('AC1/AC5: no primary disables row, header and palette unload despite live s
     await expectLive(win, id, [sibling]);
     await expect(inUseRow(win, 'alpha')).toHaveCount(1);
     await expect(rowUnload(win, 'alpha')).toHaveCount(0);
-    await expect(win.getByTestId('unload-current')).toHaveCount(0);
     await win.keyboard.press('ControlOrMeta+Shift+P');
     const palette = win.getByTestId(PALETTE_TESTIDS.root);
     await palette.getByTestId(PALETTE_TESTIDS.input).fill('>Unload current session');
@@ -407,7 +405,7 @@ test('AC6: work starting after neutral consent warns before a newly informed con
     const id = await projectId(win, 'alpha');
     await win.getByRole('button', { name: 'Files', exact: true }).click();
     const original = await generation(win, id);
-    await openUnload(win, 'header', 'alpha');
+    await openUnload(win, 'row', 'alpha');
     await expect(warning(win), 'Files hides the idle primary').toHaveCount(0);
     await sendLine(win, id, 0, '/status-work');
     await expectShellState(win, id, 0, 'busy');
@@ -429,13 +427,11 @@ test('AC6: shell 0 becoming visible after neutral consent warns before a newly i
     await openProject(win, 'alpha');
     const id = await projectId(win, 'alpha');
     await win.getByRole('button', { name: 'Files', exact: true }).click();
-    await openUnload(win, 'header', 'alpha');
+    await openUnload(win, 'row', 'alpha');
     await expect(warning(win), 'Files hides the idle primary').toHaveCount(0);
     // A state change outside the modal models the shell becoming visible while consent is pending.
     await win.evaluate(() => {
-      const tab = [...document.querySelectorAll<HTMLElement>('button')].find(
-        (b) => b.textContent?.trim() === 'Shell',
-      );
+      const tab = document.querySelector<HTMLButtonElement>('button[aria-label="Shell"]');
       if (!tab) throw new Error('missing Shell main tab');
       tab.click();
     });
@@ -455,7 +451,7 @@ test('AC6: replacing primary before confirmation cannot transfer prior consent t
     await openProject(win, 'alpha');
     const id = await projectId(win, 'alpha');
     const first = await generation(win, id);
-    await openUnload(win, 'header', 'alpha');
+    await openUnload(win, 'row', 'alpha');
     const next = await replacePrimary(win, id);
     expect(next).not.toBe(first);
     if (await confirm(win).isVisible()) await confirm(win).click();
@@ -473,7 +469,7 @@ test('AC6: replacement after submit but before main stop cannot be killed by a s
     const gate = await gateStop(app);
     let next: string;
     try {
-      await openUnload(win, 'header', 'alpha');
+      await openUnload(win, 'row', 'alpha');
       await confirm(win).click();
       await expect.poll(gate.calls, { message: 'stop request has reached main process' }).toBe(1);
       await expect(confirm(win)).toBeDisabled();
@@ -500,7 +496,7 @@ test('AC6: rejected stop shows a retryable failure and leaves original PTY runni
         throw new Error('e2e: stop refused');
       });
     });
-    await openUnload(win, 'header', 'alpha');
+    await openUnload(win, 'row', 'alpha');
     await confirm(win).click();
     await expect(dialog(win).getByTestId(IDS.error)).toContainText(COPY.stopFailed);
     await expect(dialog(win).getByTestId(IDS.retry)).toBeVisible();
@@ -529,7 +525,7 @@ test('AC6: an unreadable status is not treated as idle and Retry inspects the re
         return real(event, ...args);
       });
     });
-    await win.getByTestId('unload-current').click();
+    await rowUnload(win, 'alpha').click();
     await expect(dialog(win).getByTestId(IDS.error)).toContainText(COPY.inspectionFailed);
     await expect(confirm(win)).toHaveCount(0);
     await expectLive(win, id, [0]);
@@ -545,12 +541,12 @@ test('AC6: a session that exits before confirmation is not reported as unloaded'
   await withApp(['alpha'], async ({ win }) => {
     await openProject(win, 'alpha');
     const id = await projectId(win, 'alpha');
-    await openUnload(win, 'header', 'alpha');
+    await openUnload(win, 'row', 'alpha');
     await kill(win, id, 0);
     await expectLive(win, id, []);
     if (await confirm(win).isVisible()) await confirm(win).click();
     await expect(win.getByTestId('toast').filter({ hasText: 'Session unloaded' })).toHaveCount(0);
     await expectLive(win, id, []);
-    await expect(win.getByTestId('unload-current')).toHaveCount(0);
+    await expect(rowUnload(win, 'alpha')).toHaveCount(0);
   });
 });

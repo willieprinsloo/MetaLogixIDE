@@ -182,9 +182,9 @@ test('Claude reopened from "+ new shell" after closing its tab starts at the tab
     // First open (sidebar click → pick()) — the tab's size must reach Claude too.
     const atFirstOpen = await ptySize(win, 'demo');
 
-    // The toolbar now asks before ending shell 0. Its tab stays mounted,
+    // The sidebar action asks before ending shell 0. Its tab stays mounted,
     // so the original cached-size regression must still be exercised.
-    await win.getByTestId('unload-current').click();
+    await win.getByTestId('section-in-use').getByTestId('row-unload').click();
     const confirmation = win.getByTestId(UNLOAD_SESSION_TESTIDS.dialog);
     await expect(confirmation).toBeVisible();
     await expect(confirmation.getByTestId(UNLOAD_SESSION_TESTIDS.keep)).toBeFocused();

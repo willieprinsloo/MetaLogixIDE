@@ -10,12 +10,8 @@
 // Claude Code hook emulation (docs/specs/claude-code-notifications.md,
 // amended docs/specs/claude-status-dots.md §R1/R2 background work):
 // when launched with `--settings <path>`, reads the app-owned hook settings
-// file the same way real Claude does and POSTs JSON hook events to its
-// `http` hook's url. Headers are built from the hook's header templates,
-// substituting `$VAR` only for names listed in `allowedEnvVars` (mirrors
-// Claude: it never leaks arbitrary env into a hook header). POSTs are
-// fire-and-forget — a failure is swallowed, never surfaced to the user or
-// the caller, because Claude's own hook delivery must never block a turn.
+// file the same way real Claude does and invokes the generated command with
+// JSON over stdin. Legacy HTTP fixtures remain supported.
 // `/hook-stop` posts a plain Stop (no background_tasks). `/hook-stop-bg [n]`
 // posts a Stop with `n` (default 1) fake `background_tasks` entries — real
 // Claude sends this while paused waiting on its own background work, which
@@ -23,6 +19,7 @@
 // with an empty `background_tasks` but a non-empty `session_crons`, which
 // must still count as "finished" (AC27, `session_crons` is never read).
 import { readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 
 const args = process.argv.slice(2);
 const isContinue = args.includes('--continue');
@@ -37,14 +34,10 @@ const settingsFlagIdx = args.findIndex((a) => a === '--settings' || a.startsWith
 const settingsPath = settingsFlagIdx === -1 ? null : (args[settingsFlagIdx].startsWith('--settings=')
   ? args[settingsFlagIdx].slice('--settings='.length)
   : args[settingsFlagIdx + 1]);
-let hookConfig = null;
+let hookSettings;
 if (settingsPath) {
   try {
-    const doc = JSON.parse(readFileSync(settingsPath, 'utf8'));
-    const hook = doc?.hooks?.Notification?.[0]?.hooks?.[0];
-    if (hook && typeof hook.url === 'string') {
-      hookConfig = { url: hook.url, headers: hook.headers ?? {}, allowedEnvVars: hook.allowedEnvVars ?? [] };
-    }
+    hookSettings = JSON.parse(readFileSync(settingsPath, 'utf8'))?.hooks;
   } catch {
     // No settings file, malformed JSON, or unreadable — hooks stay disabled,
     // same as when Claude's own hook delivery has nothing to talk to.
@@ -60,14 +53,29 @@ function resolveHeaderTemplate(template, allowedEnvVars) {
 
 /** Fire-and-forget POST of one Claude Code hook event; a no-op without hook config. */
 function postHook(body) {
+  const hookConfig = hookSettings?.[body.hook_event_name]?.[0]?.hooks?.[0];
   if (!hookConfig) return;
+  if (hookConfig.type === 'command' && typeof hookConfig.command === 'string') {
+    const isPowerShell = hookConfig.shell === 'powershell';
+    const child = spawn(isPowerShell ? 'powershell.exe' : '/bin/sh',
+      isPowerShell ? ['-NoProfile', '-Command', hookConfig.command] : ['-c', hookConfig.command],
+      { stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true });
+    child.on('error', () => {});
+    child.stdin.on('error', () => {});
+    child.once('close', (status) => {
+      if (status === 0 && body.hook_event_name === 'UserPromptSubmit') process.stdout.write('HOOK-DONE UserPromptSubmit\n');
+    });
+    child.stdin.end(JSON.stringify(body));
+    return;
+  }
+  if (typeof hookConfig.url !== 'string') return;
   const headers = { 'Content-Type': 'application/json' };
-  for (const [key, template] of Object.entries(hookConfig.headers)) {
-    headers[key] = resolveHeaderTemplate(template, hookConfig.allowedEnvVars);
+  for (const [key, template] of Object.entries(hookConfig.headers ?? {})) {
+    headers[key] = resolveHeaderTemplate(template, hookConfig.allowedEnvVars ?? []);
   }
   fetch(hookConfig.url, { method: 'POST', headers, body: JSON.stringify(body) }).then(
     (response) => {
-      if (response.ok && body.hook_event_name === 'UserPromptSubmit') process.stdout.write('HOOK-ACK UserPromptSubmit\n');
+      if (response.ok && body.hook_event_name === 'UserPromptSubmit') process.stdout.write('HOOK-DONE UserPromptSubmit\n');
     },
     () => {},
   );
@@ -245,7 +253,7 @@ process.stdin.on('data', (chunk) => {
   } else if (line === '/hook-env') {
     const shell = process.env.METAIDE_HOOK_SHELL ?? 'none';
     const token = process.env.METAIDE_HOOK_TOKEN ?? 'none';
-    process.stdout.write(`HOOK-ENV shell=${shell} token=${token}\n> `);
+    process.stdout.write(`HOOK-ENDPOINT ${process.env.METAIDE_HOOK_ENDPOINT ?? 'none'}\nHOOK-ENV shell=${shell} token=${token}\n> `);
   } else if (line === '/hook-argv') {
     // How many --settings flags this process actually received, and which
     // path — ground truth for "was this spawn decorated, and exactly once",
@@ -275,9 +283,10 @@ process.stdin.on('data', (chunk) => {
     const message = spaceIdx === -1 ? '' : rest.slice(spaceIdx + 1);
     postHook({ hook_event_name: 'Notification', notification_type: type, message: message || null });
     process.stdout.write(`hook: Notification ${type}\n> `);
+  } else if (line.startsWith('/hook-tool ')) {
+    postHook({ hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: line.slice(11) } });
   } else if (line.startsWith('/hook-raw ')) {
-    // Arbitrary, non-Notification/Stop hook event name (e.g. SubagentStop) —
-    // exercises the "ignored events" path without a notification_type.
+    // A name without a configured hook does not result in a delivery.
     const eventName = line.slice('/hook-raw '.length).trim();
     postHook({ hook_event_name: eventName });
     process.stdout.write(`hook: ${eventName}\n> `);

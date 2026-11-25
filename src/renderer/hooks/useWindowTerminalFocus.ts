@@ -1,10 +1,10 @@
 import { useEffect, useLayoutEffect } from 'react';
-import { classifyActiveElement, createTerminalFocusCoordinator, type ElementLike } from '@renderer/terminal-focus';
+import { classifyActiveElement, createTerminalFocusCoordinator, type ActiveElementKind } from '@renderer/terminal-focus';
 
-function activeElement(): ElementLike | null {
+/** Classify the currently focused control using the terminal coordinator's rules. */
+export function activeElementKind(): ActiveElementKind {
   const el = document.activeElement;
-  if (!el) return null;
-  return { tagName: el.tagName, isContentEditable: el instanceof HTMLElement && el.isContentEditable, classList: el.classList };
+  return classifyActiveElement(el && { tagName: el.tagName, isContentEditable: el instanceof HTMLElement && el.isContentEditable, classList: el.classList });
 }
 
 /**
@@ -12,7 +12,7 @@ function activeElement(): ElementLike | null {
  * own JS realm, so this module-level instance is one owner per window.
  */
 export const terminalFocus = createTerminalFocusCoordinator({
-  activeElementKind: () => classifyActiveElement(activeElement()),
+  activeElementKind,
   now: () => performance.now(),
 });
 

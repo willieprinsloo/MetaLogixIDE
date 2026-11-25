@@ -5,11 +5,13 @@ import { toast } from '@renderer/hooks/useToasts';
 import { useRemoteProjects } from '@renderer/p2p/useRemoteProjects';
 import { useRemoteRoots } from '@renderer/p2p/useRemoteRoots';
 import type { Project, Root } from '@shared/types';
+import type { AgentState } from '@shared/agent-state';
 import type { MachineDot, OpenPaneRequest } from '@renderer/machine-switcher-contract';
 import { MACHINE_COPY, MACHINE_TESTIDS, SIDEBAR_COPY } from '@renderer/sidebar-copy';
 import { lastSeen, remoteSections, type RemoteSections } from '@renderer/machine-dots';
 import { RootFolderGlyph, rootFolderName } from './RootFolderGlyph';
 import { ChevronIcon } from './ChevronIcon';
+import { StatusDot } from './StatusDot';
 
 interface Props {
   machine: MachineDot;
@@ -17,20 +19,27 @@ interface Props {
   filter: string;
   /** Live project ids from the switcher's shared `shells.alive` poll; the list polls nothing itself. */
   aliveProjectIds: ReadonlySet<number>;
+  /** The ids the shared In use section shows for this machine; Recents leaves out these and only these (AC36). */
+  inUseProjectIds: ReadonlySet<number>;
+  /** Each live project's worst agent state from the same poll; a live id with no entry reads as idle. */
+  projectStates: ReadonlyMap<number, AgentState>;
   onOpenPane?: (req: OpenPaneRequest) => void;
 }
 
 /**
  * The sidebar list for one paired machine (docs/specs/machine-switcher-dots.md AC16–AC24, AC31):
- * a header that scrolls with the list (name, online/offline state, last seen, Reconnect), then —
- * only while the machine is online — In use, Recents and Projects fetched for that device. Mount it
- * under `key={deviceId}` so each switch starts with fresh, all-open sections and refetches.
+ * a header in a frosted well that scrolls with the list (name, online/offline state, last seen, Reconnect), then —
+ * only while the machine is online — Recents and Projects fetched for that device. Its live projects
+ * also show in the sidebar's shared In use section, so it has none of its own (AC16, AC36); live rows
+ * carry the peer's agent status dot (AC42). Mount it under `key={deviceId}` so each switch starts
+ * with fresh, all-open sections and refetches.
  */
-export function RemoteMachineList({ machine, filter, aliveProjectIds, onOpenPane }: Props) {
+export function RemoteMachineList(props: Props) {
+  const { machine } = props;
   return (
     <div data-testid={MACHINE_TESTIDS.remoteList} className="flex flex-col gap-7">
       <RemoteHeader machine={machine} />
-      {machine.online && <RemoteMachineProjects machine={machine} filter={filter} aliveProjectIds={aliveProjectIds} onOpenPane={onOpenPane} />}
+      {machine.online && <RemoteMachineProjects {...props} />}
     </div>
   );
 }
@@ -69,7 +78,7 @@ async function reconnect(machine: MachineDot): Promise<void> {
 function RemoteHeader({ machine }: { machine: MachineDot }) {
   const busy = useSyncExternalStore(subscribeInFlight, () => inFlight.has(machine.deviceId));
   return (
-    <div data-testid={MACHINE_TESTIDS.remoteHeader} className="flex items-center gap-2 pl-2">
+    <div data-testid={MACHINE_TESTIDS.remoteHeader} className="machine-well flex items-center gap-2 rounded-lg border border-[--border] px-3 py-2">
       <div className="flex-1 min-w-0">
         <div className="truncate min-w-0 text-[13px] font-medium text-[--text]" title={machine.name}>{machine.name}</div>
         <div className="flex items-center gap-1.5 text-[11px] text-[--text-muted]">
@@ -97,19 +106,19 @@ function RemoteHeader({ machine }: { machine: MachineDot }) {
   );
 }
 
-function RemoteMachineProjects({ machine, filter, aliveProjectIds, onOpenPane }: Props) {
+function RemoteMachineProjects({ machine, filter, aliveProjectIds, inUseProjectIds, projectStates, onOpenPane }: Props) {
   const { projects, loading, error } = useRemoteProjects(machine.deviceId);
   const { roots, loading: rootsLoading } = useRemoteRoots(machine.deviceId);
   const sections = useMemo(
-    () => remoteSections(projects, roots, aliveProjectIds, filter),
-    [projects, roots, aliveProjectIds, filter],
+    () => remoteSections(projects, roots, inUseProjectIds, filter),
+    [projects, roots, inUseProjectIds, filter],
   );
   const open = (p: Project) => onOpenPane?.({
     source: { kind: 'remote', deviceId: machine.deviceId },
     deviceName: machine.name, projectId: p.id, projectName: p.name,
   });
   const row = (p: Project, indent = 0) => (
-    <RemoteProjectRow key={p.id} project={p} alive={aliveProjectIds.has(p.id)} indent={indent} onClick={() => open(p)} />
+    <RemoteProjectRow key={p.id} project={p} state={aliveProjectIds.has(p.id) ? projectStates.get(p.id) ?? 'idle' : null} indent={indent} onClick={() => open(p)} />
   );
 
   if (error || loading || rootsLoading) return <RemoteListStatus error={error} />;
@@ -128,9 +137,6 @@ function RemoteSectionsView({ sections, aliveProjectIds, row }: {
 }) {
   return (
     <>
-      {sections.inUse.length > 0 && (
-        <RemoteSection title="In use" testId={MACHINE_TESTIDS.remoteInUse}>{sections.inUse.map((p) => row(p))}</RemoteSection>
-      )}
       {sections.recents.length > 0 && (
         <RemoteSection title="Recents" testId={MACHINE_TESTIDS.remoteRecents}>{sections.recents.map((p) => row(p))}</RemoteSection>
       )}
@@ -164,7 +170,8 @@ function RemoteSection({ title, testId, children }: { title: string; testId: str
   );
 }
 
-function RemoteProjectRow({ project, alive, indent, onClick }: { project: Project; alive: boolean; indent: number; onClick: () => void }) {
+/** A remote project row; `state` is the live project's agent state, or null when it has no live shell. */
+function RemoteProjectRow({ project, state, indent, onClick }: { project: Project; state: AgentState | null; indent: number; onClick: () => void }) {
   return (
     <button
       type="button"
@@ -174,7 +181,9 @@ function RemoteProjectRow({ project, alive, indent, onClick }: { project: Projec
       className="w-full h-7 flex items-center gap-2.5 px-2 text-sm text-[--text] rounded-lg hover:bg-[--surface-hover] transition-colors"
       style={{ paddingLeft: 8 + indent }}
     >
-      <span aria-hidden className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${alive ? 'bg-green-500' : 'bg-[--surface-active]'}`} />
+      {state
+        ? <StatusDot state={state} className="shrink-0" />
+        : <span aria-hidden className="inline-block w-1.5 h-1.5 rounded-full shrink-0 bg-[--surface-active]" />}
       <span className="truncate flex-1 text-left">{project.name}</span>
     </button>
   );

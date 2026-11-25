@@ -41,16 +41,13 @@ interface Props {
 
 type Side = 'left' | 'right';
 
-const CARD = 'rounded-[10px] bg-[--surface-pane]';
+const CARD = 'rounded-[14px] bg-[--surface-sheet]';
 const RING = 'shadow-[inset_0_0_0_1px_var(--pane-ring)]';
 
-/** Left share of the row's content box (inside its padding) at a pointer x. */
+/** Left share of the split row at a pointer x. */
 function ratioAt(row: HTMLElement, clientX: number): number {
   const rect = row.getBoundingClientRect();
-  const cs = getComputedStyle(row);
-  const padL = parseFloat(cs.paddingLeft) || 0;
-  const padR = parseFloat(cs.paddingRight) || 0;
-  return clampRatio((clientX - rect.left - padL) / (rect.width - padL - padR));
+  return clampRatio((clientX - rect.left) / rect.width);
 }
 
 /** Window-level pointer tracking for a gutter drag; returns the dragging flag and its starter. */
@@ -76,7 +73,7 @@ function useDividerDrag(rowRef: RefObject<HTMLDivElement | null>, onRatioChange:
  * Pane-mode bookkeeping. Pane mode lasts while a right pane is rendered, including its fold-out,
  * so `exiting` holds it on until AnimatePresence reports the exit complete. `opening` lasts until
  * an enter's fold completes. Terminal geometry is held for either, so the left terminal refits
- * once: after an open's fold, or in the commit that drops the header and inset after a close.
+ * once: after an open's fold, or in the commit that drops the split layout after a close.
  * Split toggles are click-only, so `custom` never asks for an instant fold.
  * The focused-pane mark resets to the left whenever a split opens; it is local and never persisted.
  */
@@ -116,19 +113,14 @@ function PaneBody({ projectId, projectName, pane, primary, rightKey, onOpenFile,
   onOpenFile: Props['onOpenFile'];
   onOpenLaunchSettings?: Props['onOpenLaunchSettings'];
 }) {
+  const content = pane.popped
+    ? <PoppedPlaceholder projectId={projectId} shellIndex={pane.index} name={projectName} />
+    : <ShellTab key={`${projectId}:${pane.index}${rightKey ? ':right' : ''}`} projectId={projectId}
+        shellIndex={pane.index} primary={primary}
+        onOpenFile={onOpenFile} onOpenLaunchSettings={onOpenLaunchSettings} />;
   return (
     <div className="flex-1 min-h-0 relative">
-      {pane.popped
-        ? <PoppedPlaceholder projectId={projectId} shellIndex={pane.index} name={projectName} />
-        : <ShellTab
-            key={`${projectId}:${pane.index}${rightKey ? ':right' : ''}`}
-            projectId={projectId}
-            shellIndex={pane.index}
-            primary={primary}
-            onOpenFile={onOpenFile}
-            onOpenLaunchSettings={onOpenLaunchSettings}
-          />
-      }
+      {content}
     </div>
   );
 }
@@ -137,7 +129,7 @@ function PaneBody({ projectId, projectName, pane, primary, rightKey, onOpenFile,
  * The shell area: the left pane alone, or the left and right panes as two cards split by a
  * resizable gutter. The left pane is always the same `.split-left` element (`flex-1`) with the
  * same child positions and ShellTab key, so opening or closing the split never remounts its
- * terminal; cards, headers, the row inset and the focused-pane ring exist only in pane mode. The
+ * terminal; the cards, headers and focused-pane ring exist only in pane mode. The
  * right pane folds in and out as a FoldPane keyed by shell index; `mode="wait"` keeps a reopen
  * from mounting a second right pane before the previous one has finished leaving.
  */
@@ -149,7 +141,7 @@ export function ShellSplit({ projectId, projectName, panes, ratio, onRatioChange
   const right = panes.right;
 
   return (
-    <div ref={rowRef} className={`h-full w-full flex min-h-0 ${paneMode ? 'p-2' : ''}`}>
+    <div ref={rowRef} className="h-full w-full flex min-h-0" data-split-layout={paneMode || undefined}>
       <div
         className={`split-left flex-1 min-h-0 min-w-0 relative flex flex-col ${cardClass('left')}`}
         data-pane-focused={focusAttr('left')}

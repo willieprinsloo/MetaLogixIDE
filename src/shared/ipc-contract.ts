@@ -1,6 +1,6 @@
 import type { Project, Root, AliveShellSummary, SettingsMap } from './types';
 import type { ClaudePermissionMode } from './claude-permission-mode';
-import type { ChromeFrostLevel, TerminalFrostLevel, VibrancyMaterial } from './frosted-glass';
+import type { ChromeFrostLevel, TerminalFrostMode, VibrancyMaterial } from './frosted-glass';
 import type { AgentShellStateEntry } from './agent-state';
 import type { FontFamilyPreference, FontSettingKey } from './font-settings';
 import type { TerminalFontWeight } from './terminal-font-weight';
@@ -12,6 +12,8 @@ import type { KeepAwakeDarkenResult, KeepAwakeStartRequest, KeepAwakeStartResult
 import type { PrimarySessionInspection, StopPrimarySessionRequest, StopPrimarySessionResult } from './unload-session-contract';
 import type { FleetEntry, P2PSettings, P2PSettingsView } from './p2p-contract';
 import type { EngineStatus, GroupView, HeadlessEngine } from './group-chat';
+import type { StatAppFileResult, UploadProgressEvent, UploadRequest, UploadResult } from './remote-upload-contract';
+import type { MetaprojectEvents, MetaprojectIpc } from './metaproject-contract';
 
 /**
  * Single-character git status codes we bubble up. The two-position
@@ -32,7 +34,7 @@ export interface GitSideContent {
   skipped?: 'absent' | 'too-large' | 'binary' | 'unavailable';
 }
 
-export interface IpcContract {
+export interface IpcContract extends MetaprojectIpc {
   // roots
   'roots:list':    { request: undefined;                  response: { roots: Root[] } };
   'roots:add':     { request: { path: string };           response: { root: Root } };
@@ -116,7 +118,8 @@ export interface IpcContract {
   /** Current live agent shells, including recognized idle shells; absent shells are non-agent idle. */
   'agent-state:list': { request: undefined; response: { shells: AgentShellStateEntry[] } };
   'shells:pin':         { request: { projectId: number; shellIndex: number; pinned: boolean }; response: { ok: true } };
-  'shells:snapshot':    { request: { projectId: number; shellIndex: number };   response: { output: string; alive: boolean } };
+  /** Desktop cut: live output at or below replayPosition is already represented in a live snapshot. */
+  'shells:snapshot':    { request: { projectId: number; shellIndex: number };   response: { output: string; alive: boolean; replayPosition: number } };
   /**
    * Snapshot of every alive shell's currently-detected ports. The main
    * process scans PTY output for common "listening on 3000" / "Local:
@@ -297,6 +300,8 @@ export interface IpcContract {
   'drops:stage-file':            { request: StageFileRequest;   response: StageResult };
   /** Save an image-only clipboard as a PNG in the drop directory. */
   'drops:stage-clipboard-image': { request: undefined;          response: ClipboardImageResult };
+  /** Name, size and folder flag of a Files-tree drag payload, with the same containment as resolve. */
+  'drops:stat-app-file':         { request: AppFileDragPayload; response: StatAppFileResult };
   /**
    * Preview a path printed in terminal output. A relative `relPath` is tried against the current project's root, then every
    * other project's; an absolute one is read as-is. The response's `relPath` is relative to the project the file was found
@@ -361,7 +366,7 @@ export interface IpcContract {
   'window:toggle-fullscreen': { request: undefined; response: { fullscreen: boolean } };
   'settings:set-frost-chrome': { request: { enabled: boolean }; response: { ok: true } | { ok: false; error: 'invalid' } };
   'settings:set-chrome-frost-level': { request: { level: ChromeFrostLevel }; response: { ok: true } | { ok: false; error: 'invalid' } };
-  'settings:set-terminal-frost-level': { request: { level: TerminalFrostLevel }; response: { ok: true } | { ok: false; error: 'invalid' } };
+  'settings:set-terminal-frost-level': { request: { level: TerminalFrostMode }; response: { ok: true } | { ok: false; error: 'invalid' } };
   'settings:set-vibrancy-material': { request: { material: VibrancyMaterial }; response: { ok: true } | { ok: false; error: 'invalid' } };
   /** Returns the absolute path of the current electron-log file so users can attach it to a bug report. */
   'app:get-log-path':       { request: undefined; response: { path: string } };
@@ -379,37 +384,17 @@ export interface IpcContract {
   'app:reveal-in-folder':   { request: { path: string }; response: { ok: true } };
 
   /* ─── metaproject chat (Flask-SocketIO backed) ─── */
-  'metaproject:login':          { request: { username: string; password: string; remember?: boolean }; response: { userId: number; userName: string } };
-  // Credentials persisted in the OS keychain (Keychain on macOS, libsecret on
-  // Linux, Credential Vault on Windows). Never round-trip through the renderer.
-  'metaproject:credentials-load':  { request: undefined; response: { username: string | null; hasPassword: boolean } };
-  'metaproject:credentials-clear': { request: undefined; response: { ok: true } };
-  'metaproject:auto-login':        { request: undefined; response: { ok: boolean; userName?: string; reason?: string } };
-  'metaproject:status':         { request: undefined; response: { loggedIn: boolean; connected: boolean; userName: string | null; userId: number | null } };
-  'metaproject:logout':         { request: undefined; response: { ok: true } };
-  'metaproject:list-channels':  { request: { projectId: number }; response: { channels: Array<{ id: number; project_id: number; name: string; is_private: boolean }> } };
+  'metaproject:list-channels':  { request: { projectId: number; epoch: number }; response: { channels: Array<{ id: number; project_id: number; name: string; is_private: boolean }> } };
   /**
    * Workspace-scoped channel list. `scope` is either 'all' (every channel the
    * user can see across every project + globals), 'global' (org-wide only),
    * or a project_id number (that project + globals).
    */
-  'metaproject:list-all-channels': { request: { scope: 'all' | 'global' | number }; response: { channels: Array<{ id: number; project_id: number | null; name: string; is_private: boolean }> } };
-  /** Lists metaproject projects the current user can access — used by the "link project" picker. */
-  'metaproject:list-projects':     { request: undefined; response: { projects: Array<{ id: number; name: string; identifier?: string | null }> } };
+  'metaproject:list-all-channels': { request: { scope: 'all' | 'global' | number; epoch: number }; response: { channels: Array<{ id: number; project_id: number | null; name: string; is_private: boolean }> } };
   /** Lists active users — used by the @-mention autocomplete in the composer. */
-  'metaproject:list-users':        { request: undefined; response: { users: Array<{ id: number; username: string; email?: string; avatar_url?: string | null }> } };
-  /** Creates a new metaproject project (kanban by default). */
-  'metaproject:create-project':    { request: { name: string; description?: string; projectType?: 'kanban' | 'sprint' | 'dcad' }; response: { project: { id: number; name: string; identifier?: string | null } } };
-  /**
-   * Sets `project_id: <n>` in the local project's `.metaproject.yaml`. Creates
-   * the file with sensible defaults if it doesn't exist, or does a regex
-   * upsert on the `project_id` line otherwise. Also refreshes the projects
-   * repo so Project.config.linkedMetaprojectProjectId reflects the change
-   * without needing a full root rescan.
-   */
-  'metaproject:link-local-project': { request: { projectId: number; metaprojectProjectId: number }; response: { ok: true } };
+  'metaproject:list-users':     { request: { epoch: number }; response: { users: Array<{ id: number; username: string; email?: string; avatar_url?: string | null }> } };
   'metaproject:list-messages':  {
-    request: { channelId: number; limit?: number; projectId?: number };
+    request: { channelId: number; limit?: number; projectId: number; epoch: number };
     response: {
       messages: Array<{
         id: number;
@@ -421,22 +406,24 @@ export interface IpcContract {
         message: string;
         created_at: string;
         parent_message_id: number | null;
+        is_deleted?: boolean;
         attachments?: Array<{ id: number; filename: string; file_size: number; mime_type?: string | null }>;
       }>;
     };
   };
-  'metaproject:join-channel':   { request: { channelId: number }; response: { ok: true } };
-  'metaproject:send-message':   { request: { channelId: number; message: string; parentMessageId?: number | null }; response: { ok: true } };
-  'metaproject:mark-read':      { request: { channelId: number; lastMessageId: number }; response: { ok: true } };
-  'metaproject:edit-message':   { request: { channelId: number; messageId: number; message: string }; response: { ok: true } };
-  'metaproject:delete-message': { request: { channelId: number; messageId: number }; response: { ok: true } };
+  'metaproject:join-channel':   { request: { channelId: number; epoch: number }; response: { ok: true } };
+  'metaproject:send-message':   { request: { projectId: number; channelId: number; message: string; parentMessageId?: number | null; epoch: number }; response: { ok: true } };
+  'metaproject:send-global-message': { request: { channelId: number; message: string; parentMessageId?: number | null; epoch: number }; response: { submitted: true } };
+  'metaproject:mark-read':      { request: { projectId: number; channelId: number; lastMessageId: number; epoch: number }; response: { ok: true } };
+  'metaproject:edit-message':   { request: { projectId: number; channelId: number; messageId: number; message: string; epoch: number }; response: { ok: true } };
+  'metaproject:delete-message': { request: { projectId: number; channelId: number; messageId: number; epoch: number }; response: { ok: true } };
   /**
    * Downloads a chat message attachment to the user's Downloads folder and
    * returns the absolute path we wrote to. Adds a ` (N)` suffix if the file
    * already exists so we never silently overwrite anything.
    */
   'metaproject:download-attachment': {
-    request: { projectId: number; attachmentId: number; filename: string };
+    request: { projectId: number; attachmentId: number; filename: string; epoch: number };
     response: { path: string };
   };
 
@@ -565,10 +552,17 @@ export interface IpcContract {
   /** Viewer side: redeems a code shown on the host. Failure carries the reason (e.g. code_consumed, attempts_exceeded, handshake_failed). */
   'p2p:pair-redeem-code':   { request: { code: string }; response: { ok: true } | { ok: false; error: string } };
   'p2p:revoke-device':      { request: { deviceId: string }; response: { ok: true } };
+  'p2p:set-workspace-access': { request: { deviceId: string; allowed: boolean }; response: { ok: true } };
   'p2p:reconnect-device':   { request: { deviceId: string }; response: { ok: true } };
   /** Renderer to main dispatch of an RPC method on a paired device; stream methods return `{ streamId }` and push `p2p:rpc-event`. */
   'p2p:rpc-call':           { request: { deviceId: string; method: string; params?: unknown }; response: { result: unknown } };
   'p2p:rpc-close-stream':   { request: { streamId: number }; response: { ok: true } };
+  /** The remote shell the main window shows (null for none), so a fleet notice for it is held back while it is in view. */
+  'p2p:viewing':            { request: { shell: { deviceId: string; projectId: number; shellIndex: number } | null }; response: { ok: true } };
+  /** Send one file or the clipboard image to a paired device's drop folder; never rejects. */
+  'p2p:upload':             { request: UploadRequest; response: UploadResult };
+  /** Stop an upload between chunks; the host discards its partial file. */
+  'p2p:upload-cancel':      { request: { uploadId: string }; response: { ok: true } };
 
   // health / dev
   'app:ping':    { request: undefined; response: 'pong' };
@@ -579,15 +573,16 @@ export type IpcRequest<C extends IpcChannelName>  = IpcContract[C]['request'];
 export type IpcResponse<C extends IpcChannelName> = IpcContract[C]['response'];
 
 // Streaming (main → renderer) event channels — separate from request/response.
-export interface IpcEvents {
-  'pty:data':               { projectId: number; shellIndex: number; data: string };
+export interface IpcEvents extends MetaprojectEvents {
+  /** Desktop-only output position, shared across shells and increasing for the lifetime of main IPC. */
+  'pty:data':               { projectId: number; shellIndex: number; data: string; replayPosition: number };
   'pty:exit':               { projectId: number; shellIndex: number; code: number | null };
   'pty:input-owner-changed':{ projectId: number; shellIndex: number; ownerWindowId: number };
   'projects:changed':       { kind: 'added' | 'removed' | 'updated'; projectId?: number };
   'settings:changed':       { key: keyof SettingsMap };
   'alive-shells:changed':   Record<string, never>;
   'popout:changed':         { popped: Array<{ projectId: number; shellIndex: number }> };
-  'metaproject:event':      { event: string; payload: unknown };
+  'metaproject:chat-event': { epoch: number; event: string; payload: unknown };
   'ports:changed':          { projectId: number; shellIndex: number; ports: number[] };
   /** An agent shell changed state; emitted after screen observation. */
   'agent-state:changed': AgentShellStateEntry;
@@ -609,10 +604,14 @@ export interface IpcEvents {
   'keep-awake:changed':     KeepAwakeState;
   /** Both darken actions (`pmset displaysleepnow`, ScreenSaverEngine) failed; keep-awake stays on. */
   'keep-awake:darken-failed': Record<string, never>;
+  /** A fleet notice was clicked: open that shell on the paired machine. */
+  'p2p:focus-remote-shell': { deviceId: string; deviceName: string; projectId: number; projectName: string; shellIndex: number };
   /** Pushed stream events from a remote device (`closed` when the stream or its connection ends). */
   'p2p:rpc-event':          { deviceId: string; streamId: number; data?: unknown; closed?: true; reason?: string };
   /** A group chat in this project changed; the group panel refetches `groups:list`. */
   'groups:changed':         { projectId: number };
+  /** Bytes sent so far for a `p2p:upload`, at most 10 per second. */
+  'p2p:upload-progress':    UploadProgressEvent;
   /**
    * Fired whenever any BrowserWindow enters or leaves fullscreen — from the
    * IPC toggle, the OS shortcut (Ctrl+Cmd+F on mac, F11 on Windows/Linux),

@@ -33,7 +33,7 @@ describe('rescanRootsAtBoot', () => {
     warn.mockClear();
   });
 
-  it('upserts, links, prunes then watches each root in order using the stored scan depth', async () => {
+  it('upserts, prunes and watches roots without treating scanner metadata as an assignment', async () => {
     const roots = [{ id: 1, path: '/r1' }, { id: 2, path: '/r2' }];
     const { services, calls } = makeServices(roots);
     discoverProjects.mockImplementation((path: string) => path === '/r1'
@@ -47,7 +47,6 @@ describe('rescanRootsAtBoot', () => {
     expect(calls).toEqual([
       'settings.get:scan_depth',
       'upsert:1:/r1/a',
-      'updateConfig:100:{"linkedMetaprojectProjectId":"MP-1"}',
       'upsert:1:/r1/b',
       'prune:/r1',
       'watch:/r1',
@@ -55,6 +54,7 @@ describe('rescanRootsAtBoot', () => {
       'watch:/r2',
     ]);
     expect(services.projects.upsert).toHaveBeenCalledWith(1, '/r1/a', 'a');
+    expect(services.projects.updateConfig).not.toHaveBeenCalled();
   });
 
   it('prunes with no live shells at boot', async () => {

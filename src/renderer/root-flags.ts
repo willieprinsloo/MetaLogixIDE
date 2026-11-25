@@ -3,7 +3,9 @@ import {
   FROSTED_GLASS_DEFAULTS,
   FROSTED_GLASS_QUERY_KEYS,
   isChromeFrostLevel,
-  isTerminalFrostLevel,
+  isTerminalFrostMode,
+  isTerminalFrostOpacity,
+  TERMINAL_FROST_OPACITY,
   toFrostPlatform,
   type FrostFlags,
 } from '@shared/frosted-glass';
@@ -38,6 +40,8 @@ export function applyRootFlags(el: RootFlagTarget, flags: RootFlags): void {
   setOrRemove(el, FROST_ATTR.platform, frost);
   setOrRemove(el, FROST_ATTR.chromeFrost, frost && flags.chromeFrost !== 'subtle' ? flags.chromeFrost : null);
   setOrRemove(el, FROST_ATTR.terminalFrost, frost && flags.terminalFrost !== 'off' ? flags.terminalFrost : null);
+  const opacity = isTerminalFrostOpacity(flags.terminalOpacity) ? flags.terminalOpacity : TERMINAL_FROST_OPACITY.default;
+  setOrRemove(el, FROST_ATTR.terminalOpacity, frost && flags.terminalFrost === 'custom' ? String(opacity) : null);
 }
 
 function parseFrostChrome(raw: string | null): boolean {
@@ -51,9 +55,11 @@ export function parseFrostQuery(search: string): FrostFlags {
   const params = new URLSearchParams(search);
   const chromeFrostRaw = params.get(FROSTED_GLASS_QUERY_KEYS.chromeFrost);
   const terminalFrostRaw = params.get(FROSTED_GLASS_QUERY_KEYS.terminalFrost);
+  const opacity = Number(params.get(FROSTED_GLASS_QUERY_KEYS.terminalOpacity));
   return {
     frostChrome: parseFrostChrome(params.get(FROSTED_GLASS_QUERY_KEYS.frostChrome)),
     chromeFrost: isChromeFrostLevel(chromeFrostRaw) ? chromeFrostRaw : FROSTED_GLASS_DEFAULTS.chromeFrostLevel,
-    terminalFrost: isTerminalFrostLevel(terminalFrostRaw) ? terminalFrostRaw : FROSTED_GLASS_DEFAULTS.terminalFrostLevel,
+    terminalFrost: isTerminalFrostMode(terminalFrostRaw) ? terminalFrostRaw : FROSTED_GLASS_DEFAULTS.terminalFrostLevel,
+    ...(terminalFrostRaw === 'custom' ? { terminalOpacity: isTerminalFrostOpacity(opacity) ? opacity : TERMINAL_FROST_OPACITY.default } : {}),
   };
 }

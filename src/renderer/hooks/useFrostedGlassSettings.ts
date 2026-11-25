@@ -4,17 +4,17 @@ import {
   FROSTED_GLASS_DEFAULTS,
   FROSTED_GLASS_KEYS,
   isChromeFrostLevel,
-  isTerminalFrostLevel,
+  isTerminalFrostMode,
   isVibrancyMaterial,
   type ChromeFrostLevel,
-  type TerminalFrostLevel,
+  type TerminalFrostMode,
   type VibrancyMaterial,
 } from '@shared/frosted-glass';
 
 export interface FrostedGlassSettings {
   frostChrome: boolean;
   chromeFrostLevel: ChromeFrostLevel;
-  terminalFrostLevel: TerminalFrostLevel;
+  terminalFrostLevel: TerminalFrostMode;
   vibrancyMaterial: VibrancyMaterial;
 }
 
@@ -22,7 +22,7 @@ export interface FrostedGlassSettingsApi {
   values: FrostedGlassSettings;
   setFrostChrome: (enabled: boolean) => Promise<void>;
   setChromeFrostLevel: (level: ChromeFrostLevel) => Promise<void>;
-  setTerminalFrostLevel: (level: TerminalFrostLevel) => Promise<void>;
+  setTerminalFrostLevel: (level: TerminalFrostMode) => Promise<void>;
   setVibrancyMaterial: (material: VibrancyMaterial) => Promise<void>;
 }
 
@@ -43,7 +43,7 @@ async function loadFrostedGlassSettings(): Promise<FrostedGlassSettings> {
   return {
     frostChrome: chrome.value === null || chrome.value === undefined ? FROSTED_GLASS_DEFAULTS.frostChrome : Boolean(chrome.value),
     chromeFrostLevel: isChromeFrostLevel(chromeLevel.value) ? chromeLevel.value : FROSTED_GLASS_DEFAULTS.chromeFrostLevel,
-    terminalFrostLevel: isTerminalFrostLevel(terminalLevel.value)
+    terminalFrostLevel: isTerminalFrostMode(terminalLevel.value)
       ? terminalLevel.value
       : FROSTED_GLASS_DEFAULTS.terminalFrostLevel,
     vibrancyMaterial: isVibrancyMaterial(material.value) ? material.value : FROSTED_GLASS_DEFAULTS.vibrancyMaterial,

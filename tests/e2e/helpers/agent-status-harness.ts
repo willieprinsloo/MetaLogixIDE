@@ -232,14 +232,6 @@ export function rowDot(win: Page, name: string): Locator {
     .getByTestId(AGENT_DOT.testId);
 }
 
-export function chipDot(win: Page): Locator {
-  return win
-    .locator('span')
-    .filter({ has: win.getByTestId('unload-current') })
-    .first()
-    .getByTestId(AGENT_DOT.testId);
-}
-
 export function inUseDot(win: Page): Locator {
   return win.getByTestId('section-in-use-toggle').getByTestId(AGENT_DOT.testId);
 }
