@@ -6,7 +6,6 @@ import { SHORTCUT_COPY } from '@renderer/shortcut-copy';
 import { useShortcutPlatform } from '@renderer/shortcut-platform';
 import { gitStatusTextClass } from '@renderer/git-status-style';
 import { unstagePaths } from '@renderer/git-unstage-paths';
-import { DIFF_COPY } from '@renderer/diff-tab-copy';
 import { createRequestGate } from '@renderer/diff/diff-load-state';
 import { ICON_SIZE, ICON_STROKE } from './icon-size';
 import { Tooltip } from './Tooltip';
@@ -66,8 +65,10 @@ export function usePanelStatus(projectId: number | null): { status: Status | nul
  * stage-unstage buttons, a commit message input, and Commit / Push / Pull.
  * Deliberately narrow scope — this is not a diff viewer or history browser;
  * it covers the 80% of git you'd otherwise `git add` in the terminal for.
+ * A row click delegates the diff to the Diff tab via `onOpenInDiff` so the
+ * full side-by-side view lives in exactly one place (AC33 rev 2).
  */
-export function GitPanel({ projectId }: { projectId: number | null }) {
+export function GitPanel({ projectId, onOpenInDiff }: { projectId: number | null; onOpenInDiff?: (entryKey: string) => void }) {
   const platform = useShortcutPlatform();
   const { status, refresh } = usePanelStatus(projectId);
   const [message, setMessage] = useState('');
@@ -109,6 +110,43 @@ export function GitPanel({ projectId }: { projectId: number | null }) {
       setMessage('');
     } catch (e) {
       toast('Commit failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+    }
+  }
+
+  async function draftCommitMessage() {
+    if (projectId == null) return;
+    const staged = status?.staged ?? [];
+    if (staged.length === 0) {
+      toast('Nothing staged', { kind: 'info', detail: 'Stage some files first; Claude needs a diff to work with.' });
+      return;
+    }
+    setBusy('draft-commit');
+    try {
+      // Pull per-file diffs and concatenate — git doesn't expose a "staged diff" tool
+      // via the Diff tab's IPC, but 'git:file-diff' with staged:true does one file at a time.
+      const pieces: string[] = [];
+      for (const f of staged) {
+        try {
+          const r = await api.invoke('git:file-diff', { projectId, path: f.path, origPath: f.origPath, staged: true });
+          if (r.diff) pieces.push(r.diff);
+        } catch {
+          // Skip a single file that errored; the others still produce a useful message.
+        }
+      }
+      const combined = pieces.join('\n\n');
+      if (!combined.trim()) {
+        toast('Couldn’t read staged diff', { kind: 'error' });
+        return;
+      }
+      const r = await api.invoke('diff:explain', {
+        projectId,
+        kind: 'commit',
+        diff: combined,
+      });
+      if (r.status === 'ok') setMessage(r.text);
+      else toast('Couldn’t draft message', { kind: 'error', detail: r.message });
+    } finally {
+      setBusy(null);
     }
   }
   async function push() {
@@ -163,29 +201,43 @@ export function GitPanel({ projectId }: { projectId: number | null }) {
         )}
         <Section title="Staged" count={status.staged.length} onBulk={unstageAll} bulkLabel="Unstage all">
           {status.staged.map((f) => (
-            <Row key={`s:${f.path}`} projectId={projectId!} file={f} staged onAction={() => void unstageOne(f)} action="−" busy={busy === `unstage:${f.path}`} />
+            <Row key={`s:${f.path}`} file={f} group="staged" onAction={() => void unstageOne(f)} action="−" busy={busy === `unstage:${f.path}`} onOpenInDiff={onOpenInDiff} />
           ))}
         </Section>
         <Section title="Changes" count={status.unstaged.length + untrackedAsEntries.length} onBulk={stageAll} bulkLabel="Stage all">
           {status.unstaged.map((f) => (
-            <Row key={`u:${f.path}`} projectId={projectId!} file={f} onAction={() => void stageOne(f.path)} action="+" busy={busy === `stage:${f.path}`} />
+            <Row key={`u:${f.path}`} file={f} group="unstaged" onAction={() => void stageOne(f.path)} action="+" busy={busy === `stage:${f.path}`} onOpenInDiff={onOpenInDiff} />
           ))}
           {untrackedAsEntries.map((f) => (
-            <Row key={`t:${f.path}`} projectId={projectId!} file={f} untracked onAction={() => void stageOne(f.path)} action="+" busy={busy === `stage:${f.path}`} />
+            <Row key={`t:${f.path}`} file={f} group="untracked" onAction={() => void stageOne(f.path)} action="+" busy={busy === `stage:${f.path}`} onOpenInDiff={onOpenInDiff} />
           ))}
         </Section>
       </div>
 
       <div className="border-t border-[--border] p-2 space-y-2 shrink-0 bg-[--panel]/40">
-        <textarea
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          onKeyDown={(e) => { if (isCommitShortcut(e, platform)) void commit(); }}
-          placeholder={SHORTCUT_COPY.commitPlaceholder(platform)}
-          rows={2}
-          className="w-full resize-none bg-[--panel-strong] border border-[--border] rounded-md px-2.5 py-1.5 text-xs outline-none focus:ring-1 focus:ring-[--accent]/60"
-          data-testid="git-message"
-        />
+        <div className="relative">
+          <textarea
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={(e) => { if (isCommitShortcut(e, platform)) void commit(); }}
+            placeholder={SHORTCUT_COPY.commitPlaceholder(platform)}
+            rows={2}
+            className="w-full resize-none bg-[--panel-strong] border border-[--border] rounded-md px-2.5 py-1.5 text-xs outline-none focus:ring-1 focus:ring-[--accent]/60"
+            data-testid="git-message"
+          />
+          <Tooltip label="Draft a commit message from the staged diff">
+            <button
+              type="button"
+              onClick={() => void draftCommitMessage()}
+              disabled={busy !== null || (status?.staged.length ?? 0) === 0}
+              className="absolute right-1 bottom-1 text-[10px] px-1.5 py-0.5 rounded border border-[--border] bg-[--panel]/80 text-[--text-muted] hover:text-[--text] hover:bg-[--panel-strong] disabled:opacity-40"
+              aria-label="Draft a commit message from the staged diff"
+              data-testid="git-draft-message"
+            >
+              {busy === 'draft-commit' ? 'Drafting…' : 'Suggest'}
+            </button>
+          </Tooltip>
+        </div>
         <div className="flex items-center gap-1.5">
           <button
             onClick={commit}
@@ -237,45 +289,28 @@ function Section({ title, count, onBulk, bulkLabel, children }: {
   );
 }
 
-function Row({ projectId, file, onAction, action, busy, staged, untracked }: {
-  projectId: number;
+function Row({ file, group, onAction, action, busy, onOpenInDiff }: {
   file: FileEntry;
+  group: 'staged' | 'unstaged' | 'untracked';
   onAction: () => void;
   action: '+' | '−';
   busy: boolean;
-  /** True when this row lives in the "Staged" section — diff comes from --cached. */
-  staged?: boolean;
-  /** True when the file has never been tracked — diff comes from --no-index. */
-  untracked?: boolean;
+  onOpenInDiff?: (entryKey: string) => void;
 }) {
   const color = gitStatusTextClass(file.status);
-  const [open, setOpen] = useState(false);
-  const [diff, setDiff] = useState<string | null>(null);
-  const [diffBusy, setDiffBusy] = useState(false);
-
-  async function toggle() {
-    if (open) { setOpen(false); return; }
-    setOpen(true);
-    if (diff != null) return;
-    setDiffBusy(true);
-    try {
-      const res = await api.invoke('git:file-diff', { projectId, path: file.path, origPath: file.origPath, staged, untracked });
-      setDiff(res.tooLarge ? DIFF_COPY.tooLarge : res.diff || '(no changes)');
-    } catch (e) {
-      setDiff(`Error: ${String(e).replace(/^Error:\s*/, '')}`);
-    } finally { setDiffBusy(false); }
-  }
-
+  const entryKey = `${group}:${file.path}`;
+  const open = onOpenInDiff ? () => onOpenInDiff(entryKey) : undefined;
   return (
     <div className="rounded hover:bg-[--panel-strong]/60">
       <div className="group flex items-center gap-2 px-1.5 py-1">
         <span className={`w-4 text-center font-mono text-[10px] ${color}`}>{file.status}</span>
         <button
-          onClick={toggle}
-          className="flex-1 flex items-center gap-1 text-left truncate font-mono text-[11px] hover:text-[--text]"
-          title={`Toggle diff for ${file.path}`}
+          onClick={open}
+          disabled={!open}
+          className="flex-1 flex items-center gap-1 text-left truncate font-mono text-[11px] hover:text-[--text] disabled:cursor-default"
+          title={`Open ${file.path} in Diff tab`}
+          data-testid={`git-row-${file.path}`}
         >
-          <span className={`text-[--text-muted] transition-transform inline-block w-2 ${open ? 'rotate-90' : ''}`}>▸</span>
           <span className="truncate">{file.path}</span>
         </button>
         <Tooltip label={action === '+' ? 'Stage this file' : 'Unstage this file'} wrapClassName="opacity-0 group-hover:opacity-100">
@@ -289,32 +324,7 @@ function Row({ projectId, file, onAction, action, busy, staged, untracked }: {
           </button>
         </Tooltip>
       </div>
-      {open && (
-        <div className="ml-6 mr-1 mb-1 rounded border border-[--border] bg-[--panel] max-h-[240px] overflow-auto text-[10px] font-mono">
-          {diffBusy && <div className="px-2 py-1 text-[--text-muted]">Loading diff…</div>}
-          {diff != null && !diffBusy && <DiffView text={diff} />}
-        </div>
-      )}
     </div>
-  );
-}
-
-/** Simple unified-diff renderer — colours + / - / @@ lines VS Code-style. */
-function DiffView({ text }: { text: string }) {
-  const lines = text.split('\n');
-  return (
-    <pre className="whitespace-pre">
-      {lines.map((l, i) => {
-        let cls = 'text-[--text-muted]';
-        // Skip the file headers ("diff --git", "index …", "---", "+++") from
-        // dominating the coloured output.
-        if (l.startsWith('@@')) cls = 'text-[color:var(--git-untracked,#38bdf8)]';
-        else if (l.startsWith('+') && !l.startsWith('+++')) cls = 'text-[color:var(--git-added,#34d399)] bg-emerald-500/5';
-        else if (l.startsWith('-') && !l.startsWith('---')) cls = 'text-[color:var(--git-deleted,#fb7185)] bg-rose-500/5';
-        else if (l.startsWith('diff --git') || l.startsWith('index ') || l.startsWith('+++') || l.startsWith('---')) cls = 'text-[--text-muted] opacity-60';
-        return <div key={i} className={`px-2 ${cls}`}>{l || ' '}</div>;
-      })}
-    </pre>
   );
 }
 

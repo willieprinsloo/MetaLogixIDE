@@ -505,6 +505,28 @@ export interface IpcContract {
       | { status: 'unchanged' }
       | { status: 'too-large' };
   };
+  /**
+   * AI-powered diff explainer. `kind` picks the prompt — 'explain' produces
+   * the Diff pane's Intent/What-changed/Flags markdown; 'commit' produces a
+   * draft commit message from a combined staged diff. `cacheHash` opts in to
+   * a session-scoped cache keyed by (projectId + kind + hash); a repeat
+   * request for the same hash returns the cached result and avoids spawning
+   * Claude again. Returns markdown on success, or an error string the
+   * UI shows inline.
+   */
+  'diff:explain': {
+    request: {
+      projectId: number;
+      kind: 'explain' | 'commit';
+      diff: string;
+      newPath?: string;
+      oldPath?: string;
+      cacheHash?: string;
+    };
+    response:
+      | { status: 'ok'; text: string; cached: boolean }
+      | { status: 'error'; message: string };
+  };
 
   /* ─── Global scrollback search ─── */
   'shells:search-scrollback': {

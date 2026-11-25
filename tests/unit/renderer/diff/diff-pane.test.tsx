@@ -1,5 +1,10 @@
-import { describe, it, expect } from 'vitest';
+// @vitest-environment jsdom
+import { describe, it, expect, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
+
+// api.ts reads window.api at module load; stub it for SSR tests.
+vi.mock('@renderer/api', () => ({ api: { invoke: vi.fn(), on: vi.fn().mockReturnValue(() => {}) } }));
+
 import { DiffPane } from '@renderer/components/DiffPane';
 import { DIFF_COPY, DIFF_TESTIDS } from '@renderer/diff-tab-copy';
 import type { DiffEntry } from '@renderer/diff/diff-selection';
@@ -21,7 +26,7 @@ const ok = (key: string): DiffSidesState => ({
 });
 
 function render(sides: DiffSidesState, shown: DiffEntry | null = entry): string {
-  return renderToStaticMarkup(<DiffPane entry={shown} sides={sides} />);
+  return renderToStaticMarkup(<DiffPane entry={shown} sides={sides} projectId={1} />);
 }
 
 const loading = `<p role="status">${DIFF_COPY.loadingDiff}</p>`;

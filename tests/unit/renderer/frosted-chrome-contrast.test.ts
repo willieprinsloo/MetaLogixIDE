@@ -2003,7 +2003,12 @@ describe('chrome colour inventory (D17)', () => {
     const reads = [
       ...chromeSource('GitPanel.tsx').matchAll(/var\((--git-[\w-]+),(#[0-9a-f]{6})\)/g),
     ];
-    expect(reads.length).toBeGreaterThanOrEqual(5);
+    // After the AC33 rev 2 refactor the Git panel no longer renders its own
+    // inline diff; the three line-coloured tokens moved with it to DiffTab /
+    // SplitDiffView. GitPanel now only reads --git-added and --git-deleted
+    // for the ahead/behind chips. Keep at least those two, and keep the
+    // fallback-equals-letter-hex invariant for every read that remains.
+    expect(reads.length).toBeGreaterThanOrEqual(2);
     for (const [, name, fallback] of reads) expect(fallback, name).toBe(letters.get(name));
   });
 });

@@ -460,7 +460,7 @@ test('list: groups in order with counts, status letters in Git panel colours, b.
     }
   }
   for (const [path, colour] of Object.entries(tabColours)) {
-    const letter = gitView.locator(`button[title=${JSON.stringify(`Toggle diff for ${path}`)}]`).first().locator('xpath=preceding-sibling::span[1]');
+    const letter = gitView.locator(`button[title=${JSON.stringify(`Open ${path} in Diff tab`)}]`).first().locator('xpath=preceding-sibling::span[1]');
     await expect(letter, `Git panel row for ${path}`).toBeVisible();
     const expected = frosted ? gitLifted[path]! : colour;
     expect(await letter.evaluate((el) => getComputedStyle(el).color), `${path} letter colour`).toBe(expected);
@@ -1083,7 +1083,7 @@ test('Diff to Shell does not focus the terminal (AC6)', async () => {
 
 /* ═══════════════════════════════ 10. Git panel ═══════════════════════════════ */
 
-test('Git panel inherits the fixes: rename under its new path with a working diff, too large, git error text, no highlighting (AC33)', async () => {
+test('Git panel inherits the fixes: rename under its new path, row click opens Diff tab with rename + too-large + git error text (AC33 rev 2)', async () => {
   h = await launch([PROJ, OTHER]);
   seedRepo({ dir: projDir(), outside: join(h.isolatedHome, 'outside') }, ['rename', 'big', 'aTs']);
   const win = h.win;
@@ -1091,23 +1091,27 @@ test('Git panel inherits the fixes: rename under its new path with a working dif
   await win.getByTestId('ab-git').click();
   const gitView = win.locator('[data-view="git"]');
 
-  const renameBtn = gitView.locator(`button[title=${JSON.stringify(`Toggle diff for ${RENAME_NEW}`)}]`);
+  // The Git panel lists the rename under its new path (not quoted, not octal bytes).
+  const renameBtn = gitView.locator(`button[title=${JSON.stringify(`Open ${RENAME_NEW} in Diff tab`)}]`);
   await expect(renameBtn).toBeVisible({ timeout: 10000 });
   await expect(renameBtn).toHaveText(new RegExp(`${RENAME_NEW}$`));
   await expect(gitView).not.toContainText('\\303');
   await expect(gitView).not.toContainText(`"${RENAME_NEW}"`);
+
+  // Clicking the row opens the Diff tab focused on that file.
   await renameBtn.click();
-  await expect(gitView).toContainText(`rename from ${RENAME_OLD}`);
-  await expect(gitView).toContainText('export const six = 66;');
+  const panel = panelOf(win);
+  await expect(panel).toBeVisible({ timeout: 10000 });
+  await expect(cell(win, 'new', 'export const six = 66;')).toBeVisible();
 
-  await gitView.locator('button[title="Toggle diff for big.txt"]').click();
-  await expect(gitView.getByText(DIFF_COPY.tooLarge, { exact: true })).toBeVisible();
+  // Switching back to the Git panel and clicking big.txt shows the too-large banner in the Diff tab.
+  await win.getByTestId('ab-git').click();
+  await gitView.locator(`button[title=${JSON.stringify('Open big.txt in Diff tab')}]`).click();
+  await expect(panel.getByText(DIFF_COPY.tooLarge, { exact: true })).toBeVisible();
 
-  expect(await hljsSpanCount(gitView), 'the panel diff stays unhighlighted').toBe(0);
-  await expect(gitView.getByTestId(DIFF_TESTIDS.sideOld)).toHaveCount(0);
-
-  // A failed status shows git's error, not the clean-tree message.
+  // A failed status still shows git's error in the Git panel itself, not the clean-tree message.
   await openProject(win, OTHER);
+  await win.getByTestId('ab-git').click();
   await expect(gitView).toContainText(/fatal: not a git repository/i, { timeout: 10000 });
   await expect(gitView.getByText('Nothing to commit — working tree clean.')).toHaveCount(0);
 });
@@ -1123,10 +1127,10 @@ test('Git panel unstages a staged rename completely: the old path is not left st
   // Positive control: the rename is staged in git and listed under Staged in the panel.
   expect(stagedEntries(projDir())).toEqual([{ xy: 'R ', path: RENAME_NEW, orig: RENAME_OLD }]);
   const staged = gitView.locator("xpath=.//span[starts-with(normalize-space(text()), 'Staged')]/ancestor::div[2]");
-  const renameBtn = staged.locator(`button[title=${JSON.stringify(`Toggle diff for ${RENAME_NEW}`)}]`);
+  const renameBtn = staged.locator(`button[title=${JSON.stringify(`Open ${RENAME_NEW} in Diff tab`)}]`);
   await expect(renameBtn).toBeVisible({ timeout: 10000 });
 
-  await renameBtn.locator('xpath=following-sibling::button[@title="Unstage"]').click();
+  await renameBtn.locator('xpath=following-sibling::span//button[@aria-label="Unstage this file"]').click();
 
   // Nothing is left staged: before the fix, "D  old.ts" stayed in the index.
   await expect.poll(() => stagedEntries(projDir()), { timeout: 5000 }).toEqual([]);
@@ -1134,7 +1138,7 @@ test('Git panel unstages a staged rename completely: the old path is not left st
   expect(entries).toContainEqual({ xy: '??', path: RENAME_NEW });
   expect(entries.find((e) => e.path === RENAME_OLD), 'old path is an unstaged deletion').toEqual({ xy: ' D', path: RENAME_OLD });
   await expect(gitView.locator("xpath=.//span[starts-with(normalize-space(text()), 'Staged')]"), 'no Staged section').toHaveCount(0, { timeout: 5000 });
-  await expect(gitView.locator(`button[title=${JSON.stringify(`Toggle diff for ${RENAME_NEW}`)}]`)).toBeVisible();
+  await expect(gitView.locator(`button[title=${JSON.stringify(`Open ${RENAME_NEW} in Diff tab`)}]`)).toBeVisible();
 });
 
 /* ═══════════════════════════════ 11. repo-configured programs ═══════════════════════════════ */
@@ -1164,12 +1168,13 @@ test('repo-configured fsmonitor, external diff and textconv never run for the Di
     expect(run, 'fsmonitor was not run by a Diff tab git call').not.toMatch(/ -z\b| diff\b| cat-file\b/);
   }
 
-  // AC33: the Git panel's diff of the textconv file runs nothing either.
+  // AC33: clicking the Git panel row for the textconv file opens the Diff tab, and it runs nothing either
+  // (the Git panel no longer invokes diff IPC at all now that it delegates to the Diff tab).
   await win.getByTestId('ab-git').click();
   const gitView = win.locator('[data-view="git"]');
-  await gitView.locator('button[title="Toggle diff for t.tc"]').click();
-  await expect(gitView).toContainText('tracked two');
-  await expect(gitView).not.toContainText(TEXTCONV_OUTPUT);
+  await gitView.locator('button[title="Open t.tc in Diff tab"]').click();
+  await expect(cell(win, 'new', 'tracked two')).toBeVisible();
+  await expect(paneOf(win)).not.toContainText(TEXTCONV_OUTPUT);
   expect(programRuns(markers.external)).toEqual([]);
   expect(programRuns(markers.textconv)).toEqual([]);
 });

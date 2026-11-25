@@ -11,8 +11,14 @@ import { useDiffSides } from '@renderer/hooks/useDiffSides';
 import { DiffFileList } from './DiffFileList';
 import { CenteredMessage, DiffPane } from './DiffPane';
 
+/** A request to focus a specific file in the Diff tab. `tick` must change on every request so
+ * repeat requests for the same key still re-select — otherwise the second click of a row the
+ * user had scrolled away from would do nothing. */
+export interface DiffFocusRequest { key: string; tick: number }
+
 interface Props {
   projectId: number;
+  focusRequest?: DiffFocusRequest | null;
 }
 
 interface ChangesViewProps {
@@ -20,6 +26,7 @@ interface ChangesViewProps {
   lists: ChangeLists;
   reloadToken: number;
   onRefresh: () => void;
+  focusRequest?: DiffFocusRequest | null;
 }
 
 const FOCUS_RING = 'focus:outline-none focus-visible:ring-2 focus-visible:ring-[--accent]';
@@ -37,10 +44,18 @@ function RefreshButton({ onRefresh }: { onRefresh: () => void }) {
   );
 }
 
-function ChangesView({ projectId, lists, reloadToken, onRefresh }: ChangesViewProps) {
+function ChangesView({ projectId, lists, reloadToken, onRefresh, focusRequest }: ChangesViewProps) {
   const groups = useMemo(() => groupChanges(lists), [lists]);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const selected = reconcileSelection(selectedKey, groups.flatMap((g) => g.entries));
+  const allEntries = useMemo(() => groups.flatMap((g) => g.entries), [groups]);
+  // An external focus request (e.g. a click on a Git-panel row) wins over the reconciled
+  // selection as long as the requested entry exists in the current lists. tick drives the
+  // effect so repeat clicks still refocus.
+  useEffect(() => {
+    if (!focusRequest) return;
+    if (allEntries.some((e) => entryKey(e) === focusRequest.key)) setSelectedKey(focusRequest.key);
+  }, [focusRequest, allEntries]);
+  const selected = reconcileSelection(selectedKey, allEntries);
   const reconciledKey = selected ? entryKey(selected) : null;
   useEffect(() => setSelectedKey(reconciledKey), [reconciledKey]);
   const [refreshToken, setRefreshToken] = useState(0);
@@ -70,7 +85,7 @@ function ChangesView({ projectId, lists, reloadToken, onRefresh }: ChangesViewPr
         </div>
       </div>
       <div className="flex-1 min-w-0 min-h-0">
-        <DiffPane entry={selected} sides={sides} />
+        <DiffPane entry={selected} sides={sides} projectId={projectId} />
       </div>
     </div>
   );
@@ -81,7 +96,7 @@ function ChangesView({ projectId, lists, reloadToken, onRefresh }: ChangesViewPr
  * selected file's side-by-side diff, or the loading, not-a-repository, clean and status-failed states
  * (spec AC7–AC13, AC17, AC21–AC30). Mount it keyed by project id so a project switch starts fresh.
  */
-export function DiffTab({ projectId }: Props) {
+export function DiffTab({ projectId, focusRequest }: Props) {
   const { state, reloadToken, refresh } = useGitChanges(projectId);
   return (
     <section className="h-full min-h-0" aria-label={DIFF_COPY.tabLabel} data-testid={DIFF_TESTIDS.panel}>
@@ -95,7 +110,7 @@ export function DiffTab({ projectId }: Props) {
         </CenteredMessage>
       )}
       {state.phase === 'ready' && (
-        <ChangesView projectId={projectId} lists={state.lists} reloadToken={reloadToken} onRefresh={refresh} />
+        <ChangesView projectId={projectId} lists={state.lists} reloadToken={reloadToken} onRefresh={refresh} focusRequest={focusRequest ?? null} />
       )}
     </section>
   );

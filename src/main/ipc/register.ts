@@ -42,6 +42,7 @@ import { describeGitFailure, runGit } from '@main/git/run-git';
 import { gitCommandError, runGitCommand } from '@main/git/run-git-command';
 import { GIT_DIFF_MAX_BYTES, readFileDiff } from '@main/git/file-diff';
 import { readDiffSides } from '@main/git/diff-sides';
+import { explainDiff } from '@main/diff-explain';
 import { dropHandlers } from '@main/drops/handlers';
 import { keepAwakeHandlers } from '@main/keep-awake/handlers';
 import { UsageService, usageDepsFor } from '@main/usage/service';
@@ -1617,6 +1618,25 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
     if (!p) throw new Error(`no project ${projectId}`);
     if (!existsSync(join(p.path, '.git'))) return { diff: '' };
     return readFileDiff(p.path, { path, origPath, staged, untracked });
+  },
+
+  /* ─── AI diff explainer / commit-message drafter ─── */
+  'diff:explain': async (s, { projectId, kind, diff, newPath, oldPath, cacheHash }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    if (kind !== 'explain' && kind !== 'commit') throw new Error(`invalid kind ${String(kind)}`);
+    if (typeof diff !== 'string' || diff.length === 0) {
+      return { status: 'error' as const, message: 'Nothing to explain — the diff is empty.' };
+    }
+    return explainDiff({
+      projectId,
+      projectPath: p.path,
+      kind,
+      diff,
+      newPath,
+      oldPath,
+      cacheHash,
+    });
   },
 
   /* ─── Global scrollback search ─── */

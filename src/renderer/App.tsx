@@ -209,6 +209,14 @@ function MainApp() {
   const [mainTab, setMainTab] = usePersistedState<MainTab>('metaide.mainTab', 'shell', isMainTab);
   const mainTabRef = useRef(mainTab);
   mainTabRef.current = mainTab;
+  // Focus request pushed to the Diff tab from the Git panel (or anywhere else that
+  // wants to show a specific file diff). tick changes on every request so clicking
+  // the same row twice still refocuses even when the key hasn't changed.
+  const [diffFocus, setDiffFocus] = useState<{ key: string; tick: number } | null>(null);
+  const openInDiff = useCallback((entryKey: string) => {
+    setDiffFocus({ key: entryKey, tick: Date.now() });
+    setMainTab('diff');
+  }, [setMainTab]);
   // Unread chat count for the sidebar badge. Increments on every incoming
   // metaproject `channel_message` that arrives while the user isn't looking
   // at the chat pane. Clears the moment they switch to chat. Persists in
@@ -854,7 +862,7 @@ function MainApp() {
           />
         );
       case 'diff':
-        return <DiffTab key={project.id} projectId={project.id} />;
+        return <DiffTab key={project.id} projectId={project.id} focusRequest={diffFocus} />;
       case 'activity':
         return <ActivityTab key={project.id} projectId={project.id} onOpenTarget={(t) => void openFileTarget(t)} followFiles={followFiles} onFollowFilesChange={setFollowFiles} />;
     }
@@ -1053,7 +1061,7 @@ function MainApp() {
                           onDismiss={() => setActiveView('projects')}
                         />
                       )}
-                      {activeView === 'git' && <GitPanel projectId={selected?.id ?? null} />}
+                      {activeView === 'git' && <GitPanel projectId={selected?.id ?? null} onOpenInDiff={openInDiff} />}
                       {activeView === 'tasks' && (
                         <TasksPanel
                           projectId={selected?.id ?? null}
