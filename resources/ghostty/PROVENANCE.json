@@ -10,7 +10,7 @@
       "@gespenst/core": {
         "archiveSha256": "d29cd3bac61676a915170ebd94e6751b29827274866968c8311bf0b25c79ffe6",
         "integrity": "sha512-jya8ug60fdzv3n7vzrFT0zVIa7ftsqLtHlJri5F41+kqxHDTQJWo3QOjS9VMtVcFQ2xAdSyGfj4AaYmz3PyuGg==",
-        "patchSha256": "df91de4daaa1c8734ace8dfac723efe9a84a1d384cc3c9a21b0aca9860a5492f"
+        "patchSha256": "b0e2c0dbd602efad561718396394bb7c9bd34d43fef711f7e0302eff0fb2d8b2"
       },
       "@gespenst/xterm": {
         "archiveSha256": "cb987a95fd3a0dca061cc307430785879fa7e6d48b20dd8788dff5c868b4f5a7",

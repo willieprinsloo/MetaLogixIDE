@@ -24,7 +24,7 @@ export function ghosttyCorePolicy() {
       replacements: [[worker, workerDisabled] as const],
     }],
     [realpathSync(join(packageDirectory, 'dist/chunks/core-DxIkt0Aw.js')).replaceAll('\\', '/'), {
-      digest: 'a6d88f21242a7ab6bad572cd41ccb60d47f2bfe84792acfb84159db69a914691',
+      digest: '30bf6727572ad3596111fda768e93ff4e08b93566bd1e94b3ff1a3eaec30f822',
       replacements: assets,
     }],
   ]);
