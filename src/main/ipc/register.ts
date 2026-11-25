@@ -64,7 +64,8 @@ import { fileURLToPath } from 'node:url';
 import type { StopPrimarySessionRequest } from '@shared/unload-session-contract';
 import { readRecentActivity } from '@main/activity/log';
 import { ACTIVITY_PAGE_MAX } from '@shared/activity';
-import { generateStoryChunk, listStoryChunks, readStoryHtml } from '@main/story/narrator';
+import { listStoryChunks, readStoryHtml } from '@main/story/narrator';
+import { generateStoryChunkAI } from '@main/story/ai-narrator';
 import { readMetaIdeEnv, readMetaIdeCliProfiles } from '@main/domain/metaide-conf';
 
 const GIT_DIFF_KINDS: ReadonlySet<GitDiffKind> = new Set(['staged', 'unstaged', 'untracked']);
@@ -1730,10 +1731,13 @@ export const handlers: { [C in IpcChannelName]: Handler<C> } = {
   'story:generate': async (s, { projectId, windowMinutes }) => {
     const p = s.projects.get(projectId);
     if (!p) throw new Error(`no project ${projectId}`);
-    const { chunk } = generateStoryChunk({
+    const { chunk } = await generateStoryChunkAI({
       projectPath: p.path,
       projectName: p.name,
-      windowMinutes: windowMinutes ?? 15,
+      // Default to 'auto' — the picker walks a ladder from 15 min out to 7
+      // days until it finds a window with enough signal to narrate. A
+      // caller can still pin a specific number of minutes.
+      windowMinutes: windowMinutes ?? 'auto',
     });
     // Tell every open renderer the chunk list changed so the left column refreshes.
     for (const win of BrowserWindow.getAllWindows()) {

@@ -9,6 +9,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+
+// Keep the AI narrator off real Claude in these handler tests — we're
+// testing the IPC plumbing, not the LLM. A failed turn falls back to the
+// template narrator, which still writes a chunk the test can assert on.
+vi.mock('@main/group-chat/engines/run-cli', () => ({
+  runCliTurn: () => Promise.resolve({ ok: false, reply: '', error: 'test: claude disabled' }),
+}));
+vi.mock('@main/group-chat/engines/cli', () => ({
+  npmCli: () => ['claude'],
+}));
+
 import { handlers } from '@main/ipc/register';
 import type { Services } from '@main/services';
 import type { ActivityEntry } from '@shared/activity';

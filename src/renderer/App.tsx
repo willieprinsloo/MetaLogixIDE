@@ -1258,7 +1258,7 @@ function MainApp() {
                       className="flex-1 min-h-0 min-w-0 overflow-auto p-4 text-base text-[--text-muted] sm:p-6">
                       {PROJECT_SETTINGS_COPY.noProject}
                     </section>
-                : selected ? mainBody(selected) : <EmptyState />}
+                : selected ? mainBody(selected) : <EmptyState sidebarOpen={sidebarOpen} onOpenSidebar={() => toggleSidebar(true)} />}
             </div>
           </main>
           {/* Status bar under the main sheet only (not the sidebar); it folds away (height) when hidden. */}
@@ -1520,13 +1520,41 @@ function TabButton({ active, onClick, testId, ariaLabel, children }: TabButtonPr
   );
 }
 
-function EmptyState() {
+export function EmptyState({ sidebarOpen, onOpenSidebar }: { sidebarOpen: boolean; onOpenSidebar: () => void }) {
   const { roots } = useRoots();
   const platform = useShortcutPlatform();
   // Onboarding: fresh install has no roots yet, so the sidebar shows no
   // projects and the main pane is blank — new users have nothing to click.
   // Surface a welcome card that walks them through the very first action.
   if (roots.length === 0) return <WelcomeOnboarding />;
+  // When the sidebar is closed, "pick one from the sidebar" misleads — the
+  // sidebar isn't visible. Offer a one-click way to open it so the user
+  // doesn't mistake a hidden sidebar for an empty project list.
+  if (!sidebarOpen) {
+    return (
+      <div className="h-full flex items-center justify-center p-8 text-center" data-testid="empty-state-sidebar-closed">
+        <div className="max-w-sm space-y-3">
+          <div className="text-sm text-[--text-muted]">Your projects are in the sidebar — it&rsquo;s hidden right now.</div>
+          <div className="flex items-center justify-center gap-2">
+            <button
+              type="button"
+              onClick={onOpenSidebar}
+              className="pressable text-xs px-3 py-1.5 rounded-md bg-[color:var(--accent)] text-[--accent-text] hover:brightness-110"
+              data-testid="empty-state-open-sidebar"
+            >
+              Show sidebar
+            </button>
+            <span className="text-xs text-[--text-muted] opacity-70">
+              or press <kbd className="px-1 py-0.5 rounded bg-[--panel] border border-[--border] text-[10px]">{SHORTCUT_COPY.toggleSidebarKey(platform)}</kbd>
+            </span>
+          </div>
+          <div className="text-xs text-[--text-muted] opacity-60">
+            Or press <kbd className="px-1 py-0.5 rounded bg-[--panel] border border-[--border] text-[10px]">{SHORTCUT_COPY.emptyPaletteKey(platform)}</kbd> to search without opening it.
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="h-full flex items-center justify-center p-8 text-center">
       <div className="max-w-sm space-y-2">

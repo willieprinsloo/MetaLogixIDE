@@ -19,6 +19,21 @@ interface Props {
   projectId: number;
 }
 
+/** The window selector shown next to "Catch me up". `'auto'` lets the
+ *  picker walk the ladder (15m → 7d) until it has enough to narrate —
+ *  the right default for most projects. A number pins the lookback. */
+type WindowChoice = 'auto' | 15 | 60 | 240 | 1440 | 4320 | 10080;
+
+const WINDOW_LABELS: Array<{ value: WindowChoice; label: string }> = [
+  { value: 'auto', label: 'Auto' },
+  { value: 15, label: '15 min' },
+  { value: 60, label: '1 hour' },
+  { value: 240, label: '4 hours' },
+  { value: 1440, label: 'Today (24 h)' },
+  { value: 4320, label: '3 days' },
+  { value: 10080, label: '7 days' },
+];
+
 export function StoryTab({ projectId }: Props) {
   const { effective: theme } = useTheme();
   const [chunks, setChunks] = useState<StoryChunk[]>([]);
@@ -26,6 +41,7 @@ export function StoryTab({ projectId }: Props) {
   const [html, setHtml] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [windowChoice, setWindowChoice] = useState<WindowChoice>('auto');
 
   const refreshList = useCallback(async () => {
     try {
@@ -81,7 +97,7 @@ export function StoryTab({ projectId }: Props) {
     setGenerating(true);
     setError(null);
     try {
-      const { chunk } = await api.invoke('story:generate', { projectId, windowMinutes: 15 });
+      const { chunk } = await api.invoke('story:generate', { projectId, windowMinutes: windowChoice });
       // Select the new chunk so the right pane jumps to it immediately.
       setSelected(chunk.file);
       await refreshList();
@@ -90,7 +106,7 @@ export function StoryTab({ projectId }: Props) {
     } finally {
       setGenerating(false);
     }
-  }, [projectId, refreshList]);
+  }, [projectId, refreshList, windowChoice]);
 
   return (
     <div className="h-full flex min-h-0" data-testid="story-tab">
@@ -102,10 +118,29 @@ export function StoryTab({ projectId }: Props) {
             disabled={generating}
             className="text-[11px] px-2 py-1 rounded border border-[color:var(--accent)]/40 text-[color:var(--accent)] hover:bg-[--accent-soft] disabled:opacity-50 disabled:cursor-not-allowed"
             data-testid="story-catch-up"
-            title="Summarise the last 15 minutes of agent activity"
+            title={
+              windowChoice === 'auto'
+                ? 'Summarise agent activity. Auto picks a window from 15 min out to 7 days until it has enough to narrate.'
+                : `Summarise the last ${WINDOW_LABELS.find((w) => w.value === windowChoice)?.label} of agent activity.`
+            }
           >
             {generating ? '…writing' : '✨ Catch me up'}
           </button>
+          <select
+            value={String(windowChoice)}
+            onChange={(e) => {
+              const v = e.target.value;
+              setWindowChoice(v === 'auto' ? 'auto' : (Number(v) as WindowChoice));
+            }}
+            disabled={generating}
+            className="text-[11px] px-1.5 py-1 rounded border border-[--border] bg-[--panel] text-[--text] hover:bg-[--panel-strong] disabled:opacity-50 disabled:cursor-not-allowed"
+            data-testid="story-window-select"
+            title="How far back to look. Auto expands until there's enough to narrate."
+          >
+            {WINDOW_LABELS.map((w) => (
+              <option key={String(w.value)} value={String(w.value)}>{w.label}</option>
+            ))}
+          </select>
           <span className="ml-auto text-[11px] text-[--text-muted] tabular-nums">{chunks.length}</span>
         </div>
         <div className="flex-1 overflow-auto min-h-0">

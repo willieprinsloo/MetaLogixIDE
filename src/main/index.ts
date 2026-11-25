@@ -236,6 +236,10 @@ async function createMainWindow(): Promise<BrowserWindow> {
   const win = new BrowserWindow({
     width: 1400,
     height: 900,
+    // Below this the Git / Diff / Story panels squeeze into something unreadable;
+    // the floor keeps every top-level view usable on any monitor.
+    minWidth: 1024,
+    minHeight: 640,
     show: false,
     backgroundColor: '#00000000',
     ...platformChrome(process.platform, readFrostedGlass().vibrancyMaterial),
@@ -273,6 +277,9 @@ export async function createPopoutWindow(projectId: number, shellIndex: number):
   const win = new BrowserWindow({
     width: 900,
     height: 620,
+    // Shell popouts are single-pane but still need room for the prompt + status bar.
+    minWidth: 640,
+    minHeight: 400,
     show: false,
     backgroundColor: '#00000000',
     ...platformChrome(process.platform, readFrostedGlass().vibrancyMaterial),

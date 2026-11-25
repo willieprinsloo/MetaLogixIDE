@@ -19,6 +19,7 @@ import type { ChatEntry } from '@shared/chat';
 import type { IntentUpdate } from '@shared/intent';
 import type { StoryChunk } from '@shared/story';
 import { storyDir, storyFile, filenameTimestamp } from './paths';
+import { pickStoryWindowMinutes } from './pick-window';
 import { renderStoryHtml, type StoryTemplate, type TimelineRow } from './template';
 import { readRecentActivity } from '../activity/log';
 
@@ -30,8 +31,10 @@ export interface GenerateOptions {
   projectPath: string;
   /** Project name for the header strap. */
   projectName: string;
-  /** Minutes back from now to include; default 15. */
-  windowMinutes?: number;
+  /** Minutes back from now to include. A number is used as-is. `'auto'` (or
+   *  omitted) asks the picker to walk the ladder — 15m → 7d — until the
+   *  window holds enough signal to narrate. */
+  windowMinutes?: number | 'auto';
   /** Clock injector for tests. */
   now?: () => Date;
 }
@@ -43,7 +46,8 @@ export interface GenerateResult {
 
 export function generateStoryChunk(opts: GenerateOptions): GenerateResult {
   const now = opts.now ? opts.now() : new Date();
-  const windowMs = (opts.windowMinutes ?? 15) * 60_000;
+  const minutes = resolveWindowMinutes(opts, now);
+  const windowMs = minutes * 60_000;
   const since = new Date(now.getTime() - windowMs);
 
   const activity = readRecentActivity(opts.projectPath, 500)
@@ -163,10 +167,21 @@ function buildTemplate(inp: BuildInput): StoryTemplate {
   const paragraphs: string[] = [];
 
   if (all.length === 0) {
-    // Honest about an empty window — don't fabricate activity.
-    paragraphs.push(
-      'Nothing was logged in this window. Agents may have been idle, or this project has no shells attached yet.',
-    );
+    // Honest about an empty window — don't fabricate activity. If an agent
+    // stated an intent recently, name it so the user has something concrete
+    // to look at instead of a generic "nothing happened" line.
+    const latestIntent = inp.intent
+      .filter((i) => i.text && i.text.trim())
+      .sort((a, b) => b.ts.localeCompare(a.ts))[0];
+    if (latestIntent) {
+      paragraphs.push(
+        `Nothing was logged in this window. The last thing ${latestIntent.agent} in shell ${latestIntent.shell} said it was doing: "${latestIntent.text.trim()}". It has been quiet since.`,
+      );
+    } else {
+      paragraphs.push(
+        'Nothing was logged in this window. Agents may have been idle, or this project has no shells attached yet.',
+      );
+    }
   } else {
     // First paragraph: overall shape.
     paragraphs.push(overallParagraph({
@@ -298,7 +313,7 @@ function chatToActivityLike(c: ChatEntry): ActivityEntry {
   };
 }
 
-function toTimelineRow(e: ActivityEntry): TimelineRow {
+export function toTimelineRow(e: ActivityEntry): TimelineRow {
   const kind = kindFor(e);
   const who = `${e.agent}#${e.shellIndex}`;
   const text =
@@ -395,9 +410,23 @@ function decodeEntities(s: string): string {
   return s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 }
 
+/**
+ * Turn `windowMinutes` into a concrete number. A fixed number passes
+ * through unchanged; `'auto'` (or an omitted value) walks the ladder in
+ * [[./pick-window.ts]] until the window holds enough signal, capped at
+ * 7 days. Shared between the template and AI narrators.
+ */
+export function resolveWindowMinutes(opts: GenerateOptions, now: Date): number {
+  const w = opts.windowMinutes;
+  if (typeof w === 'number' && Number.isFinite(w) && w > 0) return w;
+  // 'auto' (or any non-number) → let the picker decide.
+  const pick = pickStoryWindowMinutes({ projectPath: opts.projectPath, now: () => now });
+  return pick.minutes;
+}
+
 // ---------- JSONL readers (lightweight; the heavy ones live in chat/log and activity/log) ----------
 
-function readRecentChat(projectPath: string, limit: number): ChatEntry[] {
+export function readRecentChat(projectPath: string, limit: number): ChatEntry[] {
   const path = `${projectPath}/${CHAT_FILE}`;
   if (!existsSync(path)) return [];
   try {
@@ -410,7 +439,7 @@ function readRecentChat(projectPath: string, limit: number): ChatEntry[] {
   } catch { return []; }
 }
 
-function readRecentIntent(projectPath: string): IntentUpdate[] {
+export function readRecentIntent(projectPath: string): IntentUpdate[] {
   // Latest intent per (agent,shell) — tail only.
   const path = `${projectPath}/${INTENT_FILE}`;
   if (!existsSync(path)) return [];

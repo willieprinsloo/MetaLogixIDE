@@ -25,6 +25,7 @@ export const SHORTCUT_COPY = {
     `Settings (${formatShortcut(SHORTCUTS.settings, platform)})`,
   emptyPaletteKey: key(SHORTCUTS.palette),
   emptySettingsKey: key(SHORTCUTS.settings),
+  toggleSidebarKey: key(SHORTCUTS.sidebar),
   filesFindTip: (platform: ShortcutPlatform): string =>
     `${formatShortcut(SHORTCUTS.findFile, platform)} finds a file by name across the project.`,
   filesEditTitle: (platform: ShortcutPlatform): string =>

@@ -85,6 +85,22 @@ describe('generateStoryChunk', () => {
     const { absPath } = generateStoryChunk({ projectPath: tmp, projectName: 'proj', now: fixedNow });
     const html = readFileSync(absPath, 'utf8');
     expect(html).toContain('Nothing was logged in this window');
+    expect(html).toContain('Agents may have been idle');
+  });
+
+  it('names the latest intent in the empty-state chunk when one is set', () => {
+    // No activity and no chat, but an intent was recorded. Instead of the
+    // generic "may have been idle" line we want the chunk to tell the
+    // user what the agent said it was doing.
+    mkdirSync(join(tmp, '.metaide'), { recursive: true });
+    seedIntent(tmp, [{ agent: 'claude', shell: 0, text: 'waiting for codex icons' }]);
+    const { absPath } = generateStoryChunk({ projectPath: tmp, projectName: 'proj', now: fixedNow });
+    const html = readFileSync(absPath, 'utf8');
+    expect(html).toContain('Nothing was logged in this window');
+    // The template escapes HTML entities, so the quote marks become `&quot;` — assert the escaped form.
+    expect(html).toContain('&quot;waiting for codex icons&quot;');
+    expect(html).toContain('claude in shell 0');
+    expect(html).not.toContain('Agents may have been idle');
   });
 
   it('excludes entries older than the window', () => {

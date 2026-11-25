@@ -198,7 +198,7 @@ export interface IpcContract {
    */
   'story:list': { request: { projectId: number }; response: { chunks: import('./story').StoryChunk[] } };
   'story:read': { request: { projectId: number; file: string }; response: { html: string | null } };
-  'story:generate': { request: { projectId: number; windowMinutes?: number }; response: { chunk: import('./story').StoryChunk } };
+  'story:generate': { request: { projectId: number; windowMinutes?: number | 'auto' }; response: { chunk: import('./story').StoryChunk } };
 
   /**
    * Agent chat bus — one entry per human/agent message.
