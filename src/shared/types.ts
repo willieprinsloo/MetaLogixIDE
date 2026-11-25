@@ -1,6 +1,7 @@
 import type { AgentHarness } from './agent-harness';
 import type { ClaudePermissionMode } from './claude-permission-mode';
 import type { ChromeFrostLevel, TerminalFrostLevel, VibrancyMaterial } from './frosted-glass';
+import type { TerminalEngine } from './terminal-engine';
 
 export interface Root {
   id: number;
@@ -115,6 +116,8 @@ export type SettingsMap = {
   'terminal_font_weight':          number | null;
   /** Integrated-terminal bold weight (100..900, step 100), heavier than terminal_font_weight (or 900 at 900). null = never saved (effective 700). Write via settings:set-terminal-bold-weight only. */
   'terminal_bold_weight':          number | null;
+  /** Desktop-only preference for new terminal views. It does not belong to the shell or its host. */
+  'terminal_engine':               TerminalEngine;
   'metaproject_base_url':          string;
   /** Last-used metaproject username. Password is NEVER persisted. */
   'metaproject_last_username':     string;

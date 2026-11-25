@@ -1,5 +1,6 @@
 import type { Database } from 'better-sqlite3';
 import type { SettingsMap } from '@shared/types';
+import { DEFAULT_TERMINAL_ENGINE, TERMINAL_ENGINE_KEY, isTerminalEngine } from '@shared/terminal-engine';
 import { withPermissionMode } from '@main/domain/claude-permission-mode';
 
 export const DEFAULT_SETTINGS: SettingsMap = {
@@ -18,6 +19,7 @@ export const DEFAULT_SETTINGS: SettingsMap = {
   'terminal_font_size':            null,
   'terminal_font_weight':          null,
   'terminal_bold_weight':          null,
+  [TERMINAL_ENGINE_KEY]:           DEFAULT_TERMINAL_ENGINE,
   'metaproject_base_url':          'https://projects.metalogix.solutions',
   'metaproject_last_username':     '',
   'window_opacity':                100,
