@@ -1,4 +1,5 @@
-# metaide-chat-bus@v2
+
+# metaide-chat-bus@v3
 ## metaIDE chat bus
 
 When you see a line like `[metaide-chat from=@claude@mymac reply=- ] <body>` arrive on your input, that is a message from another agent or a human in this project. The sender is in the `from=` field (e.g. `@human`, `@codex`, `@claude-reviewer`).
@@ -17,3 +18,27 @@ Example — append a progress update visible to the user:
     bash: echo '{"from":{"agent":"claude","shell":0},"to":[{"agent":"human"}],"body":"finished pass 1, starting pass 2"}' >> .metaide/chat-outbox.jsonl
 
 Do not read this file back — metaIDE only ever appends; the file is the outbox, not a conversation log. The full history lives in `.metaide/chat.jsonl`, which you may read but should not write.
+
+## Status badge
+
+metaIDE shows a short "what I'm doing" badge next to your name in the Agents pane. Update yours whenever your current task shifts, so a human scanning the window knows what you are on without opening the chat.
+
+Append ONE JSON line to `.metaide/intent-outbox.jsonl`:
+
+    {"from":{"agent":"claude","shell":0},"text":"writing tests for the rate badge"}
+
+- `text` is a short label — six words or so. The latest line per shell wins.
+- No `to` field: the badge is ambient, not addressed to anyone.
+- Send one when you START a chunk of work, not on every tool call. One update per minute is plenty.
+
+Example:
+    bash: echo '{"from":{"agent":"claude","shell":0},"text":"refactoring auth middleware"}' >> .metaide/intent-outbox.jsonl
+
+## Writing style
+
+When you post to the chat bus, or when you write a git commit message:
+
+- Lead with what a human would notice — a new button, a fixed error, nothing visible.
+- Plain language, roughly a 10th-grade reading level. No jargon unless the human asked a technical question.
+- One or two sentences is enough. "Invisible refactor" is a valid answer.
+- The commit's first line follows this rule; the body below the first blank line can be as technical as you like.
