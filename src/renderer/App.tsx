@@ -44,7 +44,9 @@ import { DiffTab } from './components/DiffTab';
 import { ENV_COPY, ENV_TESTIDS } from './project-env-copy';
 import { DIFF_COPY, DIFF_TESTIDS } from './diff-tab-copy';
 import { diffTabCount } from './diff/diff-selection';
-import { isMainTab, type MainTab } from './main-tab';
+import { isMainTab, visibleMainTab, type MainTab } from './main-tab';
+import { useActivityLogEnabled } from './hooks/useActivityLogEnabled';
+import { ACTIVITY_LOG_TESTIDS } from './activity-log-contract';
 import { useEnvDrafts } from './hooks/useEnvDrafts';
 import { useClaudePermissionMode } from './hooks/useClaudePermissionMode';
 import { useTaskCount } from './hooks/useTaskCount';
@@ -209,6 +211,10 @@ function MainApp() {
   const [mainTab, setMainTab] = usePersistedState<MainTab>('metaide.mainTab', 'shell', isMainTab);
   const mainTabRef = useRef(mainTab);
   mainTabRef.current = mainTab;
+  const activityEnabled = useActivityLogEnabled();
+  useEffect(() => {
+    if (visibleMainTab(mainTab, activityEnabled) !== mainTab) setMainTab('shell');
+  }, [mainTab, activityEnabled, setMainTab]);
   // Focus request pushed to the Diff tab from the Git panel (or anywhere else that
   // wants to show a specific file diff). tick changes on every request so clicking
   // the same row twice still refocuses even when the key hasn't changed.
@@ -952,7 +958,7 @@ function MainApp() {
   }
   // Agent file-follow: when on, live-open every file the agent edits.
   const [followFiles, setFollowFiles] = usePersistedState<boolean>('metaide.followFiles', false, (v): v is boolean => typeof v === 'boolean');
-  useAgentFileFollow(selected?.id ?? null, followFiles, (t) => void openFileTarget(t));
+  useAgentFileFollow(selected?.id ?? null, followFiles && activityEnabled, (t) => void openFileTarget(t));
 
   async function killShell(shellIndex: number) {
     if (!selected) return;
@@ -1137,7 +1143,9 @@ function MainApp() {
                   </span>
                 )}
               </TabButton>
-              <TabButton active={mainTab === 'activity'} onClick={() => setMainTab('activity')}>Activity</TabButton>
+              {activityEnabled && (
+                <TabButton active={mainTab === 'activity'} onClick={() => setMainTab('activity')} testId={ACTIVITY_LOG_TESTIDS.tabButton}>Activity</TabButton>
+              )}
               <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 pr-2">
                 {selected && (
                   <>

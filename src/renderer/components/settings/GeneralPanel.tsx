@@ -24,6 +24,7 @@ import {
   Switch,
   WorkspaceNumber,
 } from '@renderer/components/settings/primitives';
+import { ACTIVITY_LOG_COPY, ACTIVITY_LOG_SETTING, ACTIVITY_LOG_TESTIDS } from '@renderer/activity-log-contract';
 import { PaletteCards } from '@renderer/components/settings/PaletteCards';
 import { ModeControl } from '@renderer/components/settings/ModeControl';
 
@@ -59,6 +60,8 @@ export function GeneralPanel({
         onShowStatusBar={(v) => board.update('show_status_bar', v)}
         showPorts={board.showPorts}
         onShowPorts={(v) => board.update('show_status_bar_ports', v)}
+        activityLog={board.activityLog}
+        onActivityLog={(v) => board.update(ACTIVITY_LOG_SETTING, v)}
         onCap={(v) => board.update('keep_alive_cap', v)}
         onScanDepth={(v) => board.update('scan_depth', v)}
         onMaxWatched={(v) => board.update('max_watched_paths', v)}
@@ -80,7 +83,8 @@ type BoardKey =
   | 'notify_claude_needs_input'
   | 'notify_claude_finished'
   | 'show_status_bar'
-  | 'show_status_bar_ports';
+  | 'show_status_bar_ports'
+  | typeof ACTIVITY_LOG_SETTING;
 
 interface BoardValues {
   readonly cap: number | null;
@@ -91,6 +95,7 @@ interface BoardValues {
   readonly notifyFinished: boolean;
   readonly showStatusBar: boolean;
   readonly showPorts: boolean;
+  readonly activityLog: boolean;
 }
 
 const INITIAL: BoardValues = {
@@ -102,6 +107,7 @@ const INITIAL: BoardValues = {
   notifyFinished: true,
   showStatusBar: true,
   showPorts: true,
+  activityLog: true,
 };
 
 const FIELD: Readonly<Record<BoardKey, keyof BoardValues>> = {
@@ -112,11 +118,12 @@ const FIELD: Readonly<Record<BoardKey, keyof BoardValues>> = {
   notify_claude_finished: 'notifyFinished',
   show_status_bar: 'showStatusBar',
   show_status_bar_ports: 'showPorts',
+  activity_log_enabled: 'activityLog',
 };
 
-/** Loads the General board's eight settings keys in one batch. */
+/** Loads the General board's nine settings keys in one batch. */
 export async function loadBoard(): Promise<BoardValues> {
-  const [c, d, w, o, ni, nf, sp, sb] = await Promise.all([
+  const [c, d, w, o, ni, nf, sp, sb, al] = await Promise.all([
     api.invoke('settings:get', { key: 'keep_alive_cap' }),
     api.invoke('settings:get', { key: 'scan_depth' }),
     api.invoke('settings:get', { key: 'max_watched_paths' }),
@@ -125,6 +132,7 @@ export async function loadBoard(): Promise<BoardValues> {
     api.invoke('settings:get', { key: 'notify_claude_finished' }),
     api.invoke('settings:get', { key: 'show_status_bar_ports' }),
     api.invoke('settings:get', { key: 'show_status_bar' }),
+    api.invoke('settings:get', { key: ACTIVITY_LOG_SETTING }),
   ]);
   return {
     cap: c.value as number,
@@ -135,6 +143,7 @@ export async function loadBoard(): Promise<BoardValues> {
     notifyFinished: (nf.value as boolean) ?? true,
     showPorts: (sp.value as boolean) ?? true,
     showStatusBar: (sb.value as boolean) ?? true,
+    activityLog: al.value !== false,
   };
 }
 
@@ -206,6 +215,8 @@ function WorkspaceSection({
   onShowStatusBar,
   showPorts,
   onShowPorts,
+  activityLog,
+  onActivityLog,
   onCap,
   onScanDepth,
   onMaxWatched,
@@ -217,6 +228,8 @@ function WorkspaceSection({
   readonly onShowStatusBar: (on: boolean) => void;
   readonly showPorts: boolean;
   readonly onShowPorts: (on: boolean) => void;
+  readonly activityLog: boolean;
+  readonly onActivityLog: (on: boolean) => void;
   readonly onCap: (v: number) => void;
   readonly onScanDepth: (v: number) => void;
   readonly onMaxWatched: (v: number) => void;
@@ -238,6 +251,16 @@ function WorkspaceSection({
         checked={showPorts}
         onChange={onShowPorts}
       />
+      <div className="flex flex-col gap-1">
+        <Switch
+          label={ACTIVITY_LOG_COPY.label}
+          ariaLabel={ACTIVITY_LOG_COPY.ariaLabel}
+          testId={ACTIVITY_LOG_TESTIDS.toggle}
+          checked={activityLog}
+          onChange={onActivityLog}
+        />
+        <span className="text-xs text-[--text-muted]">{ACTIVITY_LOG_COPY.hint}</span>
+      </div>
       <SettingRow label="Keep-alive cap" hint="Shells kept running at once; the oldest is closed first." htmlFor={`${id}-cap`}>
         <WorkspaceNumber id={`${id}-cap`} value={cap} min={1} max={20} onChange={onCap} />
       </SettingRow>

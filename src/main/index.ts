@@ -529,6 +529,7 @@ function installNotifications(services: Services, hooks: HookSource): void {
   wireActivityLog({
     hooks,
     projects: services.projects,
+    settings: services.settings,
     broadcast: (projectId, entry) => broadcast('activity:changed', { projectId, entry }),
   });
   // Chat service — one serialisation point for every post (local IPC,
