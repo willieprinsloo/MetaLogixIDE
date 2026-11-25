@@ -35,7 +35,11 @@ async function marker(win: Page, pane: string, host: Locator, shell: number, tex
   return { start: b.x + 1, end: b.x + b.width - 1, y: b.y + b.height / 2 };
 }
 
-/** Sets a non-pausing breakpoint in the pointer controller that fills the tracking scratch slot with stale upper bytes before every read. */
+/**
+ * Sets a non-pausing breakpoint in the pointer controller that fills the tracking scratch slot with
+ * stale upper bytes before every read. The condition counts each successful dirtying on
+ * `globalThis.__trackingDirtied`; V8 swallows a throwing condition, so callers assert the count.
+ */
 async function dirtyTrackingScratch(cdp: CDPSession): Promise<void> {
   const scripts: Array<{ scriptId: string; url: string }> = [];
   cdp.on('Debugger.scriptParsed', (e) => scripts.push({ scriptId: e.scriptId, url: e.url }));
@@ -46,10 +50,12 @@ async function dirtyTrackingScratch(cdp: CDPSession): Promise<void> {
     const lines = scriptSource.split('\n');
     const line = lines.findIndex((l) => /tracking\(\w+\) \{/.test(l));
     if (line < 0) continue;
-    await cdp.send('Debugger.setBreakpoint', {
+    const { actualLocation } = await cdp.send('Debugger.setBreakpoint', {
       location: { scriptId, lineNumber: line + 1, columnNumber: 0 },
-      condition: '(this.scalar.view.setUint32(0, 0x00999900, true), false)',
+      condition: '(this.scalar.view.setUint32(0, 0x00999900, true), globalThis.__trackingDirtied = (globalThis.__trackingDirtied || 0) + 1, false)',
     });
+    expect(actualLocation.lineNumber, 'breakpoint resolves inside tracking()').toBe(line + 1);
+    expect(lines[line + 1], 'tracking() body reads the scratch slot').toContain('read mouse tracking mode');
     return;
   }
   throw new Error('pointer controller tracking() not found in any loaded script');
@@ -75,9 +81,15 @@ for (const side of ['left', 'right'] as const) {
       await win.mouse.move(m.end, m.y, { steps: 8 });
       await win.mouse.up();
       await expect.poll(() => selectionText(host), { message: 'plain drag selects despite stale scratch bytes' }).toBe(tag);
+      const dirtied = await win.evaluate(() => Number(Reflect.get(globalThis, '__trackingDirtied') ?? 0));
+      expect(dirtied, 'the stale bytes were planted before the reads under test').toBeGreaterThan(0);
       await win.mouse.click(m.start + 2, m.y + 60);
+      await expect.poll(() => selectionText(host), { message: 'a plain click clears the drag selection' }).toBe('');
       await win.mouse.dblclick(m.start + 2, m.y);
-      await expect.poll(() => selectionText(host), { message: 'double-click selects a word' }).not.toBe('');
+      await expect.poll(async () => {
+        const word = await selectionText(host);
+        return word !== '' && tag.includes(word);
+      }, { message: 'double-click selects part of the marker' }).toBe(true);
       await cdp.detach();
     } finally {
       await app.close();

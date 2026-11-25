@@ -22,8 +22,10 @@ Covered by `tests/e2e/terminal-styled-background.spec.ts`.
 
 ## `@gespenst/core@0.2.0`
 
-Several changes to the pointer controller in the minified `dist/chunks/core-*.js` and
-`dist/assets/terminal-worker-*.js`. One of them is the mouse-tracking read:
+The patch changes the pointer controller in `dist/chunks/core-*.js` (drag button state, Shift-click
+selection extension, mouse-tracking read) and `dist/index.js`. The vendor worker
+`dist/assets/terminal-worker-*.js`, which the desktop build disables, carries only the
+mouse-tracking read, so the two copies stay consistent there:
 
 ```
 this.scalar.view.getInt32(0,!0)   ->   this.scalar.view.getUint8(0)
