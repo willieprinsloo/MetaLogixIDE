@@ -11,6 +11,7 @@ The desktop app defaults to xterm.js. If a view selects Ghostty (WASM), it loads
 - The build verifies the WASM, scoped stylesheet input and selected vendor JavaScript inputs before bundling. The build uses Vite's forward-slash file IDs on all platforms. The core loader transform disables the vendor worker and removes the unused default WASM paths.
 - The local core patch preserves the primary button state during drag motion. The patch changes JavaScript only and does not change the WASM modules.
 - The core patch uses Ghostty's tracked anchor to extend a selection on Shift-click. A plain selection click clears the old range and sets a new anchor.
+- The core patch reads the mouse-tracking state as the one byte Ghostty writes. A 4-byte read picked up stale memory, so plain presses could be sent as mouse reports and never select.
 - The local keyboard patch supplies the unshifted ASCII letter for Ctrl+letter events. Ghostty's encoder retains control of the legacy and Kitty keyboard formats.
 - Both provenance and [third-party license notices](../resources/ghostty/THIRD-PARTY-NOTICES.txt) ship inside `app.asar`, under `resources/ghostty/`.
 

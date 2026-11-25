@@ -19,3 +19,22 @@ behind italic or dim text. The mask (`0x03FFFFFF`) keeps only the colour mode an
 The diff is large because the file is a single minified line. 0.19.0 has the same code, so the
 patch is still needed after an upgrade; re-create it with `pnpm patch @xterm/addon-webgl`.
 Covered by `tests/e2e/terminal-styled-background.spec.ts`.
+
+## `@gespenst/core@0.2.0`
+
+The patch changes the pointer controller in `dist/chunks/core-*.js` (Shift-click selection
+extension, mouse-tracking read) and `dist/index.js` (primary-button state during drag motion, the
+unshifted letter for Ctrl+letter keys, compatibility-grid resizing). The vendor worker
+`dist/assets/terminal-worker-*.js`, which the desktop build disables, carries only the
+mouse-tracking read, so the two copies stay consistent there:
+
+```
+this.scalar.view.getInt32(0,!0)   ->   this.scalar.view.getUint8(0)
+```
+
+`ghostty_terminal_get(MOUSE_TRACKING)` writes a one-byte bool into a reused 4-byte scratch slot.
+Reading it as an int32 also read three stale bytes, so a long-running app could treat every plain
+press as a mouse report and never start a selection (Shift-drag still worked). Changing the patch
+changes the chunk digest in `scripts/desktop-ghostty-core-policy.ts` and `patchSha256` in
+`resources/ghostty/PROVENANCE.json`; update both. Re-create with `pnpm patch @gespenst/core`.
+Covered by `tests/e2e/ghostty-mouse-tracking-read.spec.ts`.
