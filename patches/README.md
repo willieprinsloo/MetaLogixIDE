@@ -22,8 +22,9 @@ Covered by `tests/e2e/terminal-styled-background.spec.ts`.
 
 ## `@gespenst/core@0.2.0`
 
-The patch changes the pointer controller in `dist/chunks/core-*.js` (drag button state, Shift-click
-selection extension, mouse-tracking read) and `dist/index.js`. The vendor worker
+The patch changes the pointer controller in `dist/chunks/core-*.js` (Shift-click selection
+extension, mouse-tracking read) and `dist/index.js` (primary-button state during drag motion, the
+unshifted letter for Ctrl+letter keys, compatibility-grid resizing). The vendor worker
 `dist/assets/terminal-worker-*.js`, which the desktop build disables, carries only the
 mouse-tracking read, so the two copies stay consistent there:
 
