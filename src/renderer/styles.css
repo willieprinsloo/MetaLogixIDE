@@ -684,7 +684,7 @@ input::placeholder, textarea::placeholder {
   border: 1px solid color-mix(in oklab, var(--text) 12%, transparent);
   --terminal-pane-radius: 13px;
 }
-.workspace-sheet:has(> div > [data-split-layout]) {
+.workspace-sheet:has([data-split-layout]) {
   background-color: transparent;
   border: 0;
 }
