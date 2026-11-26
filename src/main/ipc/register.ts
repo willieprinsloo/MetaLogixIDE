@@ -1645,7 +1645,17 @@ export const handlers: { [C in Exclude<CoreChannel, 'shells:snapshot' | 'setting
     const res = ensureAgentStanza(project.path, agent);
     if (res.appended) log.info('[chat] onboarded agent (manual)', { cli: agent, file: res.file });
     try {
-      nudgeAgentShell(s.ptyManager, projectId, shellIndex, buildOnboardingNudge(agent));
+      // Hand nudgeAgentShell a narrow write-only shim rather than
+      // s.ptyManager itself. Passing s.ptyManager as a value escapes it
+      // past the shell-mutation static analyser, which then can't prove
+      // the handler never calls .spawn/.kill. The shim only exposes
+      // write(), which isn't a mutation, and the analyser is happy.
+      nudgeAgentShell(
+        { write: (p, si, d) => s.ptyManager.write(p, si, d) },
+        projectId,
+        shellIndex,
+        buildOnboardingNudge(agent),
+      );
       log.info('[chat] nudged agent (manual)', { cli: agent, shell: shellIndex });
     } catch (err) { log.warn('[chat] manual nudge failed', { err: String(err) }); }
     return { ok: true as const, appended: res.appended, file: res.file };

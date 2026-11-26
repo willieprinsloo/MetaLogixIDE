@@ -116,10 +116,15 @@ export async function launch(projectNames: string[]): Promise<Harness> {
 
 /**
  * Launch setup must finish within this budget, so a wedged launch fails
- * inside `guardedLaunch` (and is torn down) rather than at the 60 s test
+ * inside `guardedLaunch` (and is torn down) rather than at the per-test
  * timeout, which abandons the helper mid-await and runs no catch block.
+ *
+ * Bumped from 45 s to 55 s after Frits's Electron 32 → 43 upgrade — the
+ * heavier startup pushed past 45 s on loaded workstations. Paired with
+ * a playwright.config.ts timeout bump to 120 s, so the budget still
+ * fires early for a wedged launch and leaves 65 s for the test body.
  */
-export const LAUNCH_BUDGET_MS = 45_000;
+export const LAUNCH_BUDGET_MS = 55_000;
 
 /** How long `closeApp` waits for a graceful `app.close()` before SIGKILLing the process group. */
 const CLOSE_GRACE_MS = 10_000;
