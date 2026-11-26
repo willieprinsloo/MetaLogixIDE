@@ -18,12 +18,34 @@ export interface TimelineRow {
   text: string;
 }
 
+/**
+ * One card in the vertical timeline. Replaces the single prose block
+ * when the generator can split the window into periods; the paragraphs
+ * array stays as a fallback for the template narrator.
+ */
+export interface TimelinePeriod {
+  /** HH:MM or "Nov 24 13:40" for multi-day cards. */
+  startLabel: string;
+  endLabel: string;
+  /** "35 min · 42 actions" — the strip under the time range. */
+  metaLabel: string;
+  /** Gap strip rendered ABOVE this card. Null means no strip. */
+  gapBeforeLabel: string | null;
+  /** 4-10 words, "Ported Ghostty tests". */
+  headline: string;
+  /** 2-3 sentences. */
+  paragraph: string;
+}
+
 export interface StoryTemplate {
   title: string;
   /** Range line shown under the title, e.g. "14:30 – 14:47 · 17 minutes · 2 shells". */
   subtitle: string;
-  /** Plain-English paragraphs; each becomes its own `<p>`. */
-  paragraphs: string[];
+  /** Preferred: vertical cards. When omitted, falls back to `paragraphs`. */
+  periods?: TimelinePeriod[];
+  /** Plain-English paragraphs; each becomes its own `<p>`. Used when
+   *  `periods` is not supplied (e.g. the template-fallback narrator). */
+  paragraphs?: string[];
   /** Raw events, shown inside a <details> at the bottom. */
   timeline: TimelineRow[];
   /** Project name, shown in the header strap. */
@@ -34,8 +56,39 @@ function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
 }
 
+/**
+ * Render the main body — either the timeline cards (when `periods` is
+ * non-empty) or the fallback paragraph stack. Returns an HTML fragment
+ * that goes between the header and the raw-events details.
+ */
+function renderBody(t: StoryTemplate): string {
+  if (t.periods && t.periods.length > 0) {
+    return `<ol class="timeline">${t.periods.map(renderPeriod).join('')}</ol>`;
+  }
+  if (t.paragraphs && t.paragraphs.length > 0) {
+    return t.paragraphs.map((p) => `<p>${esc(p)}</p>`).join('\n');
+  }
+  return '<div class="empty">Nothing happened in this window.</div>';
+}
+
+function renderPeriod(p: TimelinePeriod): string {
+  const gap = p.gapBeforeLabel
+    ? `<li class="gap" aria-hidden="true"><span>${esc(p.gapBeforeLabel)}</span></li>`
+    : '';
+  const sameEdge = p.startLabel === p.endLabel;
+  const range = sameEdge
+    ? `<span class="t-start">${esc(p.startLabel)}</span>`
+    : `<span class="t-start">${esc(p.startLabel)}</span><span class="t-sep" aria-hidden="true">→</span><span class="t-end">${esc(p.endLabel)}</span>`;
+  return `${gap}
+    <li class="period">
+      <div class="when">${range}<span class="meta">${esc(p.metaLabel)}</span></div>
+      <h2 class="headline">${esc(p.headline || 'Period')}</h2>
+      <p class="body">${esc(p.paragraph)}</p>
+    </li>`;
+}
+
 export function renderStoryHtml(t: StoryTemplate): string {
-  const paragraphs = t.paragraphs.map((p) => `<p>${esc(p)}</p>`).join('\n');
+  const body = renderBody(t);
   const rows = t.timeline.map((r) => `
       <tr>
         <td class="t">${esc(r.time)}</td>
@@ -118,6 +171,68 @@ export function renderStoryHtml(t: StoryTemplate): string {
       font: 400 13px/1.5 ui-sans-serif, system-ui, sans-serif;
       color: var(--muted);
     }
+    /* --- period cards --- */
+    .timeline {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .timeline .period {
+      position: relative;
+      padding: 1.25rem 0 1.25rem 1.5rem;
+      border-left: 2px solid var(--rule);
+    }
+    .timeline .period::before {
+      content: "";
+      position: absolute;
+      left: -0.47rem;
+      top: 1.55rem;
+      width: 0.8rem;
+      height: 0.8rem;
+      border-radius: 999px;
+      background: var(--accent);
+      box-shadow: 0 0 0 3px var(--bg);
+    }
+    .timeline .period + .period {
+      border-top: 1px dashed var(--rule);
+      margin-top: 0;
+    }
+    .timeline .when {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 0.5rem;
+      font: 500 12px/1 ui-sans-serif, system-ui, sans-serif;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+      margin-bottom: 0.35rem;
+    }
+    .timeline .t-start, .timeline .t-end {
+      font-variant-numeric: tabular-nums;
+      color: var(--fg);
+    }
+    .timeline .t-sep { color: var(--muted); }
+    .timeline .meta { color: var(--muted); }
+    .timeline .headline {
+      font: 600 1.15rem/1.3 ui-serif, Georgia, serif;
+      margin: 0 0 0.55rem;
+      color: var(--fg);
+      letter-spacing: -0.01em;
+    }
+    .timeline .body {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.6;
+    }
+    .timeline .gap {
+      list-style: none;
+      padding: 0.75rem 0 0.75rem 1.5rem;
+      border-left: 2px dotted var(--rule);
+      color: var(--muted);
+      font: italic 13px/1.4 ui-sans-serif, system-ui, sans-serif;
+    }
+    .timeline .gap span { opacity: 0.8; }
+    /* --- Fallback single-prose paragraphs --- */
     p {
       margin: 0 0 1.15rem;
     }
@@ -177,7 +292,7 @@ export function renderStoryHtml(t: StoryTemplate): string {
       <h1>${esc(t.title)}</h1>
       <div class="subtitle">${esc(t.subtitle)}</div>
     </header>
-    ${paragraphs || '<div class="empty">Nothing happened in this window.</div>'}
+    ${body}
     ${rowCount > 0 ? `
     <details>
       <summary>Timeline · ${rowCount} events</summary>
