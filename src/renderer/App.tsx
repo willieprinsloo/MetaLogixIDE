@@ -216,10 +216,6 @@ function MainApp() {
     setDiffFocus({ key: entryKey, tick: Date.now() });
     setMainTab('diff');
   }, [setMainTab]);
-  const activityEnabled = useActivityLogEnabled();
-  useEffect(() => {
-    if (visibleMainTab(mainTab, activityEnabled) !== mainTab) setMainTab('shell');
-  }, [mainTab, activityEnabled, setMainTab]);
   // Unread chat count scoped to the signed-in account epoch — switching accounts
   // (or signing out) resets the badge so one user's unread doesn't follow another in.
   const accountEpoch = account?.phase === 'signed-in' ? account.epoch : null;
