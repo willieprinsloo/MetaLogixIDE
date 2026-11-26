@@ -50,7 +50,6 @@ import { DIFF_TESTIDS } from './diff-tab-copy';
 import { diffTabCount } from './diff/diff-selection';
 import { isMainTab, visibleMainTab, type MainTab } from './main-tab';
 import { useActivityLogEnabled } from './hooks/useActivityLogEnabled';
-import { ACTIVITY_LOG_TESTIDS } from './activity-log-contract';
 import { useEnvDrafts } from './hooks/useEnvDrafts';
 import { useClaudePermissionMode } from './hooks/useClaudePermissionMode';
 import { useTaskCount } from './hooks/useTaskCount';

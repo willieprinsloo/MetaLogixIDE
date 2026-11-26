@@ -4,6 +4,7 @@ import type { TurnResult } from '@main/group-chat/engines/types';
 
 describe('headlessTurn', () => {
   it('resolves the reply and exposes engineSession via result()', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const run = vi.fn(async (_item: unknown, _signal: AbortSignal): Promise<TurnResult> => ({ ok: true, reply: 'hi from gpt', engineSession: 'th-1' }));
     const turn = headlessTurn({ run }, { model: 'gpt-5', engineSession: null });
     turn.start('round text');
