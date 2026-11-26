@@ -72,6 +72,7 @@ export function createCredentialStore(dir: string): CredentialStore {
     async clear(account) {
       const entries = readEntries(path);
       if (!(account in entries)) return;
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
       delete entries[account];
       writeEntries(path, entries);
     },
