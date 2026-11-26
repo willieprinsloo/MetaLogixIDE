@@ -7,8 +7,17 @@ nodeLinker: hoisted
 shamefullyHoist: true
 
 allowBuilds:
-  better-sqlite3: true
-  electron: true
+  # SQLite ships platform binaries; the root install explicitly prepares Electron.
+  better-sqlite3: false
+  electron: false
   esbuild: true
   keytar: true
   node-pty: true
+
+patchedDependencies:
+  '@gespenst/core@0.2.0': patches/@gespenst__core@0.2.0.patch
+  '@gespenst/xterm@0.2.0': patches/@gespenst__xterm@0.2.0.patch
+  '@xterm/addon-webgl@0.18.0': patches/@xterm__addon-webgl@0.18.0.patch
+
+overrides:
+  '@gespenst/xterm@0.2.0>@gespenst/core': '0.2.0'

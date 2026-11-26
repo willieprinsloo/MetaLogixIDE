@@ -181,7 +181,7 @@ async function openChat(win: Page): Promise<void> {
 }
 
 /**
- * Activates split-pane mode. `.split-left` carries the `--surface-pane` card
+ * Activates split-pane mode. `.split-left` carries the terminal surface
  * background only in split mode (ShellSplit.tsx `usePaneMode`/`cardClass`
  * `paneMode` gate) — a single, unsplit shell paints no background on it at
  * all (alpha 0), so AC9/AC10's split-card checks need split actually on.
@@ -207,31 +207,39 @@ test.describe('AC17: computed alpha relationships (default palette, dark+light, 
         }, theme);
         await focusOutOfTerminal(win);
         await openChat(win);
-        await openSplit(win);
         const s = surfaces(win);
 
         // AC1/AC2: chrome is visibly translucent in every combination.
         const chromeAlpha = await backgroundAlpha(win, s.chromeRoot);
         expect(chromeAlpha, `${theme}: chrome root is frosted`).toBeLessThan(1);
 
-        // AC4/AC10: working-area surfaces are solid with the setting OFF.
+        // AC4/AC10: the terminal surface is solid with the setting OFF.
         const sheetOff = await backgroundAlpha(win, s.sheet);
-        const chatOff = await backgroundAlpha(win, s.chat);
-        const splitOff = await backgroundAlpha(win, s.splitLeft);
         expect(sheetOff, `${theme}: shell sheet OFF reads solid`).toBeGreaterThanOrEqual(0.95);
-        expect(chatOff, `${theme}: chat column OFF reads solid`).toBeGreaterThanOrEqual(0.95);
-        expect(splitOff, `${theme}: split card OFF reads solid`).toBeGreaterThanOrEqual(0.95);
+        await expect(s.chat.locator(':scope > .chat-signin')).toBeVisible();
+        expect(await backgroundAlpha(win, s.chat), `${theme}: signed-out chat shows the chrome`).toBe(0);
+
+        async function expectSplitAlpha(alpha: number) {
+          await expect.poll(() => backgroundAlpha(win, s.splitLeft)).toBeCloseTo(alpha, 2);
+          expect(await backgroundAlpha(win, s.splitRight)).toBeCloseTo(alpha, 2);
+          expect(await backgroundAlpha(win, s.sheet), 'split gap reveals the chrome, not a terminal sheet').toBe(0);
+        }
+        await openSplit(win);
+        await expectSplitAlpha(sheetOff);
 
         // AC9/AC10: turning the setting ON lowers only the terminal group.
+        await win.getByTestId(SPLIT_TESTIDS.toggle).click();
+        await expect(s.splitRight).toHaveCount(0);
         await setFrostToggle(win, 'subtle');
         await expect.poll(() => backgroundAlpha(win, s.sheet), { timeout: 2000 }).toBeLessThan(sheetOff);
+        const sheetOn = await backgroundAlpha(win, s.sheet);
         const chatOn = await backgroundAlpha(win, s.chat);
-        const splitOn = await backgroundAlpha(win, s.splitLeft);
-        expect(chatOn, `${theme}: chat column stays solid ON (D10, AC10)`).toBeCloseTo(chatOff, 2);
-        expect(splitOn, `${theme}: split card is lowered ON (AC9)`).toBeLessThan(splitOff);
-
-        // Positive control: the two settings states actually differ (guards against a no-op toggle).
-        expect(sheetOff, 'positive control: OFF and ON differ').not.toBeCloseTo(await backgroundAlpha(win, s.sheet), 2);
+        expect(chatOn, `${theme}: signed-out chat still shows the chrome`).toBe(0);
+        expect(sheetOn, 'positive control: OFF and ON differ').not.toBeCloseTo(sheetOff, 2);
+        await openSplit(win);
+        await expectSplitAlpha(sheetOn);
+        await setFrostToggle(win, 'custom');
+        await expectSplitAlpha(0.7);
       } finally {
         await closeApp(l.app);
         l.cleanup();
@@ -377,7 +385,7 @@ test('AC7: the setting persists across relaunch, from first paint, with no flash
 
 /* ─────────────────────────────── AC21: Reduce transparency ─────────────────────────────── */
 
-test('AC21: emulated prefers-reduced-transparency makes every surface alpha 1, whatever the setting', async () => {
+test('AC21: Reduce Transparency makes chrome and terminal surfaces opaque without filling the split gap', async () => {
   test.skip(process.platform !== 'darwin', 'mac-only chrome');
   const l = await launchFrostApp({ terminalFrost: 'subtle' });
   try {
@@ -390,7 +398,7 @@ test('AC21: emulated prefers-reduced-transparency makes every surface alpha 1, w
 
     // Positive control in the same app state: translucent before emulation.
     expect(await backgroundAlpha(win, s.chromeRoot), 'control: chrome is frosted before emulation').toBeLessThan(1);
-    expect(await backgroundAlpha(win, s.sheet), 'control: terminal group is frosted ON before emulation').toBeLessThan(0.95);
+    expect(await backgroundAlpha(win, s.splitLeft), 'control: terminal card is frosted ON before emulation').toBeLessThan(0.95);
 
     const cdp = await win.context().newCDPSession(win);
     try {
@@ -404,12 +412,16 @@ test('AC21: emulated prefers-reduced-transparency makes every surface alpha 1, w
       for (const theme of ['dark', 'light'] as const) {
         await win.evaluate((t: string) => document.documentElement.setAttribute('data-theme', t), theme);
         const misses: string[] = [];
-        for (const [name, locator] of [['chrome', s.chromeRoot], ['sheet', s.sheet], ['chat', s.chat], ['split-left', s.splitLeft]] as const) {
+        for (const [name, locator] of [['chrome', s.chromeRoot], ['split-left', s.splitLeft], ['split-right', s.splitRight]] as const) {
           const a = await backgroundAlpha(win, locator);
           if (a !== 1) misses.push(`${theme}/${name}: alpha ${a}`);
         }
-        expect(misses, `${theme}: reduced transparency: every surface alpha 1`).toEqual([]);
+        expect(misses, `${theme}: reduced transparency: opaque chrome and terminal surfaces`).toEqual([]);
+        expect(await backgroundAlpha(win, s.sheet), `${theme}: no extra surface under the gutter`).toBe(0);
       }
+      await win.getByTestId(SPLIT_TESTIDS.toggle).click();
+      await expect(s.splitRight).toHaveCount(0);
+      await expect.poll(() => backgroundAlpha(win, s.sheet)).toBe(1);
     } finally {
       await cdp.send('Emulation.setEmulatedMedia', { features: [] });
       await cdp.detach();

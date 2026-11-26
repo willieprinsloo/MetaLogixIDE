@@ -21,7 +21,14 @@ export type StageResult =
   | { readonly kind: 'too-large'; readonly limitBytes: number }
   | { readonly kind: 'failed'; readonly reason: string };
 
-export type ClipboardImageResult = StageResult | { readonly kind: 'no-image' };
+/**
+ * `style` is set only when the image was staged on another machine, so the path is escaped for
+ * that machine's shell; local staging leaves it unset and the caller's style applies.
+ */
+export type ClipboardImageResult =
+  | { readonly kind: 'staged'; readonly path: string; readonly style?: PathStyle }
+  | Exclude<StageResult, { kind: 'staged' }>
+  | { readonly kind: 'no-image' };
 
 export type ResolveAppFileResult =
   | { readonly kind: 'resolved'; readonly path: string }

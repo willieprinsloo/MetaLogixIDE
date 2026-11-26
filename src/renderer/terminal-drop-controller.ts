@@ -2,17 +2,25 @@
  * Pure controller behind the terminal drop handlers (AC1, AC16, AC19, AC20). It works over minimal
  * drag-event and transfer interfaces, so it runs without a DOM: it accepts or ignores a drag by
  * `dropKindFor`, drives the overlay through the enter/leave depth counter, snapshots the transfer
- * synchronously on drop (it is unreadable once the event returns), plans the payload and pastes it
+ * synchronously on drop (it is unreadable once the event returns), including each file's folder
+ * flag from `webkitGetAsEntry`, plans the payload and pastes it
  * only when it is non-empty and the shell is still alive. `useTerminalDrop` is thin wiring over it.
  */
 import { createDragHover, dropKindFor, type DropKind } from '@renderer/drag-hover';
 import type { DropFile, DropSnapshot } from '@renderer/terminal-drop';
 import { APP_FILE_DRAG_TYPE } from '@shared/terminal-drop-contract';
 
-/** The part of a `DataTransfer` the controller reads. */
+/** The part of a `DataTransferItem` read for the folder flag. */
+export interface DropItemLike {
+  readonly kind: string;
+  webkitGetAsEntry?(): { readonly isDirectory: boolean } | null;
+}
+
+/** The part of a `DataTransfer` the controller reads; `items` is absent only in tests. */
 export interface DropTransferLike<F extends DropFile> {
   readonly types: readonly string[];
   readonly files: ArrayLike<F>;
+  readonly items?: ArrayLike<DropItemLike>;
   dropEffect: string;
   getData(type: string): string;
 }
@@ -42,12 +50,20 @@ export interface TerminalDropController<F extends DropFile> {
   attach(target: EventTarget): () => void;
 }
 
+/** Folder flag per file-kind item, in the same order as `files` (a folder arrives as a file). */
+function directoryFlags(items: ArrayLike<DropItemLike>): boolean[] {
+  return Array.from(items)
+    .filter((item) => item.kind === 'file')
+    .map((item) => item.webkitGetAsEntry?.()?.isDirectory === true);
+}
+
 function snapshotOf<F extends DropFile>(dt: DropTransferLike<F>): DropSnapshot<F> {
-  return {
+  const snapshot = {
     appFile: dt.getData(APP_FILE_DRAG_TYPE),
     files: Array.from(dt.files),
     text: dt.getData('text/plain'),
   };
+  return dt.items ? { ...snapshot, isDirectory: directoryFlags(dt.items) } : snapshot;
 }
 
 /** Creates the drop controller; `drop` never rejects, failures go to `onError`. */

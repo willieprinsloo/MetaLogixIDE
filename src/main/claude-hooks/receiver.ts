@@ -1,6 +1,6 @@
 /**
- * Loopback HTTP receiver for Claude Code `http` hooks (IO layer). Accepts
- * only `POST /claude-hook` on 127.0.0.1 with an exact `Host`, a JSON body
+ * Local HTTP receiver for Claude Code hook events (IO layer). Accepts
+ * only `POST /claude-hook` on its private endpoint with an exact `Host`, a JSON body
  * of at most 1 MiB and a valid per-spawn id + bearer token, checked before
  * any of the body is read; answers 204 with no body before handing the
  * parsed event to its listener, so a hook reply can never block or steer
@@ -46,10 +46,10 @@ const JSON_CONTENT_TYPE = /^application\/json\s*(;|$)/i;
 
 class BodyTooLarge extends Error {}
 
-function checkRequestLine(req: IncomingMessage, port: number): Rejection | null {
+function checkRequestLine(req: IncomingMessage, host: string): Rejection | null {
   if (req.method !== 'POST') return { status: 405, reason: 'method' };
   if (req.url !== HOOK_PATH) return { status: 404, reason: 'path' };
-  if (req.headers.host !== `${LOOPBACK}:${port}`) return { status: 403, reason: 'host' };
+  if (req.headers.host !== host) return { status: 403, reason: 'host' };
   if (!JSON_CONTENT_TYPE.test(req.headers['content-type'] ?? '')) return { status: 415, reason: 'content-type' };
   return null;
 }
@@ -91,10 +91,11 @@ function reject(res: ServerResponse, rejection: Rejection, close = false): void 
   res.end();
 }
 
-/** Loopback receiver for Claude Code hook POSTs; see the module docblock for the accepted request shape. */
+/** Local receiver for Claude Code hook POSTs; see the module docblock for the accepted request shape. */
 export class ClaudeHookReceiver {
   private server: Server | null = null;
   private port: number | null = null;
+  private host = '';
   private listener: HookListener = () => {};
   private readonly requestTimeoutMs: number;
 
@@ -107,8 +108,10 @@ export class ClaudeHookReceiver {
     this.listener = listener;
   }
 
-  /** Listens on an ephemeral 127.0.0.1 port and resolves with it; rejects when the socket cannot bind. */
-  async start(): Promise<number> {
+  /** Listens on a private socket, or on an ephemeral loopback port for direct transport tests. */
+  async start(): Promise<number>;
+  async start(endpoint: string): Promise<void>;
+  async start(endpoint?: string): Promise<number | void> {
     const server = createServer({
       requestTimeout: this.requestTimeoutMs,
       headersTimeout: this.requestTimeoutMs,
@@ -116,11 +119,18 @@ export class ClaudeHookReceiver {
     }, (req, res) => { void this.handle(req, res); });
     await new Promise<void>((resolveP, rejectP) => {
       server.once('error', rejectP);
-      server.listen(0, LOOPBACK, () => { server.off('error', rejectP); resolveP(); });
+      const ready = () => { server.off('error', rejectP); resolveP(); };
+      if (endpoint === undefined) server.listen(0, LOOPBACK, ready);
+      else server.listen(endpoint, ready);
     });
     server.on('error', (err) => console.error('[claude-hooks] receiver error', { cause: err }));
     this.server = server;
+    if (endpoint !== undefined) {
+      this.host = 'localhost';
+      return;
+    }
     this.port = (server.address() as AddressInfo).port;
+    this.host = `${LOOPBACK}:${this.port}`;
     console.info('[claude-hooks] receiver listening', { port: this.port });
     return this.port;
   }
@@ -131,7 +141,7 @@ export class ClaudeHookReceiver {
     return address && typeof address === 'object' ? address.address : null;
   }
 
-  /** The hook URL to put in Claude's settings, or null when not listening. */
+  /** The URL when listening in direct loopback test mode. */
   url(): string | null {
     return this.port === null ? null : `http://${LOOPBACK}:${this.port}${HOOK_PATH}`;
   }
@@ -141,13 +151,14 @@ export class ClaudeHookReceiver {
     const server = this.server;
     this.server = null;
     this.port = null;
+    this.host = '';
     if (!server) return;
     server.closeAllConnections();
     await new Promise<void>((resolveP) => server.close(() => resolveP()));
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const lineRejection = checkRequestLine(req, this.port ?? -1);
+    const lineRejection = checkRequestLine(req, this.host);
     if (lineRejection) { reject(res, lineRejection); return; }
     const identity = authenticate(req, this.auth);
     if (!identity) { reject(res, { status: 401, reason: 'auth' }); return; }

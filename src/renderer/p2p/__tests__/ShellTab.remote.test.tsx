@@ -9,9 +9,11 @@ vi.mock('@xterm/xterm', () => ({
   Terminal: class {
     unicode = { activeVersion: '' }; cols = 80; rows = 24; options: Record<string, unknown> = {};
     buffer = { active: { getLine: () => undefined }, onBufferChange: () => ({ dispose() {} }) };
+    parser = { registerOscHandler: () => ({ dispose() {} }) };
     loadAddon() {} open() {} write() {} reset() {} dispose() {} focus() {} paste() {} refresh() {}
     attachCustomKeyEventHandler() {} registerLinkProvider = vi.fn(() => ({ dispose() {} }));
     onData() { return { dispose() {} }; } onResize() { return { dispose() {} }; } onSelectionChange() { return { dispose() {} }; }
+    onRender() { return { dispose() {} }; }
     hasSelection() { return false; } getSelection() { return ''; } element = document.createElement('div');
   },
 }));
@@ -29,7 +31,6 @@ vi.mock('@renderer/fonts/font-settings-context', () => ({ useFontSettings: () =>
 vi.mock('@renderer/fonts/terminal-font-size-context', () => ({ useTerminalFontSize: () => ({ size: 13, ready: true, setSize: () => {} }) }));
 vi.mock('@renderer/fonts/terminal-font-weight-context', () => ({ useTerminalFontWeight: () => ({ weight: 400, boldWeight: 700, ready: true }) }));
 vi.mock('@renderer/shortcut-platform', () => ({ useShortcutPlatform: () => 'mac' }));
-vi.mock('@renderer/hooks/useShellStream', () => ({ useShellStream: () => {} }));
 vi.mock('@renderer/hooks/useTerminalDrop', () => ({ useTerminalDrop: () => ({ overlay: null, handlers: {} }) }));
 vi.mock('@renderer/hooks/useTerminalPaste', () => ({ useTerminalPaste: () => () => {} }));
 vi.mock('@renderer/hooks/useWindowTerminalFocus', () => ({ terminalFocus: { register: () => ({ unregister() {} }) } }));
@@ -37,7 +38,7 @@ vi.mock('@renderer/terminal-geometry-hold', () => ({ isTerminalGeometryHeld: () 
 
 const handle = {
   exit: undefined as undefined | ((c: number | null) => void),
-  onData: vi.fn(), onClose: vi.fn(), send: vi.fn(), resize: vi.fn(), close: vi.fn(),
+  onData: vi.fn(), onClose: vi.fn(), onInputError: vi.fn(), send: vi.fn(), resize: vi.fn(), close: vi.fn(),
   onExit(cb: (c: number | null) => void) { handle.exit = cb; },
 };
 const openRemoteShell = vi.fn(() => handle);
@@ -48,7 +49,7 @@ import { ShellTab } from '../../components/ShellTab';
 beforeEach(() => {
   cleanup();
   invoke.mockReset();
-  invoke.mockResolvedValue({ output: '', profiles: [] });
+  invoke.mockResolvedValue({ output: '', alive: false, replayPosition: 0, profiles: [] });
   openRemoteShell.mockClear();
   handle.exit = undefined;
   (globalThis as { ResizeObserver?: unknown }).ResizeObserver ??= class { observe() {} disconnect() {} unobserve() {} };

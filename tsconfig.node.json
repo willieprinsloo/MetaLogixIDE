@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.json",
-  "compilerOptions": { "types": ["node", "vitest/globals"] },
-  "include": ["src/main/**/*", "src/preload/**/*", "src/shared/**/*", "tests/unit/**/*"]
+  "compilerOptions": { "lib": ["ES2024", "DOM", "DOM.Iterable"], "types": ["node", "vitest/globals"] },
+  "include": ["src/main/**/*", "src/preload/**/*", "src/shared/**/*", "src/renderer/terminal/ghostty-assets.d.ts", "tests/unit/**/*"]
 }

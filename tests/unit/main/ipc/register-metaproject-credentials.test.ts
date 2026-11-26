@@ -1,166 +1,87 @@
-/**
- * Wiring tests for the Metaproject password stored through the credential
- * store: `metaproject:login` writes to it, and `credentials-load` /
- * `auto-login` read it back. The store is a plain in-memory fake, so the
- * real safeStorage / keychain is never touched.
- */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { IpcMain } from 'electron';
-import { registerIpc } from '@main/ipc/register';
-import type { CredentialStore } from '@main/credential-store';
+import { expect, it, vi } from 'vitest';
+import type { BrowserWindow, IpcMainInvokeEvent } from 'electron';
+import { registerMetaprojectIpc, type MetaprojectIpcOptions } from '@main/metaproject/ipc-handlers';
+import { metaprojectRequests } from '@shared/metaproject-contract';
+import { AssignmentOperations } from '@main/metaproject/assignment-operations';
+import { isMetaprojectRendererEntry, metaprojectOwner } from '@main/metaproject/owner';
 
-vi.mock('electron-log/main', () => ({
-  default: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-}));
+it('cancels only the matching active intent in the same frame; never cancels a replacement', async () => {
+  const operations = new AssignmentOperations();
+  const frame = {};
+  const first = { operationId: '716a3ccf-fc88-43b8-bb9a-664ec6790a48' };
+  const second = { operationId: '5c17719b-2322-4ccb-98fc-45b79d0f5af2' };
+  let proceed = (): void => { throw new Error('not started'); };
+  const pending = operations.run(first, { frame, contextCurrent: () => true }, async owns => {
+    await new Promise<void>(resolve => { proceed = resolve; });
+    return { ok: true, value: owns() };
+  });
+  expect(operations.cancel(first, {})).toEqual({ ok: false, reason: 'stale' });
+  expect(operations.cancel(first, frame)).toEqual({ ok: true, value: undefined });
+  await expect(operations.run(second, { frame, contextCurrent: () => true }, owns => ({ ok: true, value: owns() }))).resolves.toEqual({ ok: true, value: true });
+  proceed();
+  await expect(pending).resolves.toEqual({ ok: true, value: false });
+  expect(operations.cancel(first, frame)).toEqual({ ok: false, reason: 'stale' });
+});
 
-const USER = 'alice';
-const HOSTILE = 'p\\a\nss wörd ✓\\n';
-const BASE_URL_DEFAULT = 'https://projects.metalogix.solutions';
+it('checks identity, liveness and trusted entry of the actual top-level frame', () => {
+  const entry = 'file:///app/index.html';
+  const frame = { url: `${entry}#workspace` };
+  const sender = { mainFrame: frame, isDestroyed: () => false };
+  const window = { webContents: sender, isDestroyed: () => false };
+  const event = { sender, senderFrame: frame };
+  expect(metaprojectOwner(event, window, entry)).toBe(window);
+  expect(metaprojectOwner({ ...event, senderFrame: null }, window, entry)).toBeNull();
+  expect(metaprojectOwner({ ...event, senderFrame: { ...frame } }, window, entry)).toBeNull();
+  expect(metaprojectOwner({ ...event, sender: { ...sender } }, window, entry)).toBeNull();
+  expect(metaprojectOwner(event, { ...window, isDestroyed: () => true }, entry)).toBeNull();
+  expect(metaprojectOwner(event, window, 'file:///other/index.html')).toBeNull();
+  expect(isMetaprojectRendererEntry('https://example.test/index.html', entry)).toBe(false);
+});
 
-type Handler = (e: unknown, req: unknown) => Promise<unknown>;
-
-function fakeIpcMain(): IpcMain & { handlers: Map<string, Handler> } {
-  const handlers = new Map<string, Handler>();
-  return {
-    handle: (channel: string, fn: Handler) => handlers.set(channel, fn),
-    handlers,
-  } as unknown as ReturnType<typeof fakeIpcMain>;
-}
-
-function fakeCredentialStore(): CredentialStore & { readonly entries: Map<string, string> } {
-  const entries = new Map<string, string>();
-  return {
-    entries,
-    isAvailable: () => true,
-    save: vi.fn(async (account: string, password: string) => {
-      entries.set(account, password);
-      return true;
-    }),
-    load: vi.fn(async (account: string) => entries.get(account) ?? null),
-    clear: vi.fn(async (account: string) => {
-      entries.delete(account);
-    }),
-  };
-}
-
-function setup(lastUsername: string | null = USER) {
-  const metaproject = {
-    login: vi.fn(async () => ({ userName: 'Alice' })),
-    connectSocket: vi.fn(),
-    isLoggedIn: vi.fn(() => false),
-    currentUserName: vi.fn(() => null),
-    onEvent: vi.fn(),
+function setup() {
+  const channels = new Map<string, (event: IpcMainInvokeEvent, input?: unknown) => Promise<unknown>>();
+  const owner = { id: 1 } as BrowserWindow;
+  const trusted = { sender: owner, senderFrame: {} } as unknown as IpcMainInvokeEvent;
+  const keyring = { getPassword: vi.fn(), setPassword: vi.fn(), deletePassword: vi.fn() };
+  const ipcMain: Pick<MetaprojectIpcOptions['ipcMain'], 'handle' | 'removeHandler'> = {
+    handle(channel, handler) { channels.set(channel, (event, input) => Promise.resolve(handler(event, input))); },
+    removeHandler(channel) { channels.delete(channel); },
   };
   const settings = {
-    get: vi.fn((key: string) => (key === 'metaproject_last_username' ? lastUsername : null)),
-    set: vi.fn(),
+    get: vi.fn(key => key === 'metaproject_base_url' ? 'https://example.test' : 'legacy'),
+    readMetaprojectPrivate: vi.fn(), writeMetaprojectPrivate: vi.fn(),
   };
-  const credentialStore = fakeCredentialStore();
-  const ipc = fakeIpcMain();
-  registerIpc(
-    ipc as unknown as IpcMain,
-    { metaproject, settings, credentialStore } as unknown as Parameters<typeof registerIpc>[1],
-    () => {},
-  );
-  const call = (channel: string, req?: unknown) => ipc.handlers.get(channel)!({}, req);
-  return { metaproject, credentialStore, call };
+  const lifecycle = registerMetaprojectIpc({
+    ipcMain, settings, projects: {}, roots: { list: () => [] }, keyring, allowLoopbackHttp: false,
+    owner: () => owner, authorize: (event: IpcMainInvokeEvent) => event === trusted ? owner : null,
+    send: vi.fn(), openExternal: vi.fn(),
+  } as unknown as MetaprojectIpcOptions);
+  async function call(channel: string, input?: unknown, event = trusted): Promise<unknown> {
+    const handler = channels.get(channel);
+    if (!handler) throw new Error(`Missing channel ${channel}`);
+    return handler(event, input);
+  }
+  return { lifecycle, channels, owner, keyring, call };
 }
 
-describe('metaproject:login credential storage', () => {
-  it('remember:true writes the password through credentialStore.save', async () => {
-    const { call, metaproject, credentialStore } = setup();
-    await call('metaproject:login', { username: USER, password: HOSTILE, remember: true });
-
-    expect(metaproject.login).toHaveBeenCalledWith({
-      baseUrl: BASE_URL_DEFAULT,
-      username: USER,
-      password: HOSTILE,
-    });
-    expect(credentialStore.save).toHaveBeenCalledWith(USER, HOSTILE);
-    expect(credentialStore.entries.get(USER)).toBe(HOSTILE);
-  });
-
-  it('remember:false stores nothing, while remember:true in the same setup does store', async () => {
-    const { call, credentialStore } = setup();
-    await call('metaproject:login', { username: USER, password: HOSTILE, remember: false });
-    expect(credentialStore.save).not.toHaveBeenCalled();
-
-    await call('metaproject:login', { username: USER, password: HOSTILE, remember: true });
-    expect(credentialStore.save).toHaveBeenCalledTimes(1);
-  });
-
-  it('a credential-store write failure does not fail the login', async () => {
-    const { call, metaproject, credentialStore } = setup();
-    (credentialStore.save as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('locked'));
-    await expect(
-      call('metaproject:login', { username: USER, password: 'x', remember: true }),
-    ).resolves.toEqual({ userName: 'Alice' });
-    expect(metaproject.connectSocket).toHaveBeenCalledTimes(1);
-  });
+it('registers the frozen session/assignment/Board API, not the legacy password endpoints', async () => {
+  const { lifecycle, channels, keyring, call } = setup();
+  lifecycle.start(); lifecycle.start();
+  expect(keyring.getPassword).not.toHaveBeenCalled();
+  expect(Object.keys(metaprojectRequests).filter(channel => !channels.has(channel))).toEqual([]);
+  for (const channel of ['login', 'auto-login', 'credentials-load', 'credentials-clear', 'list-projects', 'create-project', 'link-local-project']) {
+    expect(channels.has(`metaproject:${channel}`)).toBe(false);
+  }
+  expect(await call('metaproject:session-status')).toMatchObject({ epoch: 0, phase: 'signed-out' });
+  lifecycle.dispose();
+  expect(channels.size).toBe(0);
 });
 
-describe('metaproject:credentials-load', () => {
-  it.each([
-    ['present password', HOSTILE, true],
-    ['empty string', '', false],
-    ['nothing stored', null, false],
-  ])('%s -> hasPassword %s without throwing', async (_name, stored, expected) => {
-    const { call, credentialStore } = setup();
-    if (stored !== null) credentialStore.entries.set(USER, stored);
-    await expect(call('metaproject:credentials-load')).resolves.toEqual({
-      username: USER,
-      hasPassword: expected,
-    });
-    expect(credentialStore.load).toHaveBeenCalledWith(USER);
-  });
-
-  it('no saved username reports no password without reading the store', async () => {
-    const { call, credentialStore } = setup(null);
-    await expect(call('metaproject:credentials-load')).resolves.toEqual({
-      username: null,
-      hasPassword: false,
-    });
-    expect(credentialStore.load).not.toHaveBeenCalled();
-  });
-});
-
-describe('metaproject:auto-login', () => {
-  it('passes the stored password to login', async () => {
-    const { call, metaproject, credentialStore } = setup();
-    credentialStore.entries.set(USER, HOSTILE);
-    await expect(call('metaproject:auto-login')).resolves.toEqual({ ok: true, userName: 'Alice' });
-    expect(metaproject.login).toHaveBeenCalledWith({
-      baseUrl: BASE_URL_DEFAULT,
-      username: USER,
-      password: HOSTILE,
-    });
-  });
-
-  it('a read failure returns keychain-error without calling login', async () => {
-    const { call, metaproject, credentialStore } = setup();
-    (credentialStore.load as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('locked'));
-    const result = (await call('metaproject:auto-login')) as { ok: boolean; reason?: string };
-    expect(result.ok).toBe(false);
-    expect(result.reason).toMatch(/^keychain-error: /);
-    expect(metaproject.login).not.toHaveBeenCalled();
-  });
-
-  it('an empty stored password is treated as no saved password and does not log in', async () => {
-    const { call, metaproject, credentialStore } = setup();
-    credentialStore.entries.set(USER, '');
-    await expect(call('metaproject:auto-login')).resolves.toEqual({
-      ok: false,
-      reason: 'no-saved-password',
-    });
-    expect(metaproject.login).not.toHaveBeenCalled();
-  });
-
-  it('nothing stored returns no-saved-password without calling login', async () => {
-    const { call, metaproject } = setup();
-    await expect(call('metaproject:auto-login')).resolves.toEqual({
-      ok: false,
-      reason: 'no-saved-password',
-    });
-    expect(metaproject.login).not.toHaveBeenCalled();
-  });
+it('rejects missing Chat epoch and rejects Board invocations from a different frame owner', async () => {
+  const { lifecycle, call } = setup();
+  await expect(call('metaproject:list-all-channels', { scope: 'all' })).rejects.toThrow('invalid-input');
+  await expect(call('metaproject:list-all-channels', { scope: 'all', epoch: 0 })).rejects.toThrow('signed-out');
+  await expect(call('metaproject:board-browser', { projectId: 1, revision: 'e'.repeat(64) }, {} as IpcMainInvokeEvent))
+    .resolves.toEqual({ ok: false, reason: 'stale' });
+  lifecycle.dispose();
 });

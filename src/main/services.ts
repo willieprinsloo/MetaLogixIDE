@@ -8,7 +8,6 @@ import { SettingsRepo } from './repos/settings-repo';
 import { PromptsRepo } from './repos/prompts-repo';
 import { PtyManager } from './pty/manager';
 import { RootWatcher } from './domain/watcher';
-import { MetaprojectClient } from './metaproject/client';
 import { applyClaudePermissionMode } from './domain/claude-permission-mode';
 import { CLAUDE_PERMISSION_MODE_ENV, isClaudePermissionMode } from '@shared/claude-permission-mode';
 import { SessionRegistry, type ShellKey } from './claude-hooks/session-registry';
@@ -16,6 +15,8 @@ import { ClaudeHookReceiver } from './claude-hooks/receiver';
 import { ClaudeHookRuntime } from './claude-hooks/runtime';
 import { createLaunchDecorator } from './claude-hooks/launch-decorator';
 import { ViewedShells } from './notifications/viewed-shells';
+import { RemoteViewing } from './notifications/fleet-notices';
+import { ActivityTracker, NoticeRouter } from './notifications/notice-router';
 import { ClaudeHookHistory } from './notifications/claude-hook-history';
 import type { AgentStatusTracker } from './agent-status/state-tracker';
 import type { GroupChatService } from './group-chat/service';
@@ -39,7 +40,6 @@ export interface Services {
   prompts: PromptsRepo;
   ptyManager: PtyManager;
   watcher: RootWatcher;
-  metaproject: MetaprojectClient;
   /** Hook sessions remain separate from status, for Claude OS notifications. */
   hookSessions: SessionRegistry;
   hookReceiver: ClaudeHookReceiver;
@@ -50,6 +50,12 @@ export interface Services {
   /** Group chats between agents; attached by `installGroupChat` at startup. */
   groupChat: GroupChatService | null;
   viewedShells: ViewedShells;
+  /** The remote shell the main window shows, for holding back fleet notices. */
+  remoteViewing?: RemoteViewing;
+  /** When this machine's IDE was last used. */
+  activity?: ActivityTracker;
+  /** Sends agent notices to the fleet's active IDE instance. */
+  noticeRouter?: NoticeRouter;
   /** Owner-only temp directory for dropped bytes and pasted images. */
   dropStaging: DropStaging;
   clipboardImage: ClipboardImage;
@@ -109,7 +115,7 @@ function lastOutputAt(ptyManager: PtyManager, shell: ShellKey): number | null {
  * `dropDir` overrides the drop staging directory, which is otherwise resolved
  * here once from the OS temp directory and the current uid.
  */
-export function buildServices(opts: { dbPath?: string; migrationsDir?: string; homeDir?: string; dropDir?: string } = {}): Services {
+export function buildServices(opts: { dbPath?: string; migrationsDir?: string; homeDir?: string; dropDir?: string; hookForwarderPath?: string } = {}): Services {
   const home = opts.homeDir ?? homedir();
   const dbPath = opts.dbPath ?? join(home, '.metaide', 'metaide.db');
   const migrationsDir = opts.migrationsDir ?? resolve(process.cwd(), 'migrations');
@@ -125,19 +131,24 @@ export function buildServices(opts: { dbPath?: string; migrationsDir?: string; h
   const prompts = new PromptsRepo(db);
   const hookSessions = new SessionRegistry();
   const hookReceiver = new ClaudeHookReceiver(hookSessions);
-  const hookRuntime = new ClaudeHookRuntime({ receiver: hookReceiver, homeDir: home });
-  const claudeDecorator = createLaunchDecorator({ sessions: hookSessions, settingsPath: () => hookRuntime.settingsPath() });
+  const hookRuntime = new ClaudeHookRuntime({
+    receiver: hookReceiver, homeDir: home,
+    forwarderPath: opts.hookForwarderPath ?? resolve('resources/claude-hooks/forward.cjs'),
+  });
+  const claudeDecorator = createLaunchDecorator({
+    sessions: hookSessions, settingsPath: () => hookRuntime.settingsPath(), forwarderEnv: () => hookRuntime.forwarderEnv(),
+  });
   const ptyManager = new PtyManager({
     spawnDecorator: (projectId, shellIndex, launch) =>
       claudeDecorator(projectId, shellIndex, launch),
   });
   const watcher = new RootWatcher({ cap: settings.get('max_watched_paths') });
-  const metaproject = new MetaprojectClient();
   const hookHistory = new ClaudeHookHistory({
     sessions: hookSessions,
     lastOutputAt: (shell) => lastOutputAt(ptyManager, shell),
     now: () => Date.now(),
   });
+  const activity = new ActivityTracker();
   const uid = process.getuid?.() ?? null;
   const dropStaging = createDropStaging({
     dir: opts.dropDir ?? defaultDropDir(process.platform, tmpdir(), uid),
@@ -145,9 +156,12 @@ export function buildServices(opts: { dbPath?: string; migrationsDir?: string; h
     uid,
   });
   return {
-    db, roots, projects, shells, settings, prompts, ptyManager, watcher, metaproject,
+    db, roots, projects, shells, settings, prompts, ptyManager, watcher,
     hookSessions, hookReceiver, hookRuntime, hookHistory, agentStatus: null, groupChat: null,
-    viewedShells: new ViewedShells(), dropStaging, clipboardImage: createClipboardImage(), listMise: listMiseTasks, keepAwake: null, homeDir: home, migrationsDir,
+    viewedShells: new ViewedShells(), remoteViewing: new RemoteViewing(), activity,
+    noticeRouter: new NoticeRouter({ localIdleMs: () => activity.idleMs(Date.now()), now: () => Date.now() }),
+    dropStaging, clipboardImage: createClipboardImage(), listMise: listMiseTasks, keepAwake: null,
+    homeDir: home, migrationsDir,
     credentialStore: null,
   };
 }

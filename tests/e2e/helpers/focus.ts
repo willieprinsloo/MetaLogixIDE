@@ -274,9 +274,7 @@ export function switcherResult(win: Page, name: string) {
  * "+" menu ("Terminal") and waits for its prompt. Returns the new shell's
  * index (the project's remembered active shell becomes that index).
  *
- * Not ⌘T: its window keydown handler is registered once and keeps the
- * first render's `setActiveShellIndex`, bound to no project, so ⌘T launches
- * the shell but never switches to its tab (pre-existing, App.tsx).
+ * Use this helper when the test needs to exercise the menu rather than ⌘T.
  */
 export async function newShellTab(win: Page, projectName: string): Promise<number> {
   const projectId = await projectIdByName(win, projectName);

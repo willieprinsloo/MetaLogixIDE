@@ -1,4 +1,4 @@
-/** Exact test ids for the split shell and its tab-strip toggle. */
+/** Exact test ids for the split shell and its toolbar toggle. */
 export const SPLIT_TESTIDS = {
   toggle: 'tabbar-split',
   header: 'split-pane-header',
@@ -9,7 +9,7 @@ export const SPLIT_TESTIDS = {
 
 /** Exact user-facing strings for the split shell. */
 export const SPLIT_COPY = {
-  pill: 'Split',
+  buttonLabel: 'Split',
   tooltipOn: 'Close split',
   tooltipOff: 'Split shell right',
   toTab: 'To tab',

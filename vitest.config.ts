@@ -2,6 +2,17 @@ import { defineConfig } from 'vitest/config';
 import { resolve } from 'node:path';
 
 export default defineConfig({
+  plugins: [{
+    name: 'terminal-wasm-test-fixtures',
+    resolveId(id) {
+      if (id === 'virtual:metaide-ghostty-vt' || id === 'virtual:metaide-ghostty-callbacks') return `\0${id}`;
+    },
+    load(id) {
+      if (id === '\0virtual:metaide-ghostty-vt' || id === '\0virtual:metaide-ghostty-callbacks') {
+        return "throw new Error('Mock the Ghostty WASM fixture before importing the renderer'); export default null;";
+      }
+    },
+  }],
   resolve: {
     alias: {
       '@main': resolve(__dirname, 'src/main'),
@@ -19,7 +30,7 @@ export default defineConfig({
     minWorkers: 1,
     // .claude/ holds mutation-test copies of the tree; dist/ and out/ hold
     // packaged builds whose bundled node_modules ship their own tests.
-    exclude: ['tests/e2e/**', 'node_modules/**', '.claude/**', 'dist/**', 'out/**'],
+    exclude: ['tests/e2e/**', 'node_modules/**', 'mobile/node_modules/**', 'mobile/ios/**', 'mobile/android/**', '.claude/**', 'dist/**', 'out/**'],
     coverage: {
       provider: 'v8',
       all: true,

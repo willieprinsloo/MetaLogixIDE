@@ -38,12 +38,12 @@
  */
 
 import { test, expect, _electron as electron, type ElectronApplication } from '@playwright/test';
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, readFileSync, existsSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   type Api, MOCK_CLAUDE, makeClaudeShim, launch, projectId, openProject, sendLine, waitForShell, aliveShells,
-  installNotificationSpy, notifications, clickNotification, baseEnv, sendAndConfirmUserPrompt,
+  installNotificationSpy, notifications, clickNotification, baseEnv, sendAndWaitForPromptHook,
   hookCredentials, postRawHook, closeApp, guardedLaunch,
 } from './helpers/claude-harness';
 import { electronOptions } from './helpers/agent-status-harness';
@@ -96,14 +96,13 @@ test.describe('Claude Code system notifications', () => {
       await openProject(h.win, 'projb');
       await waitForShell(h.win, await projectId(h.win, 'projb'), 0, 'mock-claude ready');
       const projB = await projectId(h.win, 'projb');
-      // Confirm both shells so they're hook-confirmed (AC18 depends on this
-      // elsewhere) and to establish a UserPromptSubmit baseline.
-      await sendAndConfirmUserPrompt(h.win, projA, 0, 'hello');
-      await sendAndConfirmUserPrompt(h.win, projB, 0, 'hello');
+      // Give both shells a UserPromptSubmit baseline before exercising Stop.
+      await sendAndWaitForPromptHook(h.win, projA, 0, 'hello');
+      await sendAndWaitForPromptHook(h.win, projB, 0, 'hello');
       // Capture credentials before sending needs-input. Later notifications
       // are posted directly so a typed command cannot mark an outstanding
       // notification answered in the independent hook history.
-      const projACreds = await hookCredentials(h.win, h.isolatedHome, projA, 0);
+      const projACreds = await hookCredentials(h.win, projA, 0);
 
       // Currently viewing projb: an event on proja (not viewed) must notify.
       await sendLine(h.win, projA, 0, '/hook-notify permission_prompt Claude needs your permission to run rm -rf');
@@ -127,7 +126,7 @@ test.describe('Claude Code system notifications', () => {
 
       // Stop notifies only after a hook-confirmed turn has started. This
       // UserPromptSubmit is notification-history setup, not dot authority.
-      await sendAndConfirmUserPrompt(h.win, projA, 0, 'hello');
+      await sendAndWaitForPromptHook(h.win, projA, 0, 'hello');
       await sendLine(h.win, projA, 0, '/hook-stop');
       await expect.poll(() => notifications(h.app), { timeout: 2000 }).toHaveLength(3);
       list = await notifications(h.app);
@@ -139,7 +138,7 @@ test.describe('Claude Code system notifications', () => {
       // outside the needs-input set) and SubagentStop (a whole other
       // hook_event_name) must both produce nothing.
       await sendLine(h.win, projA, 0, '/hook-notify idle_prompt should be ignored');
-      await sendLine(h.win, projA, 0, '/hook-raw SubagentStop');
+      expect((await postRawHook(projACreds, { hook_event_name: 'SubagentStop' })).status).toBe(204);
       // No poll-to-appear here (we're proving absence); give the pipeline
       // the same 2s budget AC1/AC2 use, then assert the count is unchanged.
       await h.win.waitForTimeout(2000);
@@ -206,7 +205,7 @@ test.describe('Claude Code system notifications', () => {
       // by the next step, and a second typed command's own submit Enter
       // would answer a blocked shell (AC7), so the AC16 event below has to
       // be posted directly.
-      const projACreds = await hookCredentials(h.win, h.isolatedHome, projA, 0);
+      const projACreds = await hookCredentials(h.win, projA, 0);
       await focusMain(h.app);
 
       // AC15: main window focused and showing proja's shell 0 — an event on
@@ -230,7 +229,7 @@ test.describe('Claude Code system notifications', () => {
       // No focused window: notification eligibility still uses hook
       // history. Re-establish a UserPromptSubmit before the Stop.
       await h.app.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0]!.minimize(); });
-      await sendAndConfirmUserPrompt(h.win, projA, 0, 'hello');
+      await sendAndWaitForPromptHook(h.win, projA, 0, 'hello');
       await sendLine(h.win, projA, 0, '/hook-stop');
       await expect.poll(() => notifications(h.app), { timeout: 2000 }).toHaveLength(2);
       await h.app.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0]!.restore(); });
@@ -292,7 +291,7 @@ test.describe('Claude Code system notifications', () => {
       await openProject(h.win, 'proja');
       const projA = await projectId(h.win, 'proja');
       await waitForShell(h.win, projA, 0, 'mock-claude ready');
-      await sendAndConfirmUserPrompt(h.win, projA, 0, 'hello');
+      await sendAndWaitForPromptHook(h.win, projA, 0, 'hello');
 
       const [popout] = await Promise.all([
         h.app.waitForEvent('window'),
@@ -339,7 +338,7 @@ test.describe('Claude Code system notifications', () => {
       const projA = await projectId(h.win, 'proja');
       await waitForShell(h.win, projA, 0, 'mock-claude ready');
       // Start the notification-only hook turn before a finished Stop.
-      await sendAndConfirmUserPrompt(h.win, projA, 0, 'hello');
+      await sendAndWaitForPromptHook(h.win, projA, 0, 'hello');
       await sendLine(h.win, projA, 0, '/hook-stop');
       await h.win.evaluate(async (id: number) => {
         await (window as unknown as { api: Api }).api.invoke('shells:kill', { projectId: id, shellIndex: 0 });
@@ -515,7 +514,7 @@ test.describe('Claude Code system notifications', () => {
       await openProject(h.win, 'proja');
       const projA = await projectId(h.win, 'proja');
       await waitForShell(h.win, projA, 0, 'mock-claude ready');
-      await sendAndConfirmUserPrompt(h.win, projA, 0, 'hello');
+      await sendAndWaitForPromptHook(h.win, projA, 0, 'hello');
 
       // Kill shell 0 and relaunch the primary slot: firstLaunchedAt is
       // already set, so this resolves to the `subsequent` (--continue) variant.
@@ -550,7 +549,7 @@ test.describe('Claude Code system notifications', () => {
       // Amended AC12a: "finished" requires busy -> idle. The relaunched
       // shell is a fresh session (idle baseline) — the `/hook-env` line just
       // sent posts no hook, so establish busy explicitly.
-      await sendAndConfirmUserPrompt(h.win, projA, relaunchedIdx, 'hello');
+      await sendAndWaitForPromptHook(h.win, projA, relaunchedIdx, 'hello');
       await sendLine(h.win, projA, relaunchedIdx, '/hook-stop');
       await expect.poll(() => notifications(h.app), { timeout: 2000 }).toHaveLength(1);
       expect((await notifications(h.app))[0]!.title).toBe(`proja — shell ${relaunchedIdx}`);
@@ -564,7 +563,7 @@ test.describe('Claude Code system notifications', () => {
         }) as unknown as { shellIndex: number }).shellIndex;
       }, { id: projA, shim: h.shimPath });
       await waitForShell(h.win, projA, cliIdx, 'mock-claude ready');
-      await sendAndConfirmUserPrompt(h.win, projA, cliIdx, 'hello');
+      await sendAndWaitForPromptHook(h.win, projA, cliIdx, 'hello');
       await sendLine(h.win, projA, cliIdx, '/hook-stop');
       await expect.poll(() => notifications(h.app), { timeout: 2000 }).toHaveLength(2);
       expect((await notifications(h.app))[1]!.title).toBe(`proja — shell ${cliIdx}`);
@@ -598,15 +597,14 @@ test.describe('Claude Code system notifications', () => {
       await expect(finishedToggle).not.toBeChecked();
       await h.win.getByTestId('settings-done').click();
 
-      // We're still viewing proja's shell 0 (never switched away) — a
-      // renderer document.activeElement blur does not change that (AC15
-      // suppression is keyed on the reported project/tab + main-process
-      // window focus, not DOM focus). Minimise for real so the toggle, not
-      // AC15, is what's under test here.
-      await h.app.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0]!.minimize(); });
+      // Leave the Shell view so AC15 cannot suppress the next notification
+      // independently of the toggle, even without a window manager.
+      const filesTab = h.win.getByRole('button', { name: 'Files', exact: true });
+      await filesTab.click();
+      await expect(filesTab).toHaveAttribute('aria-current', 'page');
       // Start a hook-confirmed turn so this checks the disabled toggle,
       // not merely a Stop from an already-settled notification history.
-      await sendAndConfirmUserPrompt(h.win, projA, 0, 'hello');
+      await sendAndWaitForPromptHook(h.win, projA, 0, 'hello');
       await sendLine(h.win, projA, 0, '/hook-stop');
       await h.win.waitForTimeout(2000);
       expect(await notifications(h.app), 'finished toggle off: no notification').toHaveLength(0);
@@ -655,7 +653,7 @@ test.describe('Claude Code system notifications', () => {
       const shimPath = makeClaudeShim(isolatedHome);
       // AC22: make the hook settings file unwritable by pre-creating its
       // parent directory as a plain FILE (mkdirSync then throws ENOTDIR
-      // regardless of which port the receiver ends up on) — no production
+      // regardless of the receiver's endpoint) — no production
       // code change, just a filesystem precondition ClaudeHookRuntime.start()
       // already has to handle (settings-file.ts / runtime.ts).
       const metaideDir = join(isolatedHome, '.metaide');
@@ -730,51 +728,26 @@ test.describe('Claude Code system notifications', () => {
       // positive control below needs projb's shell 0 to not be "viewed".
       await h2.app.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0]!.minimize(); });
 
-      // Discover this instance's settings file (one per running receiver
-      // port) and the shell's real id/token via /hook-env.
-      const hooksDir = join(h2.isolatedHome, '.metaide', 'claude-hooks');
-      const settingsFile = readdirSync(hooksDir).find((f) => f.startsWith('settings-'));
-      expect(settingsFile, 'AC24 setup: app-owned settings file exists').toBeTruthy();
-      const settings = JSON.parse(readFileSync(join(hooksDir, settingsFile!), 'utf8')) as {
-        hooks: { Notification: Array<{ hooks: Array<{ url: string }> }> };
-      };
-      const url = settings.hooks.Notification[0]!.hooks[0]!.url;
-
-      await sendLine(h2.win, projB, 0, '/hook-env');
-      await waitForShell(h2.win, projB, 0, 'HOOK-ENV shell=');
-      const snap = await h2.win.evaluate(async (args: { projectId: number; shellIndex: number }) => {
-        const api = (window as unknown as { api: Api }).api;
-        const s = await api.invoke('shells:snapshot', args) as unknown as { output: string };
-        return s.output;
-      }, { projectId: projB, shellIndex: 0 });
-      const m = /HOOK-ENV shell=(\S+) token=(\S+)/.exec(snap);
-      expect(m, 'parsed HOOK-ENV line').toBeTruthy();
-      const [, realShellId, realToken] = m!;
+      const creds = await hookCredentials(h2.win, projB, 0);
 
       // AC24: missing token → 401, no notification.
-      const noAuthRes = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Metaide-Shell': realShellId! },
-        body: JSON.stringify({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'forged, no token' }),
+      const noAuthRes = await postRawHook({ ...creds, token: '' }, {
+        hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'forged, no token',
       });
       expect(noAuthRes.status, 'AC24 missing token rejected').toBe(401);
 
       // AC24: wrong token → 401, no notification.
-      const wrongAuthRes = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Metaide-Shell': realShellId!, Authorization: 'Bearer not-the-real-token' },
-        body: JSON.stringify({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'forged, wrong token' }),
+      const wrongAuthRes = await postRawHook({ ...creds, token: 'not-the-real-token' }, {
+        hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'forged, wrong token',
       });
       expect(wrongAuthRes.status, 'AC24 wrong token rejected').toBe(401);
       await h2.win.waitForTimeout(1000);
       expect(await notifications(h2.app), 'AC24 no notification from either forged POST').toHaveLength(0);
 
       // Positive control: the real id + token DOES authenticate and notify —
-      // proves the 401s above are about the credential, not a broken URL.
-      const validRes = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Metaide-Shell': realShellId!, Authorization: `Bearer ${realToken}` },
-        body: JSON.stringify({ hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'real credential' }),
+      // proves the 401s above are about the credential, not a broken endpoint.
+      const validRes = await postRawHook(creds, {
+        hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'real credential',
       });
       expect(validRes.status, 'AC24 positive control: real credential accepted').toBe(204);
       await expect.poll(() => notifications(h2.app), { timeout: 2000 }).toHaveLength(1);
@@ -788,11 +761,7 @@ test.describe('Claude Code system notifications', () => {
 
       // AC26: a stray event with the now-dead id/token is rejected (401),
       // and produces no new notification.
-      const staleRes = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Metaide-Shell': realShellId!, Authorization: `Bearer ${realToken}` },
-        body: JSON.stringify({ hook_event_name: 'Stop' }),
-      });
+      const staleRes = await postRawHook(creds, { hook_event_name: 'Stop' });
       expect(staleRes.status, 'AC26 dead session id rejected').toBe(401);
       await h2.win.waitForTimeout(1000);
       expect(await notifications(h2.app), 'AC26 no new notification from a stray event').toHaveLength(1);

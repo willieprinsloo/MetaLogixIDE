@@ -31,7 +31,7 @@ test.beforeAll(async () => {
         METAIDE_DEFAULT_LAUNCH_FIRST: launch, METAIDE_DEFAULT_LAUNCH_SUBSEQUENT: launch },
     }));
     win = await app.firstWindow();
-    await win.waitForLoadState('domcontentloaded');
+    await win.getByTestId('settings-open').waitFor();
     await win.evaluate(async (path: string) => {
       await (window as unknown as { api: { invoke: (c: string, r: unknown) => Promise<unknown> } }).api.invoke('roots:add', { path });
     }, root);

@@ -61,8 +61,20 @@ describe('useFleetShells', () => {
     replies.b = rows({ projectId: 1, shellIndex: 0, agentState: 'BUSY' }, { projectId: 2, shellIndex: 0, agentState: 7 });
     const { result } = renderHook(() => useFleetShells([dot('a'), dot('b')]));
     await flush();
-    expect(result.current.get('a')).toEqual({ aliveProjectIds: new Set([1]), agentState: null });
+    expect(result.current.get('a')).toEqual({ aliveProjectIds: new Set([1]), agentState: null, projectStates: new Map([[1, 'idle']]) });
     expect(result.current.get('b')!.agentState).toBeNull();
+    expect(result.current.get('b')!.projectStates).toEqual(new Map([[1, 'idle'], [2, 'idle']]));
+  });
+
+  test('gives each live project its worst shell state; a shell with no agent counts as idle (AC42)', async () => {
+    replies.a = rows(
+      { projectId: 1, shellIndex: 0, agentState: 'busy' }, { projectId: 1, shellIndex: 1, agentState: 'blocked' }, { projectId: 1, shellIndex: 2, agentState: 'idle' },
+      { projectId: 2, shellIndex: 0, agentState: null }, { projectId: 2, shellIndex: 1, agentState: 'busy' },
+      { projectId: 3, shellIndex: 0, agentState: null },
+    );
+    const { result } = renderHook(() => useFleetShells([dot('a')]));
+    await flush();
+    expect(result.current.get('a')!.projectStates).toEqual(new Map([[1, 'blocked'], [2, 'busy'], [3, 'idle']]));
   });
 
   test('a malformed reply yields an empty entry and never throws', async () => {
@@ -70,8 +82,8 @@ describe('useFleetShells', () => {
     replies.b = async () => ({ result: [null, { projectId: 'x' }, { projectId: 3, agentState: 'busy' }] });
     const { result } = renderHook(() => useFleetShells([dot('a'), dot('b')]));
     await flush();
-    expect(result.current.get('a')).toEqual({ aliveProjectIds: new Set(), agentState: null });
-    expect(result.current.get('b')).toEqual({ aliveProjectIds: new Set([3]), agentState: 'busy' });
+    expect(result.current.get('a')).toEqual({ aliveProjectIds: new Set(), agentState: null, projectStates: new Map() });
+    expect(result.current.get('b')).toEqual({ aliveProjectIds: new Set([3]), agentState: 'busy', projectStates: new Map([[3, 'busy']]) });
   });
 
   test('a failed poll keeps that peer\'s last entry (E3)', async () => {
@@ -131,6 +143,17 @@ describe('useFleetShells', () => {
     replies.a = rows({ projectId: 1, shellIndex: 0, agentState: 'idle' });
     await flush(5000);
     expect(result.current).not.toBe(second);
+  });
+
+  test('replaces the Map when only one project\'s state changes, the machine\'s worst state staying the same (AC42)', async () => {
+    replies.a = rows({ projectId: 1, shellIndex: 0, agentState: 'blocked' }, { projectId: 2, shellIndex: 0, agentState: 'idle' });
+    const { result } = renderHook(() => useFleetShells([dot('a')]));
+    await flush();
+    const first = result.current;
+    replies.a = rows({ projectId: 1, shellIndex: 0, agentState: 'blocked' }, { projectId: 2, shellIndex: 0, agentState: 'busy' });
+    await flush(5000);
+    expect(result.current).not.toBe(first);
+    expect(result.current.get('a')!.projectStates.get(2)).toBe('busy');
   });
 
   test('keeps the same Map when the online set grows but nothing changes: the newcomer\'s poll fails', async () => {

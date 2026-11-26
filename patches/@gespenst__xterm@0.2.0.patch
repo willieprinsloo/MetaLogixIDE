@@ -1,0 +1,109 @@
+diff --git a/dist/index.js b/dist/index.js
+index 1ab7c6dada9901bb28ac66fe74d74bb323363406..a6e4f2a8b5d6d9accb1784f682ca26b9eac9aed5 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -1141,18 +1141,54 @@ var V = class extends Error {
+ 		}, {
+ 			capture: !0,
+ 			passive: !1
+-		}), e.addEventListener("mousemove", (e) => this.updateLink(e)), e.addEventListener("mouseleave", (e) => this.clearActiveLink(e)), e.addEventListener("mousedown", () => {
+-			this.pointerDownLink = this.activeLink;
+-		}), e.addEventListener("mouseup", (e) => {
+-			let t = this.activeLink;
+-			t && this.pointerDownLink === t && t.activate(e, t.text), this.pointerDownLink = null;
++		}), e.addEventListener("mousemove", (e) => this.updateLink(e)), e.addEventListener("mouseleave", (e) => this.clearActiveLink(e));
++		this.bindLinkGestures(e);
++	}
++	bindLinkGestures(root) {
++		// Core cancels pointerdown, so the browser omits the legacy mouse events.
++		const acceptsLinkGesture = (event) => event.isTrusted && event.isPrimary && event.button === 0 &&
++			!event.altKey && !event.shiftKey && !event.ctrlKey && this.modes.mouseTrackingMode === "none";
++		const moved = (event, start) => Math.hypot(event.clientX - start.x, event.clientY - start.y) > 4;
++		const overLink = (event, link) => {
++			const cell = this.bufferPosition(event);
++			return cell && $(link, cell.x, cell.y);
++		};
++		const identity = ({ text, range: { start, end } }) => JSON.stringify([text, start.x, start.y, end.x, end.y]);
++		const cancel = (event) => {
++			if (this.pointerDownLink?.id === event.pointerId) this.pointerDownLink = null;
++		};
++		root.addEventListener("pointerdown", (event) => {
++			if (!event.isTrusted || !event.isPrimary) return;
++			const link = this.activeLink;
++			this.pointerDownLink = link && acceptsLinkGesture(event) && overLink(event, link)
++				? { id: event.pointerId, link, x: event.clientX, y: event.clientY,
++					screen: this.buffer.active.type, viewport: this.buffer.active.viewportY } : null;
++		}, true);
++		root.addEventListener("pointermove", (event) => {
++			const start = this.pointerDownLink;
++			if (start?.id === event.pointerId && (moved(event, start) || !overLink(event, start.link))) cancel(event);
++		}, true);
++		root.addEventListener("pointercancel", cancel, true);
++		root.addEventListener("lostpointercapture", cancel, true);
++		root.addEventListener("pointerup", (event) => {
++			const start = this.pointerDownLink;
++			if (start?.id !== event.pointerId) return;
++			cancel(event);
++			if (!acceptsLinkGesture(event) || moved(event, start) || !overLink(event, start.link) ||
++				start.screen !== this.buffer.active.type || start.viewport !== this.buffer.active.viewportY) return;
++			// A core pointer update can drop hover state. Recheck the current provider result.
++			void Promise.resolve(this.updateLink(event)).then((link) => {
++				if (!this.disposed && link && link === this.activeLink && acceptsLinkGesture(event) &&
++					identity(link) === identity(start.link) && overLink(event, link))
++					link.activate(event, link.text);
++			}).catch((error) => this.logError(error));
+ 		});
+ 	}
+ 	syncFromSource() {
+ 		let e = this.bufferSource;
+ 		if (!e || this.disposed) return;
+ 		let t = this.buffer.active, n = t.type, r = t.viewportY, i = e.changes();
+-		(this.activeLink || this.linkDecorations.length > 0) && this.clearActiveLink(), this.bufferValue.sync(e, i);
++		(this.activeLink || this.linkDecorations.length > 0) && this.clearActiveLink(void 0, true), this.bufferValue.sync(e, i);
+ 		let { state: a } = i;
+ 		a.screen === "normal" && this.reconcileMarkers(i.trimmed, i.reset);
+ 		let o = Math.max(0, this.rowsValue - 1), s = null;
+@@ -1241,14 +1277,14 @@ var V = class extends Error {
+ 			this.clearActiveLink(e);
+ 			return;
+ 		}
+-		if (this.activeLink && $(this.activeLink, t.x, t.y)) return;
++		if (this.activeLink && $(this.activeLink, t.x, t.y)) return this.activeLink;
+ 		this.clearActiveLink(e);
+ 		let n = ++this.linkRequest, r = [...this.linkProviders], i = this.osc8Link(t.x, t.y);
+ 		if (r.length === 0) {
+ 			i && (this.activeLink = i, i.hover?.(e, i.text), this.renderLinkDecorations(i));
+-			return;
++			return i;
+ 		}
+-		Promise.all(r.map((e) => new Promise((n) => {
++		return Promise.all(r.map((e) => new Promise((n) => {
+ 			try {
+ 				e.provideLinks(t.y, n);
+ 			} catch (e) {
+@@ -1263,6 +1299,7 @@ var V = class extends Error {
+ 			for (let e of r) if (a = e?.find((e) => $(e, t.x, t.y)), a) break;
+ 			for (let e of r) for (let t of e ?? []) t !== a && t.dispose?.();
+ 			a ??= i ?? void 0, a && (this.activeLink = a, a.hover?.(e, a.text), this.renderLinkDecorations(a));
++			return a;
+ 		});
+ 	}
+ 	osc8Link(e, t) {
+@@ -1318,14 +1355,15 @@ var V = class extends Error {
+ 			c.className = "xterm-link-decoration", c.style.left = `${(r - 1) * i}px`, c.style.top = `${(n - o + 1) * a - 1}px`, c.style.width = `${Math.max(1, s - r + 1) * i}px`, t.append(c), this.linkDecorations.push(c);
+ 		}
+ 	}
+-	clearActiveLink(e) {
++	clearActiveLink(e, preserveGesture = false) {
+ 		this.linkRequest += 1;
+ 		let t = this.activeLink;
+ 		if (t) {
+ 			let n = e ?? this.lastLinkEvent;
+ 			n && t.leave?.(n, t.text), t.dispose?.();
+ 		}
+-		this.activeLink = null, this.pointerDownLink = null, this.elementValue && (this.elementValue.style.cursor = "");
++		this.activeLink = null, this.elementValue && (this.elementValue.style.cursor = "");
++		if (!preserveGesture) this.pointerDownLink = null;
+ 		for (let e of this.linkDecorations.splice(0)) e.remove();
+ 	}
+ 	normalizeWrite(e) {

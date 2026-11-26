@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Component, createRef, useEffect, useImperativeHandle, useRef, useState, type MouseEvent as ReactMouseEvent, type Ref } from 'react';
 import { AnimatePresence, m, useIsPresent, useReducedMotion } from 'motion/react';
 import { menuMotion } from '../menu-motion';
 import { toast } from '../hooks/useToasts';
@@ -7,7 +7,6 @@ import { Tooltip } from './Tooltip';
 import { SHELL_TAB_TEST_ID, type AgentKind, type AgentState } from '@shared/agent-state';
 import { ShellTabDot } from './ShellTabDot';
 import { shellChipLabel } from '../shell-label';
-import { SplitPill } from './SplitPill';
 import { PlusIcon, StarFilledIcon, StarIcon, XIcon } from './shell-icons';
 import type { Project } from '@shared/types';
 import { PROJECT_SETTINGS_COPY } from '@renderer/project-settings-contract';
@@ -15,7 +14,16 @@ import { SHORTCUT_COPY } from '@renderer/shortcut-copy';
 import { useShortcutPlatform } from '@renderer/shortcut-platform';
 import { deriveProfileName } from '@renderer/cli-profile-name';
 import { ICON_SIZE } from './icon-size';
+import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
 
+/** Receives the confirmed local shell index before the strip's next membership update. */
+export type ShellLaunched = (shellIndex: number) => void;
+
+/** Connect actions outside the tab strip to the relevant chip animation. */
+export interface ShellTabMotion {
+  launchResult(): ShellLaunched | undefined;
+  beginClose(index: number): (() => void) | undefined;
+}
 
 /** A remote peer exposes profile labels and icons, but never its command or environment. */
 export interface ShellMenuProfile {
@@ -115,7 +123,7 @@ export function NewShellMenu({
     return (
       <m.div
         {...panelProps}
-        className="absolute top-full left-0 mt-1 z-40 w-80 rounded-md border border-[--border] bg-[--panel-strong] shadow-xl overflow-hidden p-3 space-y-2 text-xs"
+        className="new-shell-menu new-shell-menu-custom absolute mt-1 z-40 rounded-md border border-[--border] bg-[--panel-strong] shadow-xl overflow-hidden p-3 space-y-2 text-xs"
       >
         <div className="font-semibold text-sm">Run a custom command</div>
         <input
@@ -160,7 +168,7 @@ export function NewShellMenu({
   return (
     <m.div
       {...panelProps}
-      className="absolute top-full left-0 mt-1 z-40 w-72 rounded-md border border-[--border] bg-[--panel-strong] shadow-xl overflow-hidden"
+      className="new-shell-menu absolute mt-1 z-40 rounded-md border border-[--border] bg-[--panel-strong] shadow-xl overflow-hidden"
     >
       <div className="px-3 py-2 border-b border-[--border]">
         <div className="text-[10px] uppercase tracking-wider text-[--text-muted] font-semibold">
@@ -272,71 +280,243 @@ export interface ShellTabsBarItem {
   state?: AgentState;
 }
 
+interface ChipStripProps {
+  readonly projectId: number;
+  readonly shells: readonly ShellTabsBarItem[];
+  readonly active: number;
+  readonly reduced: boolean;
+  readonly onSelect: (idx: number) => void;
+  readonly onClose: (idx: number, cancelCloseMotion?: () => void) => void;
+  readonly renderDot?: (shell: ShellTabsBarItem, active: boolean) => React.ReactNode;
+}
+
+interface ChipSnapshot {
+  readonly viewport: DOMRect;
+  readonly boxes: Map<HTMLElement, DOMRect>;
+}
+
+const CHIP_ENTER_MS = 200;
+const CHIP_EXIT_MS = 180;
+const CHIP_REFLOW_MS = 160;
+const CHIP_OFFSET = 'translateY(6px)';
+const CHIP_FADE_EASING = 'cubic-bezier(0.33, 1, 0.68, 1)';
+
+function chipKey(shell: ShellTabsBarItem): string {
+  return `${shell.shellIndex}:${shell.startedAt}`;
+}
+
+/** Uses React's pre-commit snapshot to animate real chip positions without changing the flow layout. */
+class ChipStrip extends Component<ChipStripProps> {
+  private readonly scroller = createRef<HTMLDivElement>();
+  private readonly exits = createRef<HTMLDivElement>();
+  private readonly closing = new WeakMap<HTMLElement, number>();
+  private readonly slides = new Map<HTMLElement, Animation>();
+  private membershipRevision = 0;
+  private entry: { index: number; deadline: number } | null = null;
+
+  launchResult(): ShellLaunched {
+    this.entry = null;
+    const before = this.membershipRevision;
+    return index => {
+      // If the broadcast committed first, the launch index no longer identifies a safe entrance.
+      if (!this.scroller.current || before !== this.membershipRevision || this.props.shells.some(shell => shell.shellIndex === index)) return;
+      this.entry = { index, deadline: performance.now() + CHIP_ENTER_MS };
+    };
+  }
+
+  beginClose(index: number): (() => void) | undefined {
+    const chip = this.chips().find(node => node.dataset.shellIndex === String(index));
+    if (!chip) return;
+    this.closing.set(chip, (this.closing.get(chip) ?? 0) + 1);
+    return () => {
+      const pending = this.closing.get(chip) ?? 0;
+      if (pending > 1) this.closing.set(chip, pending - 1);
+      else this.closing.delete(chip);
+    };
+  }
+
+  private close(event: ReactMouseEvent<HTMLButtonElement>, index: number): void {
+    event.stopPropagation();
+    this.props.onClose(index, this.beginClose(index));
+  }
+
+  private chips(): HTMLElement[] {
+    return Array.from(this.scroller.current?.children ?? []).filter(node => node instanceof HTMLElement);
+  }
+
+  override getSnapshotBeforeUpdate(prev: ChipStripProps): ChipSnapshot | null {
+    const shells = this.props.shells;
+    if (prev.shells.length === shells.length && prev.shells.every((shell, i) => {
+      const next = shells[i];
+      return next && chipKey(shell) === chipKey(next);
+    })) return null;
+    const viewport = this.scroller.current?.getBoundingClientRect();
+    return viewport ? { viewport, boxes: new Map(this.chips().map(node => [node, node.getBoundingClientRect()])) } : null;
+  }
+
+  override componentDidUpdate(prev: ChipStripProps, _state: unknown, before: ChipSnapshot | null): void {
+    if (before || prev.reduced !== this.props.reduced) this.cancelSlides();
+    if (!before) return;
+    this.membershipRevision++;
+    const entry = this.entry;
+    this.entry = null;
+    const live = new Set(this.chips());
+    const added = [...live].filter(node => !before.boxes.has(node));
+    const removed = [...before.boxes].filter(([node]) => !live.has(node));
+    const [newChip] = added;
+    const enters = newChip && added.length === 1 && removed.length === 0 && entry &&
+      newChip.dataset.shellIndex === String(entry.index) && performance.now() <= entry.deadline;
+    if (enters) this.fade(newChip, false);
+
+    const closing = removed.filter(([node]) => this.closing.has(node));
+    for (const [node, box] of closing) {
+      this.closing.delete(node);
+      this.leave(node, box, before.viewport);
+    }
+    const onlyTabClose = closing.length > 0 && closing.length === removed.length && added.length === 0;
+    if (!this.props.reduced && (enters || onlyTabClose)) this.slide(live, before.boxes);
+  }
+
+  override componentWillUnmount(): void {
+    this.cancelSlides();
+  }
+
+  private fade(node: HTMLElement, exit: boolean): Animation {
+    const faded: Keyframe = { opacity: 0, ...(this.props.reduced ? {} : { transform: CHIP_OFFSET }) };
+    const shown: Keyframe = { opacity: 1, ...(this.props.reduced ? {} : { transform: 'none' }) };
+    return node.animate(exit ? [shown, faded] : [faded, shown], {
+      duration: exit ? CHIP_EXIT_MS : CHIP_ENTER_MS,
+      easing: CHIP_FADE_EASING,
+    });
+  }
+
+  private leave(node: HTMLElement, box: DOMRect, viewport: DOMRect): void {
+    const exits = this.exits.current;
+    if (!exits || box.right <= viewport.left || box.left >= viewport.right) return;
+    const frame = exits.getBoundingClientRect();
+    const ghost = node.cloneNode(true);
+    if (!(ghost instanceof HTMLElement)) return;
+    ghost.inert = true;
+    ghost.setAttribute('aria-hidden', 'true');
+    ghost.setAttribute('data-testid', 'shell-tab-leaving');
+    ghost.removeAttribute('data-shell-index');
+    // The live scroller can shrink past a closing chip; keep its old clipping bounds.
+    const clip = document.createElement('div');
+    Object.assign(clip.style, {
+      position: 'absolute', overflow: 'hidden',
+      left: `${viewport.left - frame.left}px`, top: `${viewport.top - frame.top}px`,
+      width: `${viewport.width}px`, height: `${viewport.height}px`,
+    });
+    Object.assign(ghost.style, {
+      position: 'absolute', left: `${box.left - viewport.left}px`, top: `${box.top - viewport.top}px`,
+      width: `${box.width}px`, height: `${box.height}px`,
+    });
+    clip.append(ghost);
+    exits.append(clip);
+    this.fade(ghost, true).onfinish = () => clip.remove();
+  }
+
+  private slide(live: Set<HTMLElement>, before: Map<HTMLElement, DOMRect>): void {
+    const offsets = [...live].map(node => {
+      const x = node.getBoundingClientRect().left;
+      return { node, dx: (before.get(node)?.left ?? x) - x };
+    });
+    for (const { node, dx } of offsets) {
+      if (Math.abs(dx) < 0.5) continue;
+      const animation = node.animate([{ transform: `translateX(${dx}px)` }, { transform: 'none' }], {
+        duration: CHIP_REFLOW_MS,
+        easing: getComputedStyle(node).getPropertyValue('--ease-out').trim(),
+      });
+      this.slides.set(node, animation);
+      animation.onfinish = () => this.slides.delete(node);
+    }
+  }
+
+  private cancelSlides(): void {
+    for (const animation of this.slides.values()) animation.cancel();
+    this.slides.clear();
+  }
+
+  override render(): React.ReactNode {
+    const { shells, active, projectId, onSelect, renderDot } = this.props;
+    return (
+      <div className="relative min-w-0">
+        <div ref={this.scroller} className="flex items-center gap-1 overflow-x-auto">
+          {shells.map((s) => {
+            const label = shellChipLabel(shells, s.shellIndex);
+            const isActive = s.shellIndex === active;
+            return (
+              <div
+                key={chipKey(s)}
+                data-testid={SHELL_TAB_TEST_ID}
+                data-shell-index={s.shellIndex}
+                className={`terminal-chip group flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-md cursor-pointer whitespace-nowrap
+                  ${isActive ? 'bg-[--surface-active]' : 'hover:bg-[--surface-hover]'}`}
+                onClick={() => onSelect(s.shellIndex)}
+              >
+                {renderDot ? renderDot(s, isActive) : <ShellTabDot projectId={projectId} shellIndex={s.shellIndex} isActive={isActive} />}
+                <span className={`${isActive ? 'text-[--text] font-medium' : 'text-[--text-muted]'}`}>{label}</span>
+                <Tooltip label={`Close ${label}`} wrapClassName="ml-0.5 opacity-0 group-hover:opacity-70 hover:opacity-100">
+                  <button
+                    onClick={e => this.close(e, s.shellIndex)}
+                    className="hover:text-[--danger] w-4 h-4 flex items-center justify-center rounded"
+                    aria-label={`Close ${label}`}
+                  >
+                    <XIcon />
+                  </button>
+                </Tooltip>
+              </div>
+            );
+          })}
+        </div>
+        <div ref={this.exits} className="pointer-events-none absolute inset-0" aria-hidden="true" />
+      </div>
+    );
+  }
+}
+
+/** The desktop strip owns membership motion and the new-shell menu, not shell activation or PTY lifetime. */
 export function ShellTabsBar({
   projectId, shells, active, onSelect, onClose,
   defaultCliName, onDefaultCliChanged, remoteMenu, renderDot,
   onLaunchProfile, onLaunchPlainTab, onLaunchCustom,
-  splitOn, onToggleSplit,
+  motionRef,
 }: {
   projectId: number;
   shells: readonly ShellTabsBarItem[];
   active: number;
   onSelect: (idx: number) => void;
-  onClose: (idx: number) => void;
+  onClose: ChipStripProps['onClose'];
   /** Current per-folder auto-launch CLI, forwarded to NewShellMenu's star toggle. */
   defaultCliName: string | null;
   onDefaultCliChanged?: (project: Project) => void;
   remoteMenu?: RemoteShellMenu;
   renderDot?: (shell: ShellTabsBarItem, active: boolean) => React.ReactNode;
-  onLaunchProfile: (name: string) => void;
-  onLaunchPlainTab: () => void;
-  onLaunchCustom: (name: string, cmdLine: string, save: boolean) => void;
-  /** True when the split view is active — the toggle icon reflects it. */
-  splitOn?: boolean;
-  onToggleSplit?: () => void;
+  onLaunchProfile: (name: string, onLaunched?: ShellLaunched) => void;
+  onLaunchPlainTab: (onLaunched?: ShellLaunched) => void;
+  onLaunchCustom: (name: string, cmdLine: string, save: boolean, onLaunched?: ShellLaunched) => void;
+  motionRef?: Ref<ShellTabMotion>;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const platform = useShortcutPlatform();
+  const strip = useRef<ChipStrip>(null);
+  useImperativeHandle(motionRef, () => ({
+    launchResult: () => strip.current?.launchResult(),
+    beginClose: index => strip.current?.beginClose(index),
+  }), []);
+  const reduced = usePrefersReducedMotion();
   return (
-    <div className="flex items-center gap-1 pl-2 pr-[14px] py-1 text-xs shrink-0 overflow-visible">
-      <div className="flex items-center gap-1 min-w-0 overflow-x-auto">
-        {shells.map((s) => {
-          // Show the name of the running CLI (e.g. "Claude", "Llama", "Terminal").
-          const label = shellChipLabel(shells, s.shellIndex);
-          const isActive = s.shellIndex === active;
-          return (
-            <div
-              key={s.shellIndex}
-              data-testid={SHELL_TAB_TEST_ID}
-              data-shell-index={s.shellIndex}
-              className={`group flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-md cursor-pointer whitespace-nowrap
-                ${isActive ? 'bg-[--surface-active]' : 'hover:bg-[--surface-hover]'}`}
-              onClick={() => onSelect(s.shellIndex)}
-            >
-              {renderDot ? renderDot(s, isActive) : <ShellTabDot projectId={projectId} shellIndex={s.shellIndex} isActive={isActive} />}
-              <span className={`${isActive ? 'text-[--text] font-medium' : 'text-[--text-muted]'}`}>{label}</span>
-              <Tooltip label={`Close ${label}`} wrapClassName="ml-0.5 opacity-0 group-hover:opacity-70 hover:opacity-100">
-                <button
-                  onClick={(e) => { e.stopPropagation(); onClose(s.shellIndex); }}
-                  className="hover:text-[--danger] w-4 h-4 flex items-center justify-center rounded"
-                  aria-label={`Close ${label}`}
-                >
-                  <XIcon />
-                </button>
-              </Tooltip>
-            </div>
-          );
-        })}
-      </div>
+    <div className="shell-tabs-bar no-drag flex min-w-0 max-w-full items-center gap-1 px-[14px] text-xs">
+      <ChipStrip ref={strip} {...{ projectId, shells, active, reduced, onSelect, onClose, renderDot }} />
       {/* Add button sits right after the chips, outside their scroller so it never scrolls away. Click opens a
           menu of CLIs; the selected one is added as another tab. To put it
           in its own window instead, use the popout icon in the top toolbar
           (it moves the currently-active tab out). */}
-      <div className="relative shrink-0">
+      <div className="shrink-0">
         <Tooltip label="Add a shell" shortcut={SHORTCUT_COPY.newTerminalHint(platform)}>
           <button
             onClick={() => setMenuOpen((v) => !v)}
-            className="text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel-strong]"
+            className="new-shell-trigger text-[--text-muted] hover:text-[--text] w-6 h-6 flex items-center justify-center rounded hover:bg-[--panel-strong]"
             data-testid="tabbar-new-shell"
           >
             <PlusIcon size={ICON_SIZE.sm} />
@@ -350,19 +530,17 @@ export function ShellTabsBar({
             defaultCliName={defaultCliName}
             remoteMenu={remoteMenu}
             onDefaultChanged={onDefaultCliChanged}
-            onLaunchProfile={(name) => { setMenuOpen(false); onLaunchProfile(name); }}
-            onLaunchPlainTab={() => { setMenuOpen(false); onLaunchPlainTab(); }}
+            onLaunchProfile={(name) => { setMenuOpen(false); onLaunchProfile(name, strip.current?.launchResult()); }}
+            onLaunchPlainTab={() => { setMenuOpen(false); onLaunchPlainTab(strip.current?.launchResult()); }}
             onLaunchCustom={(name, cmdLine, save) => {
               setMenuOpen(false);
-              onLaunchCustom(name, cmdLine, save);
+              onLaunchCustom(name, cmdLine, save, strip.current?.launchResult());
             }}
             onClose={() => setMenuOpen(false)}
           />
           )}
         </AnimatePresence>
       </div>
-      <div className="flex-1" />
-      {onToggleSplit && <SplitPill on={splitOn ?? false} onToggle={onToggleSplit} />}
     </div>
   );
 }

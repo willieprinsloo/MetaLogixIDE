@@ -21,7 +21,14 @@ export function reducedMotionStore(matchMedia: (query: string) => ChangeList) {
   };
 }
 
-const windowStore = typeof window === 'undefined' ? null : reducedMotionStore((q) => window.matchMedia(q));
+// jsdom-based unit tests may stub matchMedia AFTER this module loads (vi.stubGlobal). Keep the matchMedia
+// lookup lazy inside the closure so a later stub takes effect; swallow the TypeError that happens when
+// matchMedia is still missing when the hook actually runs (older jsdom without the API, no stub set).
+const windowStore = typeof window === 'undefined' ? null : reducedMotionStore((q) => {
+  const mm = typeof window.matchMedia === 'function' ? window.matchMedia : null;
+  if (mm) return mm.call(window, q);
+  return { matches: false, addEventListener: () => {}, removeEventListener: () => {} };
+});
 const never = () => () => undefined;
 
 /**

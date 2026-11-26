@@ -101,8 +101,6 @@ const SURFACES: ReadonlyArray<readonly [string, (p: ShortcutPlatform) => string]
           onLaunchProfile={noop}
           onLaunchPlainTab={noop}
           onLaunchCustom={noop}
-          splitOn={false}
-          onToggleSplit={noop}
         />,
       ),
   ],

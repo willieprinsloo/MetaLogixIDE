@@ -1,4 +1,4 @@
-/** Fans authenticated hooks to main-only notification consumers; no listener can change status dots. */
+/** Fans authenticated hooks to main-only consumers (notifications, the activity log), each isolated from the others; no listener can change status dots. */
 import type { HookListener, ReceivedHook } from './receiver';
 
 /** Anything that accepts one hook listener, such as `ClaudeHookReceiver`. */

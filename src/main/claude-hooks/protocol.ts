@@ -1,7 +1,5 @@
 /**
- * Wire names shared by the generated hook settings file and the receiver:
- * the POST path, the shell-id header and the env vars Claude interpolates
- * into the headers.
+ * Wire names for the local command forwarder, its launch environment and the receiver.
  */
 
 /** Path the hooks POST to. */
@@ -15,3 +13,8 @@ export const SHELL_ENV = 'METAIDE_HOOK_SHELL';
 
 /** PTY env var holding the per-spawn secret token. */
 export const TOKEN_ENV = 'METAIDE_HOOK_TOKEN';
+
+/** Forwarder paths and the private endpoint belonging to the originating IDE instance. */
+export const FORWARDER_ENV = 'METAIDE_HOOK_FORWARDER';
+export const EXECUTABLE_ENV = 'METAIDE_HOOK_EXE';
+export const ENDPOINT_ENV = 'METAIDE_HOOK_ENDPOINT';

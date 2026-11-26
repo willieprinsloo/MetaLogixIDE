@@ -13,3 +13,6 @@ test-results/
 
 # Local worktrees for feature integration
 .worktrees/
+
+# Mobile probe scratch (from Frits's mobile app work)
+.probe-tmp.mjs

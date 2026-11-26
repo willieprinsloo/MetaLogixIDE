@@ -28,6 +28,7 @@ import type { HookSession, ShellKey } from './session-registry';
 export interface LaunchDecoratorDeps {
   sessions: { issue(shell: ShellKey): HookSession; release(shell: ShellKey): void };
   settingsPath: () => string | null;
+  forwarderEnv?: () => Readonly<Record<string, string>>;
   platform?: NodeJS.Platform;
   goesThroughCmd?: (argv: string[]) => boolean;
 }
@@ -65,7 +66,7 @@ export function createLaunchDecorator(deps: LaunchDecoratorDeps): SpawnDecorator
     return {
       ...launch,
       argv: [bin!, '--settings', settingsPath, ...rest],
-      env: { ...launch.env, [SHELL_ENV]: session.id, [TOKEN_ENV]: session.token },
+      env: { ...launch.env, ...deps.forwarderEnv?.(), [SHELL_ENV]: session.id, [TOKEN_ENV]: session.token },
     };
   };
 }
