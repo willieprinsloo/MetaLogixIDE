@@ -75,7 +75,12 @@ export async function createBoardProfile(): Promise<BoardProfile> {
       app = await _electron.launch({
         executablePath: executable,
         cwd: process.cwd(),
-        timeout: 15_000,
+        // 15s was snug on Electron 32 and times out on Electron 43 —
+        // the debugger attaches, then metaIDE's migrations + settings
+        // open push past the deadline on a loaded workstation. The
+        // outer 45s LAUNCH_BUDGET_MS still catches the truly wedged
+        // case; 30s here just gives the app a realistic warm-up.
+        timeout: 30_000,
         args: [
           '.',
           `--user-data-dir=${userData}`,
