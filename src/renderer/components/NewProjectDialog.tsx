@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { AssignmentChoices } from '@renderer/metaproject/AssignmentPanel';
+import { folderFromUrl, useNewProject } from '@renderer/metaproject/useNewProject';
+import { AccountStatus, SignedInPersistenceWarning } from '@renderer/metaproject/session';
 import type { Project, Root } from '@shared/types';
-import { api } from '@renderer/api';
 import { ModalFrame } from '@renderer/components/ModalFrame';
 import { ICON_SIZE, ICON_STROKE } from './icon-size';
 import { Tooltip } from './Tooltip';
@@ -13,181 +14,79 @@ interface Props {
   onCreated: (p: Project) => void;
 }
 
-const NAME_RE = /^[A-Za-z0-9._-][A-Za-z0-9._ -]*$/;
-function isValidName(n: string): boolean { return NAME_RE.test(n) && n !== '.' && n !== '..'; }
-
-type Mode = 'empty' | 'clone';
-type MpMode = 'none' | 'link' | 'create';
-interface MpProject { id: number; name: string; identifier?: string | null }
-
-/** Best-effort folder name from a git URL: strips `.git`, takes last path segment. */
-function folderFromUrl(url: string): string {
-  const trimmed = url.trim().replace(/\.git$/, '').replace(/[/:]$/, '');
-  const last = trimmed.split(/[/:]/).pop() ?? '';
-  return last;
+/** Creates a local folder first, with optional assignment via the shared account. */
+export function NewProjectDialog({ open, ...props }: Props) {
+  return open ? <NewProjectForm {...props} /> : null;
 }
 
-export function NewProjectDialog({ open, roots, defaultRootId, onClose, onCreated }: Props) {
-  // Kind of project being created + folder / url inputs.
-  const [mode, setMode] = useState<Mode>('empty');
-  const [name, setName] = useState('');
-  const [gitUrl, setGitUrl] = useState('');
-  const [rootId, setRootId] = useState<number | null>(null);
-  const [initGit, setInitGit] = useState(true);
-  // Metaproject wiring — none / pick existing / create new (with picker).
-  const [mpMode, setMpMode] = useState<MpMode>('none');
-  const [mpProjects, setMpProjects] = useState<MpProject[]>([]);
-  const [mpSelectedId, setMpSelectedId] = useState<number | null>(null);
-  const [mpNewName, setMpNewName] = useState('');
-  const [mpLoggedIn, setMpLoggedIn] = useState(false);
-  // General dialog state.
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [savingStep, setSavingStep] = useState<string>('');
+function NewProjectForm({ roots, defaultRootId, onClose, onCreated }: Omit<Props, 'open'>) {
+  const form = useNewProject(roots, defaultRootId, onCreated);
+  const { saving, created, error, canDismiss, cancel } = form;
+  const dismiss = () => { if (canDismiss) { cancel(); onClose(); } };
 
-  useEffect(() => {
-    if (!open) return;
-    setMode('empty');
-    setName('');
-    setGitUrl('');
-    setInitGit(true);
-    setMpMode('none');
-    setMpProjects([]);
-    setMpSelectedId(null);
-    setMpNewName('');
-    setError(null);
-    setSaving(false);
-    setSavingStep('');
-    if (defaultRootId != null && roots.some((r) => r.id === defaultRootId)) setRootId(defaultRootId);
-    else setRootId(roots[0]?.id ?? null);
-    // Check whether we can offer metaproject link/create at all.
-    (async () => {
-      try {
-        const s = await api.invoke('metaproject:status', undefined as never);
-        setMpLoggedIn(!!s.loggedIn);
-      } catch { setMpLoggedIn(false); }
-    })();
-  }, [open, defaultRootId, roots]);
-
-  // When mpMode flips to 'link', lazily load the project list once.
-  useEffect(() => {
-    if (mpMode !== 'link' || mpProjects.length > 0) return;
-    (async () => {
-      try {
-        const { projects } = await api.invoke('metaproject:list-projects', undefined as never);
-        setMpProjects(projects);
-      } catch (e) {
-        setError(`Failed to load metaproject projects: ${String(e).replace(/^Error:\s*/, '')}`);
-      }
-    })();
-  }, [mpMode, mpProjects.length]);
-
-  // Effective folder name: for clone mode, prefer explicit name, else derive.
-  const effectiveName = useMemo(() => {
-    if (mode === 'empty') return name.trim();
-    return (name.trim() || folderFromUrl(gitUrl)).trim();
-  }, [mode, name, gitUrl]);
-
-  const nameOk = useMemo(() => !!effectiveName && isValidName(effectiveName), [effectiveName]);
-  const gitOk = mode === 'empty' || (gitUrl.trim().length > 0 && /^(https?:\/\/|git@|ssh:\/\/|git:\/\/)/i.test(gitUrl.trim()));
-  const mpOk = mpMode !== 'create' || mpNewName.trim().length > 0;
-  const mpLinkOk = mpMode !== 'link' || mpSelectedId != null;
-  const canSubmit = nameOk && rootId != null && gitOk && mpOk && mpLinkOk && !saving;
-
-  async function submit() {
-    if (!canSubmit || rootId == null) return;
-    setSaving(true);
-    setError(null);
-    let project: Project | null = null;
-    try {
-      // Step 1 — create the local project (either empty init or git clone).
-      if (mode === 'empty') {
-        setSavingStep('Creating project…');
-        const res = await api.invoke('projects:create', { rootId, name: effectiveName, initGit });
-        project = res.project;
-      } else {
-        setSavingStep(`Cloning ${gitUrl.trim()}…`);
-        const res = await api.invoke('projects:clone-git', { rootId, url: gitUrl.trim(), name: effectiveName });
-        project = res.project;
-      }
-      // Step 2 — optional metaproject wiring.
-      if (project && mpMode === 'link' && mpSelectedId != null) {
-        setSavingStep('Linking to metaproject…');
-        await api.invoke('metaproject:link-local-project', { projectId: project.id, metaprojectProjectId: mpSelectedId });
-      } else if (project && mpMode === 'create') {
-        setSavingStep('Creating metaproject board…');
-        const { project: mp } = await api.invoke('metaproject:create-project', { name: mpNewName.trim() });
-        await api.invoke('metaproject:link-local-project', { projectId: project.id, metaprojectProjectId: mp.id });
-      }
-      if (project) {
-        onCreated(project);
-        onClose();
-      }
-    } catch (e) {
-      setError(String(e).replace(/^Error:\s*/, ''));
-      setSaving(false);
-      setSavingStep('');
-    }
-  }
-
-  if (!open) return null;
   return (
     <ModalFrame
       testId="new-project-dialog"
       tier="modal"
       motion="fade"
       layerClassName="flex items-center justify-center"
-      onDismiss={onClose}
+      onDismiss={canDismiss ? dismiss : undefined}
     >
-      <div className="modal-panel modal-sheet w-[560px] max-w-[92vw] overflow-hidden">
+      <div className="modal-panel modal-sheet w-[560px] max-w-[92vw] max-h-[95vh] overflow-auto" onKeyDown={(event) => {
+        if (event.key === 'Escape' && canDismiss) { event.stopPropagation(); dismiss(); }
+      }}>
         <div className="px-5 py-4 border-b border-[--border] flex items-center justify-between">
           <div className="font-semibold">New project</div>
           <Tooltip label="Close new-project dialog" shortcut="Esc">
-            <button onClick={onClose} className="text-[--modal-text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel]" aria-label="Close new-project dialog">
+            <button onClick={dismiss} disabled={!canDismiss} className="text-[--modal-text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel] disabled:opacity-50 disabled:cursor-not-allowed" aria-label="Close new-project dialog">
               <XCloseIcon />
             </button>
           </Tooltip>
         </div>
 
-        {/* Mode segmented control */}
-        <div className="px-5 pt-4">
+        <fieldset disabled={saving || !!created}>
+          <LocalModePicker local={form.local} />
+          <div className="p-5 space-y-4">
+            <LocalProjectFields local={form.local} roots={roots} submit={form.submit} />
+            {!created && <WiringFields wiring={form.wiring} effectiveName={form.local.effectiveName} />}
+            {created && <SignedInPersistenceWarning />}
+          </div>
+        </fieldset>
+        {error && <div role="alert" className="text-sm text-[--danger] bg-[--danger]/10 border border-[--danger]/30 rounded-md mx-5 mb-4 px-2 py-1.5">{error}</div>}
+        <NewProjectActions form={form} dismiss={dismiss} />
+      </div>
+    </ModalFrame>
+  );
+}
+
+type Form = ReturnType<typeof useNewProject>;
+
+function LocalModePicker({ local: { mode, update } }: { local: Form['local'] }) {
+  return <div className="px-5 pt-4">
           <div className="inline-flex rounded-md border border-[--border] p-0.5 bg-[--panel]/50 text-xs">
             <button
-              onClick={() => setMode('empty')}
+              onClick={() => update({ mode: 'empty' })}
               className={`px-3 py-1 rounded-md ${mode === 'empty' ? 'bg-[color:var(--accent)] text-[--accent-text]' : 'text-[--modal-text-muted] hover:text-[--text]'}`}
               data-testid="mode-empty"
             >
               Empty folder
             </button>
             <button
-              onClick={() => setMode('clone')}
+              onClick={() => update({ mode: 'clone' })}
               className={`px-3 py-1 rounded-md ${mode === 'clone' ? 'bg-[color:var(--accent)] text-[--accent-text]' : 'text-[--modal-text-muted] hover:text-[--text]'}`}
               data-testid="mode-clone"
             >
               Clone git repo
             </button>
           </div>
-        </div>
+        </div>;
+}
 
-        <div className="p-5 space-y-4">
-          {mode === 'clone' && (
-            <Field label="Git URL" hint="HTTPS, SSH, or git@… — anything the system `git clone` accepts.">
-              <input
-                autoFocus
-                value={gitUrl}
-                onChange={(e) => setGitUrl(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}
-                placeholder="git@github.com:owner/repo.git"
-                className="w-full font-mono bg-[--panel] text-[--text] border border-[--border] rounded-md px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-[--accent]/60"
-                data-testid="new-project-git-url"
-              />
-              {gitUrl && !gitOk && (
-                <div className="text-xs text-[--danger] mt-1">
-                  Expected an https://, ssh://, git://, or git@… URL.
-                </div>
-              )}
-            </Field>
-          )}
+function LocalProjectFields({ local, roots, submit }: { local: Form['local']; roots: Root[]; submit: Form['submit'] }) {
+  const { mode, name, gitUrl, initGit, nameOk, update } = local;
+  const cloning = mode === 'clone';
+  return <>
+          {cloning && <CloneUrlField local={local} />}
 
           <Field
             label="Folder name"
@@ -196,39 +95,27 @@ export function NewProjectDialog({ open, roots, defaultRootId, onClose, onCreate
             <input
               autoFocus={mode === 'empty'}
               value={name}
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') void submit(); if (e.key === 'Escape') onClose(); }}
-              placeholder={mode === 'clone' ? (gitUrl ? folderFromUrl(gitUrl) || 'my-new-project' : 'my-new-project') : 'my-new-project'}
+              onChange={(e) => update({ name: e.target.value })}
+              onKeyDown={(e) => { if (e.key === 'Enter') void submit(); }}
+              placeholder={(cloning && folderFromUrl(gitUrl)) || 'my-new-project'}
               className="w-full bg-[--panel] text-[--text] border border-[--border] rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-[--accent]/60"
               data-testid="new-project-name"
             />
-            {(mode === 'empty' && name && !nameOk) || (mode === 'clone' && !nameOk && (name || gitUrl)) ? (
+            {!nameOk && (name || (cloning && gitUrl)) ? (
               <div className="text-xs text-[--danger] mt-1">
                 Use letters, digits, dot, dash, underscore, or spaces. Must start with a letter or digit.
               </div>
             ) : null}
           </Field>
 
-          <Field label="Root" hint="Parent folder. Add more roots in Settings.">
-            <select
-              value={rootId ?? ''}
-              onChange={(e) => setRootId(Number(e.target.value))}
-              className="w-full bg-[--panel] text-[--text] border border-[--border] rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-[--accent]/60"
-              data-testid="new-project-root"
-            >
-              {roots.length === 0 && <option value="">No roots yet — add one in Settings</option>}
-              {roots.map((r) => (
-                <option key={r.id} value={r.id}>{r.path}</option>
-              ))}
-            </select>
-          </Field>
+          <RootField roots={roots} local={local} />
 
           {mode === 'empty' && (
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
                 checked={initGit}
-                onChange={(e) => setInitGit(e.target.checked)}
+                onChange={(e) => update({ initGit: e.target.checked })}
                 className="accent-[--accent]"
                 data-testid="new-project-git"
               />
@@ -236,63 +123,70 @@ export function NewProjectDialog({ open, roots, defaultRootId, onClose, onCreate
             </label>
           )}
 
-          {/* Metaproject board wiring — only when the user is signed in;
-              otherwise we hide the whole section rather than lie about it. */}
-          {mpLoggedIn && (
-            <div className="space-y-2 pt-2 border-t border-[--border]">
+  </>;
+}
+
+function CloneUrlField({ local: { gitUrl, gitOk, update } }: { local: Form['local'] }) {
+  return <Field label="Git URL" hint="HTTPS, SSH, or git@… — anything the system `git clone` accepts.">
+    <input autoFocus value={gitUrl} onChange={(e) => update({ gitUrl: e.target.value })} placeholder="git@github.com:owner/repo.git"
+      className="w-full font-mono bg-[--panel] text-[--text] border border-[--border] rounded-md px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-[--accent]/60"
+      data-testid="new-project-git-url" />
+    {gitUrl && !gitOk && <div className="text-xs text-[--danger] mt-1">Expected an https://, ssh://, git://, or git@… URL.</div>}
+  </Field>;
+}
+
+function RootField({ roots, local: { rootId, update } }: { roots: Root[]; local: Form['local'] }) {
+  return <Field label="Root" hint="Parent folder. Add more roots in Settings.">
+    <select value={rootId ?? ''} onChange={(e) => update({ rootId: Number(e.target.value) })}
+      className="w-full bg-[--panel] text-[--text] border border-[--border] rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-[--accent]/60"
+      data-testid="new-project-root">
+      {roots.length === 0 && <option value="">No roots yet — add one in Settings</option>}
+      {roots.map((r) => <option key={r.id} value={r.id}>{r.path}</option>)}
+    </select>
+  </Field>;
+}
+
+function WiringFields({ wiring, effectiveName }: { wiring: Form['wiring']; effectiveName: string }) {
+  const { signedIn, mode, name, selected, choices, retryList, update, onSignIn } = wiring;
+  return <div className="space-y-2 pt-2 border-t border-[--border]">
               <div className="text-[10px] uppercase tracking-wider font-semibold text-[--modal-text-muted]">Metaproject board</div>
-              <div className="flex items-center gap-3 text-xs">
-                <RadioPill checked={mpMode === 'none'}   onSelect={() => setMpMode('none')}>None</RadioPill>
-                <RadioPill checked={mpMode === 'link'}   onSelect={() => setMpMode('link')}>Link existing</RadioPill>
-                <RadioPill checked={mpMode === 'create'} onSelect={() => { setMpMode('create'); if (!mpNewName) setMpNewName(effectiveName); }}>Create new</RadioPill>
-              </div>
-              {mpMode === 'link' && (
-                <div>
-                  <select
-                    value={mpSelectedId ?? ''}
-                    onChange={(e) => setMpSelectedId(Number(e.target.value) || null)}
-                    className="w-full bg-[--panel] text-[--text] border border-[--border] rounded-md px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-[--accent]/60"
-                    data-testid="mp-link-select"
-                  >
-                    <option value="">— Choose a project —</option>
-                    {mpProjects.map((p) => (
-                      <option key={p.id} value={p.id}>{p.name}{p.identifier ? `  (${p.identifier})` : ''}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-              {mpMode === 'create' && (
+              {signedIn ? <><SignedInPersistenceWarning /><div className="flex flex-wrap items-center gap-3 text-xs">
+                <RadioPill checked={mode === 'none'} onSelect={() => update({ mode: 'none' })}>None</RadioPill>
+                <RadioPill checked={mode === 'link'} onSelect={() => update({ mode: 'link' })}>Link existing</RadioPill>
+                <RadioPill checked={mode === 'create'} onSelect={() => update({ mode: 'create', name: name || effectiveName })}>Create new</RadioPill>
+              </div></> : <AccountStatus onSignIn={onSignIn} />}
+              {mode === 'link' && <AssignmentChoices choices={choices} onRetry={retryList} selected={selected}
+                onSelect={(remoteId) => update({ remoteId })} />}
+              {mode === 'create' && (
                 <div>
                   <input
-                    value={mpNewName}
-                    onChange={(e) => setMpNewName(e.target.value)}
+                    aria-label="New Metaproject project name" maxLength={255}
+                    value={name}
+                    onChange={(e) => update({ name: e.target.value })}
                     placeholder="Metaproject name (defaults to folder name)"
                     className="w-full bg-[--panel] text-[--text] border border-[--border] rounded-md px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-[--accent]/60"
                     data-testid="mp-create-name"
                   />
                 </div>
               )}
-              {mpMode !== 'none' && (
+              {mode !== 'none' && (
                 <div className="text-[10px] text-[--modal-text-muted]">
-                  Writes <code className="font-mono">project_id</code> to <code className="font-mono">.metaproject.yaml</code> so the sidebar Board button and Chat pane light up automatically.
+                  Saves the assignment for this folder in <code className="font-mono">.metaproject.yaml</code>.
                 </div>
               )}
-            </div>
-          )}
+            </div>;
+}
 
-          {error && (
-            <div className="text-sm text-[--danger] bg-[--danger]/10 border border-[--danger]/30 rounded-md px-2 py-1.5">{error}</div>
-          )}
-        </div>
-
-        <div className="px-5 py-3 border-t border-[--border] bg-[--panel]/50 flex items-center justify-end gap-2">
+function NewProjectActions({ form, dismiss }: { form: Form; dismiss: () => void }) {
+  const { local: { mode }, saving, savingStep, created, canDismiss, canSubmit, submit } = form;
+  return <div className="px-5 py-3 border-t border-[--border] bg-[--panel]/50 flex items-center justify-end gap-2">
           {saving && savingStep && (
             <span className="text-[11px] text-[--modal-text-muted] mr-auto flex items-center gap-2">
               <span className="mp-spinner" aria-hidden />
               {savingStep}
             </span>
           )}
-          <button onClick={onClose} disabled={saving} className="text-sm px-3 py-1.5 rounded-md hover:bg-[--panel-strong] disabled:opacity-50">Cancel</button>
+          <button onClick={dismiss} disabled={!canDismiss} className="text-sm px-3 py-1.5 rounded-md hover:bg-[--panel-strong] disabled:opacity-50">Cancel</button>
           <button
             onClick={submit}
             disabled={!canSubmit}
@@ -301,12 +195,9 @@ export function NewProjectDialog({ open, roots, defaultRootId, onClose, onCreate
             }`}
             data-testid="new-project-create"
           >
-            {saving ? 'Working…' : (mode === 'clone' ? 'Clone' : 'Create')}
+            {saving ? 'Working…' : created ? 'Open local project' : mode === 'clone' ? 'Clone' : 'Create'}
           </button>
-        </div>
-      </div>
-    </ModalFrame>
-  );
+        </div>;
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {

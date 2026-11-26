@@ -73,6 +73,11 @@
   --terminal-live-text-muted: var(--terminal-strong-text-muted);
 }
 
+:root[data-platform][data-terminal-frost="custom"] {
+  --terminal-live-alpha: var(--terminal-opacity-preview, calc(attr(data-terminal-frost-opacity type(<number>), 70) / 100));
+  --terminal-pane-live-alpha: var(--terminal-live-alpha);
+}
+
 /* Chrome labels and indicators are lifted (D2, D16, D17) and selection, badge and field fills become opaque chips (D11, D15), so none depends on the material.
  * --text and the accent glyph token --accent-mark fall back to the palette, so they move only where a level block declares a lift (glass-settings D17, D18). */
 :root[data-platform] [data-chrome-root] {

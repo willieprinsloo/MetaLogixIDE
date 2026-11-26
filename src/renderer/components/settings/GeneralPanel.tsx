@@ -27,6 +27,8 @@ import {
 import { ACTIVITY_LOG_COPY, ACTIVITY_LOG_SETTING, ACTIVITY_LOG_TESTIDS } from '@renderer/activity-log-contract';
 import { PaletteCards } from '@renderer/components/settings/PaletteCards';
 import { ModeControl } from '@renderer/components/settings/ModeControl';
+import { TerminalEngineControl } from './TerminalEngineControl';
+import { TerminalPaddingControl } from './TerminalPaddingControl';
 
 /** General settings board: Appearance, Fonts, Workspace and Notifications sections. The only General component reading the theme and settings; the sections below it are presentational. */
 export function GeneralPanel({
@@ -52,6 +54,11 @@ export function GeneralPanel({
         {frostPlatform !== null && <FrostedGlassGroup platform={frostPlatform} />}
       </AppearanceSection>
       <FontSettingsControls discovery={fontDiscovery} onLoadInstalledFonts={onLoadInstalledFonts} />
+      <SettingsSection title="Terminal">
+        <TerminalEngineControl />
+        <TerminalPaddingControl axis="horizontal" />
+        <TerminalPaddingControl axis="vertical" />
+      </SettingsSection>
       <WorkspaceSection
         cap={board.cap}
         scanDepth={board.scanDepth}
@@ -147,7 +154,7 @@ export async function loadBoard(): Promise<BoardValues> {
   };
 }
 
-/** Board settings state: loads the eight keys once, `update` sets a value locally and saves it, `applyOpacity` clamps to 30..100 and applies window opacity. The Frosted glass group owns its own four settings through `useFrostedGlassSettings`. */
+/** Board settings state: loads the nine keys once, `update` sets a value locally and saves it, `applyOpacity` clamps to 30..100 and applies window opacity. The Frosted glass group owns its own four settings through `useFrostedGlassSettings`. */
 export function useBoardSettings() {
   const [values, setValues] = useState<BoardValues>(INITIAL);
 

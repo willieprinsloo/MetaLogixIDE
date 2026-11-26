@@ -74,7 +74,7 @@ const DRIVERS: Record<string, { open: (win: Page) => Promise<void>; close: (win:
   },
   'shortcuts-help': { open: (w) => w.keyboard.press('ControlOrMeta+/'), close: (w) => w.keyboard.press('Escape') },
   'unload-session': {
-    open: (w) => w.getByTestId('unload-current').click(),
+    open: (w) => w.getByTestId('section-in-use').getByTestId('row-unload').click(),
     close: (w) => w.getByTestId(UNLOAD_SESSION_TESTIDS.keep).click(),
   },
 };

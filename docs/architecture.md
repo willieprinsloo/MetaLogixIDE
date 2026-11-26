@@ -55,7 +55,50 @@ relay and device settings live in Settings → P2P
 in the sidebar's machine switcher (see **Machine switcher** below) and in the
 Fleet view; a remote project opens in `RemoteProjectPane`, whose terminals
 are `ShellTab` with a remote source (`src/renderer/components/RemoteMachineList.tsx`,
-`FleetView.tsx`, `RemoteProjectPane.tsx`). The fleet list
+`FleetView.tsx`, `RemoteProjectPane.tsx`). Remote and local workspaces share
+the `WorkspaceDestinations` controls, but remote navigation and data requests
+are scoped to the paired device and its project ID. Returning to Shell restores
+the selected running session; a fleet notice selects its shell. Shell session
+tabs are polled from `shells.alive` while Shell is visible and use the same
+labels as local sessions (`src/shared/shell-launch-name.ts`). Remote shell
+sessions can be viewed and switched, not added or closed from the tab strip.
+
+Remote Files supports browsing, source previews, text editing and ordinary
+file/folder operations on the host. Binary and rich previews, local file
+reveal, and desktop drag-out are not available in this view. Diff displays
+the host's staged, unstaged and untracked changes without changing Git state.
+Settings displays and changes the default agent only; it does not display
+environment values or replace legacy custom commands. Activity shows the
+host timeline when the host enables logging. Its file links open in the same
+remote workspace. Older hosts keep their existing Shell support and report
+that the workspace is unavailable.
+
+The `workspace.*` catalog (`src/shared/p2p-workspace-contract.ts`) is separate
+from local IPC. On the host, enable **Allow workspace access** for the paired
+desktop under Settings → P2P. Pairing alone does not grant workspace access,
+and the viewing desktop does not need to accept incoming connections.
+Turning the grant off blocks subsequent workspace requests without closing
+Shell. Viewer-only clients such as the mobile app are not eligible.
+
+`src/main/p2p/workspace.ts` resolves project IDs on the host, validates paths
+against the project root, protects Git metadata, the Activity log, and launch
+configuration from remote mutations, and bounds responses. New File refuses
+an existing name; ordinary saves preserve POSIX permission bits and refuse
+to replace symlinks. Path checks are not an OS sandbox against concurrent
+host-side changes. Settings responses include only agent names and a flag
+for legacy commands. The host checks its Activity switch on each workspace
+timeline request.
+
+Remote workspace access is unavailable for projects that overlap host
+application storage (including logs and crash dumps), contain another
+registered project, or overlap another project's Activity or launch files
+through filesystem aliases. A project's own Activity and launch resources
+must also resolve within that project's root. Open an eligible nested project
+directly instead.
+This restriction applies to workspace tabs, not to the existing Shell or
+legacy file APIs.
+
+The fleet list
 (`p2p:fleet-list`) holds paired machines only and never sets
 `FleetEntry.self`, so the renderer adds this machine itself. A host's
 `shells.alive` reply carries each shell's `agentState` (idle, busy, blocked
@@ -63,6 +106,25 @@ or null; absent from older hosts), which tints that machine's switcher dot
 (`src/main/p2p/hub.ts`). See
 `docs/superpowers/specs/2026-10-26-metaide-p2p-design.md` for the protocol,
 identity and pairing design.
+
+The mobile app in `mobile/` is a viewer-only fleet member. `mobile/src/core`
+ports the viewer half of `src/main/p2p` (relay client, Noise initiator, secure
+channel, RPC client), written with Effect v4 (see `mobile/README.md`), and `mobile/src/core/__tests__/interop.test.ts` runs it
+against the host code here, so a wire change that breaks the phone fails
+`pnpm test`. It pairs like any machine but sends `viewer: true` and no connect code in the
+pairing hello. The host records that in `known_devices.json`, and
+`fleet()` flags the entry `viewer` (also for any device with no connect code,
+since nothing can dial it). `useFleet` returns such devices under `devices`
+only, so the machine switcher, Fleet view and shared In use never show them;
+Settings → P2P still lists them, marked "viewer only", so they can be revoked.
+Auto-dial skips them too.
+
+The pairing window also draws a QR code for the phone
+(`src/renderer/components/settings/PairQr.tsx`). It encodes
+`metaide://pair?code=…&relay=…&port=…` from `src/shared/pair-link.ts`: the
+connect code already on screen plus this machine's relay, nothing secret. The
+mobile parser is `mobile/src/core/pairLink.ts`, and the interop test feeds it
+what `buildPairLink` produces.
 
 ### Main-process responsiveness
 
@@ -76,6 +138,19 @@ stay cheap and must never wait on a child process.
   (`src/main/pty/manager.ts`). Each event becomes one `pty:data` send per
   window. Pending output is flushed before the shell's `exit` event and on
   kill, so no byte is lost or reordered.
+- **Desktop replay position.** The main IPC registration numbers each output
+  event. It captures the current number before requesting a serialized
+  `shells:snapshot`. A live snapshot includes output through that position.
+  If the captured shell exits or is replaced before serialization completes,
+  the handler returns an empty, non-live snapshot. The local terminal view
+  subscribes before requesting the snapshot. It skips output at or below
+  the position of a live snapshot and preserves later chunks in arrival order.
+  A failed or non-live snapshot does not suppress live output. This metadata
+  is local to desktop IPC and does not change the paired-device stream.
+- **Desktop terminal view source.** `ShellTab` opens one source through
+  `src/renderer/terminal/terminal-view-source.ts`. The source owns snapshot,
+  input, resize, and close for the view. A paired source receives replay on
+  the existing stream instead of requesting a desktop snapshot.
 - **Scrollback append is O(chunk).** `RollingScrollback` keeps the raw
   scrollback as a list of chunks with a running length and trims whole
   chunks from the front. It joins the chunks and snaps the cut to a line
@@ -237,7 +312,9 @@ version footer and the Done bar. Each section is its own module in
 
 | File | Responsibility |
 |---|---|
-| `GeneralPanel.tsx` | Appearance, Fonts, Workspace and Notifications sections. Loads and saves the General settings. |
+| `GeneralPanel.tsx` | Appearance, Fonts, Terminal, Workspace and Notifications sections. Loads and saves the General settings, including the "Record agent activity" switch (`activity_log_enabled`) in Workspace. |
+| `TerminalEngineControl.tsx` | Terminal engine radios. Displays the saved value while a save is pending. On failure, retains the previous value and reports the error. |
+| `TerminalPaddingControl.tsx` | Horizontal and vertical padding fields. Enter or blur commits a whole number from 0 to 32 px. Reset restores the default for that axis. |
 | `RootsPanel.tsx`, `LaunchPanel.tsx`, `MetaprojectPanel.tsx` | The other sections. |
 | `primitives.tsx` | `SettingsSection`, `SettingRow`, `SettingStack`, `WorkspaceNumber`, `Switch`, and the older `Header` and `Field`. |
 | `PaletteCards.tsx`, `palette-swatches.ts` | Palette cards (`aria-pressed` buttons) and their preview colours. |
@@ -250,13 +327,74 @@ Components below `GeneralPanel` take values and callbacks as props, so unit
 tests render them without a DOM. Real focus, layout and colour are covered by
 `tests/e2e/settings-board.spec.ts`.
 
+Terminal padding is a desktop-local preference. Separate values control the
+horizontal and vertical insets. The default is 12 px on each side, 8 px above,
+and 4 px below. A custom vertical value applies equally above and below.
+Open local tabs, splits, and popouts receive committed updates. `ShellTab`
+observes the inner viewport and refits the current engine without reopening the
+view or restarting the shell. Paired shells keep the default padding.
+
+The desktop settings repository stores `terminal_engine` as a viewer-local
+preference. Missing or invalid values read as `xterm` without changing the
+stored row. The existing settings IPC validates writes and sends a change
+event only after a different value is saved. A terminal view reads this value
+once at opening. A read failure or timeout selects xterm.js. Setting changes
+do not replace a renderer in an open view. Settings → General → Terminal
+offers xterm.js (the default) and Ghostty (WASM).
+
+A Ghostty view feeds the same shell output to an inert xterm.js standby.
+Ghostty fits the terminal with its own cell measurements. The shell and the
+standby use that grid until xterm.js takes over and fits the pane itself.
+On macOS, Option-drag selects text in Ghostty without sending mouse input
+to the shell. An ordinary drag still reaches apps that enable mouse reporting.
+Shift-click extends a Ghostty text selection from its anchor. A plain selection
+click clears the old highlight and sets a new anchor.
+The standby parser handles live clipboard writes after local snapshot replay,
+including during Ghostty startup and fallback. Ghostty does not duplicate
+those writes. On renderer failure, the standby drains its output before it
+takes over keyboard input. It restores focus only if no newer interaction
+took focus. The shell connection does not change.
+Ghostty compiles verified bundled WASM in a lazy renderer chunk. The desktop
+document's script policy permits WASM compilation, but not JavaScript eval.
+
+### Metaproject session, assignment and Board
+
+Electron main owns the Metaproject account. It verifies the Flask web login and a protected project read in a nonpersistent Chromium session. The Board and REST client use that session. The Chat client uses its current session cookie for a direct Socket.IO WebSocket handshake and checks the returned account ID. It does not fall back to polling or use Metaproject desktop API credentials.
+
+Project-room sends wait for a protected REST response. For global rooms, the IDE treats a submission on the current verified Chat connection as sent. The existing service does not return a delivery confirmation for individual global-room writes. The IDE does not replay writes automatically. Global-room history still needs an accessible project because the reference history route is project-scoped.
+
+The Board is a top-level `WebContentsView` with its own session partition, sandbox, and normal web protections. It has no IDE preload or workspace file protocol handler. Main restricts service requests to the configured origin. **Open in Browser** passes the canonical project URL to the OS, not the IDE session. Use HTTPS for the service. An unpackaged development run can opt into literal-loopback HTTP with `METAIDE_METAPROJECT_LOOPBACK=1`.
+
+Account changes revoke the previous session generation. Confirmed service rejection retires the current shared session. A network failure, Chat disconnect, or project access denial does not by itself sign the user out. Local sign-out detaches the Board and stops Chat before it attempts server logout. A private SQLite record authorizes one origin- and account-bound OS credential record for startup restore. No pre-upgrade password without a service origin is eligible for restore. If neither local revocation nor secure deletion works, the IDE reports that it could not forget the saved sign-in.
+
+The local `.metaproject.yaml` contains the assignment. A saved link has a numeric `project_id` and `metaproject_origin`. The assignment belongs to the folder, not to an account; Metaproject still checks each account's access. The reader also accepts supported legacy prefixed IDs. Existing originless links need pre-upgrade evidence or confirmation; a stored `board_url` is not a trusted destination. Main compares the file revision before replacing it, preserves unrelated bytes, and refuses ambiguous files. Removing a link does not send a remote delete request. If remote creation succeeds but the file update fails, select that existing remote project when you retry the assignment.
+
+Legacy credential cleanup is best effort and does not search the OS store for old records. An earlier IDE version can still use its old credential slots after a downgrade. To remove any remaining legacy records, use the OS credential manager.
+
+Run the local Electron fixture from the repository root:
+
+```sh
+NODE_OPTIONS=--max-old-space-size=4096 pnpm build
+NODE_OPTIONS=--max-old-space-size=4096 pnpm exec playwright test tests/e2e/metaproject-board.spec.ts --workers=1
+```
+
+The fixture uses two loopback origins and a disposable profile. It does not verify the deployed Flask service, TLS/WSS proxy behavior, or OS credential stores.
+
 ### App chrome
 
 The chrome around the content (title bar, activity bar, sidebar columns and
 status bar) is one continuous surface, `--surface-chrome`, painted once on the
 window root. Regions are separated by tone and spacing, not borders. The main
 area and the popout's content are rounded sheets (`--surface-sheet`) inset on
-that surface. Dialogs and popovers keep their edges because they float.
+that surface. The main sheet has 8px side margins and 14px corners. It starts
+at the bottom of the toolbar with no extra gap. When the toolbar is hidden,
+the sheet has a 2px top margin. The bottom margin is 2px above the status bar
+and 8px when the bar is hidden. A single terminal has a subtle 1px border.
+In split mode, each terminal paints a separate 14px rounded card with a
+1px gray border, regardless of focus. The workspace has no shared terminal
+border or background, so the workspace chrome is visible through the 10px
+resize gap.
+Dialogs and popovers keep their edges because they float.
 
 `src/renderer/styles.css` ("Chrome surfaces and semantic hues") derives every
 chrome token from the palette tokens above, so all palettes and both
@@ -353,10 +491,25 @@ or "This machine" until it loads.
   (`src/renderer/hooks/useAgentStates.ts`), which re-renders only when the
   aggregate changes. Paired machines' status comes from
   `src/renderer/p2p/useFleetShells.ts`, one `shells.alive` call per online
-  peer every 5s; the same poll feeds the remote list's In use section.
+  peer every 5s. The same poll gives each peer's live project ids and each
+  project's worst agent state; remote live rows show the same `StatusDot`
+  as local ones (no agent, or an old host, reads as idle).
+- **Shared In use.** With a machine paired, one In use section
+  (`section-in-use`) is the first item of the list on every dot: this
+  machine's live projects first (stable order), then each online peer's, in
+  dot order and by name, each with a muted machine-name tag. Remote rows
+  (`RemoteInUseRows.tsx`) open the remote pane and
+  never switch the dot. Order and filter rules live in
+  `src/renderer/fleet-in-use.ts`; peer project names come from
+  `src/renderer/p2p/useFleetInUse.ts`, which calls `projects.list` only when
+  a peer's live set holds an unknown id (one request per peer at a time,
+  retried on a later poll after a failure). The heading dot shows the worst
+  of this machine's overall state (when it has live projects) and the
+  states of the remote rows shown. Neither machine list repeats In use.
 - `RemoteMachineList.tsx` renders a remote machine: a header (name, state,
-  last seen, Reconnect) followed by In use, Recents (6 at most unless
-  filtering) and Projects by root. An offline machine shows the header only.
+  last seen, Reconnect) followed by Recents (6 at most unless
+  filtering, without the projects shown in
+  the shared In use section) and Projects by root. An offline machine shows the header only.
   Remote collapse state is not saved and resets on every switch.
 - The local list stays mounted (hidden) while a remote machine is shown, so
   its order, collapse state and selection survive a switch. The filter field
@@ -391,8 +544,15 @@ chrome"). `styles.css` is not changed by this layer. On macOS:
 | Chrome root (`[data-chrome-root]`) | `--surface-chrome`: the opaque `--chrome-solid` at `--chrome-glass-alpha`. At Chrome frost Subtle that is 0.805 to 0.87 per palette and theme; Medium and Strong are lower (see "Frosted glass settings"). |
 | Main and popout sheet, chat column (`[data-view="chat"]`) | `--sheet-solid`, alpha 1. |
 | Sheet while a shell shows (`[data-sheet-content="shell"]`), Terminal frost not Off | `--surface-terminal`: `--sheet-solid` at `--terminal-live-alpha`. |
-| Split-shell cards | `--surface-pane`: `--pane-solid`. With Terminal frost on, cards follow the sheet; only at Chrome Subtle with Terminal Subtle do they add their own glass, as before. |
+| Split-shell cards | Each card uses the terminal sheet surface. Presets and Custom set the opacity of both cards without changing the workspace chrome in the gap. |
 | Raw `--panel`, `--panel-strong`, `--chat-surface` | Same colour, alpha 1, so menus, popovers and inputs are never more translucent than before. |
+
+**Custom terminal opacity.** Settings → General → Appearance → Frosted glass
+keeps the terminal presets and adds Custom. The 10–100% slider previews the
+background in the current window and saves at the end of the edit. Open
+windows receive the saved value. Reset returns to 70%. The setting does not
+change terminal text opacity or native window material. Reduce Transparency
+keeps the surface opaque without discarding the saved value.
 
 Hover, selected, active and field fills (`--surface-hover`, `--surface-active`,
 `--accent-soft`, `--surface-field`) and the Tasks badge fill
@@ -564,18 +724,13 @@ blurs what is behind the window. The app never blurs anything itself.
   paints an opaque `#000` underlay under `--bg`. The window stays solid, as it
   was before Linux windows became transparent.
 - **Blur is the compositor's.** The app does not request the
-  `ext-background-effect-v1` Wayland protocol. Electron 32.3.3 (Chromium 128)
-  binds no blur protocol, and a native addon cannot reach Chromium's
-  `wl_surface`. A compositor that blurs translucent surfaces by its own policy
-  blurs the window with no help from the app. Hyprland 0.56 or later does this
-  through its `decoration:blur` settings, for a translucent surface that has no
-  blur effect object.
-- **Wayland and XWayland.** The app sets no Ozone switch. Chromium runs as a
-  native Wayland client only if the environment sets
-  `ELECTRON_OZONE_PLATFORM_HINT=wayland` (or `auto`). Without it the window runs
-  under XWayland. The window is translucent as a native Wayland client.
-  Whether the XWayland window is translucent, and whether the compositor blurs
-  it, is recorded by the manual check in the build report, not by a code path.
+  `ext-background-effect-v1` Wayland protocol. A compositor can blur a
+  translucent window through its own policy. Hyprland exposes this policy
+  through its `decoration:blur` settings.
+- **Wayland and XWayland.** The app sets no Ozone switch. [Electron uses native
+  Wayland by default in Wayland sessions](https://github.com/electron/electron/blob/v43.8.12/docs/breaking-changes.md#removed-electron_ozone_platform_hint-environment-variable).
+  Use `--ozone-platform=x11` to force XWayland. Electron no longer reads
+  `ELECTRON_OZONE_PLATFORM_HINT`.
 - **No blur available.** On a compositor that does not blur, the translucent
   chrome shows the desktop unblurred. The user can turn Frosted chrome off.
 
@@ -882,7 +1037,7 @@ kill.
 
 Rules:
 
-- Motion uses the `motion` package (pinned at 14.0.0) through a strict
+- Pane folds and menus use the `motion` package (pinned at 14.0.0) through a strict
   `LazyMotion` with `domAnimation` in `main.tsx`, under
   `MotionConfig reducedMotion="user"`. Only `m.*` elements are used.
 - A fold animates one CSS variable, `--fold`, on the folding pane's
@@ -901,6 +1056,33 @@ Rules:
   drops its backdrop, role and test id and takes no pointer or keyboard
   input; reopening during an exit reuses the same instance, and a menu
   opened with `autoFocus` refocuses its first item.
+- Desktop local terminal chips fade and move vertically on pointer or keyboard add or close;
+  surviving chips slide horizontally to their new positions. The strip uses
+  pre/post-commit chip positions and Web Animations, so Motion's global
+  layout feature set and terminal geometry stay unchanged. With Reduce
+  Motion enabled, only the chip fades remain. Project switches, restores,
+  and chip selection do not animate membership.
+- A launch animates only if its returned index identifies the next
+  unambiguous addition; if an alive-list update beats the reply, the chip
+  appears without motion. The project-keyed strip records close intent before
+  the close request. When the chip leaves, an inert copy fades within the old
+  viewport bounds, independent of any new shell reusing its index. A rejected
+  close clears its intent. Animation never delays a close or controls PTY or focus.
+- The icon-only top-row tabs keep accessible names and show labels on hover
+  or keyboard focus. The Diff count and unsaved marker stay visible. These
+  tabs crossfade their selected background in place; their panels do not slide.
+- The desktop toolbar sits above the main sheet, aligned with the workspace
+  column, with 6px padding above and below its controls. Board is an icon
+  with a tooltip. The status bar shows the project
+  name and active agent. The terminal strip is centered in the toolbar, including
+  at medium window widths. It moves below the workspace icons and project
+  controls when the workspace column is narrower than 620px.
+  Tabs scroll within the strip. Add remains beside the tabs, and its menu
+  stays within the header's horizontal bounds. The icon-only Split toggle
+  sits immediately before Popout at the right edge.
+- Local terminal tab navigation does not animate the terminal panel. The old
+  view is removed without a snapshot. The new view appears at full opacity
+  once its terminal engine is ready. Tab chip motion is independent of the panel.
 
 ### Terminal focus
 
@@ -931,6 +1113,9 @@ Rules:
   is one pending request; a newer one replaces it, and starting a new
   switch or scrollback jump cancels it. A switch that lands on the Files
   tab requests nothing.
+- A new local terminal tab requests focus for its shell when the launch
+  succeeds. If the user navigates elsewhere or focuses a different text
+  field while the launch waits, the new tab does not take over.
 - A request expires after `FOCUS_REQUEST_TTL_MS`. It is honoured when no
   overlay is open and no text-entry element has focus, checked when the
   terminal opens, or at once when it is already open. A window blur drops
@@ -990,10 +1175,12 @@ bracketed paste on that sends an empty bracketed pair.
 
 Paste routes: macOS ⌘V and the Edit menu fire a DOM `paste` event, which the
 paste hook takes. Ctrl+Shift+V and the context-menu Paste item read the
-clipboard and call the same function (`ShellTab.tsx:183`,
-`ShellTab.tsx:599`). All routes sanitise the text. When the clipboard has no
-text, all routes try the clipboard image. The renderer is sandboxed, so the
-main process reads the image.
+clipboard and call the same function (`pasteFromText` in
+`src/renderer/components/ShellTab.tsx`). All routes sanitise the text. When the clipboard has no
+text, all routes try the clipboard image. The main process reads the image.
+Electron 43 retains `clipboard.readImage()`, which reads native Windows PNG-only
+clipboard entries. Before upgrading to a newer major, verify that terminal
+paste and paired-device upload still handle those entries.
 
 Temporary directory:
 
@@ -1034,16 +1221,67 @@ clears on any `pointerdown`, and on a `mousemove` with no button pressed.
 Neither event occurs during a drag, so a lost `dragend` cannot leave the
 guard disabled. A drag from the main window into a popped-out window counts
 as external there.
+
+### Remote terminal uploads
+
+A file dropped on, or an image pasted into, a remote terminal is sent to that
+machine and staged in its own drop folder; the path typed is the host's path,
+escaped for the host's platform. Limits and copy live in
+`src/shared/remote-upload-contract.ts`.
+
+| Layer | Where | What |
+|---|---|---|
+| Renderer routing | `src/renderer/remote-upload/` | `planRemoteDrop` refuses folders, refuses files over 50 MB, asks once per drop for files over 10 MB, uploads one file at a time and types the successes in order; a cancel types nothing. `remote-clipboard-deps.ts` sends the clipboard image (confirming over 10 MB). `useUploadProgress` drives `UploadProgressOverlay.tsx`, which appears after 500 ms with Cancel. Local tabs keep the local deps unchanged. |
+| Viewer main | `src/main/p2p/upload-client.ts`, IPC `p2p:upload`, `p2p:upload-cancel`, `drops:stat-app-file` | Reads the bytes (OS file from the renderer, Files-tab file and clipboard image in main), calls `drops.uploadBegin` before any bytes so an old host fails fast, sends 256 KiB chunks one at a time, emits `p2p:upload-progress`, and maps host errors to a typed `UploadResult`. It never rejects. |
+| Host | `src/main/p2p/uploads.ts`, `hub.ts` (`drops.upload*`) | Per-link sessions share one host-wide quota (`createUploadQuota`). Begin refuses over 50 MB, over 4 uploads per device across all its links, or when the drop folder plus every open upload's reserved bytes would exceed 500 MB after pruning files older than 24 h. Chunks must arrive in order and never overrun. Abort, a 60 s idle timeout and link close delete the partial file; an abort or link close while a commit is in flight removes the staged file too, and so does an abort within 60 s after the commit. A link close after the commit keeps the file, because the viewer may already have typed its path. Audit lines record names and sizes, never bytes. |
+| Staging | `src/main/drops/staging.ts` | `openUpload` writes an owner-only `.<random>.part` file and finalises it with a no-overwrite link under the cleaned file name; `usageBytes` counts the folder. |
+
 ### Full-screen terminal apps
 
 - While a shell shows the alternate screen (opencode, vim, …) the terminal
   reclaims the 14px the fit addon reserves for a scrollbar (nothing scrolls
   there), so the gap on the right matches the left padding. It refits on
-  entering and leaving the alternate screen; the shell padding never changes.
+  entering and leaving the alternate screen. The text grid keeps its padding.
+- `src/renderer/terminal/terminal-backdrop.ts` samples eight cells at the edge of
+  the alternate screen. If they agree on an RGB value or an extended ANSI
+  index, the viewer uses the active engine's color and paints it through
+  the padding and the space left by partial cells. Normal shells retain their
+  transparency. xterm.js uses its standard extended palette. Ghostty reads its
+  native palette when the sampled index changes and samples renders at most once
+  per 125 ms to limit buffer allocation. Returning to the normal shell clears the
+  fill immediately. The viewer does not infer a color when the samples differ or
+  track redefinitions of the same ANSI index.
 - Diff-rendering TUIs such as opencode debounce SIGWINCH and repaint only
   changed cells. 250 ms after the last resize, `PtyManager` briefly shrinks an
   alternate-screen PTY by one row and restores it, which those apps treat as a
   forced full repaint, so cells drawn at a stale size are cleaned up.
+
+### Terminal copy and remote input
+
+- **OSC 52.** Every shell tab, local or remote, registers an OSC 52 handler
+  (`registerClipboardOsc` in `src/renderer/osc52.ts`). A program that writes
+  the clipboard with `ESC ] 52 ; c ; <base64>` puts the decoded text on this
+  machine's clipboard through `navigator.clipboard.writeText`. This is how
+  Claude Code copies on a Linux host without xclip or wl-copy, and in its
+  fullscreen mode. Read queries (`?`) are never answered. The base64 length
+  is checked before decoding, and payloads over 1 MiB of text, invalid base64
+  and invalid UTF-8 are ignored. A clipboard rejection shows the Copy failed
+  toast, shown at most once per 5 s. Any program in a terminal can therefore replace the clipboard, as in
+  iTerm and kitty.
+- **Forced selection.** The terminal sets `macOptionClickForcesSelection`, so
+  Option+drag on macOS selects text while a program tracks the mouse.
+- **Remote input.** `src/renderer/p2p/input-queue.ts` sends a remote shell's
+  input one `shells.input` call at a time and merges input that arrives
+  meanwhile. Large pastes are split into frames of at most 256 KiB of UTF-8,
+  on code-point boundaries, because the host decodes each frame on its own.
+  A push that would take the not-yet-sent buffer over 4 MiB is refused.
+  Send and resize failures reach `RemoteShellHandle.onInputError`
+  (`src/renderer/p2p/remoteShellBridge.ts`), including input typed after the
+  remote stream has ended (host shutdown, revoked link, failed attach). Only
+  a close the user requested stays silent, and resizes after the stream ends
+  are dropped silently (a window resize is not user input). The shell tab shows one toast per
+  kind per 5 s, naming the host (`src/renderer/remote-toasts.ts`,
+  `src/renderer/toast-throttle.ts`, `REMOTE_INPUT_COPY`).
 
 ### Shell tab overlays
 
@@ -1067,7 +1305,8 @@ set status dots. The notification path does not read terminal output.
 | IO | `src/main/claude-hooks/receiver.ts` | Loopback HTTP server. Checks the request, authenticates it, answers `204`, then passes a typed event on. |
 | IO | `src/main/claude-hooks/settings-file.ts` | Builds, writes and removes the app-owned Claude Code settings file. |
 | Logic | `src/main/claude-hooks/hook-event.ts` | Parses and classifies the event name, notification type, message and background-task count for notifications. |
-| Logic | `src/main/claude-hooks/hook-fanout.ts` | Delivers authenticated hooks to the notification history. |
+| Logic | `src/main/claude-hooks/hook-fanout.ts` | Delivers authenticated hooks to each listener in isolation: the notification history and the activity log. |
+| Logic | `src/main/activity/wire.ts` | Turns hooks into activity entries, appends them to `<project>/.metaide/activity.jsonl` and broadcasts `activity:changed`. Skips both while `activity_log_enabled` is `false`; the setting is read on every hook, and a failed or non-boolean read counts as on. |
 | Logic | `src/main/claude-hooks/session-registry.ts` | Issues, verifies and releases the per-spawn id and secret. Records which shells are hook-confirmed. |
 | Logic | `src/main/claude-hooks/launch-decorator.ts` | Adds `--settings <file>` and the id and secret to the environment of a Claude launch, just before spawn. |
 | Logic | `src/main/claude-hooks/runtime.ts` | Starts the receiver, then writes the settings file. Stops both on quit. |
@@ -1108,6 +1347,25 @@ Rules:
 - A new notification for a shell closes the previous one. A PTY exit
   releases the shell's session and closes its notification, unless a
   respawn has already replaced that PTY.
+- **Fleet: the IDE instance in use gets the notice.** Before the local
+  rules run, `NoticeRouter` (`src/main/notifications/notice-router.ts`)
+  offers the notice to the paired machine that was used more recently
+  than this one. If one takes it, nothing is shown here. "Used" means
+  input while an IDE window was focused (`ActivityTracker`, sampled from
+  `powerMonitor.getSystemIdleTime()` every 5 s and on focus changes).
+  Focus alone does not count, because an unattended machine usually still
+  has its IDE in front. A viewer opens `notices.subscribe` on connect and
+  sends `presence.set { idleMs }` on connect, on focus changes and every
+  15 s; the age is converted to the host's clock on arrival, so the two
+  clocks need not agree. A tie, a viewer that never reported, and no
+  viewer at all keep the notice local.
+- The receiving machine (`src/main/notifications/fleet-notices.ts`)
+  applies its own two toggles, titles the notice
+  "<project> on <machine> — shell <n>", and holds it back while its
+  focused main window shows that remote shell (`p2p:viewing`, reported by
+  `RemoteProjectPane`). A click raises the window and opens that shell
+  (`p2p:focus-remote-shell`). The mobile app does not subscribe. The
+  generic "Command finished" notifier is not routed and stays local.
 
 ### Claude status dots
 
@@ -1153,11 +1411,10 @@ Rules:
 
 ### Local primary-session unload
 
-The local project-row X, selected-project header X, and palette Unload current session
-open one confirmation dialog. The action stops only shell index 0. Other shells,
+The local project-row X and the **Unload current session** palette action
+open the same confirmation dialog. The action stops only shell index 0. Other shells,
 project records, files, and the selected project remain unchanged
-(`src/renderer/App.tsx:288-306,429-460,874-876`;
-`src/renderer/components/Sidebar.tsx:282-420`).
+(`src/renderer/App.tsx`; `src/renderer/components/Sidebar.tsx`).
 
 The dialog inspects the live PTY generation and the agent state for shell 0.
 It warns when that agent is busy or needs input. It also warns when shell 0
@@ -1222,7 +1479,9 @@ Settings → Environment, after "Launch commands".
 | Presentation | `src/renderer/components/env/InheritedEnvList.tsx` | The read-only "From app settings" list in the project Env tab. |
 | Presentation | `src/renderer/components/ProjectEnvTab.tsx` | The Env tab body. Reads the project fresh through `projects:list` when it mounts, edits the draft, and saves only `{ env }`. Save stays disabled until the stored values have loaded. Shows the inherited list below Save and Discard. |
 | Presentation | `src/renderer/components/settings/EnvironmentPanel.tsx` | Settings → Environment: `useAppEnv`, `saveAppEnv` and the shared editor. |
-| Contract | `src/renderer/main-tab.ts` | `MainTab` (`shell`, `files`, `diff`, `env`, `settings`) and `isMainTab`, the validator for the persisted tab. |
+| Contract | `src/renderer/main-tab.ts` | `MainTab` (`shell`, `files`, `diff`, `settings`, `activity`), `isMainTab`, the validator for the persisted tab, and `visibleMainTab`, which shows Shell in place of Activity while the activity log is off. |
+| Contract | `src/renderer/activity-log-contract.ts` | The activity-log setting key, test ids and switch copy, shared by the implementation and the E2E suite. |
+| Presentation | `src/renderer/hooks/useActivityLogEnabled.ts` | Whether the activity log is on; follows `settings:changed`. |
 | Contract | `src/renderer/project-env-copy.ts` | Every string and test id of both editors (`ENV_COPY`, `ENV_TESTIDS`, `APP_ENV_COPY`, `APP_ENV_TESTIDS`). |
 
 Rules:
@@ -1548,20 +1807,23 @@ links outside a diagram open through the `app:open-external` IPC channel.
 
 ### Claude notification event
 
-1. At app start, `runtime.ts` starts the receiver on an ephemeral
-   `127.0.0.1` port. It writes
-   `~/.metaide/claude-hooks/settings-<port>.json` with `Notification`,
-   `Stop` and `UserPromptSubmit` HTTP hooks, each with a one-second timeout
-   (`src/main/claude-hooks/settings-file.ts:21-55`).
+1. At startup, `runtime.ts` opens a Unix socket in a private temporary
+   directory, or a randomly named pipe on Windows. It writes
+   `~/.metaide/claude-hooks/settings-<instance>.json` with asynchronous
+   command hooks for `Notification`, `Stop`, `UserPromptSubmit`,
+   `PreToolUse` and `PostToolUse`.
 2. When a Claude shell spawns, the decorator issues a session id and a
    secret. It adds `--settings <file>` after `argv[0]`, and
-   `METAIDE_HOOK_SHELL` and `METAIDE_HOOK_TOKEN` to the environment.
-3. Claude Code posts each hook event. It fills the `X-Metaide-Shell` and
-   `Authorization: Bearer` headers from those environment variables.
+   the credentials, private endpoint and forwarder paths to the environment.
+   It leaves explicitly supplied `--settings` and non-Claude launches alone.
+3. Claude sends hook JSON on stdin to the bundled forwarder, which runs in
+   Electron's Node mode. The forwarder makes one bounded delivery attempt to
+   the originating endpoint. It emits no output or decision if the IDE is
+   unavailable. The token never goes into argv or the settings file.
 4. The receiver checks method, path, `Host`, content type, the id and
    secret, and then the body size (1 MiB at most). It answers `204` with no
-   body, and only then passes the event on through the fan-out. Claude Code
-   never gets a decision from the app.
+   body, and only then passes the event on through the fan-out to notifications
+   and Activity. Claude Code never gets a decision from the app.
 5. `ClaudeHookHistory` confirms the current session and updates only
    notification eligibility. It sends the applied event and its prior and
    current eligibility to `ClaudeNotifier`.
@@ -1570,6 +1832,12 @@ links outside a diagram open through the `app:open-external` IPC channel.
 7. A click on a popped-out shell's notification focuses the popout.
    Otherwise the main window is restored and focused, and
    `shell:focus-request` is sent only while the shell is still alive.
+
+An IDE restart does not reauthorize a previously launched Claude process.
+After upgrading from the old HTTP hooks, resume the conversation in a newly
+launched Claude process to replace the settings that the old process loaded.
+The IDE removes its own settings file on a clean quit; it does not sweep legacy
+per-port files that another instance could still be using.
 
 ### Agent status update
 
@@ -1733,9 +2001,9 @@ the whole side falls back to escaped plain text.
 | `markdown-it` | 14.3.0 | Markdown parser. `html` is `false`. |
 | `highlight.js` | lockfile | Code block highlighting, and both sides of the Diff tab. |
 | `katex` | 0.16.47, exact pin | Math. Also the version `mermaid` depends on, so the bundle has one copy. |
-| `mermaid` | 11.17.2, exact pin | Diagrams. Version 12 requires Node 22, and the repo uses Node 20. |
+| `mermaid` | 11.17.2, exact pin | Diagrams. |
 | mise CLI | external, user-installed; developed against 2026.10.4 | Tasks panel listing and running. Only the `name`, `description`, `hide` and `global` fields of `mise tasks ls --json` are read. The JSON format is not documented by mise. |
-| Electron `powerSaveBlocker` | electron 32.3.3 | Keep-awake assertion, type `prevent-app-suspension`. On macOS it is a system idle-sleep assertion, not a display one; the E2E suite checks this against `pmset -g assertions`. |
+| Electron `powerSaveBlocker` | electron 43.8.12 | Keep-awake assertion, type `prevent-app-suspension`. On macOS it is a system idle-sleep assertion, not a display one; the E2E suite checks this against `pmset -g assertions`. |
 | `/usr/bin/pmset` | macOS, system | `pmset displaysleepnow` turns the display off for keep-awake. No root needed in practice; this is not documented. `pmset -g assertions` is read in E2E only. |
 | ScreenSaverEngine | macOS, system | Keep-awake darken fallback, launched with `/usr/bin/open`. |
 

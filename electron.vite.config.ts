@@ -2,6 +2,8 @@ import { defineConfig } from 'electron-vite';
 import react from '@vitejs/plugin-react';
 import { resolve } from 'node:path';
 import { writeFileSync, mkdirSync } from 'node:fs';
+import { desktopGhosttyAssets } from './scripts/desktop-ghostty-assets';
+import { ghosttyCorePolicy } from './scripts/desktop-ghostty-core-policy';
 
 // Emits `out/main/package.json` = {"type":"commonjs"} so Node treats every
 // .js file under out/main/ as CommonJS regardless of the parent
@@ -63,6 +65,7 @@ export default defineConfig({
   renderer: {
     root: 'src/renderer',
     build: {
+      manifest: 'asset-manifest.json',
       rollupOptions: {
         input: {
           index: resolve('src/renderer/index.html'),
@@ -73,7 +76,7 @@ export default defineConfig({
       // Emit fonts and CLI icons as files: the CSP does not permit data URLs.
       assetsInlineLimit: (file: string) => (/\.(woff2?|ttf)$/.test(file) || /\/cli-icons\/.*\.svg$/.test(file) ? false : undefined),
     },
-    plugins: [react()],
+    plugins: [react(), desktopGhosttyAssets(), ghosttyCorePolicy()],
     resolve: { alias: { '@shared': resolve('src/shared'), '@renderer': resolve('src/renderer') } }
   }
 });

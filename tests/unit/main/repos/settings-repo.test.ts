@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { openDb } from '@main/db/connection';
 import { runMigrations } from '@main/db/migrator';
 import { SettingsRepo, DEFAULT_SETTINGS } from '@main/repos/settings-repo';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -17,6 +17,162 @@ function seed() {
 }
 
 describe('SettingsRepo', () => {
+  describe('desktop terminal engine', () => {
+    it('defaults to xterm on a fresh profile and seeds it on upgrade without touching other settings', () => {
+      const db = openDb(':memory:');
+      try {
+        runMigrations(db, migrationsDir);
+        const repo = new SettingsRepo(db);
+        repo.set('theme', 'light');
+        expect(repo.get('terminal_engine')).toBe('xterm');
+        expect(repo.getAll().terminal_engine).toBe('xterm');
+        repo.seedDefaults();
+        expect(db.prepare('SELECT value FROM settings WHERE key = ?').get('terminal_engine')).toEqual({ value: '"xterm"' });
+        expect(repo.get('theme')).toBe('light');
+        expect(seed().get('terminal_engine')).toBe('xterm');
+      } finally { db.close(); }
+    });
+
+    it.each(['not JSON', 'null', '42', '[]', '{"engine":"ghostty"}', '"Ghostty"', '"ghostty "', '"next-engine"'])(
+      'reads invalid stored value %s as xterm without rewriting it', (raw) => {
+        const db = openDb(':memory:');
+        try {
+          runMigrations(db, migrationsDir);
+          db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('terminal_engine', raw);
+          const repo = new SettingsRepo(db);
+          repo.seedDefaults();
+          expect(repo.get('terminal_engine')).toBe('xterm');
+          expect(repo.getAll().terminal_engine).toBe('xterm');
+          expect(db.prepare('SELECT value FROM settings WHERE key = ?').get('terminal_engine')).toEqual({ value: raw });
+        } finally { db.close(); }
+      },
+    );
+
+    it('preserves either saved engine when the database is reopened and defaults are seeded', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'st-engine-'));
+      const path = join(dir, 'db');
+      function withRepo(run: (repo: SettingsRepo) => void): void {
+        const db = openDb(path);
+        try {
+          runMigrations(db, migrationsDir);
+          const repo = new SettingsRepo(db);
+          repo.seedDefaults();
+          run(repo);
+        } finally { db.close(); }
+      }
+      try {
+        withRepo(repo => repo.set('terminal_engine', 'ghostty'));
+        withRepo(repo => {
+          expect(repo.get('terminal_engine')).toBe('ghostty');
+          expect(repo.getAll().terminal_engine).toBe('ghostty');
+          repo.set('terminal_engine', 'xterm');
+        });
+        withRepo(repo => expect(repo.get('terminal_engine')).toBe('xterm'));
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('does not hide unrelated malformed JSON or database failures', () => {
+      const db = openDb(':memory:');
+      try {
+        runMigrations(db, migrationsDir);
+        db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('theme', 'not JSON');
+        const repo = new SettingsRepo(db);
+        expect(() => repo.get('theme')).toThrow(SyntaxError);
+        expect(() => repo.getAll()).toThrow(SyntaxError);
+        db.exec('DROP TABLE settings');
+        expect(() => repo.get('terminal_engine')).toThrow('no such table');
+        expect(() => repo.getAll()).toThrow('no such table');
+      } finally { db.close(); }
+    });
+  });
+
+  describe('desktop terminal padding', () => {
+    it('keeps independent overrides, including zero, after reopening the database', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'st-padding-'));
+      function withRepo(run: (repo: SettingsRepo) => void): void {
+        const db = openDb(join(dir, 'db'));
+        try {
+          runMigrations(db, migrationsDir);
+          const repo = new SettingsRepo(db);
+          repo.seedDefaults();
+          run(repo);
+        } finally { db.close(); }
+      }
+      try {
+        withRepo(repo => {
+          repo.set('terminal_padding_horizontal', 0);
+          repo.set('terminal_padding_vertical', 32);
+        });
+        withRepo(repo => {
+          expect(repo.get('terminal_padding_horizontal')).toBe(0);
+          expect(repo.get('terminal_padding_vertical')).toBe(32);
+          repo.set('terminal_padding_horizontal', null);
+        });
+        withRepo(repo => expect(repo.getAll()).toMatchObject({
+          terminal_padding_horizontal: null, terminal_padding_vertical: 32,
+        }));
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it.each(['not JSON', '33', '1.5', '"12"'])('uses Default for corrupt padding %s', raw => {
+      const db = openDb(':memory:');
+      try {
+        runMigrations(db, migrationsDir);
+        const repo = new SettingsRepo(db);
+        repo.seedDefaults();
+        db.prepare('UPDATE settings SET value = ? WHERE key = ?').run(raw, 'terminal_padding_horizontal');
+        expect(repo.get('terminal_padding_horizontal')).toBeNull();
+        expect(repo.getAll().terminal_padding_horizontal).toBeNull();
+      } finally { db.close(); }
+    });
+  });
+
+  describe('Metaproject private state', () => {
+    it('commits an origin and restore tombstone together and keeps private rows out of public settings', () => {
+      const directory = mkdtempSync(join(tmpdir(), 'metaproject-st-'));
+      const filename = join(directory, 'db');
+      const db = openDb(filename);
+      try {
+        runMigrations(db, migrationsDir);
+        const settings = new SettingsRepo(db);
+        const key = 'metaproject_restore_grant_v1';
+        expect(settings.readMetaprojectPrivate(key)).toBeUndefined();
+        settings.writeMetaprojectPrivate({ [key]: { grantId: 'fixture' } });
+        expect(settings.readMetaprojectPrivate(key)).toEqual({ grantId: 'fixture' });
+        expect(settings.getAll()).not.toHaveProperty(key);
+        settings.writeMetaprojectPrivate({ [key]: null, metaproject_base_url: 'https://other.example' });
+        expect(db.pragma('synchronous', { simple: true })).toBe(1);
+        db.close();
+        const reopened = openDb(filename);
+        try {
+          const repo = new SettingsRepo(reopened);
+          expect(repo.get('metaproject_base_url')).toBe('https://other.example');
+          expect(repo.readMetaprojectPrivate(key)).toBeNull();
+        } finally { reopened.close(); }
+      } finally {
+        if (db.open) db.close();
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
+
+    it('fails closed on a corrupt nonsecret grant without reseeding it', () => {
+      const directory = mkdtempSync(join(tmpdir(), 'metaproject-st-'));
+      const db = openDb(join(directory, 'db'));
+      try {
+        runMigrations(db, migrationsDir);
+        const repo = new SettingsRepo(db);
+        const key = 'metaproject_restore_grant_v1';
+        db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(key, 'invalid json');
+        repo.seedDefaults();
+        expect(repo.readMetaprojectPrivate(key)).toBeNull();
+        expect(repo.getAll()).not.toHaveProperty(key);
+      } finally {
+        db.close();
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('seeds all defaults', () => {
     const repo = seed();
     expect(repo.get('keep_alive_cap')).toBe(DEFAULT_SETTINGS.keep_alive_cap);
@@ -308,6 +464,27 @@ describe('SettingsRepo', () => {
     repo.seedDefaults();
     expect(repo.get('notify_claude_finished')).toBe(false);
     expect(repo.get('notify_claude_needs_input')).toBe(true);
+  });
+
+  it('AC1 — activity_log_enabled defaults to on for a fresh install (pinned to a literal)', () => {
+    expect(seed().get('activity_log_enabled')).toBe(true);
+  });
+
+  it('AC1 — an upgraded DB without the row seeds it on and leaves other rows alone', () => {
+    const db = openDb(join(mkdtempSync(join(tmpdir(), 'st-')), 'db'));
+    runMigrations(db, migrationsDir);
+    db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('keep_alive_cap', JSON.stringify(7));
+    const repo = new SettingsRepo(db);
+    repo.seedDefaults();
+    expect(repo.get('activity_log_enabled')).toBe(true);
+    expect(repo.get('keep_alive_cap')).toBe(7);
+  });
+
+  it('AC1 — a user\'s off survives re-seeding (restart)', () => {
+    const repo = seed();
+    repo.set('activity_log_enabled', false);
+    repo.seedDefaults();
+    expect(repo.get('activity_log_enabled')).toBe(false);
   });
 
   describe('app_env (AC3)', () => {

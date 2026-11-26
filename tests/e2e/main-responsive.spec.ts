@@ -309,10 +309,11 @@ async function installFloodRecorder(win: Page, specs: Array<{ key: string; tag: 
     };
     let shapeBad: string | null = null;
     const off = w.api.on('pty:data', (payload) => {
-      const ev = payload as { projectId?: unknown; shellIndex?: unknown; data?: unknown };
+      const ev = payload as { projectId?: unknown; shellIndex?: unknown; data?: unknown; replayPosition?: unknown };
       const keys = Object.keys(ev).sort().join(',');
-      if (keys !== 'data,projectId,shellIndex' || typeof ev.data !== 'string'
-        || typeof ev.projectId !== 'number' || typeof ev.shellIndex !== 'number') {
+      if (keys !== 'data,projectId,replayPosition,shellIndex' || typeof ev.data !== 'string'
+        || typeof ev.projectId !== 'number' || typeof ev.shellIndex !== 'number'
+        || typeof ev.replayPosition !== 'number' || !Number.isSafeInteger(ev.replayPosition) || ev.replayPosition <= 0) {
         shapeBad ??= `unexpected pty:data payload: keys=${keys}`;
         return;
       }
@@ -434,7 +435,7 @@ test('terminal output stays complete and in order when chunks are coalesced', as
 
   // Every byte the renderer received: each shell's lines 1…N exactly once, in order, then its marker; no foreign lines.
   const { shells, shapeBad } = await floodRecords(win);
-  expect(shapeBad, 'every pty:data event keeps the { projectId, shellIndex, data } shape').toBeNull();
+  expect(shapeBad, 'every pty:data event carries its target, data, and desktop replay position').toBeNull();
   expect(shells.map((s) => s.tag).sort()).toEqual(floods.map((f) => f.tag).sort());
   for (const s of shells) {
     expect(s.bad, `shell ${s.tag}: no gap, duplicate, reorder or foreign line`).toBeNull();

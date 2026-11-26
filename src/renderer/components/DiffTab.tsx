@@ -8,6 +8,7 @@ import {
 } from '@renderer/diff/diff-selection';
 import { useGitChanges } from '@renderer/hooks/useGitChanges';
 import { useDiffSides } from '@renderer/hooks/useDiffSides';
+import type { RemoteWorkspace } from '@renderer/p2p/remote-workspace';
 import { DiffFileList } from './DiffFileList';
 import { CenteredMessage, DiffPane } from './DiffPane';
 
@@ -19,10 +20,12 @@ export interface DiffFocusRequest { key: string; tick: number }
 interface Props {
   projectId: number;
   focusRequest?: DiffFocusRequest | null;
+  remote?: RemoteWorkspace;
 }
 
 interface ChangesViewProps {
   projectId: number;
+  remote: RemoteWorkspace | undefined;
   lists: ChangeLists;
   reloadToken: number;
   onRefresh: () => void;
@@ -44,7 +47,7 @@ function RefreshButton({ onRefresh }: { onRefresh: () => void }) {
   );
 }
 
-function ChangesView({ projectId, lists, reloadToken, onRefresh, focusRequest }: ChangesViewProps) {
+function ChangesView({ projectId, remote, lists, reloadToken, onRefresh, focusRequest }: ChangesViewProps) {
   const groups = useMemo(() => groupChanges(lists), [lists]);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const allEntries = useMemo(() => groups.flatMap((g) => g.entries), [groups]);
@@ -59,7 +62,7 @@ function ChangesView({ projectId, lists, reloadToken, onRefresh, focusRequest }:
   const reconciledKey = selected ? entryKey(selected) : null;
   useEffect(() => setSelectedKey(reconciledKey), [reconciledKey]);
   const [refreshToken, setRefreshToken] = useState(0);
-  const sides = useDiffSides(projectId, selected, reloadToken, refreshToken);
+  const sides = useDiffSides(projectId, selected, reloadToken, refreshToken, remote);
   const refresh = () => {
     setRefreshToken((t) => t + 1);
     onRefresh();
@@ -96,8 +99,8 @@ function ChangesView({ projectId, lists, reloadToken, onRefresh, focusRequest }:
  * selected file's side-by-side diff, or the loading, not-a-repository, clean and status-failed states
  * (spec AC7–AC13, AC17, AC21–AC30). Mount it keyed by project id so a project switch starts fresh.
  */
-export function DiffTab({ projectId, focusRequest }: Props) {
-  const { state, reloadToken, refresh } = useGitChanges(projectId);
+export function DiffTab({ projectId, focusRequest, remote }: Props): JSX.Element {
+  const { state, reloadToken, refresh } = useGitChanges(projectId, undefined, remote);
   return (
     <section className="h-full min-h-0" aria-label={DIFF_COPY.tabLabel} data-testid={DIFF_TESTIDS.panel}>
       {state.phase === 'loading' && <CenteredMessage><p role="status">{DIFF_COPY.loadingList}</p></CenteredMessage>}
@@ -110,7 +113,7 @@ export function DiffTab({ projectId, focusRequest }: Props) {
         </CenteredMessage>
       )}
       {state.phase === 'ready' && (
-        <ChangesView projectId={projectId} lists={state.lists} reloadToken={reloadToken} onRefresh={refresh} focusRequest={focusRequest ?? null} />
+        <ChangesView projectId={projectId} remote={remote} lists={state.lists} reloadToken={reloadToken} onRefresh={refresh} focusRequest={focusRequest ?? null} />
       )}
     </section>
   );

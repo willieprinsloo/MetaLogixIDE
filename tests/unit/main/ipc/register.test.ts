@@ -13,6 +13,7 @@ import type { ProjectConfig } from '@shared/types';
 import type { ResolvedLaunch } from '@main/domain/launch';
 import type { MiseLister, MiseListResult } from '@main/domain/mise-cli';
 import { defaultShellArgv } from '@main/domain/shell';
+import { ScreenMirror } from '@main/pty/screen-mirror';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
 import { commitAll, finishOrder, git, makeConflict, markerScript, slowCommandDir, stubGitEnv, tempProject } from '../git/temp-repo';
@@ -100,6 +101,72 @@ describe('registerIpc', () => {
     const services = { agentStatus: null } as unknown as Parameters<typeof registerIpc>[1];
     registerIpc(ipc, services, () => {});
     await expect(ipc.handlers.get('agent-state:list')!({}, undefined)).rejects.toThrow('agent status not installed');
+  });
+
+  describe('desktop snapshot replay position', () => {
+    const shell = { projectId: 4, shellIndex: 2 };
+    const identity = { pid: 42, generation: 'first', agent: null };
+
+    function replayRig() {
+      const ipc = fakeIpcMain();
+      const ptyManager = fakePtyManager();
+      ptyManager.liveShell.mockReturnValue(identity);
+      const source = new EventEmitter();
+      ptyManager.on.mockImplementation((event: string, listener: (...args: unknown[]) => void) => source.on(event, listener));
+      const sendEvent = vi.fn();
+      registerIpc(ipc, { ptyManager } as unknown as Parameters<typeof registerIpc>[1], sendEvent);
+      const invoke = ipc.handlers.get('shells:snapshot');
+      if (!invoke) throw new Error('Snapshot IPC not registered');
+      return { ptyManager, source, sendEvent, snapshot: () => invoke({}, shell) };
+    }
+
+    it('captures position before the parser barrier and keeps identical later chunks distinct', async () => {
+      const { ptyManager, source, sendEvent, snapshot } = replayRig();
+      const mirror = new ScreenMirror(80, 24);
+      ptyManager.getSnapshot.mockImplementation(() => mirror.snapshot());
+      const emit = (data: string) => {
+        source.emit('data', { ...shell, data });
+        mirror.write(data);
+      };
+      try {
+        emit('before\r\n');
+        emit('overlap\r\n');
+        const response = snapshot();
+        expect(ptyManager.getSnapshot).toHaveBeenCalledOnce();
+        emit('same\r\n');
+        emit('same\r\n');
+        const cut = await response;
+        expect(cut).toEqual({ output: expect.stringContaining('overlap'), alive: true, replayPosition: 2 });
+        expect(cut).not.toEqual(expect.objectContaining({ output: expect.stringContaining('same') }));
+        expect(sendEvent.mock.calls).toEqual([
+          ['pty:data', { ...shell, data: 'before\r\n', replayPosition: 1 }],
+          ['pty:data', { ...shell, data: 'overlap\r\n', replayPosition: 2 }],
+          ['pty:data', { ...shell, data: 'same\r\n', replayPosition: 3 }],
+          ['pty:data', { ...shell, data: 'same\r\n', replayPosition: 4 }],
+        ]);
+      } finally { mirror.dispose(); }
+    });
+
+    it.each([null, { ...identity, generation: 'replacement' }])('does not return an old snapshot when the captured generation is gone (%j)', async (current) => {
+      const { ptyManager, snapshot } = replayRig();
+      ptyManager.getSnapshot.mockResolvedValue('old state');
+      const response = snapshot();
+      ptyManager.liveShell.mockReturnValue(current);
+      await expect(response).resolves.toEqual({ output: '', alive: false, replayPosition: 0 });
+    });
+
+    it('does not serialize a shell that is not live at the cut', async () => {
+      const { ptyManager, snapshot } = replayRig();
+      ptyManager.liveShell.mockReturnValue(null);
+      await expect(snapshot()).resolves.toEqual({ output: '', alive: false, replayPosition: 0 });
+      expect(ptyManager.getSnapshot).not.toHaveBeenCalled();
+    });
+
+    it('does not turn a failed snapshot into a valid cut', async () => {
+      const { ptyManager, snapshot } = replayRig();
+      ptyManager.getSnapshot.mockRejectedValue(new Error('snapshot failed'));
+      await expect(snapshot()).rejects.toThrow('snapshot failed');
+    });
   });
 
   describe('PTY exit delivery', () => {
@@ -331,6 +398,143 @@ describe('registerIpc', () => {
     await expect(ipc.handlers.get('settings:set')!({}, { key, value: 'Bypass Font' })).rejects.toThrow();
     expect(setSpy).not.toHaveBeenCalled();
     expect(settings.get(key)).toBeNull();
+  });
+
+  it('settings:set activity_log_enabled stores the value and emits one keyed settings:changed', async () => {
+    const ipc = fakeIpcMain();
+    const settings = realSettings();
+    const events: Array<{ channel: string; payload: unknown; stored: unknown }> = [];
+    const sendEvent = (channel: string, payload: unknown) => {
+      events.push({ channel, payload, stored: settings.get('activity_log_enabled') });
+    };
+    const services = { settings } as unknown as Parameters<typeof registerIpc>[1];
+    registerIpc(ipc as unknown as IpcMain, services, sendEvent as never);
+
+    await ipc.handlers.get('settings:set')!({}, { key: 'activity_log_enabled', value: false });
+    expect(settings.get('activity_log_enabled')).toBe(false);
+    expect(events).toEqual([{ channel: 'settings:changed', payload: { key: 'activity_log_enabled' }, stored: false }]);
+  });
+
+  describe('desktop terminal engine setting via existing settings IPC', () => {
+    function rig() {
+      const ipc = fakeIpcMain();
+      const settings = realSettings();
+      const events: Array<{ channel: string; payload: unknown; committed: unknown }> = [];
+      registerIpc(ipc, { settings } as Parameters<typeof registerIpc>[1], (channel, payload) => {
+        events.push({ channel, payload, committed: settings.get('terminal_engine') });
+      });
+      return {
+        settings, events,
+        read: () => ipc.handlers.get('settings:get')!({}, { key: 'terminal_engine' }),
+        write: (value: unknown, key: unknown = 'terminal_engine') => ipc.handlers.get('settings:set')!({}, { key, value }),
+      };
+    }
+
+    it('changes in both directions, notifying only real, persisted changes', async () => {
+      const { read, write, events, settings } = rig();
+      const set = vi.spyOn(settings, 'set');
+      await expect(read()).resolves.toEqual({ value: 'xterm' });
+      await expect(write('xterm')).resolves.toEqual({ ok: true });
+      expect(set).not.toHaveBeenCalled();
+      expect(events).toEqual([]);
+      for (const value of ['ghostty', 'xterm']) {
+        await expect(write(value)).resolves.toEqual({ ok: true });
+        await expect(write(value)).resolves.toEqual({ ok: true });
+        await expect(read()).resolves.toEqual({ value });
+      }
+      expect(set.mock.calls).toEqual([['terminal_engine', 'ghostty'], ['terminal_engine', 'xterm']]);
+      expect(events).toEqual(['ghostty', 'xterm'].map(committed => ({
+        channel: 'settings:changed', payload: { key: 'terminal_engine' }, committed,
+      })));
+    });
+
+    it.each([undefined, null, 0, true, {}, ['xterm'], '', 'GHOSTTY', 'ghostty ', 'other'].map(value => [value]))(
+      'rejects invalid input %j without writing or notifying', async (value) => {
+        const { read, write, events, settings } = rig();
+        const set = vi.spyOn(settings, 'set');
+        await expect(write(value)).rejects.toThrow('Invalid terminal engine');
+        expect(set).not.toHaveBeenCalled();
+        expect(events).toEqual([]);
+        await expect(read()).resolves.toEqual({ value: 'xterm' });
+      },
+    );
+
+    it('rejects a non-string setting key without writing or notifying', async () => {
+      const { write, settings, events } = rig();
+      const set = vi.spyOn(settings, 'set');
+      await expect(write('ghostty', 123)).rejects.toThrow('Invalid settings key');
+      expect(set).not.toHaveBeenCalled();
+      expect(events).toEqual([]);
+    });
+
+    it('does not notify or change the next read when the database rejects a save', async () => {
+      const { read, write, events, settings } = rig();
+      vi.spyOn(settings, 'set').mockImplementationOnce(() => { throw new Error('database write failed'); });
+      await expect(write('ghostty')).rejects.toThrow('database write failed');
+      expect(events).toEqual([]);
+      await expect(read()).resolves.toEqual({ value: 'xterm' });
+      await expect(write('ghostty')).resolves.toEqual({ ok: true });
+      await expect(read()).resolves.toEqual({ value: 'ghostty' });
+    });
+  });
+
+  describe.each(['terminal_padding_horizontal', 'terminal_padding_vertical'])('%s settings IPC', key => {
+    function rig() {
+      const ipc = fakeIpcMain();
+      const settings = realSettings();
+      const events = vi.fn();
+      registerIpc(ipc, { settings } as Parameters<typeof registerIpc>[1], events);
+      function handler(channel: string) {
+        const fn = ipc.handlers.get(channel);
+        if (!fn) throw new Error(`Missing IPC handler for ${channel}`);
+        return fn;
+      }
+      return {
+        events,
+        read: () => handler('settings:get')({}, { key }),
+        write: (value: unknown) => handler('settings:set')({}, { key, value }),
+      };
+    }
+
+    it('persists each override including zero, and resets with null', async () => {
+      const { read, write, events } = rig();
+      await expect(read()).resolves.toEqual({ value: null });
+      await expect(write(null)).resolves.toEqual({ ok: true });
+      for (const value of [0, 32, null]) {
+        await expect(write(value)).resolves.toEqual({ ok: true });
+        await expect(write(value)).resolves.toEqual({ ok: true });
+        await expect(read()).resolves.toEqual({ value });
+      }
+      expect(events.mock.calls).toEqual(Array.from({ length: 3 }, () => ['settings:changed', { key }]));
+    });
+
+    it('rejects invalid values without overwriting the saved padding or emitting changes', async () => {
+      const { read, write, events } = rig();
+      await write(8);
+      events.mockClear();
+      for (const value of [-1, 33, 3.5, '8', true, {}, [8], Infinity, NaN, undefined]) {
+        await expect(write(value)).rejects.toThrow(/invalid terminal padding/i);
+        await expect(read()).resolves.toEqual({ value: 8 });
+      }
+      expect(events).not.toHaveBeenCalled();
+    });
+  });
+
+  it('activity:list still returns the stored entries while activity_log_enabled is off (AC17)', async () => {
+    const ipc = fakeIpcMain();
+    const settings = realSettings();
+    settings.set('activity_log_enabled', false);
+    const dir = mkdtempSync(join(tmpdir(), 'reg-act-'));
+    mkdirSync(join(dir, '.metaide'));
+    const entries = [
+      { id: 'a1', ts: '2026-01-01T00:00:00.000Z', agent: 'claude', shellIndex: 1, kind: 'prompt', text: 'one' },
+      { id: 'a2', ts: '2026-01-01T00:00:01.000Z', agent: 'claude', shellIndex: 1, kind: 'turn-end' },
+    ];
+    writeFileSync(join(dir, '.metaide', 'activity.jsonl'), entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
+    const services = { settings, projects: { get: () => ({ id: 4, path: dir }) } } as unknown as Parameters<typeof registerIpc>[1];
+    registerIpc(ipc as unknown as IpcMain, services, () => {});
+    await expect(ipc.handlers.get('activity:list')!({}, { projectId: 4 })).resolves.toEqual({ entries });
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it('settings:set rejects key app_env without writing (bypass of settings:set-app-env, AC4)', async () => {
@@ -940,20 +1144,20 @@ describe('registerIpc', () => {
   it('shells:snapshot returns the serialized terminal state, not the raw scrollback tail', async () => {
     const ipc = fakeIpcMain();
     const ptyManager = fakePtyManager();
-    ptyManager.isAlive.mockReturnValue(true);
+    ptyManager.liveShell.mockReturnValue({ pid: 42, generation: 'live', agent: null });
     ptyManager.getScrollback.mockReturnValue('RAW-TAIL');
     ptyManager.getSnapshot.mockResolvedValue('\x1b[1mSERIALIZED');
     const services = { ptyManager } as unknown as Parameters<typeof registerIpc>[1];
     registerIpc(ipc as unknown as IpcMain, services, () => {});
     const result = await ipc.handlers.get('shells:snapshot')!({}, { projectId: 4, shellIndex: 2 });
-    expect(result).toEqual({ output: '\x1b[1mSERIALIZED', alive: true });
+    expect(result).toEqual({ output: '\x1b[1mSERIALIZED', alive: true, replayPosition: 0 });
     expect(ptyManager.getSnapshot).toHaveBeenCalledWith(4, 2);
   });
 
   it('shells:snapshot returns an empty dead snapshot when no ptyManager is wired', async () => {
     const ipc = fakeIpcMain();
     registerIpc(ipc as unknown as IpcMain, {} as unknown as Parameters<typeof registerIpc>[1], () => {});
-    await expect(ipc.handlers.get('shells:snapshot')!({}, { projectId: 1, shellIndex: 0 })).resolves.toEqual({ output: '', alive: false });
+    await expect(ipc.handlers.get('shells:snapshot')!({}, { projectId: 1, shellIndex: 0 })).resolves.toEqual({ output: '', alive: false, replayPosition: 0 });
   });
 
   it('shells:launch rejects while the permission mode is unchosen, without spawning', async () => {
@@ -1106,7 +1310,7 @@ describe('registerIpc', () => {
     });
 
     describe('settings:set-terminal-frost-level', () => {
-      it.each(['off', 'subtle', 'medium', 'strong'])('a valid level %s persists, returns ok and emits settings:changed once', async (level) => {
+      it.each(['off', 'subtle', 'medium', 'strong', 'custom'])('a valid level %s persists, returns ok and emits settings:changed once', async (level) => {
         const { ipc, settings, events } = setup();
         await expect(ipc.handlers.get('settings:set-terminal-frost-level')!({}, { level })).resolves.toEqual({ ok: true });
         expect(settings.get('terminal_frost_level')).toBe(level);
@@ -1124,6 +1328,24 @@ describe('registerIpc', () => {
         const { ipc, settings, events } = setup();
         await expect(ipc.handlers.get('settings:set-terminal-frost-level')!({}, {})).resolves.toEqual({ ok: false, error: 'invalid' });
         expect(settings.get('terminal_frost_level')).toBe('off');
+        expect(events).toEqual([]);
+      });
+    });
+
+    describe('settings:set terminal_frost_opacity', () => {
+      it.each([10, 100])('stores %s and emits only for a changed value', async (value) => {
+        const { ipc, settings, events } = setup();
+        const set = ipc.handlers.get('settings:set')!;
+        await set({}, { key: 'terminal_frost_opacity', value });
+        await set({}, { key: 'terminal_frost_opacity', value });
+        expect(settings.get('terminal_frost_opacity')).toBe(value);
+        expect(events).toEqual([{ channel: 'settings:changed', payload: { key: 'terminal_frost_opacity' } }]);
+      });
+
+      it.each([9, 101, 50.5, '50', null])('rejects %j without writing or emitting', async (value) => {
+        const { ipc, settings, events } = setup();
+        await expect(ipc.handlers.get('settings:set')!({}, { key: 'terminal_frost_opacity', value })).rejects.toThrow('Invalid terminal frost opacity');
+        expect(settings.get('terminal_frost_opacity')).toBe(70);
         expect(events).toEqual([]);
       });
     });

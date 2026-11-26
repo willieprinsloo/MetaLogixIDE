@@ -47,7 +47,7 @@ export interface TerminalHandle {
 }
 
 export interface TerminalRegistration {
-  opened(): void;            // call right after term.open()
+  opened(restoreHandoff?: boolean): void; // Call after the terminal surface becomes ready.
   used(): void;              // call on the xterm textarea's 'focus' event
   unregister(): void;        // call in effect cleanup
 }
@@ -92,7 +92,7 @@ class Coordinator implements TerminalFocusCoordinator {
   register(handle: TerminalHandle): TerminalRegistration {
     this.handles.push(handle);
     return {
-      opened: () => this.opened(handle),
+      opened: (restoreHandoff) => this.opened(handle, restoreHandoff),
       used: () => { if (this.handles.includes(handle)) this.lastUsed = handle; },
       unregister: () => this.unregister(handle),
     };
@@ -154,10 +154,11 @@ class Coordinator implements TerminalFocusCoordinator {
     return shouldHonourRequest(this.ruleInput());
   }
 
-  private opened(handle: TerminalHandle): void {
+  private opened(handle: TerminalHandle, restoreHandoff = false): void {
     const isPending = this.pendingTarget === handle;
     if (isPending) this.pendingTarget = null;
-    if (this.consumeRequest(handle) || (isPending && shouldTakeFocus(this.ruleInput()))) handle.focus();
+    if (this.consumeRequest(handle) || (isPending && shouldTakeFocus(this.ruleInput())) ||
+      (restoreHandoff && !this.request && !this.overlayOpen && this.deps.activeElementKind() === 'none')) handle.focus();
   }
 
   private unregister(handle: TerminalHandle): void {

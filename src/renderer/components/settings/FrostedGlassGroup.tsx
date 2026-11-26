@@ -1,10 +1,11 @@
 import { FROSTED_GLASS_COPY, FROSTED_GLASS_TESTIDS } from '@renderer/frosted-chrome-contract';
-import { CHROME_FROST_LEVELS, TERMINAL_FROST_LEVELS, type FrostPlatform } from '@shared/frosted-glass';
+import { CHROME_FROST_LEVELS, TERMINAL_FROST_MODES, type FrostPlatform } from '@shared/frosted-glass';
 import { useFrostedGlassSettings } from '@renderer/hooks/useFrostedGlassSettings';
 import { usePrefersReducedTransparency } from '@renderer/hooks/usePrefersReducedTransparency';
 import { Switch } from '@renderer/components/settings/primitives';
 import { FrostLevelRow } from '@renderer/components/settings/FrostLevelRow';
 import { MaterialRow } from '@renderer/components/settings/MaterialRow';
+import { TerminalFrostOpacityControl } from './TerminalFrostOpacityControl';
 
 const ROW_LABEL = 'text-[13px] font-medium text-[--text]';
 const HINT = 'text-xs text-[--text-muted]';
@@ -51,12 +52,13 @@ export function FrostedGlassGroup({ platform }: { readonly platform: FrostPlatfo
       />
       <FrostLevelRow
         label={FROSTED_GLASS_COPY.terminalFrost}
-        options={TERMINAL_FROST_LEVELS}
+        options={TERMINAL_FROST_MODES}
         value={values.terminalFrostLevel}
         disabled={levelsDisabled}
         testId={FROSTED_GLASS_TESTIDS.terminalFrost}
         onChange={(next) => void setTerminalFrostLevel(next)}
       />
+      {values.terminalFrostLevel === 'custom' && <TerminalFrostOpacityControl disabled={levelsDisabled || reduceTransparency} />}
       {!isLinux && <MaterialRow value={values.vibrancyMaterial} onChange={(next) => void setVibrancyMaterial(next)} />}
       {reduceTransparency && (
         <p data-testid={FROSTED_GLASS_TESTIDS.reduceTransparency} className={HINT}>

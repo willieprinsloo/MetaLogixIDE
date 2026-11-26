@@ -11,6 +11,7 @@ export const FROST_ATTR = {
   overlay: 'data-overlay',
   chromeFrost: 'data-chrome-frost',
   terminalFrost: 'data-terminal-frost',
+  terminalOpacity: 'data-terminal-frost-opacity',
   /**
    * Present whenever the window itself is transparent (Linux, whatever Frosted chrome says). With
    * Frosted chrome off it lets the CSS paint an opaque underlay, so the window still looks as it
@@ -34,7 +35,7 @@ export const FROSTED_GLASS_COPY = {
   frostChromeHintLinux: 'Let the desktop show through the sidebar and title bar. Blur depends on your compositor.',
   reduceTransparency: 'Reduce transparency is on in System Settings, so these surfaces stay solid.',
   reduceTransparencyLinux: 'Your system asks for reduced transparency, so these surfaces stay solid.',
-  levels: { off: 'Off', subtle: 'Subtle', medium: 'Medium', strong: 'Strong' },
+  levels: { off: 'Off', subtle: 'Subtle', medium: 'Medium', strong: 'Strong', custom: 'Custom' },
   materials: {
     sidebar: 'Sidebar',
     'under-window': 'Under window',

@@ -21,6 +21,7 @@ export interface TargetSample {
   present: boolean;
   count: number;
   x: number;
+  y: number;
   w: number;
   h: number;
   /** Computed padding-left + padding-right (to get a row's content width). */
@@ -42,7 +43,7 @@ export interface Frame {
 }
 
 const ABSENT: TargetSample = {
-  present: false, count: 0, x: 0, w: 0, h: 0, padX: 0, clip: 'none', transform: 'none', opacity: 0, inlineOpacity: '', pressed: null, testid: null,
+  present: false, count: 0, x: 0, y: 0, w: 0, h: 0, padX: 0, clip: 'none', transform: 'none', opacity: 0, inlineOpacity: '', pressed: null, testid: null,
 };
 
 /**
@@ -79,6 +80,7 @@ export async function startFrames(win: Page, targets: Record<string, string>, ms
           present: true,
           count,
           x: r.x,
+          y: r.y,
           w: r.width,
           h: r.height,
           padX: (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0),

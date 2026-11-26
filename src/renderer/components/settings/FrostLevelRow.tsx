@@ -1,8 +1,8 @@
 import { FROSTED_GLASS_COPY } from '@renderer/frosted-chrome-contract';
 import { SegmentedRadioGroup } from '@renderer/components/settings/SegmentedRadioGroup';
-import type { TerminalFrostLevel } from '@shared/frosted-glass';
+import type { TerminalFrostMode } from '@shared/frosted-glass';
 
-export interface FrostLevelRowProps<T extends TerminalFrostLevel> {
+export interface FrostLevelRowProps<T extends TerminalFrostMode> {
   label: string;
   options: readonly T[];
   value: T;
@@ -17,7 +17,7 @@ export interface FrostLevelRowProps<T extends TerminalFrostLevel> {
  * "Needs Frosted chrome" reason shows under them, linked to the radiogroup with
  * `aria-describedby` so it is announced with the disabled radios (AC9).
  */
-export function FrostLevelRow<T extends TerminalFrostLevel>({ label, options, value, disabled, testId, onChange }: FrostLevelRowProps<T>) {
+export function FrostLevelRow<T extends TerminalFrostMode>({ label, options, value, disabled, testId, onChange }: FrostLevelRowProps<T>) {
   const hintId = `${testId}-hint`;
   return (
     <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">

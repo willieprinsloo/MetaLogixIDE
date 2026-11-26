@@ -15,6 +15,9 @@ import { StoryTab } from './components/StoryTab';
 import { ChatTab } from './components/ChatTab';
 import { AgentChatTab } from './components/AgentChatTab';
 import { useSelfDeviceName } from './p2p/useSelfDeviceName';
+import { BoardPanel, type BoardLeaseControl } from './metaproject/BoardPanel';
+import { MetaprojectSessionProvider, useMetaprojectSession } from './metaproject/session';
+import { useAssignment } from './metaproject/useAssignment';
 import { GitPanel } from './components/GitPanel';
 import { Settings } from './components/Settings';
 import { ProjectSettingsTab } from './components/ProjectSettingsTab';
@@ -33,6 +36,8 @@ import { appShortcutAction } from './app-keys';
 import type { AppShortcutAction } from './shortcut-contract';
 import { SHORTCUT_COPY } from './shortcut-copy';
 import { useShortcutPlatform } from './shortcut-platform';
+import { routeTerminalKey, terminalTabAction } from './terminal-keys';
+import { GHOSTTY_HOST_SELECTOR } from '@shared/terminal-engine';
 import { ProjectSearch } from './components/ProjectSearch';
 import { PromptLibrary } from './components/PromptLibrary';
 import { ScrollbackSearch } from './components/ScrollbackSearch';
@@ -41,8 +46,7 @@ import { ToastStack } from './components/ToastStack';
 import { PermissionModeDialog } from './components/PermissionModeDialog';
 import { ProjectEnvTab } from './components/ProjectEnvTab';
 import { DiffTab } from './components/DiffTab';
-import { ENV_COPY, ENV_TESTIDS } from './project-env-copy';
-import { DIFF_COPY, DIFF_TESTIDS } from './diff-tab-copy';
+import { DIFF_TESTIDS } from './diff-tab-copy';
 import { diffTabCount } from './diff/diff-selection';
 import { isMainTab, visibleMainTab, type MainTab } from './main-tab';
 import { useActivityLogEnabled } from './hooks/useActivityLogEnabled';
@@ -64,7 +68,7 @@ import { usePoppedShells } from './hooks/usePoppedShells';
 import { useProjectShells } from './hooks/useProjectShells';
 import { useGitStatus } from './hooks/useGitStatus';
 import { useWindowFullscreen } from './hooks/useWindowFullscreen';
-import { terminalFocus, useWindowTerminalFocus } from './hooks/useWindowTerminalFocus';
+import { activeElementKind, terminalFocus, useWindowTerminalFocus } from './hooks/useWindowTerminalFocus';
 import { useReportViewedShells } from './hooks/useReportViewedShells';
 import { Tooltip } from './components/Tooltip';
 import { FoldPane } from './components/FoldPane';
@@ -78,12 +82,13 @@ const STATUS_BAR_HEIGHT = 34;
 import { useSplitLifecycle } from './hooks/useSplitLifecycle';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { StatusDot } from './components/StatusDot';
-import { useProjectAgentState, useShellAgentState } from './hooks/useAgentStates';
+import { useShellAgentState } from './hooks/useAgentStates';
 import { useApplyUiFont } from './fonts/use-apply-ui-font';
-import { XIcon } from './components/shell-icons';
 import { ICON_SIZE } from './components/icon-size';
-import { ShellTabsBar } from './components/ShellTabsBar';
+import { ShellTabsBar, type ShellLaunched, type ShellTabMotion } from './components/ShellTabsBar';
+import { SplitButton } from './components/SplitButton';
 import { ShellSplit } from './components/ShellSplit';
+import { WorkspaceDestinations } from './components/WorkspaceDestinations';
 import { ShellTabDot } from './components/ShellTabDot';
 import { SPLIT_RATIO_DEFAULT, sanitizeRatio } from './split-ratio';
 import { shellChipLabel, stripShells } from './shell-label';
@@ -152,7 +157,7 @@ export function App() {
   // a blank window. See components/ErrorBoundary.tsx for the fallback UI.
   return (
     <ErrorBoundary>
-      {popout ? <PopoutShell {...popout} /> : <MainApp />}
+      {popout ? <PopoutShell {...popout} /> : <MetaprojectSessionProvider><MainApp /></MetaprojectSessionProvider>}
     </ErrorBoundary>
   );
 }
@@ -160,44 +165,29 @@ export function App() {
 function MainApp() {
   const platform = useShortcutPlatform();
   useFrostedGlassAttributes();
-  // App-boot auto-login: if the user opted into "Remember me" in a previous
-  // session, the OS keychain has their password. Try the silent auto-login
-  // once at startup so the chat unread badge, event stream, and rail state
-  // reflect reality without waiting for the user to open the chat panel.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const { username, hasPassword } = await api.invoke('metaproject:credentials-load', undefined as never);
-        if (cancelled) return;
-        if (!username) return;
-        if (!hasPassword) {
-          console.warn('[metaproject] saved username but no keychain password — you were signed out; sign in again to persist');
-          return;
-        }
-        const res = await api.invoke('metaproject:auto-login', undefined as never);
-        if (cancelled) return;
-        if (res.ok && res.userName) {
-          toast(`Signed in to metaproject as ${res.userName}`, { kind: 'success' });
-        } else if (!res.ok) {
-          console.warn('[metaproject] auto-login failed:', res.reason);
-          toast('Metaproject auto-login failed — sign in again from the Chat tab', {
-            kind: 'error',
-            detail: res.reason ?? 'unknown reason',
-          });
-        }
-      } catch (e) {
-        console.warn('[metaproject] auto-login threw:', e);
-      }
-    })();
-    return () => { cancelled = true; };
+  const { snapshot: account, current: currentAccount, promptOpen } = useMetaprojectSession();
+  const [boardProject, setBoardProject] = useState<number | null>(null);
+  const boardControls = useRef<BoardLeaseControl | null>(null);
+  const boardOpener = useRef<HTMLButtonElement>(null);
+  const beforeOverlay = useCallback((show: () => void) => {
+    const lease = boardControls.current;
+    if (lease) void lease.hide().then(show); else show();
   }, []);
+  const closeBoard = useCallback(() => { boardControls.current?.close(); setBoardProject(null); }, []);
+  const returnToWorkspace = useCallback(() => { closeBoard(); boardOpener.current?.focus(); }, [closeBoard]);
   const [selected, setSelected] = useState<Project | null>(null);
+  const selectionRequestRef = useRef(0);
   // A project on a paired machine, shown in place of the local main body until a local project is picked.
   const [remotePane, setRemotePane] = useState<OpenPaneRequest | null>(null);
-  const openPane = useCallback((req: OpenPaneRequest) => setRemotePane(req), []);
+  const remotePaneRef = useRef(remotePane);
+  remotePaneRef.current = remotePane;
+  const localWorkspaceProject = remotePane ? null : selected;
+  function openLocalWorkspaceFile(relPath: string, line: number | null): void {
+    if (remotePaneRef.current) return;
+    setMainTab('files');
+    setOpenInFiles({ relPath, line });
+  }
   // -1 never matches a real project id, so this reads idle when nothing is selected.
-  const selectedAgentState = useProjectAgentState(selected?.id ?? -1);
   // Keep a live ref of `selected` so the shortcut handler (bound once in a
   // useEffect with an empty dep list) always reads the current project.
   const selectedRef = useRef<Project | null>(null);
@@ -208,7 +198,10 @@ function MainApp() {
   useEffect(() => { toggleFullscreenRef.current = toggleFullscreen; }, [toggleFullscreen]);
   const [aliveCount, setAliveCount] = useState(0);
   const [localAliveShells, setLocalAliveShells] = useState<Array<{ projectId: number; projectName: string; projectPath: string; shellIndex: number; launchArgv: string[] }>>([]);
-  const [mainTab, setMainTab] = usePersistedState<MainTab>('metaide.mainTab', 'shell', isMainTab);
+  const [mainTab, persistMainTab] = usePersistedState<MainTab>('metaide.mainTab', 'shell', isMainTab);
+  const setMainTab = useCallback((tab: MainTab) => { closeBoard(); persistMainTab(tab); }, [closeBoard, persistMainTab]);
+  const assignment = useAssignment(selected?.id ?? null);
+  const boardVisible = boardProject !== null && boardProject === selected?.id && !remotePane;
   const mainTabRef = useRef(mainTab);
   mainTabRef.current = mainTab;
   const activityEnabled = useActivityLogEnabled();
@@ -223,21 +216,28 @@ function MainApp() {
     setDiffFocus({ key: entryKey, tick: Date.now() });
     setMainTab('diff');
   }, [setMainTab]);
-  // Unread chat count for the sidebar badge. Increments on every incoming
-  // metaproject `channel_message` that arrives while the user isn't looking
-  // at the chat pane. Clears the moment they switch to chat. Persists in
-  // localStorage so a badge that hasn't been acknowledged survives an app
-  // restart — you won't lose track of unread pings between sessions.
-  const [chatUnread, setChatUnread] = usePersistedState<number>(
-    'metaide.chatUnread',
-    0,
-    (v): v is number => typeof v === 'number' && Number.isFinite(v),
-  );
-  const [activeView, setActiveView] = usePersistedState<ActivityView>(
+  const activityEnabled = useActivityLogEnabled();
+  useEffect(() => {
+    if (visibleMainTab(mainTab, activityEnabled) !== mainTab) setMainTab('shell');
+  }, [mainTab, activityEnabled, setMainTab]);
+  // Unread chat count scoped to the signed-in account epoch — switching accounts
+  // (or signing out) resets the badge so one user's unread doesn't follow another in.
+  const accountEpoch = account?.phase === 'signed-in' ? account.epoch : null;
+  const [unread, setUnread] = useState<{ epoch: number; count: number } | null>(null);
+  const chatUnread = unread && unread.epoch === accountEpoch ? unread.count : 0;
+  const [activeView, persistActiveView] = usePersistedState<ActivityView>(
     'metaide.activeView',
     'projects',
     (v): v is ActivityView => v === 'projects' || v === 'chat' || v === 'agents' || v === 'git' || v === 'tasks' || v === 'fleet' || v === 'story',
   );
+  const setActiveView = useCallback((view: ActivityView) => { closeBoard(); persistActiveView(view); }, [closeBoard, persistActiveView]);
+  const openPane = useCallback((request: OpenPaneRequest) => {
+    ++selectionRequestRef.current;
+    remotePaneRef.current = request;
+    terminalFocus.cancelRequest();
+    setActiveView('projects');
+    setRemotePane(request);
+  }, [setActiveView]);
   // The Agents chat lives in its own right-side dock — toggled independently
   // of activeView so opening it never hides the project tree.
   const [agentsDockOpen, setAgentsDockOpen] = usePersistedState<boolean>(
@@ -260,20 +260,14 @@ function MainApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const selfDeviceName = useSelfDeviceName();
-  // Live-ref of the active view so the metaproject subscriber can decide
-  // whether to bump the badge without re-subscribing on every switch.
   const activeViewRef = useRef<ActivityView>('projects');
-  useEffect(() => { activeViewRef.current = activeView; }, [activeView]);
-  useEffect(() => {
-    const off = api.on('metaproject:event', ({ event }) => {
-      if (event === 'channel_message' && activeViewRef.current !== 'chat') {
-        setChatUnread((n) => n + 1);
-      }
-    });
-    return () => { off(); };
-  }, []);
-  // Clear unread the instant the chat panel opens.
-  useEffect(() => { if (activeView === 'chat') setChatUnread(0); }, [activeView]);
+  activeViewRef.current = activeView;
+  useEffect(() => api.on('metaproject:chat-event', ({ epoch, event }) => {
+    const now = currentAccount();
+    if (now?.phase !== 'signed-in' || now.epoch !== epoch || event !== 'channel_message' || activeViewRef.current === 'chat') return;
+    setUnread((previous) => ({ epoch, count: previous?.epoch === epoch ? previous.count + 1 : 1 }));
+  }), [currentAccount]);
+  useEffect(() => { if (activeView === 'chat' || accountEpoch === null) setUnread(null); }, [activeView, accountEpoch]);
   // Clear any pending "open this file" request when the project changes —
   // otherwise a relPath captured from project A would fire in project B's
   // FilesTab and either open the wrong file or 404. The one exception is a
@@ -326,12 +320,12 @@ function MainApp() {
   const [unloadTarget, setUnloadTarget] = useState<Pick<Project, 'id' | 'name'> | null>(null);
   const unloadTargetRef = useRef<Pick<Project, 'id' | 'name'> | null>(null);
   const unloadOpenerRef = useRef<HTMLElement | null>(null);
-  const openUnloadSession = useCallback((project: Project, opener: HTMLElement | null) => {
+  const openUnloadSession = useCallback((project: Project, opener: HTMLElement | null) => beforeOverlay(() => {
     if (unloadTargetRef.current) return;
     unloadTargetRef.current = { id: project.id, name: project.name };
     unloadOpenerRef.current = opener;
     setUnloadTarget(unloadTargetRef.current);
-  }, []);
+  }), [beforeOverlay]);
   const closeUnloadSession = useCallback(() => {
     unloadTargetRef.current = null;
     setUnloadTarget(null);
@@ -352,7 +346,7 @@ function MainApp() {
   const activeShellAgentStateLabel = activeShellAgentLabel ? activeShellAgentState : null;
   const showStatusBar = useShowStatusBar();
   const reduceMotion = useReducedMotion() ?? false;
-  // Hold terminal geometry while the status bar folds and the sheet's margins animate, then refit once.
+  // Hold terminal geometry while the status bar folds, then refit once.
   const [statusBarAnimating, setStatusBarAnimating] = useState(false);
   const statusBarFirst = useRef(true);
   useLayoutEffect(() => {
@@ -385,29 +379,39 @@ function MainApp() {
   // the left sheet so the two can be sized for their different content
   // (list of files vs an ambient chat stream).
   const [agentsDockWidth, setAgentsDockWidth] = usePersistedNumber('metaide.agentsDockWidth', 340, 260, 640);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsOpen, updateSettingsOpen] = useState(false);
+  // beforeOverlay lets the Board panel save a lease before another modal shows over it.
+  const setSettingsOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updateSettingsOpen(open)); else updateSettingsOpen(false); }, [beforeOverlay]);
   const [projectSettingsTarget, setProjectSettingsTarget] = useState<ProjectSettingsTarget | null>(null);
   const settingsTarget = projectSettingsTarget ?? selected;
   // Bumped by "Environment variables…" so the Settings tab scrolls its env section into view.
   const [envFocusRequest, setEnvFocusRequest] = useState(0);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
-  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [newProjectOpen, updateNewProjectOpen] = useState(false);
+  const setNewProjectOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updateNewProjectOpen(open)); else updateNewProjectOpen(false); }, [beforeOverlay]);
   const [openInFiles, setOpenInFiles] = useState<{ relPath: string; line: number | null } | null>(null);
   const [filesActivePath, setFilesActivePath] = useState<string | null>(null);
   const [paletteRequest, setPaletteRequest] = useState<PaletteRequest | null>(null);
   const paletteOpenRef = useRef(false);
   paletteOpenRef.current = paletteRequest != null;
   const paletteSeqRef = useRef(0);
-  const openPalette = useCallback((seed: PaletteSeed) => {
+  const openPalette = useCallback((seed: PaletteSeed) => beforeOverlay(() => {
     paletteSeqRef.current += 1;
     setPaletteRequest({ seq: paletteSeqRef.current, seed });
-  }, []);
-  const [helpOpen, setHelpOpen] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [promptsOpen, setPromptsOpen] = useState(false);
-  const [scrollbackOpen, setScrollbackOpen] = useState(false);
+  }), [beforeOverlay]);
+  const [helpOpen, updateHelpOpen] = useState(false);
+  const setHelpOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updateHelpOpen(true)); else updateHelpOpen(false); }, [beforeOverlay]);
+  const helpOpenRef = useRef(helpOpen);
+  helpOpenRef.current = helpOpen;
+  const [searchOpen, updateSearchOpen] = useState(false);
+  const setSearchOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updateSearchOpen(open)); else updateSearchOpen(false); }, [beforeOverlay]);
+  const [promptsOpen, updatePromptsOpen] = useState(false);
+  const setPromptsOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updatePromptsOpen(open)); else updatePromptsOpen(false); }, [beforeOverlay]);
+  const [scrollbackOpen, updateScrollbackOpen] = useState(false);
+  const setScrollbackOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updateScrollbackOpen(open)); else updateScrollbackOpen(false); }, [beforeOverlay]);
   const keepAwake = useKeepAwake();
-  const [keepAwakeUntilOpen, setKeepAwakeUntilOpen] = useState(false);
+  const [keepAwakeUntilOpen, updateKeepAwakeUntilOpen] = useState(false);
+  const setKeepAwakeUntilOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updateKeepAwakeUntilOpen(open)); else updateKeepAwakeUntilOpen(false); }, [beforeOverlay]);
   const keepAwakeActive = keepAwake?.state.active ?? false;
   const keepAwakeStart = keepAwake?.start;
   const keepAwakeStop = keepAwake?.stop;
@@ -422,17 +426,17 @@ function MainApp() {
           darkenNow: () => { void keepAwakeDarken(); },
         }
       : null
-  ), [keepAwakeActive, keepAwakeStart, keepAwakeStop, keepAwakeDarken]);
+  ), [keepAwakeActive, keepAwakeStart, keepAwakeStop, keepAwakeDarken, setKeepAwakeUntilOpen]);
   const envDrafts = useEnvDrafts();
   const envDirty = selected != null && envDrafts.isDirty(selected.id);
   const { mode: themeMode, effective: effectiveTheme, cycle: cycleTheme, setMode: setThemeMode, setPalette: setThemePalette } = useTheme();
   const permissionMode = useClaudePermissionMode();
   const shortcutsBlockedRef = useRef(true);
-  shortcutsBlockedRef.current = permissionMode.status !== 'chosen' || unloadTarget !== null;
+  shortcutsBlockedRef.current = permissionMode.status !== 'chosen' || unloadTarget !== null || promptOpen;
   const overlayOpen = paletteRequest != null || settingsOpen || newProjectOpen
     || helpOpen || (searchOpen && selected != null) || promptsOpen || scrollbackOpen
-    || permissionMode.status === 'unchosen' || unloadTarget !== null;
-  useWindowTerminalFocus(overlayOpen);
+    || permissionMode.status === 'unchosen' || unloadTarget !== null || promptOpen || keepAwakeUntilOpen;
+  useWindowTerminalFocus(overlayOpen || boardVisible);
   // A request issued while the palette is still open is refused by the overlay rule, so it waits for the close to commit.
   const focusAfterPaletteRef = useRef<number | null>(null);
   useEffect(() => {
@@ -441,7 +445,7 @@ function MainApp() {
     focusAfterPaletteRef.current = null;
     terminalFocus.requestProjectFocus(projectId);
   }, [paletteRequest]);
-  useReportViewedShells({ selectedProjectId: selected?.id ?? null, mainTab, activeShellIndex, rightShellIndex });
+  useReportViewedShells({ selectedProjectId: boardVisible ? null : selected?.id ?? null, mainTab, activeShellIndex, rightShellIndex });
   const { roots } = useRoots();
   const { isPopped } = usePoppedShells();
   const split = useSplitLifecycle({
@@ -468,30 +472,62 @@ function MainApp() {
     }
   }, [selected, activeShellIndex, isPopped]);
 
+  const tabLaunchRef = useRef(0);
+  const tabMotionRef = useRef<ShellTabMotion>(null);
+  function selectTerminalTab(shellIndex: number) {
+    if (!selected) return;
+    ++tabLaunchRef.current;
+    terminalFocus.cancelRequest();
+    setActiveShellIndex(shellIndex);
+  }
+
+  const restoreClosedTerminal = useCallback((projectId: number, shellIndex: number) => {
+    if (shellIndex === 0 || selectedRef.current?.id !== projectId || activeShellIndexRef.current !== shellIndex) return;
+    setActiveShellIndexFor(projectId, 0);
+  }, [setActiveShellIndexFor]);
+
+  const beginTerminalTabLaunch = useCallback((projectId: number, onLaunched?: ShellLaunched) => {
+    const launch = ++tabLaunchRef.current;
+    terminalFocus.cancelRequest();
+    const selection = selectionRequestRef.current;
+    const main = mainTabRef.current;
+    const view = activeViewRef.current;
+    const remote = remotePaneRef.current;
+    const opener = document.activeElement;
+    const isCurrent = () => launch === tabLaunchRef.current && selection === selectionRequestRef.current &&
+      selectedRef.current?.id === projectId && main === mainTabRef.current && view === activeViewRef.current && remote === remotePaneRef.current;
+    return (shellIndex: number) => {
+      if (!isCurrent()) return;
+      onLaunched?.(shellIndex);
+      if (opener !== document.activeElement && activeElementKind() === 'text-entry') return;
+      setMainTab('shell');
+      setActiveShellIndexFor(projectId, shellIndex);
+      if (document.hasFocus()) terminalFocus.requestFocus({ projectId, shellIndex });
+    };
+  }, [setActiveShellIndexFor, setMainTab]);
+
   /** Launches a plain shell in the selected project: a new tab (⌘T) or, with `newWindow`, a new window (⌘⇧T). */
-  const openNewTerminal = useCallback((newWindow: boolean) => {
+  const openNewTerminal = useCallback((newWindow: boolean, onLaunched?: ShellLaunched) => {
     const p = selectedRef.current;
-    if (!p) return;
+    if (!p || remotePaneRef.current) return;
+    const activate = newWindow ? null : beginTerminalTabLaunch(p.id, onLaunched);
     void (async () => {
       try {
         const { shellIndex } = await api.invoke('shells:launch-plain', { projectId: p.id });
         if (newWindow) {
           await api.invoke('windows:popout-shell', { projectId: p.id, shellIndex });
           toast(`New terminal in ${p.name}`, { kind: 'info' });
-        } else {
-          setMainTab('shell');
-          setActiveShellIndex(shellIndex);
-        }
+        } else activate?.(shellIndex);
       } catch (err) {
         toast('Failed to open terminal', { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') });
       }
     })();
-  }, [setActiveShellIndex, setMainTab]);
+  }, [beginTerminalTabLaunch]);
   const openNewTerminalRef = useRef(openNewTerminal);
   openNewTerminalRef.current = openNewTerminal;
 
   const commands = useMemo(() => buildPaletteCommands({
-    hasProject: selected != null,
+    hasProject: localWorkspaceProject !== null,
     hasPrimary: primaryAlive && remotePane === null,
     sidebarOpen,
     openPalette,
@@ -502,16 +538,18 @@ function MainApp() {
     toggleSidebar: () => toggleSidebar(false),
     statusBarVisible: showStatusBar,
     toggleStatusBar: () => { void api.invoke('settings:set', { key: 'show_status_bar', value: !showStatusBar }); },
-    showTab: setMainTab,
+    showTab: (tab) => { if (!remotePaneRef.current) setMainTab(tab); },
     openHelp: () => setHelpOpen(true),
     openNewProject: () => setNewProjectOpen(true),
     unloadSession: async () => {
-      if (selected && !remotePane && primaryAlive) {
+      if (selected && !remotePaneRef.current && primaryAlive) {
         openUnloadSession(selected, document.querySelector<HTMLElement>('[data-testid="status-bar-palette-hint"]'));
       }
     },
     popOutShell: async () => {
-      if (selected) await api.invoke('windows:popout-shell', { projectId: selected.id, shellIndex: 0 });
+      if (localWorkspaceProject && !remotePaneRef.current) {
+        await api.invoke('windows:popout-shell', { projectId: localWorkspaceProject.id, shellIndex: 0 });
+      }
     },
     findInTerminal: () => toast(SHORTCUT_COPY.findInTerminalToast(platform), { kind: 'info' }),
     openNewTerminal,
@@ -523,7 +561,7 @@ function MainApp() {
     },
     keepAwake: paletteKeepAwake,
     platform,
-  }), [selected, remotePane, primaryAlive, openUnloadSession, sidebarOpen, openPalette, setActiveView, toggleSidebar, showStatusBar, setMainTab, openNewTerminal, setThemeMode, setThemePalette, paletteKeepAwake, platform]);
+  }), [selected, remotePane, localWorkspaceProject, primaryAlive, openUnloadSession, sidebarOpen, openPalette, setActiveView, toggleSidebar, showStatusBar, setMainTab, openNewTerminal, setThemeMode, setThemePalette, paletteKeepAwake, platform, setSearchOpen, setScrollbackOpen, setPromptsOpen, setHelpOpen, setNewProjectOpen, setSettingsOpen]);
 
   const refreshAlive = useCallback(async () => {
     const { shells } = await api.invoke('shells:alive-list', undefined as never);
@@ -568,13 +606,10 @@ function MainApp() {
         const cur   = selectedRef.current!;
         const fresh = projects.find((p) => p.id === idAtStart);
         if (!fresh) return;
-        const linkedNow    = fresh.config.linkedMetaprojectProjectId ?? fresh.metaprojectProjectId ?? null;
-        const linkedBefore = cur.config.linkedMetaprojectProjectId   ?? cur.metaprojectProjectId   ?? null;
         const defaultCliNow    = fresh.config.defaultCliName ?? null;
         const defaultCliBefore = cur.config.defaultCliName   ?? null;
         const materialChange =
-          linkedNow !== linkedBefore
-          || defaultCliNow !== defaultCliBefore
+          defaultCliNow !== defaultCliBefore
           || fresh.name !== cur.name
           || fresh.path !== cur.path;
         if (materialChange) setSelected(fresh);              // (2)
@@ -600,9 +635,11 @@ function MainApp() {
 
   useEffect(() => {
     const off = api.on('app:open-file-request', async ({ path }) => {
+      closeBoard();
       const requestId = ++selectionRequestRef.current;
       try {
         const { projects } = await api.invoke('projects:list', undefined as never);
+        if (selectionRequestRef.current !== requestId) return;
         // Longest-prefix wins — a project nested inside a parent project
         // (rare, but possible with multiple roots) still routes correctly.
         const match = projects
@@ -622,14 +659,26 @@ function MainApp() {
         setActiveView('projects');
         setSelected(project);
         try { await api.invoke('shells:launch', { projectId: project.id }); } catch { /* fine */ }
+        if (selectionRequestRef.current !== requestId) return;
         setMainTab('files');
-        if (relPath) requestAnimationFrame(() => setOpenInFiles({ relPath, line: null }));
+        if (relPath) requestAnimationFrame(() => {
+          if (selectionRequestRef.current === requestId) setOpenInFiles({ relPath, line: null });
+        });
       } catch (e) {
+        if (selectionRequestRef.current !== requestId) return;
         toast('Could not open file', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
       }
     });
     return () => { off(); };
-  }, []);
+  }, [closeBoard, setActiveView, setMainTab]);
+
+  // A clicked fleet notice: open that shell on the paired machine it came from.
+  useEffect(() => {
+    const off = api.on('p2p:focus-remote-shell', ({ deviceId, deviceName, projectId, projectName, shellIndex }) => {
+      openPane({ source: { kind: 'remote', deviceId }, deviceName, projectId, projectName, shellIndex });
+    });
+    return () => { off(); };
+  }, [openPane]);
 
   // Terminal link clicks for local files (file:// URLs, bare absolute paths)
   // that resolve inside a known project route here. We switch the window
@@ -660,6 +709,7 @@ function MainApp() {
   // switch to that shell tab.
   useEffect(() => {
     const off = api.on('shell:focus-request', async ({ projectId, shellIndex }) => {
+      closeBoard();
       const requestId = ++selectionRequestRef.current;
       setRemotePane(null);
       terminalFocus.requestFocus({ projectId, shellIndex });
@@ -678,18 +728,18 @@ function MainApp() {
       }
     });
     return () => { off(); };
-  }, [setActiveShellIndexFor, setMainTab]);
+  }, [closeBoard, setActiveShellIndexFor, setMainTab]);
 
   useEffect(() => {
     const runAppShortcut: Readonly<Record<AppShortcutAction, () => void>> = {
       'toggle-sidebar': () => toggleSidebar(false),
       'open-settings': () => setSettingsOpen(true),
       'new-project': () => setNewProjectOpen(true),
-      'project-search': () => setSearchOpen(true),
+      'project-search': () => { if (!remotePaneRef.current) setSearchOpen(true); },
       prompts: () => setPromptsOpen(true),
       'scrollback-search': () => setScrollbackOpen(true),
-      'toggle-help': () => setHelpOpen((v) => !v),
-      'new-terminal': () => openNewTerminalRef.current(false),
+      'toggle-help': () => setHelpOpen(!helpOpenRef.current),
+      'new-terminal': () => openNewTerminalRef.current(false, tabMotionRef.current?.launchResult()),
       'new-terminal-window': () => openNewTerminalRef.current(true),
       'toggle-agents-dock': () => setAgentsDockOpen((x) => !x),
       'focus-agents-composer': () => {
@@ -703,7 +753,9 @@ function MainApp() {
       if (palette.kind === 'swallow') return;
       if (palette.kind === 'toggle' || palette.kind === 'open') {
         e.preventDefault();
-        if (palette.kind === 'open') openPalette(palette.seed);
+        if (palette.kind === 'open') {
+          if (!remotePaneRef.current || palette.seed !== '@') openPalette(palette.seed);
+        }
         else if (paletteOpenRef.current) setPaletteRequest(null);
         else openPalette('');
         return;
@@ -717,13 +769,17 @@ function MainApp() {
       if (mod && e.key.toLowerCase() === 'w' && !e.shiftKey && !e.altKey) {
         // ⌘W → close the active shell tab in the current project.
         const p = selectedRef.current;
+        if (remotePaneRef.current) { e.preventDefault(); return; }
         if (!p) return;
         e.preventDefault();
         const idx = activeShellIndexRef.current;
+        const cancelCloseMotion = tabMotionRef.current?.beginClose(idx);
         (async () => {
           try {
             await api.invoke('shells:kill', { projectId: p.id, shellIndex: idx });
+            restoreClosedTerminal(p.id, idx);
           } catch (err) {
+            cancelCloseMotion?.();
             toast('Failed to close tab', { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') });
           }
         })();
@@ -732,9 +788,19 @@ function MainApp() {
       if (action) { e.preventDefault(); runAppShortcut[action](); }
       if (e.key === 'Escape')                            { setSettingsOpen(false); setPaletteRequest(null); setNewProjectOpen(false); setHelpOpen(false); setSearchOpen(false); setPromptsOpen(false); setScrollbackOpen(false); }
     }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [openPalette, toggleSidebar, platform]);
+    function ghosttyAppKey(e: KeyboardEvent): boolean {
+      return e.target instanceof Element && !!e.target.closest(GHOSTTY_HOST_SELECTOR) &&
+        routeTerminalKey(e, platform) === 'app' && terminalTabAction(e, platform) === null;
+    }
+    function capture(e: KeyboardEvent) { if (ghosttyAppKey(e)) onKey(e); }
+    function bubble(e: KeyboardEvent) { if (!ghosttyAppKey(e)) onKey(e); }
+    window.addEventListener('keydown', capture, true);
+    window.addEventListener('keydown', bubble);
+    return () => {
+      window.removeEventListener('keydown', capture, true);
+      window.removeEventListener('keydown', bubble);
+    };
+  }, [openPalette, toggleSidebar, platform, restoreClosedTerminal, setSettingsOpen, setNewProjectOpen, setHelpOpen, setSearchOpen, setPromptsOpen, setScrollbackOpen]);
 
   // Keep the OS window title in sync with the current project so it reads
   // "lawreader — MetaLogix IDE" in Mission Control, Dock previews, and every
@@ -746,9 +812,9 @@ function MainApp() {
 
   useExternalDragGuard();
 
-  const selectionRequestRef = useRef(0);
   /** Selects `p` as the sidebar does and launches its shell; resolves true when it selected `p`, false when the open failed or a newer pick superseded it. */
   async function pick(p: Pick<Project, 'id'>): Promise<boolean> {
+    closeBoard();
     setProjectSettingsTarget(null);
     setRemotePane(null);
     const requestId = ++selectionRequestRef.current;
@@ -801,13 +867,17 @@ function MainApp() {
   }
 
   /** Opens an explicit sidebar target without selecting its project or launching a shell. */
-  function openProjectSettings(target: ProjectSettingsTarget): void {
+  const openProjectSettings = useCallback((target: ProjectSettingsTarget): void => {
     setEnvFocusRequest(0);
     setRemotePane(null);
     setProjectSettingsTarget(target);
     mainTabRef.current = 'settings';
     setMainTab('settings');
-  }
+  }, [setMainTab]);
+
+  useLayoutEffect(() => {
+    if (boardVisible && selected && assignment.state.kind === 'loaded' && assignment.state.value.kind !== 'linked') openProjectSettings(selected);
+  }, [assignment.state, boardVisible, selected, openProjectSettings]);
 
   /** The main tab always targets the selected project rather than a previous sidebar override. */
   function openSelectedProjectSettings(): void {
@@ -888,38 +958,23 @@ function MainApp() {
     }
   }
 
-  /** Spawn an ad-hoc plain shell in the project's cwd as an inline tab. */
-  async function newPlainShellAsTab() {
-    if (!selected) return;
-    try {
-      const { shellIndex } = await api.invoke('shells:launch-plain', { projectId: selected.id });
-      setMainTab('shell');
-      setActiveShellIndex(shellIndex);
-    } catch (e) {
-      toast('Failed to open terminal', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
-      console.error(e);
-    }
-  }
-
   /** Spawn a named CLI profile (Claude, Llama, custom…). */
-  async function launchCliProfile(profileName: string, mode: 'tab' | 'window') {
+  async function launchCliProfile(profileName: string, mode: 'tab' | 'window', onLaunched?: ShellLaunched) {
     if (!selected) return;
+    const activate = mode === 'tab' ? beginTerminalTabLaunch(selected.id, onLaunched) : null;
     try {
       const { shellIndex } = await api.invoke('shells:launch-cli', { projectId: selected.id, profileName });
       if (mode === 'window') {
         await api.invoke('windows:popout-shell', { projectId: selected.id, shellIndex });
         toast(`${profileName} in ${selected.name}`, { kind: 'info' });
-      } else {
-        setMainTab('shell');
-        setActiveShellIndex(shellIndex);
-      }
+      } else activate?.(shellIndex);
     } catch (e) {
       toast(`Failed to launch ${profileName}`, { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
     }
   }
 
   /** Run a one-off custom command, optionally saving it as a project profile. */
-  async function launchCustomCli(name: string, cmdLine: string, save: boolean, mode: 'tab' | 'window') {
+  async function launchCustomCli(name: string, cmdLine: string, save: boolean, mode: 'tab' | 'window', onLaunched?: ShellLaunched) {
     if (!selected) return;
     // Very small argv splitter: whitespace + double-quoted groups. Not a
     // shell — we don't do variable expansion or piping. Users who need that
@@ -929,6 +984,7 @@ function MainApp() {
     let m: RegExpExecArray | null;
     while ((m = re.exec(cmdLine)) !== null) argv.push(m[1] ?? m[2] ?? '');
     if (argv.length === 0) throw new Error('empty command');
+    const activate = mode === 'tab' ? beginTerminalTabLaunch(selected.id, onLaunched) : null;
     try {
       const { shellIndex } = await api.invoke('shells:launch-cli', {
         projectId: selected.id,
@@ -939,10 +995,7 @@ function MainApp() {
       if (mode === 'window') {
         await api.invoke('windows:popout-shell', { projectId: selected.id, shellIndex });
         toast(`${name || argv[0]} in ${selected.name}`, { kind: 'info' });
-      } else {
-        setMainTab('shell');
-        setActiveShellIndex(shellIndex);
-      }
+      } else activate?.(shellIndex);
     } catch (e) {
       toast('Failed to launch CLI', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
     }
@@ -960,13 +1013,14 @@ function MainApp() {
   const [followFiles, setFollowFiles] = usePersistedState<boolean>('metaide.followFiles', false, (v): v is boolean => typeof v === 'boolean');
   useAgentFileFollow(selected?.id ?? null, followFiles && activityEnabled, (t) => void openFileTarget(t));
 
-  async function killShell(shellIndex: number) {
-    if (!selected) return;
+  async function killShell(shellIndex: number, cancelCloseMotion?: () => void) {
+    if (!selected) { cancelCloseMotion?.(); return; }
     try {
       await api.invoke('shells:kill', { projectId: selected.id, shellIndex });
-      if (activeShellIndex === shellIndex) setActiveShellIndex(0);
+      restoreClosedTerminal(selected.id, shellIndex);
       if (rightShellIndex === shellIndex) setRightShellIndex(null);
     } catch (e) {
+      cancelCloseMotion?.();
       toast('Failed to close terminal', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
     }
   }
@@ -995,11 +1049,7 @@ function MainApp() {
     } catch (e) { toast('Tile failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
   }
 
-  function unloadCurrent(event: React.MouseEvent<HTMLButtonElement>) {
-    if (selected && primaryAlive) openUnloadSession(selected, event.currentTarget);
-  }
-
-  const mainSheetContent: SheetContent = mainTab === 'shell' ? 'shell' : 'other';
+  const mainSheetContent: SheetContent = !remotePane && !boardVisible && mainTab === 'shell' ? 'shell' : 'other';
 
   return (
     <div className="h-screen w-screen overflow-hidden flex flex-col bg-[--surface-chrome]" data-chrome-root>
@@ -1062,7 +1112,7 @@ function MainApp() {
                       {activeView === 'chat' && (
                         <ChatTab
                           projectId={selected?.id ?? 0}
-                          metaprojectProjectId={selected ? (selected.config.linkedMetaprojectProjectId ?? selected.metaprojectProjectId ?? null) : null}
+                          assignment={assignment.state}
                           compact
                           onDismiss={() => setActiveView('projects')}
                         />
@@ -1106,64 +1156,49 @@ function MainApp() {
             </FoldPane>
           )}
         </AnimatePresence>
-        <div className="flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden" data-testid="main-column">
-          <main
-            className={`flex flex-1 flex-col min-h-0 min-w-0 bg-[--surface-sheet] transition-[margin,border-radius] duration-200 ease-out motion-reduce:transition-none ${
-              showStatusBar ? 'mt-2 mr-2 rounded-[14px]' : 'mt-0 mr-0 rounded-none'
-            }`}
-            data-sheet-content={mainSheetContent}
-            data-status-bar={showStatusBar ? 'shown' : 'hidden'}
-          >
-            <div className={`drag flex-wrap items-center gap-1.5 px-3 pt-2.5 pb-1.5 text-xs shrink-0 ${remotePane ? 'hidden' : 'flex'}`} data-testid={DIFF_TESTIDS.tabBar}>
-              <TabButton active={mainTab === 'shell'} onClick={() => setMainTab('shell')}>Shell</TabButton>
-              <TabButton active={mainTab === 'files'} onClick={() => setMainTab('files')}>Files</TabButton>
-              <TabButton
-                active={mainTab === 'diff'}
-                onClick={() => setMainTab('diff')}
-                testId={DIFF_TESTIDS.tab}
-                ariaLabel={diffCount !== null ? DIFF_COPY.tabCountLabel(diffCount) : undefined}
-              >
-                {DIFF_COPY.tabLabel}
-                {diffCount !== null && (
-                  <span aria-hidden className="ml-1.5 font-mono text-[10px] text-[--hue-orange-text]" data-testid={DIFF_TESTIDS.tabCount}>
-                    {diffCount}
-                  </span>
-                )}
-              </TabButton>
-              <TabButton
-                active={mainTab === 'settings'}
-                onClick={openSelectedProjectSettings}
-                testId={PROJECT_SETTINGS_TESTIDS.tab}
-                ariaLabel={envDirty ? ENV_COPY.tabUnsavedLabel : undefined}
-              >
-                {PROJECT_SETTINGS_COPY.tab}
-                {envDirty && (
-                  <span aria-hidden className="ml-1 text-[--accent]" data-testid={ENV_TESTIDS.unsaved}>
-                    {ENV_COPY.tabUnsavedMarker}
-                  </span>
-                )}
-              </TabButton>
-              {activityEnabled && (
-                <TabButton active={mainTab === 'activity'} onClick={() => setMainTab('activity')} testId={ACTIVITY_LOG_TESTIDS.tabButton}>Activity</TabButton>
+        <div className="workspace-header-container flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden" data-testid="main-column">
+            {!remotePane && <header className="workspace-header-row drag relative shrink-0 items-center gap-x-1.5 gap-y-1 px-3 py-1.5 text-xs" data-testid={DIFF_TESTIDS.tabBar}>
+              <WorkspaceDestinations active={boardVisible ? null : mainTab} activityEnabled={activityEnabled}
+                diffCount={diffCount} envDirty={envDirty}
+                onSelect={(tab) => tab === 'settings' ? openSelectedProjectSettings() : setMainTab(tab)} />
+              {!boardVisible && selected && mainTab === 'shell' && (
+                <ShellTabsBar
+                  key={`shell-tabs-${selected.id}`}
+                  projectId={selected.id}
+                  shells={stripShells(projectShells, rightShellIndex, split.hiddenShells)}
+                  active={activeShellIndex}
+                  onSelect={selectTerminalTab}
+                  onClose={killShell}
+                  motionRef={tabMotionRef}
+                  defaultCliName={selected.config.defaultCliName ?? null}
+                  onDefaultCliChanged={applyDefaultAgentProject}
+                  onLaunchProfile={(name, onLaunched) => void launchCliProfile(name, 'tab', onLaunched)}
+                  onLaunchPlainTab={(onLaunched) => openNewTerminal(false, onLaunched)}
+                  onLaunchCustom={(name, cmdLine, save, onLaunched) => void launchCustomCli(name, cmdLine, save, 'tab', onLaunched)}
+                />
               )}
-              <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 pr-2">
+              <div className="workspace-project-actions flex min-w-0 flex-wrap items-center justify-end gap-2 pr-2">
                 {selected && (
                   <>
-                    <span className="flex min-w-0 items-center gap-1.5 text-[--text] pl-2 pr-1 py-0.5 rounded-md bg-[--surface-active] text-[11px] max-w-[280px]" title={selected.path}>
-                      <StatusDot state={selectedAgentState} />
-                      <span className="truncate font-medium">{selected.name}</span>
-                      {primaryAlive && <Tooltip label="Unload session (close shell)" wrapClassName="ml-1 shrink-0">
-                        <button
-                          onClick={unloadCurrent}
-                          className="text-[--text-muted] hover:text-[--danger] hover:bg-[--panel]/60 w-4 h-4 flex items-center justify-center rounded focus-visible:ring-2 focus-visible:ring-[--accent]"
-                          aria-label="Unload session (close shell)"
-                          data-testid="unload-current"
-                        >
-                          <XIcon />
-                        </button>
-                      </Tooltip>}
-                    </span>
-                    <MetaprojectBoardButton project={selected} onRequestLink={() => setActiveView('chat')} />
+                    {/*
+                      The project-name chip + unload button that used to sit here were removed as part of PR #16 —
+                      Frits's Sidebar now carries the project name (with a live status dot) and the per-shell tabs
+                      own the unload affordance. We just render the hosted Board opener here, matching the new layout.
+                    */}
+                    <Tooltip label="Board" focusable>
+                      <button ref={boardOpener} type="button"
+                        className="no-drag flex h-7 w-7 items-center justify-center rounded text-[--hue-purple] hover:bg-[--panel-strong] focus-visible:ring-2 focus-visible:ring-[--accent]"
+                        data-testid="metaproject-board" aria-label="Board" aria-pressed={boardVisible} onClick={() => {
+                          if (boardVisible) returnToWorkspace();
+                          else if (assignment.state.kind === 'loaded' && assignment.state.value.kind !== 'linked') openProjectSettings(selected);
+                          else {
+                            if (activeView === 'fleet') setActiveView('projects');
+                            terminalFocus.cancelRequest(); setBoardProject(selected.id);
+                          }
+                        }}>
+                        <span aria-hidden="true"><BoardIcon /></span>
+                      </button>
+                    </Tooltip>
                     <Tooltip label="Prompt library" shortcut={SHORTCUT_COPY.promptsShortcut(platform)}>
                       <button
                         onClick={() => setPromptsOpen(true)}
@@ -1199,36 +1234,33 @@ function MainApp() {
                         <RevealFolderIcon />
                       </button>
                     </Tooltip>
-                    <Tooltip label="Pop the active shell into its own window">
-                      <button
-                        onClick={popoutCurrent}
-                        className="text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel-strong]"
-                        data-testid="popout-shell"
-                      >
-                        <PopoutIcon />
-                      </button>
-                    </Tooltip>
+                    <div className="no-drag flex shrink-0 items-center gap-2">
+                      {mainTab === 'shell' && (
+                        <SplitButton on={rightShellIndex != null} onToggle={() => (rightShellIndex != null ? split.closeSplit() : void openSplit())} />
+                      )}
+                      <Tooltip label="Pop the active shell into its own window">
+                        <button
+                          onClick={popoutCurrent}
+                          className="text-[--text-muted] hover:text-[--text] w-7 h-7 flex items-center justify-center rounded hover:bg-[--panel-strong]"
+                          data-testid="popout-shell"
+                        >
+                          <PopoutIcon />
+                        </button>
+                      </Tooltip>
+                    </div>
                   </>
                 )}
               </div>
-            </div>
+            </header>}
+          <main
+            className={`workspace-sheet mx-2 mt-0.5 flex flex-1 flex-col min-h-0 min-w-0 rounded-[14px] bg-[--surface-sheet] ${showStatusBar ? 'mb-0.5' : 'mb-2'}`}
+            data-sheet-content={mainSheetContent}
+          >
             <div className="flex-1 relative min-h-0 flex flex-col">
-              {!remotePane && selected && mainTab === 'shell' && (
-                <ShellTabsBar
-                  projectId={selected.id}
-                  shells={stripShells(projectShells, rightShellIndex, split.hiddenShells)}
-                  active={activeShellIndex}
-                  onSelect={setActiveShellIndex}
-                  onClose={killShell}
-                  defaultCliName={selected.config.defaultCliName ?? null}
-                  onDefaultCliChanged={applyDefaultAgentProject}
-                  onLaunchProfile={(name) => void launchCliProfile(name, 'tab')}
-                  onLaunchPlainTab={newPlainShellAsTab}
-                  onLaunchCustom={(name, cmdLine, save) => void launchCustomCli(name, cmdLine, save, 'tab')}
-                  splitOn={rightShellIndex != null}
-                  onToggleSplit={() => (rightShellIndex != null ? split.closeSplit() : void openSplit())}
-                />
-              )}
+              {/* Board overlay (Frits #81): the workspace layer gets inert/invisible while the board is up.
+                  The ShellTabsBar for the shell view is rendered once above inside the header; this layer
+                  only hosts the main-tab body (fleet / remote / files / diff / settings / story / empty). */}
+              <div {...(boardVisible ? { inert: '' } : {})} aria-hidden={boardVisible || undefined} className={`flex flex-1 min-h-0 min-w-0 flex-col ${boardVisible ? 'invisible pointer-events-none' : ''}`}>
               {activeView === 'story'
                 ? (selected
                     ? <StoryTab projectId={selected.id} />
@@ -1243,13 +1275,14 @@ function MainApp() {
                         setActiveShellIndexFor(projectId, shellIndex);
                       });
                     }}
-                    onOpenRemote={(req) => { setActiveView('projects'); setRemotePane(req); }}
+                    onOpenRemote={openPane}
                   />
                 : remotePane
-                ? <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId} projectName={remotePane.projectName} onClose={() => setRemotePane(null)} />
+                ? <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId}
+                    projectName={remotePane.projectName} openRequest={remotePane} onClose={() => setRemotePane(null)} />
                 : mainTab === 'settings'
                 ? settingsTarget
-                  ? <ProjectSettingsTab key={settingsTarget.id} target={settingsTarget} onSaved={applyDefaultAgentProject}>
+                  ? <ProjectSettingsTab key={settingsTarget.id} target={settingsTarget} onSaved={applyDefaultAgentProject} assignmentVisible={!boardVisible}>
                       <ScrollIntoViewOnRequest request={envFocusRequest}>
                         <ProjectEnvTab
                           projectId={settingsTarget.id}
@@ -1267,6 +1300,10 @@ function MainApp() {
                       {PROJECT_SETTINGS_COPY.noProject}
                     </section>
                 : selected ? mainBody(selected) : <EmptyState sidebarOpen={sidebarOpen} onOpenSidebar={() => toggleSidebar(true)} />}
+              </div>
+              {boardVisible && selected && <BoardPanel key={selected.id} projectId={selected.id} name={selected.name}
+                assignment={assignment.state} covered={overlayOpen} controls={boardControls} onReload={assignment.reload}
+                onClose={returnToWorkspace} onSettings={() => openProjectSettings(selected)} />}
             </div>
           </main>
           {/* Status bar under the main sheet only (not the sidebar); it folds away (height) when hidden. */}
@@ -1335,7 +1372,7 @@ function MainApp() {
       </div>
 
       {unloadTarget && <UnloadSessionDialog key={unloadTarget.id} project={unloadTarget}
-        visible={isPrimaryVisible(unloadTarget.id, { selectedProjectId: selected?.id ?? null, mainTab, activeShellIndex, rightShellIndex })}
+        visible={!boardVisible && isPrimaryVisible(unloadTarget.id, { selectedProjectId: selected?.id ?? null, mainTab, activeShellIndex, rightShellIndex })}
         onClose={closeUnloadSession}
         onStopped={() => { toast('Session unloaded', { kind: 'success' }); }}
       />}
@@ -1359,34 +1396,32 @@ function MainApp() {
       <CommandPalette
         request={paletteRequest}
         commands={commands}
-        currentProject={selected}
+        currentProject={localWorkspaceProject}
         onPickProject={(p) => { void pick(p); }}
         onPickCurrent={(p) => { if (mainTabRef.current === 'shell') focusAfterPaletteRef.current = p.id; }}
-        onPickFile={(relPath) => { setMainTab('files'); setOpenInFiles({ relPath, line: null }); }}
+        onPickFile={(relPath) => openLocalWorkspaceFile(relPath, null)}
         onClose={() => setPaletteRequest(null)}
       />
       <ToastStack />
       <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
       <ProjectSearch
-        open={searchOpen && selected != null}
-        projectId={selected?.id ?? null}
+        open={searchOpen && localWorkspaceProject !== null}
+        projectId={localWorkspaceProject?.id ?? null}
         onClose={() => setSearchOpen(false)}
-        onOpenMatch={(relPath, line) => {
-          setMainTab('files');
-          setOpenInFiles({ relPath, line });
-        }}
+        onOpenMatch={openLocalWorkspaceFile}
       />
       <PromptLibrary
         open={promptsOpen}
         onClose={() => setPromptsOpen(false)}
-        projectId={selected?.id ?? null}
-        activeShell={selected ? { projectId: selected.id, shellIndex: activeShellIndex } : null}
-        activeShellLabel={selected ? `${selected.name} · shell ${activeShellIndex}` : undefined}
+        projectId={localWorkspaceProject?.id ?? null}
+        activeShell={localWorkspaceProject ? { projectId: localWorkspaceProject.id, shellIndex: activeShellIndex } : null}
+        activeShellLabel={localWorkspaceProject ? `${localWorkspaceProject.name} · shell ${activeShellIndex}` : undefined}
       />
       <ScrollbackSearch
         open={scrollbackOpen}
         onClose={() => setScrollbackOpen(false)}
         onFocus={async (projectId, shellIndex) => {
+          closeBoard();
           const requestId = ++selectionRequestRef.current;
           setRemotePane(null);
           terminalFocus.cancelRequest();
@@ -1499,32 +1534,6 @@ function PopoutShell({ projectId, shellIndex }: PopoutInfo) {
         )}
       </div>
     </div>
-  );
-}
-
-interface TabButtonProps {
-  active: boolean;
-  onClick: () => void;
-  testId?: string;
-  ariaLabel?: string;
-  children: React.ReactNode;
-}
-
-function TabButton({ active, onClick, testId, ariaLabel, children }: TabButtonProps) {
-  return (
-    <button
-      onClick={onClick}
-      data-testid={testId}
-      aria-label={ariaLabel}
-      aria-current={active ? 'page' : undefined}
-      className={`h-7 px-2 rounded-lg transition-colors ${
-        active
-          ? 'bg-[--accent-soft] text-[--accent-soft-text] font-medium'
-          : 'text-[--text-muted] hover:text-[--text] hover:bg-[--surface-hover]'
-      }`}
-    >
-      {children}
-    </button>
   );
 }
 
@@ -1650,65 +1659,9 @@ function PopoutIcon() {
   );
 }
 
-function MetaprojectBoardButton({ project, onRequestLink }: { project: Project; onRequestLink: () => void }) {
-  // Seed with the default so a click during the settings-fetch race doesn't
-  // dead-end on a "not configured" toast — the vast majority of users will
-  // hit the default anyway, and settings:get overwrites it when it resolves.
-  const DEFAULT_BASE = 'https://projects.metalogix.solutions';
-  const [baseUrl, setBaseUrl] = useState<string>(DEFAULT_BASE);
-  useEffect(() => {
-    (async () => {
-      try {
-        const { value } = await api.invoke('settings:get', { key: 'metaproject_base_url' });
-        if (typeof value === 'string' && value) setBaseUrl(value);
-      } catch { /* keep default */ }
-    })();
-  }, []);
-  const linked = project.config.linkedMetaprojectProjectId ?? project.metaprojectProjectId;
-  // Strip any leading identifier prefix ("PROJ-42" → "42"). The public URL
-  // is `/projects/<int_id>` which auto-redirects to the kanban board.
-  const numericId = linked ? Number(String(linked).replace(/^[A-Za-z]+-/, '')) : null;
-  const isLinked = !!(linked && numericId && Number.isFinite(numericId));
-  // Normalize baseUrl: users often save a bare host like
-  // `projects.metalogix.solutions` without a scheme, which then fails the
-  // main-process URL-scheme allowlist. Prepend `https://` when missing and
-  // strip a trailing slash so the join is clean.
-  const normalizedBase = /^https?:\/\//i.test(baseUrl)
-    ? baseUrl.replace(/\/$/, '')
-    : `https://${baseUrl.replace(/^\/+/, '').replace(/\/$/, '')}`;
-  const url = isLinked ? `${normalizedBase}/projects/${numericId}` : '';
-  return (
-    <button
-      onClick={async () => {
-        // Unlinked → surface the link/create banner in the chat rail so the
-        // user can wire this local project to a metaproject board in one
-        // click; the banner already has both "Link existing" and "Create new".
-        if (!isLinked) {
-          toast('Not linked yet — pick or create a metaproject board', { kind: 'info' });
-          onRequestLink();
-          return;
-        }
-        try {
-          await api.invoke('app:open-external', { url });
-        } catch (e) {
-          toast('Could not open the board', { kind: 'error', detail: `${String(e).replace(/^Error:\s*/, '')} — URL: ${url}` });
-        }
-      }}
-      className={`text-[11px] px-2 py-0.5 rounded-md flex items-center gap-1.5 ${
-        isLinked ? 'hover:bg-[--panel-strong] text-[--text]' : 'text-[--text-muted] hover:bg-[--panel-strong] hover:text-[--text]'
-      }`}
-      title={isLinked ? `Open ${linked} on the metaproject board` : 'Not linked to a metaproject board — click to link or create one'}
-      data-testid="metaproject-board"
-    >
-      <span className="text-[--hue-purple]"><BoardIcon /></span>
-      <span>{isLinked ? 'Board' : 'Board · link'}</span>
-    </button>
-  );
-}
-
 function BoardIcon() {
   return (
-    <svg width={ICON_SIZE.sm} height={ICON_SIZE.sm} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width={ICON_SIZE.md} height={ICON_SIZE.md} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3" y="4" width="18" height="16" rx="2" />
       <line x1="9" y1="4" x2="9" y2="20" />
       <line x1="15" y1="4" x2="15" y2="20" />

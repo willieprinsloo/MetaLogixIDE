@@ -17,6 +17,7 @@ import { toast } from '@renderer/hooks/useToasts';
 import { isSaveShortcut } from '@renderer/app-keys';
 import { SHORTCUT_COPY } from '@renderer/shortcut-copy';
 import { useShortcutPlatform } from '@renderer/shortcut-platform';
+import type { RemoteWorkspace } from '@renderer/p2p/remote-workspace';
 import type { GitFileStatus } from '@shared/ipc-contract';
 import { APP_FILE_DRAG_TYPE } from '@shared/terminal-drop-contract';
 
@@ -39,16 +40,11 @@ function extOf(name: string): string {
   return i === -1 ? '' : name.slice(i + 1).toLowerCase();
 }
 
-export function FilesTab({
-  projectId,
-  openRelPath,
-  openLine,
-  onOpenRelPathConsumed,
-  onActivePathChange,
-  isFullscreen = false,
-  onFullscreenToggle,
-}: {
+interface FilesTabProps {
   projectId: number;
+  remote?: RemoteWorkspace;
+  /** A mounted but hidden workspace keeps its drafts without opening files or refreshing. */
+  active?: boolean;
   openRelPath?: string | null;
   openLine?: number | null;
   onOpenRelPathConsumed?: () => void;
@@ -57,9 +53,32 @@ export function FilesTab({
   onActivePathChange?: (relPath: string | null) => void;
   /** True when the host window is in native fullscreen; toolbars render an exit affordance. */
   isFullscreen?: boolean;
-  /** Fire the window-level fullscreen toggle IPC; wired from App.tsx so the hook lives at the top. */
+  /** Fire the window-level fullscreen toggle IPC. */
   onFullscreenToggle?: () => void;
-}) {
+}
+
+/** File browser and editor; open tabs and drafts belong to the current project and peer. */
+export function FilesTab(props: FilesTabProps): JSX.Element {
+  const { projectId, remote } = props;
+  const [scope, setScope] = useState({ projectId, remote, version: 0 });
+  // A new peer may have the same numeric project ID and relative paths.
+  if (scope.projectId !== projectId || scope.remote !== remote) {
+    setScope({ projectId, remote, version: scope.version + 1 });
+  }
+  return <ScopedFilesTab key={scope.version} {...props} />;
+}
+
+function ScopedFilesTab({
+  projectId,
+  remote,
+  active = true,
+  openRelPath,
+  openLine,
+  onOpenRelPathConsumed,
+  onActivePathChange,
+  isFullscreen = false,
+  onFullscreenToggle,
+}: FilesTabProps): JSX.Element {
   const platform = useShortcutPlatform();
   const [pendingLine, setPendingLine] = useState<number | null>(null);
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -68,7 +87,17 @@ export function FilesTab({
   const [activePath, setActivePath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [treeWidth, setTreeWidth] = usePersistedNumber('metaide.filesTreeWidth', 256, 160, 500);
-  const { status: gitStatus } = useGitStatus(projectId);
+  const { status: gitStatus } = useGitStatus(remote ? null : projectId);
+  const lifetime = useRef<AbortSignal | null>(null);
+  const visible = useRef(active);
+  const dirRequest = useRef(0);
+  const requestedDir = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const controller = new AbortController();
+    lifetime.current = controller.signal;
+    return () => controller.abort();
+  }, []);
+  useEffect(() => { visible.current = active; }, [active]);
 
   const activeFile = useMemo(
     () => openFiles.find((f) => f.relPath === activePath) ?? null,
@@ -76,24 +105,33 @@ export function FilesTab({
   );
 
   const loadDir = useCallback(async (relPath?: string) => {
+    const signal = lifetime.current;
+    if (!visible.current || !signal || signal.aborted) return;
+    const request = ++dirRequest.current;
+    requestedDir.current = relPath;
     setError(null);
     try {
-      const { entries } = await api.invoke('files:tree', { projectId, relPath });
+      const { entries } = remote
+        ? await remote.call('workspace.fileTree', relPath === undefined ? { projectId } : { projectId, relPath })
+        : await api.invoke('files:tree', { projectId, relPath });
+      if (signal.aborted || request !== dirRequest.current) return;
       setEntries(entries);
       setDir(relPath);
-    } catch (e) { setError(String(e)); }
-  }, [projectId]);
+    } catch (e) {
+      if (!signal.aborted && request === dirRequest.current) setError(String(e));
+    }
+  }, [projectId, remote]);
 
   const openPath = useCallback(async (relPath: string) => {
+    const signal = lifetime.current;
+    if (!signal || signal.aborted) return;
     setError(null);
     if (openFiles.some((f) => f.relPath === relPath)) { setActivePath(relPath); return; }
     try {
-      const { content, kind } = await api.invoke('files:read', { projectId, relPath });
-      // Dedupe INSIDE the updater: two opens can race while the first read
-      // is in flight (the consume effect re-fires when App re-renders with a
-      // fresh onOpenRelPathConsumed arrow), and the closure's `openFiles`
-      // snapshot is stale for the second call. The updater sees committed
-      // state, so the second append collapses into a no-op.
+      const { content, kind } = remote
+        ? await remote.call('workspace.fileRead', { projectId, relPath })
+        : await api.invoke('files:read', { projectId, relPath });
+      if (signal.aborted) return;
       // Dedupe INSIDE the updater: opens can race while an earlier read is
       // still in flight (the consume effect re-fires when App re-renders with
       // a fresh onOpenRelPathConsumed arrow, or when openPath identity
@@ -104,8 +142,10 @@ export function FilesTab({
         ? prev
         : [...prev, { relPath, content, buffer: content, kind, editing: false }]);
       setActivePath(relPath);
-    } catch (err) { setError(String(err)); }
-  }, [projectId, openFiles]);
+    } catch (err) {
+      if (!signal.aborted) setError(String(err));
+    }
+  }, [projectId, remote, openFiles]);
 
   const updateBuffer = useCallback((relPath: string, buffer: string) => {
     setOpenFiles((prev) => prev.map((f) => (f.relPath === relPath ? { ...f, buffer } : f)));
@@ -118,28 +158,35 @@ export function FilesTab({
   /** Re-read with forceText and drop straight into edit mode. Used by the
    * "Edit as text anyway" button on the binary-file placeholder. */
   const forceTextOn = useCallback(async (relPath: string) => {
+    const signal = lifetime.current;
+    if (remote || !signal || signal.aborted) return;
     try {
       const { content, kind } = await api.invoke('files:read', { projectId, relPath, forceText: true });
+      if (signal.aborted) return;
       setOpenFiles((prev) => prev.map((f) => (
         f.relPath === relPath ? { ...f, content, buffer: content, kind, editing: true } : f
       )));
     } catch (err) {
-      toast('Could not open as text', { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') });
+      if (!signal.aborted) toast('Could not open as text', { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') });
     }
-  }, [projectId]);
+  }, [projectId, remote]);
 
   const saveFile = useCallback(async (relPath: string) => {
+    const signal = lifetime.current;
+    if (!signal || signal.aborted) return;
     const cur = openFiles.find((f) => f.relPath === relPath);
     if (!cur || cur.kind !== 'text') return;
     if (cur.buffer === cur.content) return; // clean
     try {
-      await api.invoke('files:write', { projectId, relPath, content: cur.buffer });
+      if (remote) await remote.call('workspace.fileWrite', { projectId, relPath, content: cur.buffer });
+      else await api.invoke('files:write', { projectId, relPath, content: cur.buffer });
+      if (signal.aborted) return;
       setOpenFiles((prev) => prev.map((f) => (f.relPath === relPath ? { ...f, content: cur.buffer } : f)));
       toast(`Saved ${relPath.split('/').pop()}`, { kind: 'success', timeoutMs: 1500 });
     } catch (err) {
-      toast('Save failed', { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') });
+      if (!signal.aborted) toast('Save failed', { kind: 'error', detail: String(err).replace(/^Error:\s*/, '') });
     }
-  }, [openFiles, projectId]);
+  }, [openFiles, projectId, remote]);
 
   const openEntry = useCallback((e: Entry) => {
     if (e.isDir) { void loadDir(e.relPath); return; }
@@ -183,8 +230,9 @@ export function FilesTab({
     });
   }, []);
 
-  // Reset when project switches.
-  useEffect(() => { void loadDir(undefined); setOpenFiles([]); setActivePath(null); }, [loadDir]);
+  useEffect(() => {
+    if (active) void loadDir(requestedDir.current);
+  }, [active, loadDir]);
 
   // Keep the parent informed of the focused file — the title-bar "Reveal" uses this.
   useEffect(() => { onActivePathChange?.(activePath); }, [activePath, onActivePathChange]);
@@ -192,7 +240,7 @@ export function FilesTab({
   const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = rootRef.current;
-    if (!el) return;
+    if (!active || !el) return;
     const onKey = (e: KeyboardEvent) => {
       if (activePath && isSaveShortcut(e, platform)) {
         e.preventDefault();
@@ -201,28 +249,33 @@ export function FilesTab({
     };
     el.addEventListener('keydown', onKey);
     return () => el.removeEventListener('keydown', onKey);
-  }, [activePath, saveFile, platform]);
+  }, [active, activePath, saveFile, platform]);
 
   // React to a Cmd+P / Cmd+Shift+F / hover-preview pick — open the relative
   // path directly and, if a line was passed, note it so the preview can
   // scroll there once the file loads.
   useEffect(() => {
-    if (!openRelPath) return;
+    if (!active || !openRelPath) return;
+    const signal = lifetime.current;
     setPendingLine(openLine ?? null);
-    void openPath(openRelPath).finally(() => onOpenRelPathConsumed?.());
-  }, [openRelPath, openLine, openPath, onOpenRelPathConsumed]);
+    void openPath(openRelPath).finally(() => {
+      if (visible.current && signal && !signal.aborted) onOpenRelPathConsumed?.();
+    });
+  }, [active, openRelPath, openLine, openPath, onOpenRelPathConsumed]);
 
   return (
     <div ref={rootRef} tabIndex={-1} className="h-full flex min-h-0 focus:outline-none">
       <FileTreePane
         projectId={projectId}
+        remote={remote}
+        lifetime={lifetime}
         entries={entries}
         dir={dir}
         openFileRelPath={activePath}
         gitFiles={gitStatus.files}
         onNavigate={(relPath) => loadDir(relPath)}
         onOpen={openEntry}
-        onRefresh={() => loadDir(dir)}
+        onRefresh={() => loadDir(requestedDir.current)}
         width={treeWidth}
       />
       <ResizeHandle
@@ -245,17 +298,18 @@ export function FilesTab({
           />
         )}
         <div className="flex-1 min-h-0">
-          {error && <div className="p-4 text-sm text-[--danger]">{error}</div>}
+          {error && <div role="alert" className="p-4 text-sm text-[--danger]">{error}</div>}
           {!error && !activeFile && (
             <div className="h-full flex items-center justify-center p-8 text-center text-sm text-[--text-muted]">
               Pick a file on the left to preview it. <br />
-              <span className="opacity-70">{SHORTCUT_COPY.filesFindTip(platform)}</span>
+              {!remote && <span className="opacity-70">{SHORTCUT_COPY.filesFindTip(platform)}</span>}
             </div>
           )}
           {!error && activeFile && (
             <FilePreview
               projectId={projectId}
               file={activeFile}
+              remotePreview={Boolean(remote)}
               scrollToLine={pendingLine}
               onScrolled={() => setPendingLine(null)}
               onChange={(v) => updateBuffer(activeFile.relPath, v)}
@@ -264,7 +318,7 @@ export function FilesTab({
               dirty={activeFile.buffer !== activeFile.content}
               onForceText={() => void forceTextOn(activeFile.relPath)}
               isFullscreen={isFullscreen}
-              onFullscreenToggle={() => onFullscreenToggle?.()}
+              {...(onFullscreenToggle ? { onFullscreenToggle } : {})}
             />
           )}
         </div>
@@ -398,9 +452,11 @@ function TabXIcon() {
 }
 
 function FileTreePane({
-  projectId, entries, dir, openFileRelPath, gitFiles, onNavigate, onOpen, onRefresh, width,
+  projectId, remote, lifetime, entries, dir, openFileRelPath, gitFiles, onNavigate, onOpen, onRefresh, width,
 }: {
   projectId: number;
+  remote: RemoteWorkspace | undefined;
+  lifetime: React.RefObject<AbortSignal>;
   entries: Entry[];
   dir: string | undefined;
   openFileRelPath: string | null;
@@ -419,48 +475,55 @@ function FileTreePane({
   }, []);
   const rowMenu = useCallback((e: React.MouseEvent, entry: Entry) => {
     e.preventDefault();
+    e.stopPropagation();
     setMenu({ x: e.clientX, y: e.clientY, entry });
   }, []);
 
-  async function newFile() {
+  async function mutate(title: string, operation: () => Promise<unknown>) {
+    const signal = lifetime.current;
+    if (!signal || signal.aborted) return;
+    try {
+      await operation();
+      if (!signal.aborted) onRefresh();
+    } catch (e) {
+      if (!signal.aborted) toast(title, { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+    }
+  }
+
+  function newFile(parent = dir) {
     const name = window.prompt('New file name:', 'untitled.md');
     if (!name) return;
-    const relPath = dir ? `${dir}/${name}` : name;
-    try {
-      await api.invoke('files:write', { projectId, relPath, content: '' });
-      onRefresh();
-    } catch (e) { toast('Failed to create file', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
+    const params = { projectId, relPath: parent ? `${parent}/${name}` : name, content: '' };
+    void mutate('Failed to create file', () => remote
+      ? remote.call('workspace.fileWrite', { ...params, createOnly: true }) : api.invoke('files:write', params));
   }
-  async function newFolder() {
+  function newFolder(parent = dir) {
     const name = window.prompt('New folder name:');
     if (!name) return;
-    const relPath = dir ? `${dir}/${name}` : name;
-    try {
-      await api.invoke('files:mkdir', { projectId, relPath });
-      onRefresh();
-    } catch (e) { toast('Failed to create folder', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
+    const params = { projectId, relPath: parent ? `${parent}/${name}` : name };
+    void mutate('Failed to create folder', () => remote
+      ? remote.call('workspace.fileMkdir', params) : api.invoke('files:mkdir', params));
   }
-  async function renameEntry(entry: Entry) {
+  function renameEntry(entry: Entry) {
     const parts = entry.relPath.split('/');
     const oldName = parts.pop() ?? '';
     const parent = parts.join('/');
     const next = window.prompt(`Rename ${oldName} to:`, oldName);
     if (!next || next === oldName) return;
     const to = parent ? `${parent}/${next}` : next;
-    try {
-      await api.invoke('files:rename', { projectId, from: entry.relPath, to });
-      onRefresh();
-    } catch (e) { toast('Rename failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
+    const params = { projectId, from: entry.relPath, to };
+    void mutate('Rename failed', () => remote
+      ? remote.call('workspace.fileRename', params) : api.invoke('files:rename', params));
   }
-  async function deleteEntry(entry: Entry) {
+  function deleteEntry(entry: Entry) {
     const kind = entry.isDir ? 'folder' : 'file';
     if (!window.confirm(`Delete ${kind} ${entry.name}? This cannot be undone.`)) return;
-    try {
-      await api.invoke('files:delete', { projectId, relPath: entry.relPath });
-      onRefresh();
-    } catch (e) { toast('Delete failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
+    const params = { projectId, relPath: entry.relPath };
+    void mutate('Delete failed', () => remote
+      ? remote.call('workspace.fileDelete', params) : api.invoke('files:delete', params));
   }
   async function reveal(entry: Entry) {
+    if (remote) return;
     try { await api.invoke('files:reveal', { projectId, relPath: entry.relPath }); }
     catch (e) { toast('Reveal failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
   }
@@ -468,33 +531,19 @@ function FileTreePane({
   const rowItems = (entry: Entry): ContextMenuItem[] => [
     ...(entry.isDir
       ? [
-          { label: 'New File…',   onClick: async () => {
-            const name = window.prompt('New file name:', 'untitled.md');
-            if (!name) return;
-            try {
-              await api.invoke('files:write', { projectId, relPath: `${entry.relPath}/${name}`, content: '' });
-              onRefresh();
-            } catch (e) { toast('Failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
-          } },
-          { label: 'New Folder…', onClick: async () => {
-            const name = window.prompt('New folder name:');
-            if (!name) return;
-            try {
-              await api.invoke('files:mkdir', { projectId, relPath: `${entry.relPath}/${name}` });
-              onRefresh();
-            } catch (e) { toast('Failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
-          }, separatorAfter: true },
+          { label: 'New File…', onClick: () => newFile(entry.relPath) },
+          { label: 'New Folder…', onClick: () => newFolder(entry.relPath), separatorAfter: true },
         ]
       : []),
     { label: 'Rename…',            onClick: () => renameEntry(entry) },
-    { label: 'Reveal in Finder',   onClick: () => reveal(entry) },
+    ...(remote ? [] : [{ label: 'Reveal in Finder', onClick: () => reveal(entry) }]),
     { label: 'Copy path',          onClick: () => { void navigator.clipboard.writeText(entry.relPath); toast('Path copied', { kind: 'success', timeoutMs: 1200 }); }, separatorAfter: true },
     { label: 'Delete',             onClick: () => deleteEntry(entry), danger: true },
   ];
 
   const bgItems: ContextMenuItem[] = [
-    { label: 'New File…',   onClick: newFile },
-    { label: 'New Folder…', onClick: newFolder, separatorAfter: true },
+    { label: 'New File…',   onClick: () => newFile() },
+    { label: 'New Folder…', onClick: () => newFolder(), separatorAfter: true },
     { label: 'Refresh',     onClick: onRefresh },
   ];
 
@@ -523,7 +572,9 @@ function FileTreePane({
             <span key={segPath} className="flex items-center gap-0.5 min-w-0">
               <span className="text-[--text-muted]/50">›</span>
               {isLast ? (
-                <span className="truncate text-[--text]" title={seg}>{seg}</span>
+                // The outer container already carries title={dir}, so no title on the current-segment span
+                // — otherwise getByTitle(seg) in tests would find two matches (Frits #16 test expectation).
+                <span className="truncate text-[--text]">{seg}</span>
               ) : (
                 <button
                   onClick={() => onNavigate(segPath)}
@@ -538,16 +589,15 @@ function FileTreePane({
         })}
       </div>
       {dir && (
-        <Tooltip label={parentDir ? `Up to ${parentDir}` : 'Up to project root'} wrapClassName="w-full">
-          <button
-            onClick={() => onNavigate(parentDir)}
-            className="w-full text-left px-2 py-1 rounded-md hover:bg-[--panel-strong] text-[--text-muted] flex items-center gap-2"
-            aria-label={parentDir ? `Up to ${parentDir}` : 'Up to project root'}
-          >
-            <span>↰</span>
-            <span className="truncate">..</span>
-          </button>
-        </Tooltip>
+        // Frits's #16 adds a short "← root" button that always jumps to the project root — the breadcrumb
+        // above already offers mid-path navigation. The accessible name '← root' is what the file-tab
+        // race-condition tests pin against, so keep the literal text in the button content.
+        <button
+          onClick={() => onNavigate(undefined)}
+          className="w-full text-left px-2 py-1 rounded-md hover:bg-[--panel-strong] text-[--text-muted]"
+        >
+          ← root
+        </button>
       )}
       <ul>
         {entries.map((e) => {
@@ -558,8 +608,8 @@ function FileTreePane({
               <button
                 onClick={() => onOpen(e)}
                 onContextMenu={(ev) => rowMenu(ev, e)}
-                draggable={!e.isDir}
-                onDragStart={(ev) => {
+                 draggable={!remote && !e.isDir}
+                 onDragStart={remote ? undefined : (ev) => {
                   // Two behaviours in one gesture:
                   //   1. Set APP_FILE_DRAG_TYPE so a terminal drop resolves the
                   //      absolute path in this project; text/plain stays for
@@ -612,9 +662,10 @@ function FileTreePane({
   );
 }
 
+/** View a file or edit its text; remote previews never load viewer-side resources. */
 export function FilePreview({
   projectId, file, scrollToLine, onScrolled, onChange, onToggleEdit, onSave, dirty, onForceText,
-  isFullscreen, onFullscreenToggle,
+  isFullscreen, onFullscreenToggle, remotePreview = false,
 }: {
   projectId: number;
   file: OpenFile;
@@ -627,14 +678,16 @@ export function FilePreview({
   /** Escape hatch: user overrode the binary heuristic and wants to edit as text anyway. */
   onForceText?: () => void;
   isFullscreen: boolean;
-  onFullscreenToggle: () => void;
-}) {
+  onFullscreenToggle?: () => void;
+  remotePreview?: boolean;
+}): JSX.Element {
   const ext = extOf(file.relPath);
-  const isMd = MD_EXT.has(ext);
-  const isImg = IMG_EXT.has(ext);
-  const isPdf = PDF_EXT.has(ext);
-  const isHtml = HTML_EXT.has(ext);
-  const editable = file.kind === 'text';
+  // Remote source previews must never resolve resources in the viewer's workspace.
+  const isMd = !remotePreview && MD_EXT.has(ext);
+  const isHtml = !remotePreview && HTML_EXT.has(ext);
+  const unsupportedRemotePreview = remotePreview
+    && (file.kind === 'binary' || PDF_EXT.has(ext) || (IMG_EXT.has(ext) && ext !== 'svg'));
+  const editable = file.kind === 'text' && !unsupportedRemotePreview;
   const editing = file.editing && editable;
   const platform = useShortcutPlatform();
   // Shared zoom for markdown editor + preview, persisted across restarts.
@@ -648,7 +701,7 @@ export function FilePreview({
     if (!el) return;
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.shiftKey && (e.key === 'Enter' || e.key === 'Return')) {
+      if (onFullscreenToggle && mod && e.shiftKey && (e.key === 'Enter' || e.key === 'Return')) {
         e.preventDefault();
         onFullscreenToggle();
         return;
@@ -663,11 +716,11 @@ export function FilePreview({
   }, [isMd, mdZoomIn, mdZoomOut, mdResetZoom, onFullscreenToggle]);
 
   // Image / PDF viewers handle their own toolbars + routing.
-  if (isImg) {
-    return <ImageViewer projectId={projectId} relPath={file.relPath} fullscreen={isFullscreen} onFullscreenToggle={onFullscreenToggle} />;
+  if (!remotePreview && IMG_EXT.has(ext)) {
+    return <ImageViewer projectId={projectId} relPath={file.relPath} fullscreen={isFullscreen} onFullscreenToggle={() => onFullscreenToggle?.()} />;
   }
-  if (isPdf) {
-    return <PdfViewer projectId={projectId} relPath={file.relPath} fullscreen={isFullscreen} onFullscreenToggle={onFullscreenToggle} />;
+  if (!remotePreview && PDF_EXT.has(ext)) {
+    return <PdfViewer projectId={projectId} relPath={file.relPath} fullscreen={isFullscreen} onFullscreenToggle={() => onFullscreenToggle?.()} />;
   }
 
   return (
@@ -690,15 +743,16 @@ export function FilePreview({
             </Tooltip>
           </>
         )}
-        <Tooltip label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'} shortcut="⌘⇧Enter">
+        {onFullscreenToggle && (
           <button
             onClick={onFullscreenToggle}
             className="text-[11px] px-2 py-0.5 rounded border border-[--border] hover:bg-[--panel-strong]"
+            title={isFullscreen ? 'Exit fullscreen (⌘⇧Enter)' : 'Fullscreen (⌘⇧Enter)'}
             aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
           >
             {isFullscreen ? '⤡' : '⤢'}
           </button>
-        </Tooltip>
+        )}
         {editable && (
           <>
             <button
@@ -724,7 +778,10 @@ export function FilePreview({
         )}
       </div>
       <div className="flex-1 overflow-auto min-h-0">
-        {file.kind === 'binary' && (
+        {unsupportedRemotePreview && (
+          <p className="p-6 text-sm text-[--text-muted]">Binary preview is not available for remote files.</p>
+        )}
+        {file.kind === 'binary' && !remotePreview && (
           <div className="p-6 text-sm text-[--text-muted] space-y-3">
             <div>Binary file — no preview.</div>
             <div className="text-xs opacity-70">
@@ -739,16 +796,16 @@ export function FilePreview({
             </button>
           </div>
         )}
-        {file.kind === 'text' && editing && (
+        {editing && (
           <EditorWithLineNumbers value={file.buffer} onChange={onChange} scrollToLine={scrollToLine} onScrolled={onScrolled} lang={langForPath(file.relPath)} zoom={isMd ? mdZoom : 1} />
         )}
-        {file.kind === 'text' && !editing && isMd && (
+        {editable && !editing && isMd && (
           <MarkdownPreview source={file.buffer} zoom={mdZoom} />
         )}
-        {file.kind === 'text' && !editing && isHtml && (
+        {editable && !editing && isHtml && (
           <HtmlPreview projectId={projectId} relPath={file.relPath} />
         )}
-        {file.kind === 'text' && !editing && !isMd && !isHtml && (
+        {editable && !editing && !isMd && !isHtml && (
           <SyntaxHighlightedPre content={file.buffer} lang={langForPath(file.relPath)} scrollToLine={scrollToLine} onScrolled={onScrolled} />
         )}
       </div>

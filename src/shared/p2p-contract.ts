@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { MAX_STAGED_BYTES } from './terminal-drop-contract';
+import { UPLOAD_CHUNK_MAX_B64_CHARS } from './remote-upload-contract';
+import { WorkspaceMethods } from './p2p-workspace-contract';
 
 /** Shapes for the RPC catalogue in docs/superpowers/specs/2026-10-26-metaide-p2p-design.md §5. */
 
@@ -21,7 +24,7 @@ export const ShellInfo = z
     shellIndex: z.number(),
     /** Host's agent state for this shell; absent from older hosts or hosts without the tracker, null when no recognised agent runs. */
     agentState: z.enum(['idle', 'busy', 'blocked']).nullable().optional(),
-    /** Agent family running the shell ("claude", "codex", "ollama", …); absent on older hosts, null when no recognised agent runs. */
+    /** Agent family running the shell ("claude", "codex", "opencode", "ollama", …); labels the viewer's tab. Absent on older hosts, null when no recognised agent runs. */
     agent: z.string().nullable().optional(),
   })
   .passthrough();
@@ -57,6 +60,19 @@ export const RosterRowZ = z.object({
   mention: z.string(),
 });
 
+/**
+ * An agent notice a host sends to the IDE instance in use (`notices.subscribe`). The body is already
+ * stripped of control characters and cut to 200 characters by the host; the receiver checks again.
+ */
+export const Notice = z.object({
+  kind: z.enum(['needs-input', 'finished']),
+  projectId: z.number().int().positive(),
+  shellIndex: z.number().int().min(0),
+  projectName: z.string().max(200).nullable(),
+  body: z.string().max(200),
+});
+export type Notice = z.infer<typeof Notice>;
+
 export const Dirent = z.object({
   name: z.string(),
   isDir: z.boolean(),
@@ -64,6 +80,7 @@ export const Dirent = z.object({
 });
 
 export const RpcMethods = {
+  ...WorkspaceMethods,
   'device.info': { params: z.object({}), result: DeviceInfo },
   'projects.list': { params: z.object({}), result: z.array(Project) },
   'projects.get': { params: z.object({ id: z.number().int().positive() }), result: Project },
@@ -92,6 +109,17 @@ export const RpcMethods = {
     params: z.object({ projectId: z.number().int().positive(), shellIndex: z.number() }),
     result: z.object({ ok: z.literal(true) }),
   },
+  /**
+   * The viewer says how long ago its IDE was last used (input while its window was focused); null if never.
+   * The host uses it to send agent notices to the instance in use. Sent as an age, not a time, so the two
+   * machines' clocks need not agree.
+   */
+  'presence.set': {
+    params: z.object({ idleMs: z.number().min(0).nullable() }),
+    result: z.object({ ok: z.literal(true) }),
+  },
+  /** Stream of `Notice` events for as long as it stays open. A viewer that does not open it gets no notices. */
+  'notices.subscribe': { params: z.object({}), result: z.object({ stream: z.number() }) },
   'fs.list': {
     params: z.object({ projectId: z.number().int().positive(), path: z.string() }),
     result: z.array(Dirent),
@@ -116,6 +144,30 @@ export const RpcMethods = {
   'chat.roster': {
     params: z.object({ projectId: z.number().int().positive() }),
     result: z.object({ rows: z.array(RosterRowZ) }),
+  },
+
+  // Remote upload (src/shared/remote-upload-contract.ts). Begin is sent before any bytes, so an
+  // old host answers `unknown_method` without a wasted transfer (AC-U12).
+  'drops.uploadBegin': {
+    params: z.object({
+      name: z.string().max(1024),
+      mime: z.string().max(255),
+      size: z.number().int().min(0).max(MAX_STAGED_BYTES),
+      kind: z.enum(['file', 'clipboard-image']),
+    }),
+    result: z.object({ uploadId: z.string(), chunkBytes: z.number().int().positive() }),
+  },
+  'drops.uploadChunk': {
+    params: z.object({ uploadId: z.string().max(64), offset: z.number().int().min(0), data: z.string().max(UPLOAD_CHUNK_MAX_B64_CHARS) }),
+    result: z.object({ received: z.number().int().min(0) }),
+  },
+  'drops.uploadCommit': {
+    params: z.object({ uploadId: z.string().max(64) }),
+    result: z.object({ path: z.string(), platform: z.string() }),
+  },
+  'drops.uploadAbort': {
+    params: z.object({ uploadId: z.string().max(64) }),
+    result: z.object({ ok: z.literal(true) }),
   },
 } as const;
 
@@ -145,7 +197,18 @@ export const Frame = z.union([
 ]);
 export type Frame = z.infer<typeof Frame>;
 
-export type FleetEntry = { deviceId: string; name: string; online: boolean; lastSeenAt: number | null; /** True for this machine's own entry, when the fleet includes it. */ self?: boolean };
+export type FleetEntry = {
+  deviceId: string;
+  name: string;
+  online: boolean;
+  lastSeenAt: number | null;
+  /** True for this machine's own entry, when the fleet includes it. */
+  self?: boolean;
+  /** True for a paired device that only connects in (the mobile app). Listed for revoking, never shown as a machine. */
+  viewer?: boolean;
+  /** Host-local grant state; absent for ineligible devices such as the mobile viewer. */
+  workspaceAccess?: boolean;
+};
 
 /** Stored in `p2p_settings` (singleton row, id = 1). */
 export interface P2PSettings {

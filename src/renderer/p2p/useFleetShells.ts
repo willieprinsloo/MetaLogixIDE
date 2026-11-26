@@ -1,27 +1,41 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { machineAgentState, readAgentState } from '../agent-state';
+import type { AgentState } from '@shared/agent-state';
 import type { MachineDot } from '../machine-switcher-contract';
 import type { PeerShells } from '../machine-dots';
 
 const POLL_MS = 5000;
 const EMPTY: ReadonlyMap<string, PeerShells> = new Map();
 
+function worstPerProject(live: ReadonlyArray<{ projectId: number; state: AgentState | null }>): Map<number, AgentState> {
+  const states = new Map<number, AgentState>();
+  for (const { projectId, state } of live) {
+    states.set(projectId, machineAgentState([states.get(projectId), state ?? 'idle']) ?? 'idle');
+  }
+  return states;
+}
+
 function parseShells(result: unknown): PeerShells {
   const rows = Array.isArray(result) ? result : [];
-  const live = rows.filter((r): r is { projectId: number; agentState?: unknown } => (
-    typeof r === 'object' && r !== null && typeof (r as { projectId?: unknown }).projectId === 'number'
-  ));
+  const live = rows
+    .filter((r): r is { projectId: number; agentState?: unknown } => (
+      typeof r === 'object' && r !== null && typeof (r as { projectId?: unknown }).projectId === 'number'
+    ))
+    .map((r) => ({ projectId: r.projectId, state: readAgentState(r.agentState) }));
   return {
     aliveProjectIds: new Set(live.map((r) => r.projectId)),
-    agentState: machineAgentState(live.map((r) => readAgentState(r.agentState))),
+    agentState: machineAgentState(live.map((r) => r.state)),
+    projectStates: worstPerProject(live),
   };
 }
 
 function sameShells(a: PeerShells, b: PeerShells): boolean {
   return a.agentState === b.agentState
     && a.aliveProjectIds.size === b.aliveProjectIds.size
-    && [...a.aliveProjectIds].every((id) => b.aliveProjectIds.has(id));
+    && [...a.aliveProjectIds].every((id) => b.aliveProjectIds.has(id))
+    && a.projectStates.size === b.projectStates.size
+    && [...a.projectStates].every(([id, state]) => b.projectStates.get(id) === state);
 }
 
 function withEntry(prev: ReadonlyMap<string, PeerShells>, deviceId: string, entry: PeerShells): ReadonlyMap<string, PeerShells> {
@@ -38,8 +52,9 @@ function keepOnly(prev: ReadonlyMap<string, PeerShells>, ids: readonly string[])
 /**
  * Live shells per online paired machine (docs/specs/machine-switcher-dots.md AC34): one
  * `shells.alive` call per online peer every 5 s, polled at once when the online set changes. Each
- * entry holds the live project ids and the worst agent state, with untrusted values guarded to the
- * three literals (an old host's missing field reads as null). A failed poll keeps that peer's last
+ * entry holds the live project ids, the worst agent state (null with no agent) and each live
+ * project's worst state (AC42, a shell with no agent counting as idle), with untrusted values guarded
+ * to the three literals (an old host's missing field reads as null). A failed poll keeps that peer's last
  * entry; going offline or unpaired drops it. The Map keeps its reference while nothing changes.
  */
 export function useFleetShells(peers: readonly MachineDot[]): ReadonlyMap<string, PeerShells> {
