@@ -4,7 +4,7 @@
  * the process ends. Never throws: a CLI that can't start, crashes, or is stopped resolves
  * `{ ok: false, error }`, so a group round always gets an answer.
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import type { Progress, TurnResult } from './types';
 
 const STDERR_KEEP = 2048;
@@ -32,6 +32,11 @@ export function runCliTurn(o: {
         env: { ...process.env, ...o.env },
         windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
+        // Put the child in its own process group (POSIX) / own job
+        // (Windows) so onAbort below can kill the WHOLE tree, not just
+        // the direct child. A CLI that spawns helpers (wrappers, git
+        // hooks, subshells) leaves grandchildren behind otherwise.
+        detached: process.platform !== 'win32',
       });
     } catch (e) {
       done({ ok: false, reply: '', error: `couldn’t start ${o.cmd[0]}: ${(e as Error).message}` });
@@ -40,7 +45,7 @@ export function runCliTurn(o: {
 
     let pending = '';
     let stderr = '';
-    const onAbort = () => { child.kill(); done({ ok: false, reply: '', error: 'stopped' }); };
+    const onAbort = () => { killTree(child.pid); done({ ok: false, reply: '', error: 'stopped' }); };
     o.signal.addEventListener('abort', onAbort, { once: true });
 
     child.stdout!.setEncoding('utf8');
@@ -71,4 +76,31 @@ export function runCliTurn(o: {
 
     child.stdin!.end(o.text);
   });
+}
+
+/**
+ * Kill the child and every process it spawned. On POSIX the child was
+ * started with `detached: true` so it's the leader of its own process
+ * group; signalling the negative pid hits the whole group. On Windows
+ * `taskkill /T /F` walks the tree by PID. We send SIGTERM first (so a
+ * CLI that catches signals can clean up) then SIGKILL after a short
+ * grace window so a stuck child can't outlive the abort.
+ *
+ * Any failure (process gone already, EPERM in a sandbox) is swallowed —
+ * the abort path's job is to STOP work, and a best-effort kill does
+ * that without crashing the main process.
+ */
+function killTree(pid: number | undefined): void {
+  if (!pid) return;
+  if (process.platform === 'win32') {
+    try { spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true }); } catch { /* best-effort */ }
+    return;
+  }
+  try { process.kill(-pid, 'SIGTERM'); } catch { /* group gone */ }
+  // Grace window before SIGKILL — short enough that an abort still
+  // feels snappy to the human, long enough for a well-behaved CLI to
+  // flush and exit on SIGTERM.
+  setTimeout(() => {
+    try { process.kill(-pid, 'SIGKILL'); } catch { /* group gone */ }
+  }, 250).unref();
 }
