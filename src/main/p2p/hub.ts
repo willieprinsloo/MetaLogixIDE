@@ -408,6 +408,7 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
     return { entries: entries as unknown as Result<'chat.sync_since'>['entries'] };
   });
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   on('chat.roster', async (_params) => {
     // Hub doesn't yet track peer-visible roster; return an empty shape
     // so the verb is live and callers can degrade gracefully. The

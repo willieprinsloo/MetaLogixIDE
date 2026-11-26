@@ -194,6 +194,7 @@ export class GroupChatService {
   }
 
   /** A shell exited or was closed. Group members don't run in tabs, so nothing stops. */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   shellGone(_shell: Shell): void {
     /* kept for the install wiring; members run headless on their own copies */
   }

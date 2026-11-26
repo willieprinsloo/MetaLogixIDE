@@ -6,8 +6,10 @@ import type { AddressInfo } from 'node:net';
 import { runOllama } from '@main/group-chat/engines/ollama';
 
 type Handler = (req: IncomingMessage, res: ServerResponse, body: unknown) => void;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function fakeOllama(handler: Handler): Promise<{ base: string; seen: Array<{ url: string; body: any }>; close: () => Promise<void> }> {
   return new Promise((resolve) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const seen: Array<{ url: string; body: any }> = [];
     const srv = createServer((req, res) => {
       let body = '';
