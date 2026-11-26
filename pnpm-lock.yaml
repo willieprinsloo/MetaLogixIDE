@@ -4,6 +4,14 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@gespenst/xterm@0.2.0>@gespenst/core': 0.2.0
+
+patchedDependencies:
+  '@gespenst/core@0.2.0': df91de4daaa1c8734ace8dfac723efe9a84a1d384cc3c9a21b0aca9860a5492f
+  '@gespenst/xterm@0.2.0': 89e7747ab4ab8dc26ac0cb4342848e1476f7d32abf1065b8357e881507aa8477
+  '@xterm/addon-webgl@0.18.0': 7aa158ed67a7ac75c08b772e7a173821e6bd16426db35ab2e97b1e961f1c4302
+
 importers:
 
   .:
@@ -31,7 +39,7 @@ importers:
         version: 0.11.0(@xterm/xterm@5.5.0)
       '@xterm/addon-webgl':
         specifier: ^0.18.0
-        version: 0.18.0(@xterm/xterm@5.5.0)
+        version: 0.18.0(patch_hash=7aa158ed67a7ac75c08b772e7a173821e6bd16426db35ab2e97b1e961f1c4302)(@xterm/xterm@5.5.0)
       '@xterm/headless':
         specifier: ^5.5.0
         version: 5.5.0
@@ -89,10 +97,10 @@ importers:
         version: 4.2.0(supports-color@7.2.0)
       '@gespenst/core':
         specifier: 0.2.0
-        version: 0.2.0
+        version: 0.2.0(patch_hash=df91de4daaa1c8734ace8dfac723efe9a84a1d384cc3c9a21b0aca9860a5492f)
       '@gespenst/xterm':
         specifier: 0.2.0
-        version: 0.2.0
+        version: 0.2.0(patch_hash=89e7747ab4ab8dc26ac0cb4342848e1476f7d32abf1065b8357e881507aa8477)
       '@playwright/test':
         specifier: ^1.47.0
         version: 1.61.1
@@ -4282,11 +4290,11 @@ snapshots:
       '@eslint/core': 0.17.0
       levn: 0.4.1
 
-  '@gespenst/core@0.2.0': {}
+  '@gespenst/core@0.2.0(patch_hash=df91de4daaa1c8734ace8dfac723efe9a84a1d384cc3c9a21b0aca9860a5492f)': {}
 
-  '@gespenst/xterm@0.2.0':
+  '@gespenst/xterm@0.2.0(patch_hash=89e7747ab4ab8dc26ac0cb4342848e1476f7d32abf1065b8357e881507aa8477)':
     dependencies:
-      '@gespenst/core': 0.2.0
+      '@gespenst/core': 0.2.0(patch_hash=df91de4daaa1c8734ace8dfac723efe9a84a1d384cc3c9a21b0aca9860a5492f)
 
   '@humanfs/core@0.19.2':
     dependencies:
@@ -4991,7 +4999,7 @@ snapshots:
     dependencies:
       '@xterm/xterm': 5.5.0
 
-  '@xterm/addon-webgl@0.18.0(@xterm/xterm@5.5.0)':
+  '@xterm/addon-webgl@0.18.0(patch_hash=7aa158ed67a7ac75c08b772e7a173821e6bd16426db35ab2e97b1e961f1c4302)(@xterm/xterm@5.5.0)':
     dependencies:
       '@xterm/xterm': 5.5.0
 
