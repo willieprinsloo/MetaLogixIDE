@@ -13,3 +13,20 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm test
+
+  mobile:
+    # Mobile is a separate npm project (own package-lock.json, not in the
+    # pnpm workspace). It must typecheck on every PR too — the core logic
+    # under `mobile/src/core` is shared with the desktop's P2P code via
+    # `mobile/src/core/__tests__/interop.test.ts`, so a type drift between
+    # the two breaks pairing silently. The interop tests themselves are
+    # already exercised by `pnpm test` in the main job.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version-file: .nvmrc }
+      - run: npm install --no-audit --no-fund
+        working-directory: mobile
+      - run: npm run typecheck
+        working-directory: mobile
