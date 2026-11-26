@@ -1,6 +1,6 @@
 // One headless CLI turn: spawn, message on stdin, events on stdout, a parsed result.
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { runCliTurn } from '@main/group-chat/engines/run-cli';
@@ -26,7 +26,11 @@ describe('runCliTurn', () => {
     expect(r).toEqual({ ok: true, reply: 'codex: hello group', engineSession: 'fake-thread-1' });
     const call = JSON.parse(readFileSync(file, 'utf8').trim()) as { cwd: string; stdin: string };
     expect(call.stdin).toBe('hello group');
-    expect(resolve(call.cwd).toLowerCase()).toBe(resolve(cwd).toLowerCase());
+    // realpath both sides — on macOS tmpdir is /var/folders (symlink to
+    // /private/var/folders), and the child's process.cwd() reads the
+    // realpath while Node's path.resolve does not. Compare the resolved
+    // real paths so the test isn't platform-flaky.
+    expect(realpathSync(call.cwd).toLowerCase()).toBe(realpathSync(cwd).toLowerCase());
   });
 
   it('resumes the thread it is given', async () => {

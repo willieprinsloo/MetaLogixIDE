@@ -75,7 +75,12 @@ export async function createBoardProfile(): Promise<BoardProfile> {
       app = await _electron.launch({
         executablePath: executable,
         cwd: process.cwd(),
-        timeout: 15_000,
+        // 15s was snug on Electron 32 and times out on Electron 43 —
+        // the debugger attaches, then metaIDE's migrations + settings
+        // open push past the deadline on a loaded workstation. The
+        // outer 45s LAUNCH_BUDGET_MS still catches the truly wedged
+        // case; 30s here just gives the app a realistic warm-up.
+        timeout: 30_000,
         args: [
           '.',
           `--user-data-dir=${userData}`,
@@ -105,14 +110,20 @@ export async function createBoardProfile(): Promise<BoardProfile> {
         fixture: process.env.METAIDE_METAPROJECT_FIXTURE,
         electron: process.versions.electron,
       }));
-      expect(paths, 'all prerequisites for the local fixture keyring').toEqual({
+      // Don't pin the electron version — the integrate-pr-16 upgrade bumped
+      // it from 32.3.3 to 43.x and a hardcoded string fails every launch
+      // after an upgrade. Confirm the five fields the fixture keyring
+      // actually depends on, and check electron is a non-empty version
+      // string separately.
+      const { electron, ...nonVersion } = paths;
+      expect(nonVersion, 'all prerequisites for the local fixture keyring').toEqual({
         profile: userData,
         switchProfile: userData,
         packaged: false,
         testMode: '1',
         fixture: '1',
-        electron: '32.3.3',
       });
+      expect(electron, 'electron reports a version').toMatch(/^\d+\.\d+\.\d+/);
       const win = await app.firstWindow({ timeout: 15_000 });
       await win.waitForLoadState('domcontentloaded');
       win.setDefaultTimeout(7_500);
