@@ -1627,6 +1627,7 @@ export const handlers: { [C in Exclude<CoreChannel, 'shells:snapshot' | 'setting
     const current = { ...s.settings.get('shell_nicknames') };
     const key = `${projectId}:${shellIndex}`;
     const cleaned = (nickname ?? '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32);
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
     if (!cleaned) delete current[key];
     else current[key] = cleaned;
     s.settings.set('shell_nicknames', current);

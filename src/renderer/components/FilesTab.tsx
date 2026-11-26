@@ -548,7 +548,6 @@ function FileTreePane({
   ];
 
   const segments = dir ? dir.split('/').filter(Boolean) : [];
-  const parentDir = segments.length <= 1 ? undefined : segments.slice(0, -1).join('/');
 
   return (
     <div className="shrink-0 overflow-y-auto py-2 px-1 text-sm" style={{ width }} onContextMenu={bgMenu}>
