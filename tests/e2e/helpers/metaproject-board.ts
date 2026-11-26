@@ -105,14 +105,20 @@ export async function createBoardProfile(): Promise<BoardProfile> {
         fixture: process.env.METAIDE_METAPROJECT_FIXTURE,
         electron: process.versions.electron,
       }));
-      expect(paths, 'all prerequisites for the local fixture keyring').toEqual({
+      // Don't pin the electron version — the integrate-pr-16 upgrade bumped
+      // it from 32.3.3 to 43.x and a hardcoded string fails every launch
+      // after an upgrade. Confirm the five fields the fixture keyring
+      // actually depends on, and check electron is a non-empty version
+      // string separately.
+      const { electron, ...nonVersion } = paths;
+      expect(nonVersion, 'all prerequisites for the local fixture keyring').toEqual({
         profile: userData,
         switchProfile: userData,
         packaged: false,
         testMode: '1',
         fixture: '1',
-        electron: '32.3.3',
       });
+      expect(electron, 'electron reports a version').toMatch(/^\d+\.\d+\.\d+/);
       const win = await app.firstWindow({ timeout: 15_000 });
       await win.waitForLoadState('domcontentloaded');
       win.setDefaultTimeout(7_500);
