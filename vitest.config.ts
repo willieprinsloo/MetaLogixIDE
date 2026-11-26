@@ -2,6 +2,17 @@ import { defineConfig } from 'vitest/config';
 import { resolve } from 'node:path';
 
 export default defineConfig({
+  plugins: [{
+    name: 'terminal-wasm-test-fixtures',
+    resolveId(id) {
+      if (id === 'virtual:metaide-ghostty-vt' || id === 'virtual:metaide-ghostty-callbacks') return `\0${id}`;
+    },
+    load(id) {
+      if (id === '\0virtual:metaide-ghostty-vt' || id === '\0virtual:metaide-ghostty-callbacks') {
+        return "throw new Error('Mock the Ghostty WASM fixture before importing the renderer'); export default null;";
+      }
+    },
+  }],
   resolve: {
     alias: {
       '@main': resolve(__dirname, 'src/main'),
