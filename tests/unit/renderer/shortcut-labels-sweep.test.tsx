@@ -71,6 +71,7 @@ const paletteDeps: PaletteCommandDeps = {
   setThemeMode: noop,
   setThemePalette: noop,
   openSettings: noop,
+  openFeedback: noop,
 };
 
 /** Each rendered surface, as the markup (or text) it produces for a platform. */

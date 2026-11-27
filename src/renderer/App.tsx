@@ -29,6 +29,7 @@ import { UsageMeter } from './components/UsageMeter';
 import { ActivityBar, ABButton, type ActivityView } from './components/ActivityBar';
 import { CommandPalette } from './components/CommandPalette';
 import { ShortcutsHelp } from './components/ShortcutsHelp';
+import { FeedbackDialog } from './components/FeedbackDialog';
 import type { PaletteRequest, PaletteSeed } from './command-palette-contract';
 import { buildPaletteCommands } from './palette-commands';
 import { paletteKeyAction } from './palette-keys';
@@ -398,6 +399,8 @@ function MainApp() {
   const setHelpOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updateHelpOpen(true)); else updateHelpOpen(false); }, [beforeOverlay]);
   const helpOpenRef = useRef(helpOpen);
   helpOpenRef.current = helpOpen;
+  const [feedbackOpen, updateFeedbackOpen] = useState(false);
+  const setFeedbackOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updateFeedbackOpen(true)); else updateFeedbackOpen(false); }, [beforeOverlay]);
   const [searchOpen, updateSearchOpen] = useState(false);
   const setSearchOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updateSearchOpen(open)); else updateSearchOpen(false); }, [beforeOverlay]);
   const [promptsOpen, updatePromptsOpen] = useState(false);
@@ -563,9 +566,10 @@ function MainApp() {
       if (section) setSettingsSection(section);
       setSettingsOpen(true);
     },
+    openFeedback: () => setFeedbackOpen(true),
     keepAwake: paletteKeepAwake,
     platform,
-  }), [selected, remotePane, localWorkspaceProject, primaryAlive, openUnloadSession, sidebarOpen, openPalette, setActiveView, toggleSidebar, showStatusBar, setMainTab, openNewTerminal, setThemeMode, setThemePalette, paletteKeepAwake, platform, setSearchOpen, setScrollbackOpen, setPromptsOpen, setHelpOpen, setNewProjectOpen, setSettingsOpen]);
+  }), [selected, remotePane, localWorkspaceProject, primaryAlive, openUnloadSession, sidebarOpen, openPalette, setActiveView, toggleSidebar, showStatusBar, setMainTab, openNewTerminal, setThemeMode, setThemePalette, paletteKeepAwake, platform, setSearchOpen, setScrollbackOpen, setPromptsOpen, setHelpOpen, setNewProjectOpen, setSettingsOpen, setFeedbackOpen]);
 
   const refreshAlive = useCallback(async () => {
     const { shells } = await api.invoke('shells:alive-list', undefined as never);
@@ -1409,6 +1413,7 @@ function MainApp() {
       />
       <ToastStack />
       <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <FeedbackDialog open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
       <ProjectSearch
         open={searchOpen && localWorkspaceProject !== null}
         projectId={localWorkspaceProject?.id ?? null}
