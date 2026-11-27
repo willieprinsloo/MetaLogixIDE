@@ -17,6 +17,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '@renderer/api';
 import type { StoryFeature } from '@shared/story-feature';
+import { githubPrUrl } from '@shared/story-ref-extract';
+import { useAssignment } from '@renderer/metaproject/useAssignment';
+import { useOptionalMetaprojectSession } from '@renderer/metaproject/session';
 import { renderStoryFeatureBody } from '@renderer/story/renderFeatureBody';
 
 interface Props {
@@ -24,10 +27,24 @@ interface Props {
 }
 
 export function StoryTab({ projectId }: Props) {
+  const mpSession = useOptionalMetaprojectSession();
+  const [kanbanUrl, setKanbanUrl] = useState<string | null>(null);
+  // Only mount the assignment reader when the metaproject session
+  // provider is live — otherwise `useAssignment` throws by design.
+  // A tiny child component carries the hook and reports its finding
+  // back through `onKanbanUrl`, so the main component stays clean.
+  const kanbanReader = mpSession !== null
+    ? <KanbanUrlReader projectId={projectId} onResolve={setKanbanUrl} />
+    : null;
+  return <StoryTabCore projectId={projectId} kanbanUrl={kanbanUrl} extra={kanbanReader} />;
+}
+
+function StoryTabCore({ projectId, kanbanUrl, extra }: { projectId: number; kanbanUrl: string | null; extra: React.ReactNode }) {
   const [features, setFeatures] = useState<StoryFeature[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [repoUrl, setRepoUrl] = useState<string | null>(null);
   const [showMaintenance, setShowMaintenance] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
@@ -51,6 +68,20 @@ export function StoryTab({ projectId }: Props) {
   }, [projectId]);
 
   useEffect(() => { void refreshList(); }, [refreshList]);
+
+  // Fetch the GitHub repo URL once per project change. Rare to shift
+  // mid-session (requires editing .git/config), so no watcher.
+  useEffect(() => {
+    let cancelled = false;
+    setRepoUrl(null);
+    (async () => {
+      try {
+        const { repoUrl: url } = await api.invoke('story:features:repo-url', { projectId });
+        if (!cancelled) setRepoUrl(url);
+      } catch { if (!cancelled) setRepoUrl(null); }
+    })();
+    return () => { cancelled = true; };
+  }, [projectId]);
 
   // Stream new entries in as the main side writes them.
   useEffect(() => {
@@ -124,6 +155,7 @@ export function StoryTab({ projectId }: Props) {
 
   return (
     <div className="h-full flex min-h-0" data-testid="story-tab">
+      {extra}
       {/* Left rail: feature feed */}
       <aside className="w-80 shrink-0 border-r border-[--border] flex flex-col min-h-0">
         <div className="px-3 py-2 border-b border-[--border] flex items-center gap-2">
@@ -165,9 +197,14 @@ export function StoryTab({ projectId }: Props) {
                   className={`w-full text-left px-3 py-2 border-b border-[--border] hover:bg-[--surface-hover] ${selectedId === f.id ? 'bg-[--accent-soft]' : ''} ${f.kind === 'maintenance' ? 'opacity-60' : ''}`}
                   data-testid="story-feature-row"
                 >
-                  <div className="flex items-center gap-1.5 text-[11px] text-[--text-muted] mb-0.5">
+                  <div className="flex items-center gap-1.5 text-[11px] text-[--text-muted] mb-0.5 flex-wrap">
                     <span className="tabular-nums">{formatDate(f.ts)}</span>
-                    {f.prNumber !== null && <span className="text-[color:var(--accent)]">#{f.prNumber}</span>}
+                    {f.prNumber !== null && (
+                      <PrLink prNumber={f.prNumber} repoUrl={repoUrl} />
+                    )}
+                    {f.ticketRefs?.map((ref) => (
+                      <TicketChip key={ref} refToken={ref} kanbanUrl={kanbanUrl} />
+                    ))}
                     {f.kind === 'maintenance' && <span className="px-1 rounded bg-[--panel] text-[10px] uppercase tracking-wide">maintenance</span>}
                     {f.edited && <span className="text-[10px] italic" title="This entry was hand-edited.">edited</span>}
                   </div>
@@ -198,7 +235,7 @@ export function StoryTab({ projectId }: Props) {
               onCancel={cancelEdit}
             />
           ) : (
-            <FeatureDetail feature={selected} onEdit={startEdit} />
+            <FeatureDetail feature={selected} onEdit={startEdit} repoUrl={repoUrl} kanbanUrl={kanbanUrl} />
           )
         ) : (
           <div className="flex-1 flex items-center justify-center text-[--text-muted] text-sm">
@@ -210,14 +247,19 @@ export function StoryTab({ projectId }: Props) {
   );
 }
 
-function FeatureDetail({ feature, onEdit }: { feature: StoryFeature; onEdit: () => void }) {
+function FeatureDetail({ feature, onEdit, repoUrl, kanbanUrl }: { feature: StoryFeature; onEdit: () => void; repoUrl: string | null; kanbanUrl: string | null }) {
   const html = useMemo(() => renderStoryFeatureBody(feature.body), [feature.body]);
   return (
     <div className="flex-1 overflow-auto min-h-0 flex flex-col" data-testid="story-feature-detail">
       <header className="px-6 pt-6 pb-3 border-b border-[--border]">
         <div className="flex items-center gap-2 text-[11px] text-[--text-muted] mb-1 tabular-nums">
           <span>{formatFullDate(feature.ts)}</span>
-          {feature.prNumber !== null && <span className="text-[color:var(--accent)]">#{feature.prNumber}</span>}
+          {feature.prNumber !== null && (
+            <PrLink prNumber={feature.prNumber} repoUrl={repoUrl} />
+          )}
+          {feature.ticketRefs?.map((ref) => (
+            <TicketChip key={ref} refToken={ref} kanbanUrl={kanbanUrl} />
+          ))}
           <span className="font-mono">{feature.id}</span>
           {feature.edited && <span className="italic">· edited</span>}
           <button
@@ -315,4 +357,74 @@ function formatFullDate(iso: string): string {
   } catch {
     return iso;
   }
+}
+
+/** PR number chip. Clickable when the repo URL resolved; plain text
+ *  otherwise (e.g. the user hasn't configured a GitHub remote, or it's
+ *  a self-hosted forge). The row button that wraps the chip uses
+ *  `stopPropagation` so clicking the link doesn't also select the row. */
+function PrLink({ prNumber, repoUrl }: { prNumber: number; repoUrl: string | null }): React.JSX.Element {
+  const url = githubPrUrl(repoUrl, prNumber);
+  if (!url) {
+    return <span className="text-[color:var(--accent)]">#{prNumber}</span>;
+  }
+  return (
+    <a
+      href={url}
+      onClick={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        void api.invoke('app:open-external', { url });
+      }}
+      className="text-[color:var(--accent)] underline-offset-2 hover:underline"
+      title={`Open PR #${prNumber} on GitHub`}
+      data-testid="story-feature-pr-link"
+      data-pr-number={prNumber}
+    >
+      #{prNumber}
+    </a>
+  );
+}
+
+/** Metaproject ticket ref chip (e.g. `METAI-7`). Clickable when the
+ *  current project is linked to a metaproject board — opens the
+ *  kanban. v1 does not resolve the ref to the exact ticket URL; the
+ *  user lands on the board, where the identifier badge is enough to
+ *  find the ticket. Follow-up work can swap the href when the server
+ *  gains a `/tickets/<ref>` deep link. */
+function TicketChip({ refToken, kanbanUrl }: { refToken: string; kanbanUrl: string | null }): React.JSX.Element {
+  const base = `px-1 rounded text-[10px] uppercase tracking-wide font-medium`;
+  if (!kanbanUrl) {
+    return <span className={`${base} bg-[--panel] text-[--text-muted]`} data-testid="story-feature-ticket-chip">{refToken}</span>;
+  }
+  return (
+    <a
+      href={kanbanUrl}
+      onClick={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        void api.invoke('app:open-external', { url: kanbanUrl });
+      }}
+      className={`${base} bg-[color:var(--accent-soft)] text-[color:var(--accent)] hover:brightness-110`}
+      title={`Open the metaproject board (search for ${refToken})`}
+      data-testid="story-feature-ticket-chip"
+      data-ref={refToken}
+    >
+      {refToken}
+    </a>
+  );
+}
+
+/** Reads the current project's metaproject assignment and reports the
+ *  kanban URL up to StoryTab. Mounts only when the session provider is
+ *  present — `useAssignment` throws without one, so we can't call it
+ *  unconditionally from StoryTab. Renders nothing visible. */
+function KanbanUrlReader({ projectId, onResolve }: { projectId: number; onResolve: (url: string | null) => void }): null {
+  const { state } = useAssignment(projectId);
+  useEffect(() => {
+    if (state.kind !== 'loaded') { onResolve(null); return; }
+    const a = state.value;
+    onResolve(a.kind === 'linked' ? `${a.origin}/projects/${a.remoteId}/kanban` : null);
+  }, [state, onResolve]);
+  return null;
 }

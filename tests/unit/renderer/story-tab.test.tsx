@@ -31,6 +31,18 @@ function makeFeature(overrides: Partial<StoryFeature> = {}): StoryFeature {
   };
 }
 
+// StoryTab now uses `useOptionalMetaprojectSession` and `useAssignment`
+// to resolve the project's metaproject kanban URL for ticket-ref chips.
+// Stub both so the tests render without a real session provider; returning
+// `null` for the session simulates signed-out, which is the safe default
+// for tests that don't care about the metaproject chips.
+vi.mock('@renderer/metaproject/session', () => ({
+  useMetaprojectSession: () => { throw new Error('tests should not read the full session'); },
+  useOptionalMetaprojectSession: () => null,
+  useSignInIntent: () => () => {},
+  AccountStatus: () => null,
+}));
+
 vi.mock('@renderer/api', () => ({
   api: {
     invoke: vi.fn().mockImplementation(async (ch: string, req: unknown) => {

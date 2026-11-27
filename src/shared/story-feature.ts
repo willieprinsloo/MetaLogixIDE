@@ -57,6 +57,11 @@ export interface StoryFeature {
   /** Was this entry hand-edited after generation? UI shows a small
    *  "edited" badge so the reader knows which prose Claude wrote. */
   edited: boolean;
+  /** Metaproject ticket references found in the PR title or commit
+   *  body — e.g. `['METAI-7', 'METAI-8']`. Deduplicated, in the order
+   *  they first appear. Empty when nothing matched. Displayed as small
+   *  chips on the row that link to the project's kanban. */
+  ticketRefs?: string[];
 }
 
 /** The cursor records where a project's last scan left off, so the
