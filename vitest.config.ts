@@ -30,7 +30,7 @@ export default defineConfig({
     minWorkers: 1,
     // .claude/ holds mutation-test copies of the tree; dist/ and out/ hold
     // packaged builds whose bundled node_modules ship their own tests.
-    exclude: ['tests/e2e/**', 'node_modules/**', 'mobile/node_modules/**', 'mobile/ios/**', 'mobile/android/**', '.claude/**', 'dist/**', 'out/**'],
+    exclude: ['tests/e2e/**', 'node_modules/**', 'mobile/node_modules/**', 'mobile/ios/**', 'mobile/android/**', '.claude/**', '.worktrees/**', 'dist/**', 'out/**'],
     coverage: {
       provider: 'v8',
       all: true,

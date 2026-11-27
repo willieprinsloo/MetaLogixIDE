@@ -21,3 +21,22 @@ patchedDependencies:
 
 overrides:
   '@gespenst/xterm@0.2.0>@gespenst/core': '0.2.0'
+  # Security patches (safe pass — transitive-only, within existing majors).
+  # See GitHub dependabot alerts on the repo for the full list.
+  undici: ^6.29.1
+  postcss: ^8.5.23
+  postcss-selector-parser: ^6.1.5
+  dompurify: ^3.4.17
+  markdown-it: ^14.3.3
+  source-map-js: ^1.2.2
+  js-yaml: ^4.3.2
+  '@xmldom/xmldom': ^0.9.12
+  baseline-browser-mapping: ^2.11.0
+  browserslist: ^4.28.7
+  tar: ^7.5.21
+  'glob@>=9 <15': ^14.0.2
+  esbuild: ^0.25.0
+  builder-util-runtime: ^9.7.0
+  'brace-expansion@<2': ^1.1.21
+  'brace-expansion@>=2 <4': ^2.1.7
+  'brace-expansion@>=4': ^5.0.12
