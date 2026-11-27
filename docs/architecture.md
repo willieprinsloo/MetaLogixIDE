@@ -1072,9 +1072,9 @@ kill.
 | Presentation | `src/renderer/components/ShellTabsBar.tsx`, `SplitPill.tsx` | The tab strip: chips, the new-shell menu, and the labelled **Split** toggle (`aria-pressed`). |
 | Presentation | `src/renderer/components/ShellSplit.tsx`, `SplitPaneHeader.tsx`, `SplitGutter.tsx`, `FoldPane.tsx` | Split mode: pane cards, headers (dot, label, abbreviated project path, To tab, Close), the focused-pane ring, and the resizable gutter (**Resize panes**, arrow keys move it by 2%). |
 | Logic | `src/renderer/shell-label.ts`, `split-ratio.ts`, `split-copy.ts` | Chip labels and which shells the strip hides; the ratio default, clamp and sanitising; exact test ids and copy. |
-| Presentation | `src/renderer/components/FoldPane.tsx` (shared fold) | Takes a `size`: `{ share }`, `'intrinsic'`, or `{ clamp: { min, max, reserve } }`. The clamp sets `--fold-size` to `clamp(min, 100cqw - reserve, max)` in CSS, against the nearest inline-size container. Optional `options`: `inertWhileExiting` (blur focus and set `inert` on a leaving pane) and `startBleedPx` (widen the clip box past the start edge). Both are off by default, so the sidebar and split do not change. |
+| Presentation | `src/renderer/components/FoldPane.tsx` (shared fold) | Takes a `size`: `{ share }`, `'intrinsic'`, or `{ clamp: { min, max, reserve } }`. The clamp sets `--fold-size` to `clamp(min, 100cqw - reserve, max)` in CSS, against the nearest inline-size container. Optional `options`: `inertWhileExiting` (blur focus and set `inert` on a leaving pane) `startBleedPx` (widen the clip box past the start edge) and `snapOnInstant` (when `custom.instant` turns on while the pane stays, jump a running fold to its end in one step). All are off by default, so the sidebar and split do not change. |
 | Presentation | `src/renderer/styles.css` (`.workspace-row`) | `.workspace-row` holds the main column and the Agents dock. It is an inline-size container (`container-type: inline-size`), which is the `100cqw` base of the dock's clamp. It is not a containing block for `position: fixed` descendants (size containment does not create one), so fixed elements inside it are still placed against the window. |
-| Logic | `src/renderer/agents-dock-fold.ts`, `agents-dock-layout.ts`, `agents-dock-copy.ts` | The pure fold state machine (`stepDockFold`: only a pointer toggle with a visible dock animates; a context change is instant and drops a running fold). The layout constants 240, 8 and 360 (they must match the App classes `min-w-[240px]`, `mr-2`, `min-w-[360px]`). The dock's test ids. |
+| Logic | `src/renderer/agents-dock-fold.ts`, `agents-dock-layout.ts`, `agents-dock-copy.ts` | The pure fold state machine (`stepDockFold`: only a pointer toggle with a visible dock animates; a shortcut during a running slide ends it in one step and the terminal hold is released when the dock reaches its end state; a context change is instant and drops a running fold). The layout constants 240, 8 and 360 (they must match the App classes `min-w-[240px]`, `mr-2`, `min-w-[360px]`). The dock's test ids. |
 | Adapter | `src/renderer/hooks/useAgentsDockFold.ts` | Runs the state machine each render, holds terminal geometry during a pointer slide, and reads reduced motion live. The hold watchdog counts as fold complete, so the next slide takes a fresh hold. |
 | Logic | `src/renderer/pane-fold.ts`, `pending-kill.ts`, `terminal-geometry-hold.ts`, `menu-motion.ts`, `motion-tokens.ts` | Fold and menu transitions, shells awaiting a kill or an activation after their exit, the terminal size hold, and the shared durations and easings. |
 | Adapter | `src/renderer/hooks/useTerminalGeometryHold.ts`, `usePrefersReducedMotion.ts` | Holds terminal refits while a fold runs; reads the OS reduced-motion setting live. |
@@ -1098,8 +1098,9 @@ Rules:
   and slides only on a pointer toggle (activity-bar button, dock close
   button). ⌘J, ⇧⌘A, the start-up migration, app start and context changes
   (remote pane, project selection) switch it in one step. A context change
-  also drops a fold that is running. Terminals hold their size during the
-  slide, like other folds.
+  also drops a fold that is running. A shortcut pressed while the dock is
+  sliding ends the slide in one step (⇧⌘A snaps it fully open). Terminals
+  hold their size during the slide, like other folds, and refit once.
 - The dock's final width is `clamp(248px, 100cqw - 360px, width + 8px)`
   against `.workspace-row`, where `width` is the saved dock width. The
   clamp lives in CSS, so a narrow window keeps PR #35's shrink at every
