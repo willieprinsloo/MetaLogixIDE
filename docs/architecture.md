@@ -398,10 +398,11 @@ The right-side Agents dock has no title row. Its roster bar (agent pills,
 Start round, the close button) sits on the chrome above the dock's panel,
 the way the Shell tabs sit above the Shell sheet. The bar takes the height
 of the workspace header row, so the panel starts level with the main sheet.
-The panel holds the thread and the composer. It carries
-`data-sheet-content="shell"`, so it gets the Shell sheet's surface and 14px
-corners, but it draws no border, and nothing inside it draws a divider. The
-composer's text box is a little darker than the panel.
+The panel holds only the thread. It carries `data-sheet-content="shell"`,
+so it gets the Shell sheet's surface and 14px corners, but it draws no
+border. The composer sits below the panel, on the chrome, and its text box
+is a little darker than the panel. The roster bar and the composer have no
+horizontal padding, so they line up with the panel's edges.
 Dialogs and popovers keep their edges because they float.
 
 `src/renderer/styles.css` ("Chrome surfaces and semantic hues") derives every

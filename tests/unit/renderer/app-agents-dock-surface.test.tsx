@@ -164,7 +164,6 @@ describe('Agents dock surface', () => {
     expect(dock).not.toBeNull();
     expect(classes(dock)).not.toContain('workspace-sheet');
     expect(dock?.hasAttribute('data-sheet-content')).toBe(false);
-    expect(classes(panel())).toEqual(expect.arrayContaining(['mb-2']));
   });
 
   it('has no "Agents" title row; its close button lives in the roster bar', async () => {

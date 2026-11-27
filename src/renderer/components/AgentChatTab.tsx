@@ -269,7 +269,7 @@ export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick,
   return (
     <div className="h-full min-h-0 flex flex-col" data-testid="agent-chat-tab">
       {/* Horizontal pill bar — compact, reclaims horizontal space for the thread. */}
-      <div className="shrink-0 px-3 py-1.5 flex items-center gap-1.5 overflow-x-auto" data-testid="agent-chat-bar"
+      <div className="shrink-0 px-0 py-1.5 flex items-center gap-1.5 overflow-x-auto" data-testid="agent-chat-bar"
         style={barMinHeight ? { minHeight: barMinHeight } : undefined}>
         {roster.length === 0 ? (
           <div className="text-[--text-muted] text-xs flex items-center gap-2">
@@ -427,9 +427,10 @@ export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick,
             item.kind === 'chat' ? renderChatRow(item.chat, selfDevice) : renderRoundRow(item.log, item.group)
           ))}
         </div>
-        <div className="p-3 relative" data-testid="agent-chat-composer">
+      </section>
+      <div className="shrink-0 pt-2 pb-2 relative" data-testid="agent-chat-composer">
           {candidates.length > 0 && mention && (
-            <div className="absolute bottom-full left-3 right-3 mb-1 max-h-56 overflow-y-auto rounded-md border border-[--border] bg-[--panel-strong] shadow-xl z-10">
+            <div className="absolute bottom-full left-0 right-0 mb-1 max-h-56 overflow-y-auto rounded-md border border-[--border] bg-[--panel-strong] shadow-xl z-10">
               {candidates.map((r, i) => {
                 return (
                   <button
@@ -465,8 +466,7 @@ export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick,
             rows={2}
             className="w-full bg-black/20 border border-[--border] rounded px-2 py-1 text-sm resize-none focus:outline-none focus:border-[--accent]"
           />
-        </div>
-      </section>
+      </div>
     </div>
   );
 }

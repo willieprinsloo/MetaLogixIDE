@@ -1370,7 +1370,7 @@ function MainApp() {
                 selfDevice={selfDeviceName}
                 focusTick={agentsComposerFocusTick}
                 barMinHeight={workspaceHeaderHeight || undefined}
-                panelClassName="workspace-sheet mb-2 rounded-[14px] bg-[--surface-sheet] overflow-hidden !border-0"
+                panelClassName="workspace-sheet rounded-[14px] bg-[--surface-sheet] overflow-hidden !border-0"
                 panelSheetContent="shell"
                 barEnd={
                   <Tooltip label="Close Agents pane" shortcut="⌘J to reopen">

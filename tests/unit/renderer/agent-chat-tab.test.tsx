@@ -162,7 +162,7 @@ describe('AgentChatTab', () => {
 describe('AgentChatTab dock layout', () => {
   const cls = (el: Element | null): string[] => (el?.getAttribute('class') ?? '').split(/\s+/).filter(Boolean);
 
-  it('puts the roster bar outside the panel and the thread and composer inside it', async () => {
+  it('puts the roster bar above the panel and the composer below it, both outside it', async () => {
     const { container } = render(<AgentChatTab projectId={1} selfDevice="laptop"
       panelClassName="workspace-sheet rounded-[14px] bg-[--surface-sheet]" barEnd={<button>Close dock</button>} />);
     await screen.findByText('hello');
@@ -171,7 +171,12 @@ describe('AgentChatTab dock layout', () => {
     expect(bar).not.toBeNull();
     expect(panel).not.toBeNull();
     expect(panel!.contains(bar)).toBe(false);
-    expect(panel!.querySelector('textarea')).not.toBeNull();
+    const composer = container.querySelector('[data-testid="agent-chat-composer"]');
+    expect(composer).not.toBeNull();
+    expect(composer!.querySelector('textarea')).not.toBeNull();
+    expect(panel!.contains(composer)).toBe(false);
+    expect(panel!.querySelector('textarea')).toBeNull();
+    expect(panel!.compareDocumentPosition(composer!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(panel!.textContent).toContain('hello');
     expect(cls(panel)).toEqual(expect.arrayContaining(['workspace-sheet', 'rounded-[14px]', 'bg-[--surface-sheet]']));
     expect(bar!.contains(screen.getByRole('button', { name: 'Close dock' }))).toBe(true);
@@ -186,6 +191,14 @@ describe('AgentChatTab dock layout', () => {
     expect(composer).not.toBeNull();
     expect(cls(bar)).not.toContain('border-b');
     expect(cls(composer)).not.toContain('border-t');
+  });
+
+  it('gives the roster bar no horizontal padding', async () => {
+    const { container } = render(<AgentChatTab projectId={1} selfDevice="laptop" />);
+    await screen.findByText('hello');
+    const bar = cls(container.querySelector('[data-testid="agent-chat-bar"]'));
+    expect(bar).toContain('px-0');
+    expect(bar.some((c) => /^(px|pl|pr)-(?!0$)/.test(c))).toBe(false);
   });
 
   it('gives the composer textbox a darker background than the panel', async () => {
