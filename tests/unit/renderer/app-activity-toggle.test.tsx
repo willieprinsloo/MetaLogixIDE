@@ -97,6 +97,9 @@ vi.mock('@renderer/components/ChatTab', () => ({ ChatTab: () => null }));
 vi.mock('@renderer/components/Settings', () => ({ Settings: () => null }));
 vi.mock('@renderer/components/NewProjectDialog', () => ({ NewProjectDialog: ({ open }: { open: boolean }) =>
   open ? <div role="dialog" aria-label="New project">New project</div> : null }));
+vi.mock('@renderer/components/ProjectSettingsTab', () => ({ ProjectSettingsTab: ({ children }: { children: ReactNode }) =>
+  <section data-testid="project-settings-view">{children}</section> }));
+vi.mock('@renderer/components/ProjectEnvTab', () => ({ ProjectEnvTab: () => null }));
 vi.mock('@renderer/components/ShellTabsBar', () => ({ ShellTabsBar: ({ onSelect }: { onSelect: (shellIndex: number) => void }) =>
   <button onClick={() => onSelect(2)}>Terminal tab 2</button> }));
 vi.mock('@renderer/components/ShellSplit', () => ({ ShellSplit: () => <div data-testid="shell-view" /> }));
@@ -108,8 +111,8 @@ const tabButton = () => document.querySelector('[data-testid="activity-tab-butto
 const stored = (key: string) => JSON.parse(localStorage.getItem(key) ?? 'null') as unknown;
 const peeks = () => bridge.calls.filter((c) => c.channel === 'files:peek');
 
-/** Mounts App with the setting and saved tab given, then selects project 1. */
-async function mount(opts: { activity: boolean; tab?: string; follow?: boolean }): Promise<void> {
+/** Mounts App with the setting and saved tab given, then selects project 1 unless `select` is false. */
+async function mount(opts: { activity: boolean; tab?: string; follow?: boolean; select?: boolean }): Promise<void> {
   bridge.activity = opts.activity;
   localStorage.clear();
   if (opts.tab) localStorage.setItem('metaide.mainTab', JSON.stringify(opts.tab));
@@ -119,6 +122,7 @@ async function mount(opts: { activity: boolean; tab?: string; follow?: boolean }
   const mountedRoot = createRoot(container);
   root = mountedRoot;
   await act(async () => { mountedRoot.render(<App />); });
+  if (opts.select === false) { await flush(); return; }
   await act(async () => { [...document.querySelectorAll('button')].find((b) => b.textContent === 'Select 1')!.click(); });
   await flush();
   await flush();
@@ -245,6 +249,22 @@ describe('selecting a terminal tab focuses its terminal', () => {
     bridge.focus = [];
     await click('Files');
     expect(document.querySelector('[data-testid="files-view"]')).not.toBeNull();
+    expect(bridge.focus).toEqual([]);
+  });
+
+  it('clicking the Settings destination asks for no terminal (AC3)', async () => {
+    await mount({ activity: true, tab: 'shell' });
+    bridge.focus = [];
+    await click('Settings');
+    expect(document.querySelector('[data-testid="project-settings-view"]')).not.toBeNull();
+    expect(bridge.focus).toEqual([]);
+  });
+
+  it('clicking the Shell destination with no project selected asks for no terminal', async () => {
+    await mount({ activity: true, tab: 'files', select: false });
+    bridge.focus = [];
+    await click('Shell');
+    expect(document.querySelector('[data-testid="main-column"]')).not.toBeNull();
     expect(bridge.focus).toEqual([]);
   });
 });
