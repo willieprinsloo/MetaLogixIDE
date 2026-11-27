@@ -213,6 +213,11 @@ export interface IpcContract extends MetaprojectIpc {
   'story:features:list': { request: { projectId: number }; response: { features: import('./story-feature').StoryFeature[]; lastRefresh: string | null } };
   'story:features:refresh': { request: { projectId: number }; response: { added: number; failed: number } };
   'story:features:update': { request: { projectId: number; id: string; title?: string; body?: string }; response: { feature: import('./story-feature').StoryFeature } };
+  /** Project's GitHub web URL, derived from `git remote get-url origin`
+   *  — returns `null` when the remote isn't a recognisable github.com
+   *  SSH or HTTPS URL. Cached by the renderer; the backing value doesn't
+   *  change often enough to warrant a watcher. */
+  'story:features:repo-url': { request: { projectId: number }; response: { repoUrl: string | null } };
 
   /**
    * Agent chat bus — one entry per human/agent message.

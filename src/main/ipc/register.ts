@@ -1670,6 +1670,20 @@ export const handlers: { [C in Exclude<CoreChannel, 'shells:snapshot' | 'setting
     }
     return { added: result.added, failed: result.failed };
   },
+  'story:features:repo-url': async (s, { projectId }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    try {
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const { parseGithubRepoUrl } = await import('@shared/story-ref-extract');
+      const run = promisify(execFile);
+      const { stdout } = await run('git', ['remote', 'get-url', 'origin'], { cwd: p.path });
+      return { repoUrl: parseGithubRepoUrl(stdout.trim()) };
+    } catch {
+      return { repoUrl: null };
+    }
+  },
   'story:features:update': async (s, { projectId, id, title, body }) => {
     const p = s.projects.get(projectId);
     if (!p) throw new Error(`no project ${projectId}`);
