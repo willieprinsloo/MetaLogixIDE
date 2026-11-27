@@ -8,12 +8,14 @@ import type { FoldCustom } from './pane-fold';
 /** Which input flipped the dock setting; only a pointer toggle slides. */
 export type DockToggleSource = 'pointer' | 'shortcut' | 'migration';
 
+/** One render's inputs: the persisted open setting, whether the dock can be shown here, and what flipped the setting last. */
 export interface DockFoldInput {
   setting: boolean;
   context: boolean;
   source: DockToggleSource;
 }
 
+/** Last seen inputs, whether the current change slides (`animate`), and whether a slide holds the terminal (`folding`). */
 export interface DockFoldState {
   setting: boolean;
   context: boolean;
@@ -21,6 +23,7 @@ export interface DockFoldState {
   folding: boolean;
 }
 
+/** The state on first render: nothing slides, so a dock left open is already open (AC17). */
 export function initialDockFold(input: Pick<DockFoldInput, 'setting' | 'context'>): DockFoldState {
   return { ...input, animate: false, folding: false };
 }
