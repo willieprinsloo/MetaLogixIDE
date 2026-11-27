@@ -63,7 +63,7 @@ describe('TerminalFontSizeControl hint on Linux (AC6)', () => {
   it('names the Ctrl zoom chords and no Mac glyph', async () => {
     const { TerminalFontSizeControl } = await import('@renderer/components/settings/TerminalFontSizeControl');
     const html = renderToStaticMarkup(
-      <ShortcutPlatformContext.Provider value="other">
+      <ShortcutPlatformContext.Provider value="linux">
         <TerminalFontSizeControl />
       </ShortcutPlatformContext.Provider>,
     );

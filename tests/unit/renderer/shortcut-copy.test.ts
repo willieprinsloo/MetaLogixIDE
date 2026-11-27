@@ -49,7 +49,7 @@ describe('SHORTCUT_COPY', () => {
   });
 
   it.each(CASES)('%s reads the Ctrl+ form on Linux (AC6)', (name, _mac, linux) => {
-    expect(SHORTCUT_COPY[name]('other')).toBe(linux);
+    expect(SHORTCUT_COPY[name]('linux')).toBe(linux);
   });
 
   it('describes ChatTab’s real Enter-to-send behaviour, with no platform branch (AC9)', () => {

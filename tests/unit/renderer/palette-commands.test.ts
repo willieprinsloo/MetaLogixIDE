@@ -213,11 +213,11 @@ const LINUX_HINTS: ReadonlyArray<readonly [string, string]> = [
 
 describe('buildPaletteCommands on Linux (AC6)', () => {
   it.each(LINUX_HINTS)('hints %s as %s', (id, hint) => {
-    expect(byId(buildPaletteCommands({ ...deps().deps, platform: 'other' }), id).hint).toBe(hint);
+    expect(byId(buildPaletteCommands({ ...deps().deps, platform: 'linux' }), id).hint).toBe(hint);
   });
 
   it('carries no Mac glyph in any hint and hints exactly the same commands as on mac', () => {
-    const linux = buildPaletteCommands({ ...deps().deps, platform: 'other' });
+    const linux = buildPaletteCommands({ ...deps().deps, platform: 'linux' });
     expect(linux.filter((c) => c.hint && GLYPHS.test(c.hint)).map((c) => c.id)).toEqual([]);
     const hinted = (list: readonly PaletteCommand[]) => list.filter((c) => c.hint).map((c) => c.id);
     expect(hinted(linux)).toEqual(hinted(buildPaletteCommands({ ...deps().deps, platform: 'mac' })));

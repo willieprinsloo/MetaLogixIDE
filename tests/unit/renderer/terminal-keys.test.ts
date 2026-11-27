@@ -31,69 +31,69 @@ describe('routeTerminalKey on other platforms', () => {
   it.each(['r', 'p', 'b', 't', 'c', '\\', 'a', 'd', 'l', 'u', 'w', 'z'])(
     'sends unshifted Ctrl+%s to the shell (AC10)',
     (k) => {
-      expect(routeTerminalKey(ctrl(k), 'other')).toBe('shell');
+      expect(routeTerminalKey(ctrl(k), 'linux')).toBe('shell');
     },
   );
 
   it.each(['k', 'K'])(
     'routes unshifted Ctrl+%s to the app so the palette opens from a terminal',
     (k) => {
-      expect(routeTerminalKey(ctrl(k), 'other')).toBe('app');
+      expect(routeTerminalKey(ctrl(k), 'linux')).toBe('app');
     },
   );
 
   it('sends upper-case-reported unshifted Ctrl letters to the shell', () => {
-    expect(routeTerminalKey(ctrl('R'), 'other')).toBe('shell');
+    expect(routeTerminalKey(ctrl('R'), 'linux')).toBe('shell');
   });
 
   it.each(['P', 'K', 'O', 'N', 'T', 'F', 'A', 'p', 'k', 'o', 'n', 't', 'f', 'a'])(
     'routes Ctrl+Shift+%s to the app (AC11)',
     (k) => {
-      expect(routeTerminalKey(ctrlShift(k), 'other')).toBe('app');
+      expect(routeTerminalKey(ctrlShift(k), 'linux')).toBe('app');
     },
   );
 
   it.each([',', '/', '=', '-', '0'])('routes Ctrl+%s to the app (AC11)', (k) => {
-    expect(routeTerminalKey(ctrl(k), 'other')).toBe('app');
+    expect(routeTerminalKey(ctrl(k), 'linux')).toBe('app');
   });
 
   it('routes Ctrl++ (reported shifted or not) to the app', () => {
-    expect(routeTerminalKey(ctrl('+'), 'other')).toBe('app');
-    expect(routeTerminalKey(ctrl('+', { shiftKey: true }), 'other')).toBe('app');
+    expect(routeTerminalKey(ctrl('+'), 'linux')).toBe('app');
+    expect(routeTerminalKey(ctrl('+', { shiftKey: true }), 'linux')).toBe('app');
   });
 
   it('takes unshifted Ctrl+F for terminal find (AC11/AC12)', () => {
-    expect(routeTerminalKey(ctrl('f'), 'other')).toBe('app');
-    expect(routeTerminalKey(ctrl('F'), 'other')).toBe('app');
+    expect(routeTerminalKey(ctrl('f'), 'linux')).toBe('app');
+    expect(routeTerminalKey(ctrl('F'), 'linux')).toBe('app');
   });
 
   it('routes Ctrl+Shift+C to copy and Ctrl+Shift+V to paste', () => {
-    expect(routeTerminalKey(ctrlShift('C'), 'other')).toBe('copy');
-    expect(routeTerminalKey(ctrlShift('c'), 'other')).toBe('copy');
-    expect(routeTerminalKey(ctrlShift('V'), 'other')).toBe('paste');
+    expect(routeTerminalKey(ctrlShift('C'), 'linux')).toBe('copy');
+    expect(routeTerminalKey(ctrlShift('c'), 'linux')).toBe('copy');
+    expect(routeTerminalKey(ctrlShift('V'), 'linux')).toBe('paste');
   });
 
   it('leaves keys xterm still maps, and other shifted chords, to default', () => {
-    expect(routeTerminalKey(ctrl('['), 'other')).toBe('default');
-    expect(routeTerminalKey(ctrl('3'), 'other')).toBe('default');
-    expect(routeTerminalKey(ctrl('_', { shiftKey: true }), 'other')).toBe('default');
-    expect(routeTerminalKey(ctrlShift('R'), 'other')).toBe('default');
+    expect(routeTerminalKey(ctrl('['), 'linux')).toBe('default');
+    expect(routeTerminalKey(ctrl('3'), 'linux')).toBe('default');
+    expect(routeTerminalKey(ctrl('_', { shiftKey: true }), 'linux')).toBe('default');
+    expect(routeTerminalKey(ctrlShift('R'), 'linux')).toBe('default');
   });
 
   it('leaves plain, shifted and Alt keys to default', () => {
-    expect(routeTerminalKey(key('k'), 'other')).toBe('default');
-    expect(routeTerminalKey(key('K', { shiftKey: true }), 'other')).toBe('default');
-    expect(routeTerminalKey(key('Enter'), 'other')).toBe('default');
-    expect(routeTerminalKey(key('b', { altKey: true }), 'other')).toBe('default');
-    expect(routeTerminalKey(ctrl('b', { altKey: true }), 'other')).toBe('default');
-    expect(routeTerminalKey(ctrl('f', { altKey: true }), 'other')).toBe('default');
+    expect(routeTerminalKey(key('k'), 'linux')).toBe('default');
+    expect(routeTerminalKey(key('K', { shiftKey: true }), 'linux')).toBe('default');
+    expect(routeTerminalKey(key('Enter'), 'linux')).toBe('default');
+    expect(routeTerminalKey(key('b', { altKey: true }), 'linux')).toBe('default');
+    expect(routeTerminalKey(ctrl('b', { altKey: true }), 'linux')).toBe('default');
+    expect(routeTerminalKey(ctrl('f', { altKey: true }), 'linux')).toBe('default');
   });
 
   it('does not treat Super as a modifier', () => {
-    expect(routeTerminalKey(key('k', { metaKey: true }), 'other')).toBe('default');
-    expect(routeTerminalKey(key('f', { metaKey: true }), 'other')).toBe('default');
-    expect(routeTerminalKey(key('C', { metaKey: true, shiftKey: true }), 'other')).toBe('default');
-    expect(routeTerminalKey(ctrl('k', { metaKey: true }), 'other')).toBe('default');
+    expect(routeTerminalKey(key('k', { metaKey: true }), 'linux')).toBe('default');
+    expect(routeTerminalKey(key('f', { metaKey: true }), 'linux')).toBe('default');
+    expect(routeTerminalKey(key('C', { metaKey: true, shiftKey: true }), 'linux')).toBe('default');
+    expect(routeTerminalKey(ctrl('k', { metaKey: true }), 'linux')).toBe('default');
   });
 });
 
@@ -143,7 +143,7 @@ function harness(
   const paste = vi.fn();
   const onClipboardError = vi.fn();
   const deps: TerminalKeyHandlerDeps = {
-    platform: opts.platform ?? 'other',
+    platform: opts.platform ?? 'linux',
     hasSelection: () => selection.length > 0,
     getSelection: () => selection,
     writeClipboard,
@@ -294,7 +294,7 @@ describe('createTerminalKeyHandler', () => {
 });
 
 describe.each([
-  { platform: 'other' as const, mod: { ctrlKey: true }, wrong: { metaKey: true } },
+  { platform: 'linux' as const, mod: { ctrlKey: true }, wrong: { metaKey: true } },
   { platform: 'mac' as const, mod: { metaKey: true }, wrong: { ctrlKey: true } },
 ])('terminalTabAction on $platform', ({ platform, mod, wrong }) => {
   it.each([
@@ -320,5 +320,71 @@ describe.each([
     expect(terminalTabAction(key('F', { ...mod, shiftKey: true }), platform)).toBeNull();
     expect(terminalTabAction(key('f', { ...mod, altKey: true }), platform)).toBeNull();
     expect(terminalTabAction(key('k', mod), platform)).toBeNull();
+  });
+});
+
+describe('routeTerminalKey on Windows (METAI-7)', () => {
+  it('routes plain Ctrl+V to paste — Windows Terminal convention', () => {
+    expect(routeTerminalKey(ctrl('v'), 'win')).toBe('paste');
+  });
+
+  it('still routes Ctrl+Shift+V to paste so Linux muscle memory keeps working', () => {
+    expect(routeTerminalKey(ctrlShift('v'), 'win')).toBe('paste');
+  });
+
+  it('routes plain Ctrl+C to copy-or-shell — the handler picks copy vs ^C by selection', () => {
+    expect(routeTerminalKey(ctrl('c'), 'win')).toBe('copy-or-shell');
+  });
+
+  it('still routes Ctrl+Shift+C to copy outright', () => {
+    expect(routeTerminalKey(ctrlShift('c'), 'win')).toBe('copy');
+  });
+
+  it('every other Ctrl+letter stays with the shell, same as Linux', () => {
+    for (const k of ['a', 'd', 'l', 'u', 'w']) {
+      expect(routeTerminalKey(ctrl(k), 'win')).toBe('shell');
+    }
+  });
+
+  it('app chords (Ctrl+F find, Ctrl+K palette, Ctrl+J) still escape to the app', () => {
+    expect(routeTerminalKey(ctrl('f'), 'win')).toBe('app');
+    expect(routeTerminalKey(ctrl('k'), 'win')).toBe('app');
+    expect(routeTerminalKey(ctrl('j'), 'win')).toBe('app');
+  });
+
+  it('Ctrl without a chord goes to default so plain modifier taps do nothing weird', () => {
+    expect(routeTerminalKey(key('Control', { ctrlKey: true }), 'win')).toBe('default');
+  });
+});
+
+describe('createTerminalKeyHandler on Windows (METAI-7)', () => {
+  it('plain Ctrl+C with a selection copies the selection and prevents default', () => {
+    const h = harness({ platform: 'win', selection: 'hello' });
+    const handler = createTerminalKeyHandler(h.deps);
+    const e = event(ctrl('c'));
+    const result = handler(e);
+    expect(result).toBe(false);
+    expect(e.preventDefault).toHaveBeenCalled();
+    expect(h.writeClipboard).toHaveBeenCalledWith(sanitizeTerminalCopy('hello'));
+  });
+
+  it('plain Ctrl+C with no selection returns true so xterm sends ^C to the shell', () => {
+    const h = harness({ platform: 'win', selection: '' });
+    const handler = createTerminalKeyHandler(h.deps);
+    const e = event(ctrl('c'));
+    const result = handler(e);
+    expect(result).toBe(true);
+    expect(e.preventDefault).not.toHaveBeenCalled();
+    expect(h.writeClipboard).not.toHaveBeenCalled();
+  });
+
+  it('plain Ctrl+V pastes the clipboard and prevents default', async () => {
+    const h = harness({ platform: 'win', clipboard: 'pasted text' });
+    const handler = createTerminalKeyHandler(h.deps);
+    const e = event(ctrl('v'));
+    handler(e);
+    await flush();
+    expect(e.preventDefault).toHaveBeenCalled();
+    expect(h.paste).toHaveBeenCalledWith('pasted text');
   });
 });

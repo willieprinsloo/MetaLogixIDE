@@ -18,7 +18,7 @@ const key = (k: string, mods: Mods = {}): ShortcutKeyLike => ({
 });
 
 const PLATFORMS: ReadonlyArray<{ platform: ShortcutPlatform; mod: Mods; wrong: Mods }> = [
-  { platform: 'other', mod: { ctrlKey: true }, wrong: { metaKey: true } },
+  { platform: 'linux', mod: { ctrlKey: true }, wrong: { metaKey: true } },
   { platform: 'mac', mod: { metaKey: true }, wrong: { ctrlKey: true } },
 ];
 
@@ -78,10 +78,10 @@ describe.each(PLATFORMS)('appShortcutAction on $platform', ({ platform, mod, wro
 
 describe('Find in project vs terminal find on Linux (AC12)', () => {
   it('Ctrl+Shift+F opens project search, Ctrl+F does not', () => {
-    expect(appShortcutAction(key('F', { ctrlKey: true, shiftKey: true }), 'other')).toBe(
+    expect(appShortcutAction(key('F', { ctrlKey: true, shiftKey: true }), 'linux')).toBe(
       'project-search',
     );
-    expect(appShortcutAction(key('f', { ctrlKey: true }), 'other')).toBeNull();
+    expect(appShortcutAction(key('f', { ctrlKey: true }), 'linux')).toBeNull();
   });
 });
 
