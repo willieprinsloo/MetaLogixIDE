@@ -269,7 +269,7 @@ export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick,
   return (
     <div className="h-full min-h-0 flex flex-col" data-testid="agent-chat-tab">
       {/* Horizontal pill bar — compact, reclaims horizontal space for the thread. */}
-      <div className="shrink-0 px-0 py-1.5 flex items-center gap-1.5 overflow-x-auto" data-testid="agent-chat-bar"
+      <div className="shrink-0 px-0 py-1.5 flex flex-wrap items-center gap-1.5" data-testid="agent-chat-bar"
         style={barMinHeight ? { minHeight: barMinHeight } : undefined}>
         {roster.length === 0 ? (
           <div className="text-[--text-muted] text-xs flex items-center gap-2">
