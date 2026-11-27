@@ -23,6 +23,7 @@ import { uploadClient } from '@renderer/remote-upload/upload-client';
 import { useUploadProgress, type RemoteTarget } from '@renderer/remote-upload/useUploadProgress';
 import { UploadProgressOverlay } from './UploadProgressOverlay';
 import { terminalFocus } from '@renderer/hooks/useWindowTerminalFocus';
+import { terminalFocusKey } from '@renderer/terminal-focus';
 import { detectPaths, detectBareFilenames } from '@shared/detect-paths';
 import { sanitizeTerminalCopy } from '@shared/sanitize-terminal-copy';
 import { HoverPreview, type HoverPreviewOpen, type HoverPreviewState } from './HoverPreview';
@@ -475,7 +476,7 @@ export function ShellTab({
     let opened = false;
     let disposed = false;
     const focusReg = terminalFocus.register({
-      key: { projectId, shellIndex },
+      key: terminalFocusKey(projectId, shellIndex, remoteDeviceId),
       primary: primaryRef.current,
       isOpen: () => snapshotReady.current,
       focus: () => activeSurfaceRef.current?.focus(),

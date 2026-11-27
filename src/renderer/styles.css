@@ -692,7 +692,8 @@ input::placeholder, textarea::placeholder {
   border: 1px solid light-dark(rgb(0 0 0 / 0.18), rgb(255 255 255 / 0.18));
   --terminal-pane-radius: 0 0 13px 13px;
 }
-[data-testid="remote-project-pane"] { --terminal-pane-radius: 0 0 13px 13px; }
+/* Standalone (no header row) the remote shell view draws its chips above the terminal, so only the bottom corners round. */
+[data-testid="remote-project-pane"] [data-testid="remote-shell-tabs"] + * { --terminal-pane-radius: 0 0 13px 13px; }
 .terminal-pane[data-terminal-backdrop] {
   border-radius: var(--terminal-pane-radius, 0);
   overflow: clip;

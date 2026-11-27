@@ -76,8 +76,10 @@ export interface CoordinatorDeps {
 
 interface PendingRequest { matches(h: TerminalHandle): boolean; at: number }
 
+const machineOf = (key: ShellKey): string => key.machine ?? LOCAL_TERMINAL_MACHINE;
+
 const sameKey = (a: ShellKey, b: ShellKey): boolean =>
-  a.projectId === b.projectId && a.shellIndex === b.shellIndex;
+  a.projectId === b.projectId && a.shellIndex === b.shellIndex && machineOf(a) === machineOf(b);
 
 /** Per-window focus owner. It tracks registered terminals, the last-used one,
  *  a window-focus target still waiting for `term.open()`, and one focus request
@@ -124,8 +126,8 @@ class Coordinator implements TerminalFocusCoordinator {
     this.requestMatching((h) => sameKey(h.key, key));
   }
 
-  requestProjectFocus(projectId: number): void {
-    this.requestMatching((h) => h.primary && h.key.projectId === projectId);
+  requestProjectFocus(projectId: number, machine: string = LOCAL_TERMINAL_MACHINE): void {
+    this.requestMatching((h) => h.primary && h.key.projectId === projectId && machineOf(h.key) === machine);
   }
 
   cancelRequest(): void {
@@ -176,4 +178,9 @@ class Coordinator implements TerminalFocusCoordinator {
 /** Builds the window's terminal-focus coordinator; see `Coordinator`. */
 export function createTerminalFocusCoordinator(deps: CoordinatorDeps): TerminalFocusCoordinator {
   return new Coordinator(deps);
+}
+
+/** The focus key a terminal registers: a remote terminal (`remoteDeviceId` set) carries its host's device id as `machine`; a local one carries none. */
+export function terminalFocusKey(projectId: number, shellIndex: number, remoteDeviceId: string | null): ShellKey {
+  return remoteDeviceId === null ? { projectId, shellIndex } : { projectId, shellIndex, machine: remoteDeviceId };
 }

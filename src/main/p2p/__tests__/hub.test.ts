@@ -48,7 +48,7 @@ function setup(extra: {
   noticeRouter?: NoticeRouter;
   auditMaxBytes?: number;
   events?: { aliveShellsChanged(): void; projectsChanged(): void };
-  desktopWorkspaceAllowed?: boolean;
+  desktopWorkspaceAllowed?: boolean | (() => boolean);
   workspaceDiagnosticPaths?: HubOptions['workspaceDiagnosticPaths'];
 } = {}) {
   const [ta, tb] = pairedTransports();
@@ -1118,5 +1118,151 @@ describe('upload caps are host-wide across links (AC-U8)', () => {
     const other = link('dev-other');
     await expect(Promise.all([1, 2, 3, 4].map(() => begin(other.client)))).resolves.toHaveLength(4);
     await Promise.all([b.hub.dispose(), other.hub.dispose()]);
+  });
+});
+
+describe('shell tab RPCs', () => {
+  const granted = { desktopWorkspaceAllowed: true };
+  const spyConfig = () => projects.get(projectId)!.config;
+
+  test('cliProfiles lists names, scopes and icons with the default and never a command or environment', async () => {
+    projects.updateConfig(projectId, {
+      cliProfiles: [{ name: 'secret-cli', argv: ['/opt/bin/agent', '--token=TOPSECRET'], env: { API_KEY: 'k-123' }, icon: '🤖' }],
+    });
+    const { client } = setup(granted);
+    await client.call('shells.setDefaultCli', { projectId, name: 'secret-cli' });
+    const result = await client.call('shells.cliProfiles', { projectId });
+    expect(result.defaultName).toBe('secret-cli');
+    expect(result.profiles.find((p) => p.name === 'secret-cli')).toEqual({ name: 'secret-cli', scope: 'project', icon: '🤖' });
+    const wire = JSON.stringify(result);
+    for (const leak of ['TOPSECRET', '/opt/bin/agent', 'API_KEY', 'k-123', 'argv', 'env']) expect(wire).not.toContain(leak);
+  });
+
+  test('launchProfile runs a saved profile by name only; a raw command in the request never reaches the launcher', async () => {
+    projects.updateConfig(projectId, { cliProfiles: [{ name: 'mine', argv: ['x'] }] });
+    const spy = vi.spyOn(handlers, 'shells:launch-cli').mockResolvedValue({ shellIndex: 3 });
+    const events = { aliveShellsChanged: vi.fn(), projectsChanged: vi.fn() };
+    const { client } = setup({ events });
+    const result = await client.call('shells.launchProfile', { projectId, profileName: 'mine', argv: ['rm', '-rf', '/'], env: { X: '1' }, save: true } as never);
+    expect(result).toEqual({ shellIndex: 3 });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0]![1]).toEqual({ projectId, profileName: 'mine' });
+    expect(events.aliveShellsChanged).toHaveBeenCalledTimes(1);
+    await expect(client.call('shells.launchProfile', { projectId, profileName: '' })).rejects.toMatchObject({ code: 'invalid_params' });
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  test('launchProfile with an unknown profile rejects unknown_profile without launching', async () => {
+    const spy = vi.spyOn(handlers, 'shells:launch-cli');
+    const { client } = setup();
+    await expect(client.call('shells.launchProfile', { projectId, profileName: 'no-such-profile' })).rejects.toMatchObject({ code: 'unknown_profile' });
+    expect(spy).not.toHaveBeenCalled();
+    expect(pty.liveShell(projectId, 0) ?? null).toBeNull();
+  });
+
+  test('launchPlain opens the host login shell through the local plain launcher', async () => {
+    const spy = vi.spyOn(handlers, 'shells:launch-plain').mockResolvedValue({ shellIndex: 2 });
+    const events = { aliveShellsChanged: vi.fn(), projectsChanged: vi.fn() };
+    const { client } = setup({ events });
+    expect(await client.call('shells.launchPlain', { projectId })).toEqual({ shellIndex: 2 });
+    expect(spy.mock.calls[0]![1]).toEqual({ projectId });
+    expect(events.aliveShellsChanged).toHaveBeenCalledTimes(1);
+  });
+
+  test('removeCliProfile removes a project profile and leaves global-only names alone', async () => {
+    projects.updateConfig(projectId, { cliProfiles: [{ name: 'mine', argv: ['x'] }, { name: 'keep', argv: ['y'] }] });
+    const { client } = setup(granted);
+    expect(await client.call('shells.removeCliProfile', { projectId, name: 'mine' })).toEqual({ ok: true });
+    expect(spyConfig().cliProfiles?.map((p) => p.name)).toEqual(['keep']);
+    const globals = (await client.call('shells.cliProfiles', { projectId })).profiles.filter((p) => p.scope === 'global').map((p) => p.name);
+    expect(globals.length).toBeGreaterThan(0);
+    expect(await client.call('shells.removeCliProfile', { projectId, name: globals[0]! })).toEqual({ ok: true });
+    const after = (await client.call('shells.cliProfiles', { projectId })).profiles.filter((p) => p.scope === 'global').map((p) => p.name);
+    expect(after).toEqual(globals);
+    expect(spyConfig().cliProfiles?.map((p) => p.name)).toEqual(['keep']);
+  });
+
+  test('setDefaultCli sets and clears the host default; a name with no saved profile is unknown_profile and changes nothing', async () => {
+    projects.updateConfig(projectId, { cliProfiles: [{ name: 'mine', argv: ['x'] }] });
+    const { client } = setup(granted);
+    expect(await client.call('shells.setDefaultCli', { projectId, name: 'mine' })).toEqual({ defaultName: 'mine' });
+    expect(spyConfig().defaultCliName).toBe('mine');
+    await expect(client.call('shells.setDefaultCli', { projectId, name: 'not-a-profile' })).rejects.toMatchObject({ code: 'unknown_profile' });
+    expect(spyConfig().defaultCliName).toBe('mine');
+    expect(await client.call('shells.setDefaultCli', { projectId, name: null })).toEqual({ defaultName: null });
+    expect(spyConfig().defaultCliName ?? null).toBeNull();
+  });
+
+  test('unknown_project on all five methods, even with a grant', async () => {
+    const { client } = setup(granted);
+    const missing = 9999;
+    await expect(client.call('shells.cliProfiles', { projectId: missing })).rejects.toMatchObject({ code: 'unknown_project' });
+    await expect(client.call('shells.launchProfile', { projectId: missing, profileName: 'a' })).rejects.toMatchObject({ code: 'unknown_project' });
+    await expect(client.call('shells.launchPlain', { projectId: missing })).rejects.toMatchObject({ code: 'unknown_project' });
+    await expect(client.call('shells.removeCliProfile', { projectId: missing, name: 'a' })).rejects.toMatchObject({ code: 'unknown_project' });
+    await expect(client.call('shells.setDefaultCli', { projectId: missing, name: 'a' })).rejects.toMatchObject({ code: 'unknown_project' });
+  });
+
+  test('without a grant the two settings methods reject forbidden and change nothing; the other three work', async () => {
+    projects.updateConfig(projectId, { cliProfiles: [{ name: 'mine', argv: ['x'] }] });
+    vi.spyOn(handlers, 'shells:launch-plain').mockResolvedValue({ shellIndex: 0 });
+    for (const allowed of [undefined, false]) {
+      const { client } = setup({ desktopWorkspaceAllowed: allowed });
+      await expect(client.call('shells.setDefaultCli', { projectId, name: 'mine' }))
+        .rejects.toMatchObject({ code: 'forbidden', message: 'workspace access requires a grant from the host' });
+      await expect(client.call('shells.removeCliProfile', { projectId, name: 'mine' }))
+        .rejects.toMatchObject({ code: 'forbidden', message: 'workspace access requires a grant from the host' });
+      expect(spyConfig().cliProfiles?.map((p) => p.name)).toEqual(['mine']);
+      expect(spyConfig().defaultCliName ?? null).toBeNull();
+      await expect(client.call('shells.cliProfiles', { projectId })).resolves.toBeTruthy();
+      await expect(client.call('shells.launchPlain', { projectId })).resolves.toEqual({ shellIndex: 0 });
+    }
+  });
+
+  test('a revoked grant is honoured on the next call of an established link', async () => {
+    projects.updateConfig(projectId, { cliProfiles: [{ name: 'mine', argv: ['x'] }] });
+    let allowed = true;
+    const { client } = setup({ desktopWorkspaceAllowed: () => allowed });
+    await expect(client.call('shells.setDefaultCli', { projectId, name: 'mine' })).resolves.toEqual({ defaultName: 'mine' });
+    allowed = false;
+    await expect(client.call('shells.setDefaultCli', { projectId, name: null })).rejects.toMatchObject({ code: 'forbidden' });
+    await expect(client.call('shells.removeCliProfile', { projectId, name: 'mine' })).rejects.toMatchObject({ code: 'forbidden' });
+    expect(spyConfig().defaultCliName).toBe('mine');
+    expect(spyConfig().cliProfiles?.map((p) => p.name)).toEqual(['mine']);
+  });
+
+  test.each([{ first: { argv: ['my-agent'], env: {} } }, { subsequent: { argv: ['my-agent', '--continue'], env: {} } }])(
+    'setDefaultCli refuses custom_command and keeps the host launch command (%o)', async (launchCmd) => {
+      projects.updateConfig(projectId, { cliProfiles: [{ name: 'mine', argv: ['x'] }], launchCmd });
+      const { client } = setup(granted);
+      await expect(client.call('shells.setDefaultCli', { projectId, name: 'mine' })).rejects.toMatchObject({ code: 'custom_command' });
+      expect(spyConfig().launchCmd).toEqual(launchCmd);
+      expect(spyConfig().defaultCliName ?? null).toBeNull();
+    });
+
+  test('error precedence: unknown_project, then forbidden, then custom_command, then unknown_profile', async () => {
+    projects.updateConfig(projectId, { launchCmd: { first: { argv: ['my-agent'], env: {} } } });
+    const denied = setup().client;
+    await expect(denied.call('shells.setDefaultCli', { projectId: 9999, name: 'x' })).rejects.toMatchObject({ code: 'unknown_project' });
+    await expect(denied.call('shells.setDefaultCli', { projectId, name: 'x' })).rejects.toMatchObject({ code: 'forbidden' });
+    const allowed = setup(granted).client;
+    await expect(allowed.call('shells.setDefaultCli', { projectId, name: 'x' })).rejects.toMatchObject({ code: 'custom_command' });
+    projects.updateConfig(projectId, { launchCmd: null });
+    await expect(allowed.call('shells.setDefaultCli', { projectId, name: 'x' })).rejects.toMatchObject({ code: 'unknown_profile' });
+  });
+
+  test('no argv, env or command reaches the wire from any of the five methods', async () => {
+    projects.updateConfig(projectId, { cliProfiles: [{ name: 'p', argv: ['/bin/SECRETBIN'], env: { TOK: 'SECRETVAL' } }] });
+    vi.spyOn(handlers, 'shells:launch-cli').mockResolvedValue({ shellIndex: 1 });
+    vi.spyOn(handlers, 'shells:launch-plain').mockResolvedValue({ shellIndex: 2 });
+    const { client } = setup(granted);
+    const out = [
+      await client.call('shells.cliProfiles', { projectId }),
+      await client.call('shells.launchProfile', { projectId, profileName: 'p' }),
+      await client.call('shells.launchPlain', { projectId }),
+      await client.call('shells.setDefaultCli', { projectId, name: 'p' }),
+      await client.call('shells.removeCliProfile', { projectId, name: 'p' }),
+    ];
+    expect(JSON.stringify(out)).not.toMatch(/SECRET|argv|TOK/);
   });
 });

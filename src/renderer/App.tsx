@@ -97,6 +97,8 @@ import { isPrimaryVisible } from './unload-session';
 import { resolveFileTarget } from './agent-file-targets';
 import { useAgentFileFollow } from './hooks/useAgentFileFollow';
 import type { SheetContent } from './frosted-chrome-contract';
+import { WorkspaceHeaderSlotContext } from './components/WorkspaceHeaderSlot';
+import { RemoteShellCommandsContext, type RemoteShellCommands } from './components/RemoteShellCommands';
 
 
 interface PopoutInfo {
@@ -180,6 +182,12 @@ function MainApp() {
   const [remotePane, setRemotePane] = useState<OpenPaneRequest | null>(null);
   const remotePaneRef = useRef(remotePane);
   remotePaneRef.current = remotePane;
+  // ⌘T / ⌘W reach a remote project's shell tabs through this ref (filled by its Shell view).
+  const remoteShellCommandsRef = useRef<RemoteShellCommands | null>(null);
+  // The header row a remote project pane portals its tabs, shell strip and actions into (same layout as the local header).
+  const [remoteHeaderSlot, setRemoteHeaderSlot] = useState<HTMLElement | null>(null);
+  // Whether the remote pane shows its Shell tab; the main sheet then takes the shell styling, as for a local Shell tab.
+  const [remoteSheetContent, setRemoteSheetContent] = useState<SheetContent>('other');
   const localWorkspaceProject = remotePane ? null : selected;
   function openLocalWorkspaceFile(relPath: string, line: number | null): void {
     if (remotePaneRef.current) return;
@@ -743,7 +751,10 @@ function MainApp() {
       prompts: () => setPromptsOpen(true),
       'scrollback-search': () => setScrollbackOpen(true),
       'toggle-help': () => setHelpOpen(!helpOpenRef.current),
-      'new-terminal': () => openNewTerminalRef.current(false, tabMotionRef.current?.launchResult()),
+      'new-terminal': () => {
+        if (remotePaneRef.current) { remoteShellCommandsRef.current?.newTab(); return; }
+        openNewTerminalRef.current(false, tabMotionRef.current?.launchResult());
+      },
       'new-terminal-window': () => openNewTerminalRef.current(true),
       'toggle-agents-dock': () => setAgentsDockOpen((x) => !x),
       'focus-agents-composer': () => {
@@ -773,7 +784,7 @@ function MainApp() {
       if (mod && e.key.toLowerCase() === 'w' && !e.shiftKey && !e.altKey) {
         // ⌘W → close the active shell tab in the current project.
         const p = selectedRef.current;
-        if (remotePaneRef.current) { e.preventDefault(); return; }
+        if (remotePaneRef.current) { e.preventDefault(); remoteShellCommandsRef.current?.closeActive(); return; }
         if (!p) return;
         e.preventDefault();
         const idx = activeShellIndexRef.current;
@@ -1053,7 +1064,7 @@ function MainApp() {
     } catch (e) { toast('Tile failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
   }
 
-  const mainSheetContent: SheetContent = !remotePane && !boardVisible && mainTab === 'shell' ? 'shell' : 'other';
+  const mainSheetContent: SheetContent = remotePane ? remoteSheetContent : !boardVisible && mainTab === 'shell' ? 'shell' : 'other';
 
   return (
     <div className="h-screen w-screen overflow-hidden flex flex-col bg-[--surface-chrome]" data-chrome-root>
@@ -1161,6 +1172,7 @@ function MainApp() {
           )}
         </AnimatePresence>
         <div className="workspace-header-container flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden" data-testid="main-column">
+            {remotePane && <header ref={setRemoteHeaderSlot} className="workspace-header-row drag relative shrink-0 items-center gap-x-1.5 gap-y-1 px-3 py-1.5 text-xs text-[--text]" data-testid="remote-workspace-header" />}
             {!remotePane && <header className="workspace-header-row drag relative shrink-0 items-center gap-x-1.5 gap-y-1 px-3 py-1.5 text-xs" data-testid={DIFF_TESTIDS.tabBar}>
               <WorkspaceDestinations active={boardVisible ? null : mainTab} activityEnabled={activityEnabled}
                 diffCount={diffCount} envDirty={envDirty}
@@ -1282,8 +1294,13 @@ function MainApp() {
                     onOpenRemote={openPane}
                   />
                 : remotePane
-                ? <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId}
-                    projectName={remotePane.projectName} openRequest={remotePane} onClose={() => setRemotePane(null)} />
+                ? <WorkspaceHeaderSlotContext.Provider value={remoteHeaderSlot}>
+                    <RemoteShellCommandsContext.Provider value={remoteShellCommandsRef}>
+                      <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId}
+                        projectName={remotePane.projectName} openRequest={remotePane} onClose={() => setRemotePane(null)}
+                        onSheetContentChange={setRemoteSheetContent} />
+                    </RemoteShellCommandsContext.Provider>
+                  </WorkspaceHeaderSlotContext.Provider>
                 : mainTab === 'settings'
                 ? settingsTarget
                   ? <ProjectSettingsTab key={settingsTarget.id} target={settingsTarget} onSaved={applyDefaultAgentProject} assignmentVisible={!boardVisible}>
