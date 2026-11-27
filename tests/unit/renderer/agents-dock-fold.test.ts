@@ -55,11 +55,18 @@ describe('stepDockFold', () => {
     expect(flip(closed(false), 'pointer')).toEqual({ setting: true, context: false, animate: false, folding: false });
   });
 
-  it('returns the same state when neither input changed, whatever the source (AC24)', () => {
+  it.each<DockToggleSource>(['shortcut', 'migration'])('snaps a pointer slide to its end in one step when a %s leaves the setting as it is (AC11)', (source) => {
     const sliding = flip(closed(), 'pointer');
-    expect(stepDockFold(sliding, { setting: true, context: true, source: 'shortcut' })).toBe(sliding);
+    expect(stepDockFold(sliding, { setting: true, context: true, source }))
+      .toEqual({ setting: true, context: true, animate: false, folding: false });
+  });
+
+  it('returns the same state when neither input changed and nothing is folding, whatever the source (AC24)', () => {
+    const sliding = flip(closed(), 'pointer');
+    expect(stepDockFold(sliding, { setting: true, context: true, source: 'pointer' })).toBe(sliding);
     const rest = completeDockFold(sliding);
     expect(stepDockFold(rest, { setting: true, context: true, source: 'pointer' })).toBe(rest);
+    expect(stepDockFold(rest, { setting: true, context: true, source: 'shortcut' })).toBe(rest);
   });
 });
 

@@ -137,6 +137,14 @@ describe('useAgentsDockFold', () => {
     expect(result().custom.instant).toBe(true);
   });
 
+  it('releases at once and switches to one step when ⇧⌘A arrives during a pointer open (AC11)', () => {
+    render({ setting: true, context: true, source: 'pointer' });
+    expect(isTerminalGeometryHeld()).toBe(true);
+    render({ setting: true, context: true, source: 'shortcut' });
+    expect(isTerminalGeometryHeld()).toBe(false);
+    expect(result().custom).toEqual({ instant: true, reduced: false });
+  });
+
   it('releases at once when the context changes mid-fold (AC22)', () => {
     render({ setting: true, context: true, source: 'pointer' });
     render({ setting: true, context: false, source: 'pointer' });

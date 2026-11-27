@@ -1,5 +1,5 @@
-import { useLayoutEffect, useRef, type CSSProperties, type ReactNode, type RefObject } from 'react';
-import { m, useIsPresent } from 'motion/react';
+import { useEffect, useLayoutEffect, useRef, type CSSProperties, type ReactNode, type RefObject } from 'react';
+import { animate, m, useIsPresent } from 'motion/react';
 import { FOLD_LABELS, paneFoldVariants, type FoldCustom } from '../pane-fold';
 
 /** Final width resolved by CSS from the nearest inline-size container: clamp(min, 100cqw - reserve, max), px. */
@@ -9,7 +9,7 @@ export interface FoldClamp { min: number; max: number; reserve: number }
 export type FoldSize = { share: number } | 'intrinsic' | { clamp: FoldClamp };
 
 /** Opt-in behaviours; the sidebar and split leave them off. */
-export interface FoldOptions { inertWhileExiting?: boolean; startBleedPx?: number }
+export interface FoldOptions { inertWhileExiting?: boolean; startBleedPx?: number; snapOnInstant?: boolean }
 
 interface Props {
   size: FoldSize;
@@ -49,6 +49,25 @@ function useLeavingInert(enabled: boolean, outer: RefObject<HTMLDivElement | nul
   return leaving ? { inert: '' } : {};
 }
 
+/**
+ * When `enabled`, jumps a pane that stays present to fully open the moment `instant` turns on,
+ * stopping any enter still running, and reports it as the enter's end. A changed `custom` alone
+ * cannot do this: motion re-runs a variant only when its target value changes, and the enter's
+ * target is `--fold: 1` either way. It is a passive effect so it lands after motion's own update,
+ * which reverts the reduced-motion opacity (dropped from the instant target) back to 0.
+ */
+function useSnapOnInstant(enabled: boolean, instant: boolean, outer: RefObject<HTMLDivElement | null>, onFoldComplete?: (phase: 'enter') => void) {
+  const present = useIsPresent();
+  const wasInstant = useRef(instant);
+  useEffect(() => {
+    const snap = enabled && instant && present && !wasInstant.current;
+    wasInstant.current = instant;
+    const el = outer.current;
+    if (!snap || !el) return;
+    void animate(el, { '--fold': 1, opacity: 1 }, { duration: 0 }).then(() => onFoldComplete?.('enter'));
+  }, [enabled, instant, present, outer, onFoldComplete]);
+}
+
 const clampWidth = ({ min, max, reserve }: FoldClamp) => `clamp(${min}px, calc(100cqw - ${reserve}px), ${max}px)`;
 
 type FoldStyle = CSSProperties & { [FOLD_SIZE_VAR]?: string };
@@ -81,7 +100,9 @@ function widths(size: FoldSize, bleedPx = 0): { outer: FoldStyle; inner: CSSProp
  * instant/reduced flags; `onFoldComplete` reports the end of an enter or exit. `options` (off by
  * default): `inertWhileExiting` makes the leaving pane inert and blurs focus inside it as the exit
  * starts; `startBleedPx` widens the clip box that far past the start edge (negative margin plus
- * padding, so layout is unchanged) to keep an overhanging start handle painted and hit-testable.
+ * padding, so layout is unchanged) to keep an overhanging start handle painted and hit-testable;
+ * `snapOnInstant` ends a running enter at full open in one step when `custom` turns instant while
+ * the pane stays (a shortcut arriving mid-slide).
  */
 export function FoldPane({ size, anchor, custom, onFoldComplete, className = '', innerClassName = '', options, children }: Props) {
   const outerRef = useRef<HTMLDivElement>(null);
@@ -90,6 +111,7 @@ export function FoldPane({ size, anchor, custom, onFoldComplete, className = '',
   useIntrinsicFoldSize(intrinsic, outerRef, innerRef);
   const style = widths(size, options?.startBleedPx);
   const leavingProps = useLeavingInert(options?.inertWhileExiting ?? false, outerRef);
+  useSnapOnInstant(options?.snapOnInstant ?? false, custom.instant, outerRef, onFoldComplete);
 
   return (
     <m.div

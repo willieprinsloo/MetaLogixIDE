@@ -218,6 +218,17 @@ describe('Agents dock toggle sources', () => {
     expect(JSON.parse(presenceData().custom!)).toMatchObject({ instant: true });
   });
 
+  it('snaps a pointer open to fully open on ⇧⌘A mid-slide and bumps the composer focus (AC11)', async () => {
+    await mount({ 'metaide.agentsDockOpen': false });
+    await click(testid(AGENTS_DOCK_TESTIDS.toggle)!);
+    expect(dockCustom().instant).toBe(false);
+    await press('A', true);
+    expect(dock()).not.toBeNull();
+    expect(dockCustom().instant).toBe(true);
+    expect(rec.dock?.options).toMatchObject({ snapOnInstant: true });
+    expect(rec.focusTicks.at(-1)).toBe(1);
+  });
+
   it('opens in one step on ⇧⌘A and bumps the composer focus (AC10)', async () => {
     await mount({ 'metaide.agentsDockOpen': false });
     await press('A', true);
@@ -251,7 +262,7 @@ describe('Agents dock fold props', () => {
     expect(rec.dock).toMatchObject({
       anchor: 'start',
       size: { clamp: { min: DOCK_MIN_W + DOCK_MARGIN_W, max: 400 + DOCK_MARGIN_W, reserve: MAIN_MIN_W } },
-      options: { inertWhileExiting: true, startBleedPx: 2 },
+      options: { inertWhileExiting: true, startBleedPx: 2, snapOnInstant: true },
     });
     expect(typeof dockFold().onFoldComplete).toBe('function');
     expect(presenceData().childKey).toBe('agents-dock');

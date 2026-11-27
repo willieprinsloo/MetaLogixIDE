@@ -82,8 +82,8 @@ import { AGENTS_DOCK_TESTIDS } from './agents-dock-copy';
 
 /** Status bar fold and sheet margin/rounding transition length. */
 const STATUS_BAR_MS = 200;
-/** The Agents dock's fold opt-ins: inert while it leaves, and room for its handle's 2px start overhang. */
-const DOCK_FOLD_OPTIONS: FoldOptions = { inertWhileExiting: true, startBleedPx: 2 };
+/** The Agents dock's fold opt-ins: inert while it leaves, room for its handle's 2px start overhang, and a snap to open when a shortcut lands mid-slide. */
+const DOCK_FOLD_OPTIONS: FoldOptions = { inertWhileExiting: true, startBleedPx: 2, snapOnInstant: true };
 /** The status bar's fixed height (StatusBar's h-[34px]); its slot animates to this. */
 const STATUS_BAR_HEIGHT = 34;
 import { useSplitLifecycle } from './hooks/useSplitLifecycle';

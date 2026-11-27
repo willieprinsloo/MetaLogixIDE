@@ -15,16 +15,16 @@ let root: Root | null = null;
 let setShown: (shown: boolean) => void = () => undefined;
 let observed = 0;
 
-interface HarnessProps { size: FoldSize; custom: FoldCustom; options?: FoldOptions; children?: ReactNode }
+interface HarnessProps { size: FoldSize; custom: FoldCustom; options?: FoldOptions; onFoldComplete?: (phase: 'enter' | 'exit') => void; children?: ReactNode }
 
-function Harness({ size, custom, options, children }: HarnessProps) {
+function Harness({ size, custom, options, onFoldComplete, children }: HarnessProps) {
   const [shown, set] = useState(true);
   setShown = set;
   return (
     <LazyMotion features={domAnimation} strict>
       <AnimatePresence initial={false} custom={custom}>
         {shown && (
-          <FoldPane key="pane" size={size} anchor="start" custom={custom} options={options}>
+          <FoldPane key="pane" size={size} anchor="start" custom={custom} options={options} onFoldComplete={onFoldComplete}>
             {children ?? <button type="button">inside</button>}
           </FoldPane>
         )}
@@ -141,5 +141,66 @@ describe('FoldPane inertWhileExiting', () => {
     expect(outer()).toBe(pane);
     expect(pane.hasAttribute('inert')).toBe(false);
     expect(document.activeElement?.textContent).toBe('inside');
+  });
+});
+
+const REDUCED: FoldCustom = { instant: false, reduced: true };
+const wait = (ms: number) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
+const fold = (): number => Number(outer()!.style.getPropertyValue('--fold'));
+
+async function slideIn(props: Omit<HarnessProps, 'custom'>, custom: FoldCustom = SLIDE): Promise<void> {
+  mount({ ...props, custom: INSTANT });
+  act(() => { setShown(false); });
+  await wait(20);
+  mount({ ...props, custom });
+  act(() => { setShown(true); });
+  await wait(90);
+}
+
+describe('FoldPane snapOnInstant', () => {
+  const size: FoldSize = { clamp: { min: 248, max: 348, reserve: 360 } };
+
+  it('ends a running slide-in at full open within two frames when the flags turn instant, and reports the enter (AC11)', async () => {
+    const onFoldComplete = vi.fn();
+    await slideIn({ size, options: { snapOnInstant: true }, onFoldComplete });
+    expect(fold()).toBeGreaterThan(0);
+    expect(fold()).toBeLessThan(1);
+    onFoldComplete.mockClear();
+    mount({ size, custom: INSTANT, options: { snapOnInstant: true }, onFoldComplete });
+    await wait(34);
+    expect(fold()).toBe(1);
+    expect(onFoldComplete).toHaveBeenCalledWith('enter');
+    await wait(300);
+    expect(fold()).toBe(1);
+  });
+
+  it('ends a reduced-motion fade-in fully opaque when the flags turn instant (AC11, AC12)', async () => {
+    await slideIn({ size, options: { snapOnInstant: true } }, REDUCED);
+    expect(Number(outer()!.style.opacity)).toBeGreaterThan(0);
+    expect(Number(outer()!.style.opacity)).toBeLessThan(1);
+    mount({ size, custom: { instant: true, reduced: true }, options: { snapOnInstant: true } });
+    await wait(34);
+    expect(fold()).toBe(1);
+    expect(outer()!.style.opacity).toBe('1');
+    await wait(300);
+    expect(outer()!.style.opacity).toBe('1');
+  });
+
+  it('does nothing to a pane that mounts or rests with instant flags', async () => {
+    const onFoldComplete = vi.fn();
+    mount({ size, custom: INSTANT, options: { snapOnInstant: true }, onFoldComplete });
+    mount({ size, custom: INSTANT, options: { snapOnInstant: true }, onFoldComplete });
+    await wait(34);
+    expect(onFoldComplete).not.toHaveBeenCalled();
+    expect(outer()!.style.opacity).toBe('');
+  });
+
+  it('keeps tweening when the option is off, as the sidebar and split do (AC27)', async () => {
+    await slideIn({ size });
+    const before = fold();
+    mount({ size, custom: INSTANT });
+    await wait(34);
+    expect(fold()).toBeGreaterThan(before);
+    expect(fold()).toBeLessThan(1);
   });
 });

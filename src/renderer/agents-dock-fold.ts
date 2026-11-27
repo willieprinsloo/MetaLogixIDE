@@ -29,14 +29,15 @@ export function initialDockFold(input: Pick<DockFoldInput, 'setting' | 'context'
 }
 
 /**
- * One render's step: a context change switches in one step and drops any fold in flight; otherwise
- * a setting flip slides only when a pointer made it while the dock can be seen. Returns `prev`
- * itself when neither input changed.
+ * One render's step: a context change switches in one step and drops any fold in flight; a
+ * non-pointer source arriving mid-fold without flipping the setting (⇧⌘A during a pointer open)
+ * snaps that fold to its end in one step (AC11); otherwise a setting flip slides only when a
+ * pointer made it while the dock can be seen. Returns `prev` itself when nothing changed.
  */
 export function stepDockFold(prev: DockFoldState, next: DockFoldInput): DockFoldState {
   const { setting, context } = next;
   if (context !== prev.context) return { setting, context, animate: false, folding: false };
-  if (setting === prev.setting) return prev;
+  if (setting === prev.setting) return prev.folding && next.source !== 'pointer' ? { ...prev, animate: false, folding: false } : prev;
   const animate = next.source === 'pointer' && context;
   return { setting, context, animate, folding: animate };
 }
