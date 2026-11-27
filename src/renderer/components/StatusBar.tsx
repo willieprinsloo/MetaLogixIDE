@@ -11,6 +11,7 @@ import { SHORTCUT_COPY } from '@renderer/shortcut-copy';
 import { RUNTIME_SHORTCUT_PLATFORM, useShortcutPlatform } from '@renderer/shortcut-platform';
 import type { KeepAwakeControls } from '@renderer/hooks/useKeepAwake';
 import { KeepAwakeChip } from './KeepAwakeChip';
+import { MetaprojectChip } from './MetaprojectChip';
 import { XIcon } from './shell-icons';
 import { ICON_SIZE } from './icon-size';
 import { Tooltip } from './Tooltip';
@@ -32,10 +33,14 @@ interface StatusBarProps {
   readonly activeAgent?: string | null;
   /** Agent state for the visible shell — "idle" / "thinking" / "needs-input" / "finished". */
   readonly activeAgentState?: string | null;
+  /** Opens the project's settings tab — used by the metaproject chip when the
+   *  folder is unlinked so the fix is one hop away. Omitting it hides the
+   *  "Bind" chip (there's no action to offer), leaving only the linked view. */
+  readonly onOpenProjectSettings?: (() => void) | null;
 }
 
-/** The window's bottom bar: project, active agent, git branch, shells chip, port chips, the ⌘K palette hint and the app version. */
-export function StatusBar({ project, aliveCount, onOpenPalette, keepAwake, activeAgent, activeAgentState }: StatusBarProps): React.JSX.Element {
+/** The window's bottom bar: project, metaproject binding, active agent, git branch, shells chip, port chips, the ⌘K palette hint and the app version. */
+export function StatusBar({ project, aliveCount, onOpenPalette, keepAwake, activeAgent, activeAgentState, onOpenProjectSettings }: StatusBarProps): React.JSX.Element {
   const { status: localGit } = useGitStatus(project?.id ?? null);
   const git = { ...localGit, changedCount: Object.keys(localGit.files).length };
   const showPorts = useShowStatusBarPorts();
@@ -55,6 +60,7 @@ export function StatusBar({ project, aliveCount, onOpenPalette, keepAwake, activ
         <span className={`inline-block w-1.5 h-1.5 rounded-full ${label ? 'bg-[color:var(--accent-mark,var(--accent))]' : 'bg-[--text-muted]/50'}`} />
         {label ?? 'no project'}
       </span>
+      <MetaprojectChip projectId={project?.id ?? null} onOpenAssignment={onOpenProjectSettings ?? null} />
       {activeAgent && (
         <span className="flex items-center gap-1.5" title={activeAgentState ? `${activeAgent} — ${activeAgentState}` : activeAgent}>
           <AgentStateDot state={activeAgentState} />

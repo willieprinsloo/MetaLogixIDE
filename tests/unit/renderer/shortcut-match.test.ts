@@ -13,15 +13,15 @@ const key = (k: string, mods: Partial<Omit<ShortcutKeyLike, 'key'>> = {}): Short
 
 describe('isPrimaryMod', () => {
   it('counts Ctrl as the modifier on other platforms', () => {
-    expect(isPrimaryMod(key('k', { ctrlKey: true }), 'other')).toBe(true);
-    expect(isPrimaryMod(key('K', { ctrlKey: true, shiftKey: true, altKey: true }), 'other')).toBe(
+    expect(isPrimaryMod(key('k', { ctrlKey: true }), 'linux')).toBe(true);
+    expect(isPrimaryMod(key('K', { ctrlKey: true, shiftKey: true, altKey: true }), 'linux')).toBe(
       true,
     );
   });
 
   it('does not count Super (metaKey) on other platforms, alone or with Ctrl', () => {
-    expect(isPrimaryMod(key('k', { metaKey: true }), 'other')).toBe(false);
-    expect(isPrimaryMod(key('k', { metaKey: true, ctrlKey: true }), 'other')).toBe(false);
+    expect(isPrimaryMod(key('k', { metaKey: true }), 'linux')).toBe(false);
+    expect(isPrimaryMod(key('k', { metaKey: true, ctrlKey: true }), 'linux')).toBe(false);
   });
 
   it('counts Cmd as the modifier on mac', () => {
@@ -36,7 +36,7 @@ describe('isPrimaryMod', () => {
     expect(isPrimaryMod(key('k', { ctrlKey: true, metaKey: true }), 'mac')).toBe(false);
   });
 
-  it.each(['mac', 'other'] as const)(
+  it.each(['mac', 'linux'] as const)(
     'is false with no modifier or only Shift/Alt (%s)',
     (platform) => {
       expect(isPrimaryMod(key('k'), platform)).toBe(false);

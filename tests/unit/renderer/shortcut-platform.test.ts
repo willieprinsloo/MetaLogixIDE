@@ -6,8 +6,9 @@ import { toShortcutPlatform } from '@renderer/shortcut-platform';
 describe('toShortcutPlatform', () => {
   it.each([
     ['darwin', 'mac'],
-    ['linux', 'other'],
-    ['win32', 'other'],
+    ['linux', 'linux'],
+    ['win32', 'win'],
+    ['freebsd', 'linux'],
     [undefined, 'mac'],
   ] as const)('maps %s to %s', (node, expected) => {
     expect(toShortcutPlatform(node)).toBe(expected);
@@ -25,7 +26,7 @@ describe('runtime platform from the preload bridge (AC8)', () => {
     vi.resetModules();
     const { RUNTIME_SHORTCUT_PLATFORM } = await import('@renderer/shortcut-platform');
     const { ShortcutsHelp } = await import('@renderer/components/ShortcutsHelp');
-    expect(RUNTIME_SHORTCUT_PLATFORM).toBe('other');
+    expect(RUNTIME_SHORTCUT_PLATFORM).toBe('linux');
     const html = renderToStaticMarkup(
       createElement(ShortcutsHelp, { open: true, onClose: () => undefined }),
     );

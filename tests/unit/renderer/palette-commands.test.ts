@@ -25,6 +25,7 @@ function deps(over: Partial<PaletteCommandDeps> = {}) {
     setThemeMode: vi.fn(),
     setThemePalette: vi.fn(),
     openSettings: vi.fn(),
+    openFeedback: vi.fn(),
   } satisfies Record<DepFn, unknown>;
   return { fns, deps: { hasProject: true, hasPrimary: true, sidebarOpen: true, statusBarVisible: true, ...fns, ...over } };
 }
@@ -63,6 +64,7 @@ const LEGACY: ReadonlyArray<readonly [string, string, string, string | undefined
   ['theme.catppuccin', 'Theme', 'Use Catppuccin palette', undefined],
   ['theme.rose-pine', 'Theme', 'Use Rosé Pine palette', undefined],
   ['app.settings', 'App', 'Open Settings', '⌘,'],
+  ['app.feedback', 'App', 'Report a bug / Leave feedback…', undefined],
 ];
 
 const NEEDS_PROJECT = [
@@ -103,6 +105,7 @@ const EFFECTS: ReadonlyArray<readonly [string, DepFn, readonly unknown[]]> = [
   ['theme.catppuccin', 'setThemePalette', ['catppuccin']],
   ['theme.rose-pine', 'setThemePalette', ['rose-pine']],
   ['app.settings', 'openSettings', []],
+  ['app.feedback', 'openFeedback', []],
   ['term.new', 'openNewTerminal', [false]],
   ['term.new-window', 'openNewTerminal', [true]],
 ];
@@ -213,11 +216,11 @@ const LINUX_HINTS: ReadonlyArray<readonly [string, string]> = [
 
 describe('buildPaletteCommands on Linux (AC6)', () => {
   it.each(LINUX_HINTS)('hints %s as %s', (id, hint) => {
-    expect(byId(buildPaletteCommands({ ...deps().deps, platform: 'other' }), id).hint).toBe(hint);
+    expect(byId(buildPaletteCommands({ ...deps().deps, platform: 'linux' }), id).hint).toBe(hint);
   });
 
   it('carries no Mac glyph in any hint and hints exactly the same commands as on mac', () => {
-    const linux = buildPaletteCommands({ ...deps().deps, platform: 'other' });
+    const linux = buildPaletteCommands({ ...deps().deps, platform: 'linux' });
     expect(linux.filter((c) => c.hint && GLYPHS.test(c.hint)).map((c) => c.id)).toEqual([]);
     const hinted = (list: readonly PaletteCommand[]) => list.filter((c) => c.hint).map((c) => c.id);
     expect(hinted(linux)).toEqual(hinted(buildPaletteCommands({ ...deps().deps, platform: 'mac' })));

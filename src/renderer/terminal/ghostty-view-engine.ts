@@ -27,7 +27,7 @@ export interface GhosttyView extends TerminalRenderer {
 }
 
 interface GhosttyInteraction {
-  readonly platform: 'mac' | 'other';
+  readonly platform: 'mac' | 'win' | 'linux';
   readonly keys: (event: KeyboardEvent) => boolean;
   readonly pathLinks?: (text: string) => readonly TerminalFileLink[];
   readonly openWebLink: (url: string) => void;

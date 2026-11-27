@@ -5,6 +5,8 @@ import {
   shouldHonourRequest,
   createTerminalFocusCoordinator,
   FOCUS_REQUEST_TTL_MS,
+  LOCAL_TERMINAL_MACHINE,
+  terminalFocusKey,
   XTERM_TEXTAREA_CLASS,
   type ActiveElementKind,
   type ElementLike,
@@ -604,5 +606,86 @@ describe('createTerminalFocusCoordinator', () => {
       open(t);
       expect(t.focusCalls).toBe(1);
     });
+  });
+});
+
+describe('focus keys carry the machine (AC20)', () => {
+  let active: ActiveElementKind;
+  let coord: TerminalFocusCoordinator;
+  const openTerminal = (key: ShellKey, primary = true) => {
+    const t = { focusCalls: 0 };
+    coord.register({ key, primary, isOpen: () => true, focus: () => { t.focusCalls += 1; } }).opened();
+    return t;
+  };
+
+  beforeEach(() => {
+    active = 'none';
+    coord = createTerminalFocusCoordinator({ activeElementKind: () => active, now: () => 1000 });
+  });
+
+  const local: ShellKey = { projectId: 4, shellIndex: 1 };
+  const explicitLocal: ShellKey = { projectId: 4, shellIndex: 1, machine: LOCAL_TERMINAL_MACHINE };
+  const tower: ShellKey = { projectId: 4, shellIndex: 1, machine: 'tower-key' };
+  const laptop: ShellKey = { projectId: 4, shellIndex: 1, machine: 'laptop-key' };
+
+  it.each([
+    ['the local terminal', local, 0],
+    ['the local terminal named explicitly', explicitLocal, 0],
+    ['the tower terminal', tower, 1],
+    ['the laptop terminal', laptop, 2],
+  ] as const)('a request for %s focuses only that one', (_label, key, expected) => {
+    const terms = [openTerminal(local), openTerminal(tower), openTerminal(laptop)];
+    coord.requestFocus(key);
+    expect(terms.map((t) => t.focusCalls)).toEqual(terms.map((_, i) => (i === expected ? 1 : 0)));
+  });
+
+  it('a project-focus request never focuses a remote primary with the same project id', () => {
+    const remote = openTerminal({ projectId: 4, shellIndex: 0, machine: 'tower-key' });
+    const localPrimary = openTerminal({ projectId: 4, shellIndex: 0 });
+    coord.requestProjectFocus(4);
+    expect(localPrimary.focusCalls).toBe(1);
+    expect(remote.focusCalls).toBe(0);
+  });
+
+  it('a pending project-focus request keeps waiting past a remote primary that opens first', () => {
+    coord.requestProjectFocus(4);
+    const remote = openTerminal({ projectId: 4, shellIndex: 0, machine: 'tower-key' });
+    const localPrimary = openTerminal({ projectId: 4, shellIndex: 2 });
+    expect(remote.focusCalls).toBe(0);
+    expect(localPrimary.focusCalls).toBe(1);
+  });
+
+  it('a project-focus request for a device focuses only that device\'s primary', () => {
+    const localPrimary = openTerminal({ projectId: 4, shellIndex: 0 });
+    const laptopPrimary = openTerminal({ projectId: 4, shellIndex: 0, machine: 'laptop-key' });
+    const towerSecondary = openTerminal({ projectId: 4, shellIndex: 3, machine: 'tower-key' }, false);
+    const towerPrimary = openTerminal({ projectId: 4, shellIndex: 2, machine: 'tower-key' });
+    coord.requestProjectFocus(4, 'tower-key');
+    expect([localPrimary, laptopPrimary, towerSecondary, towerPrimary].map((t) => t.focusCalls)).toEqual([0, 0, 0, 1]);
+  });
+
+  it('keyed remote requests follow the overlay and text-entry rules', () => {
+    const remote = openTerminal(tower);
+    active = 'text-entry';
+    coord.requestFocus(tower);
+    coord.requestProjectFocus(4, 'tower-key');
+    active = 'none';
+    coord.setOverlayOpen(true);
+    coord.requestFocus(tower);
+    coord.requestProjectFocus(4, 'tower-key');
+    expect(remote.focusCalls).toBe(0);
+    coord.setOverlayOpen(false);
+    coord.requestFocus(tower);
+    expect(remote.focusCalls).toBe(1);
+  });
+});
+
+describe('terminalFocusKey', () => {
+  it('keys a local terminal without a machine, so existing local keys compare equal', () => {
+    expect(terminalFocusKey(3, 1, null)).toEqual({ projectId: 3, shellIndex: 1 });
+  });
+
+  it('keys a remote terminal by its host device id', () => {
+    expect(terminalFocusKey(3, 1, 'tower-key')).toEqual({ projectId: 3, shellIndex: 1, machine: 'tower-key' });
   });
 });

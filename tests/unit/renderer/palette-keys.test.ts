@@ -110,13 +110,13 @@ describe('paletteKeyAction on mac ignores Ctrl (AC2)', () => {
 
 describe('paletteKeyAction on other platforms (AC1/AC3)', () => {
   it.each([false, true])('toggles on Ctrl+K (open=%s)', (isOpen) => {
-    expect(paletteKeyAction(key('k', { ctrlKey: true }), isOpen, 'other')).toEqual({
+    expect(paletteKeyAction(key('k', { ctrlKey: true }), isOpen, 'linux')).toEqual({
       kind: 'toggle',
     });
   });
 
   it.each([false, true])('opens with "@" on Ctrl+P (open=%s)', (isOpen) => {
-    expect(paletteKeyAction(key('p', { ctrlKey: true }), isOpen, 'other')).toEqual({
+    expect(paletteKeyAction(key('p', { ctrlKey: true }), isOpen, 'linux')).toEqual({
       kind: 'open',
       seed: '@',
     });
@@ -126,10 +126,10 @@ describe('paletteKeyAction on other platforms (AC1/AC3)', () => {
     'opens with ">" on Ctrl+Shift+P whatever case the key reports (open=%s)',
     (isOpen) => {
       expect(
-        paletteKeyAction(key('P', { ctrlKey: true, shiftKey: true }), isOpen, 'other'),
+        paletteKeyAction(key('P', { ctrlKey: true, shiftKey: true }), isOpen, 'linux'),
       ).toEqual({ kind: 'open', seed: '>' });
       expect(
-        paletteKeyAction(key('p', { ctrlKey: true, shiftKey: true }), isOpen, 'other'),
+        paletteKeyAction(key('p', { ctrlKey: true, shiftKey: true }), isOpen, 'linux'),
       ).toEqual({ kind: 'open', seed: '>' });
     },
   );
@@ -138,8 +138,8 @@ describe('paletteKeyAction on other platforms (AC1/AC3)', () => {
     'swallows Ctrl+%s while open and passes it while closed',
     (k) => {
       const e = key(k, { ctrlKey: true, shiftKey: k !== k.toLowerCase() });
-      expect(paletteKeyAction(e, true, 'other')).toEqual({ kind: 'swallow' });
-      expect(paletteKeyAction(e, false, 'other')).toEqual({ kind: 'pass' });
+      expect(paletteKeyAction(e, true, 'linux')).toEqual({ kind: 'swallow' });
+      expect(paletteKeyAction(e, false, 'linux')).toEqual({ kind: 'pass' });
     },
   );
 
@@ -151,7 +151,7 @@ describe('paletteKeyAction on other platforms (AC1/AC3)', () => {
       key('b', { metaKey: true }),
       key('k', { metaKey: true, ctrlKey: true }),
     ]) {
-      expect(paletteKeyAction(e, isOpen, 'other'), e.key).toEqual({ kind: 'pass' });
+      expect(paletteKeyAction(e, isOpen, 'linux'), e.key).toEqual({ kind: 'pass' });
     }
   });
 });

@@ -9,10 +9,14 @@
 import { createContext, useContext } from 'react';
 import type { ShortcutPlatform } from './shortcut-contract';
 
-/** `darwin` → mac; any other defined value → other; undefined (node tests, no bridge) → mac. */
+/** `darwin` → mac, `win32` → win, any other defined value → linux; undefined
+ *  (node tests, no bridge) → mac so the shortcut labels render as the primary
+ *  authoring platform's conventions. */
 export function toShortcutPlatform(nodePlatform: string | undefined): ShortcutPlatform {
   if (nodePlatform === undefined) return 'mac';
-  return nodePlatform === 'darwin' ? 'mac' : 'other';
+  if (nodePlatform === 'darwin') return 'mac';
+  if (nodePlatform === 'win32') return 'win';
+  return 'linux';
 }
 
 interface PlatformBridge { readonly api?: { readonly platform?: string } }

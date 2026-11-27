@@ -29,6 +29,8 @@ import { UsageMeter } from './components/UsageMeter';
 import { ActivityBar, ABButton, type ActivityView } from './components/ActivityBar';
 import { CommandPalette } from './components/CommandPalette';
 import { ShortcutsHelp } from './components/ShortcutsHelp';
+import { FeedbackDialog } from './components/FeedbackDialog';
+import { MetaprojectBindPrompt } from './components/MetaprojectBindPrompt';
 import type { PaletteRequest, PaletteSeed } from './command-palette-contract';
 import { buildPaletteCommands } from './palette-commands';
 import { paletteKeyAction } from './palette-keys';
@@ -97,6 +99,9 @@ import { isPrimaryVisible } from './unload-session';
 import { resolveFileTarget } from './agent-file-targets';
 import { useAgentFileFollow } from './hooks/useAgentFileFollow';
 import type { SheetContent } from './frosted-chrome-contract';
+import { WorkspaceHeaderSlotContext } from './components/WorkspaceHeaderSlot';
+import { RemoteShellCommandsContext, type RemoteShellCommands } from './components/RemoteShellCommands';
+import { REMOTE_PANE_TESTIDS } from './remote-pane-contract';
 
 
 interface PopoutInfo {
@@ -180,6 +185,9 @@ function MainApp() {
   const [remotePane, setRemotePane] = useState<OpenPaneRequest | null>(null);
   const remotePaneRef = useRef(remotePane);
   remotePaneRef.current = remotePane;
+  const remoteShellCommandsRef = useRef<RemoteShellCommands | null>(null);
+  const [remoteHeaderSlot, setRemoteHeaderSlot] = useState<HTMLElement | null>(null);
+  const [remoteSheetContent, setRemoteSheetContent] = useState<SheetContent>('other');
   const localWorkspaceProject = remotePane ? null : selected;
   function openLocalWorkspaceFile(relPath: string, line: number | null): void {
     if (remotePaneRef.current) return;
@@ -409,6 +417,8 @@ function MainApp() {
   const setHelpOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updateHelpOpen(true)); else updateHelpOpen(false); }, [beforeOverlay]);
   const helpOpenRef = useRef(helpOpen);
   helpOpenRef.current = helpOpen;
+  const [feedbackOpen, updateFeedbackOpen] = useState(false);
+  const setFeedbackOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updateFeedbackOpen(true)); else updateFeedbackOpen(false); }, [beforeOverlay]);
   const [searchOpen, updateSearchOpen] = useState(false);
   const setSearchOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updateSearchOpen(open)); else updateSearchOpen(false); }, [beforeOverlay]);
   const [promptsOpen, updatePromptsOpen] = useState(false);
@@ -574,9 +584,10 @@ function MainApp() {
       if (section) setSettingsSection(section);
       setSettingsOpen(true);
     },
+    openFeedback: () => setFeedbackOpen(true),
     keepAwake: paletteKeepAwake,
     platform,
-  }), [selected, remotePane, localWorkspaceProject, primaryAlive, openUnloadSession, sidebarOpen, openPalette, setActiveView, toggleSidebar, showStatusBar, setMainTab, openNewTerminal, setThemeMode, setThemePalette, paletteKeepAwake, platform, setSearchOpen, setScrollbackOpen, setPromptsOpen, setHelpOpen, setNewProjectOpen, setSettingsOpen]);
+  }), [selected, remotePane, localWorkspaceProject, primaryAlive, openUnloadSession, sidebarOpen, openPalette, setActiveView, toggleSidebar, showStatusBar, setMainTab, openNewTerminal, setThemeMode, setThemePalette, paletteKeepAwake, platform, setSearchOpen, setScrollbackOpen, setPromptsOpen, setHelpOpen, setNewProjectOpen, setSettingsOpen, setFeedbackOpen]);
 
   const refreshAlive = useCallback(async () => {
     const { shells } = await api.invoke('shells:alive-list', undefined as never);
@@ -754,7 +765,10 @@ function MainApp() {
       prompts: () => setPromptsOpen(true),
       'scrollback-search': () => setScrollbackOpen(true),
       'toggle-help': () => setHelpOpen(!helpOpenRef.current),
-      'new-terminal': () => openNewTerminalRef.current(false, tabMotionRef.current?.launchResult()),
+      'new-terminal': () => {
+        if (remotePaneRef.current) { remoteShellCommandsRef.current?.newTab(); return; }
+        openNewTerminalRef.current(false, tabMotionRef.current?.launchResult());
+      },
       'new-terminal-window': () => openNewTerminalRef.current(true),
       'toggle-agents-dock': () => setAgentsDockOpen((x) => !x),
       'focus-agents-composer': () => {
@@ -784,7 +798,7 @@ function MainApp() {
       if (mod && e.key.toLowerCase() === 'w' && !e.shiftKey && !e.altKey) {
         // ⌘W → close the active shell tab in the current project.
         const p = selectedRef.current;
-        if (remotePaneRef.current) { e.preventDefault(); return; }
+        if (remotePaneRef.current) { e.preventDefault(); remoteShellCommandsRef.current?.closeActive(); return; }
         if (!p) return;
         e.preventDefault();
         const idx = activeShellIndexRef.current;
@@ -1064,7 +1078,7 @@ function MainApp() {
     } catch (e) { toast('Tile failed', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') }); }
   }
 
-  const mainSheetContent: SheetContent = !remotePane && !boardVisible && mainTab === 'shell' ? 'shell' : 'other';
+  const mainSheetContent: SheetContent = remotePane ? remoteSheetContent : !boardVisible && mainTab === 'shell' ? 'shell' : 'other';
 
   return (
     <div className="h-screen w-screen overflow-hidden flex flex-col bg-[--surface-chrome]" data-chrome-root>
@@ -1172,6 +1186,13 @@ function MainApp() {
           )}
         </AnimatePresence>
         <div className="workspace-header-container flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden" data-testid="main-column">
+            {!remotePane && !boardVisible && (
+              <MetaprojectBindPrompt
+                projectId={localWorkspaceProject?.id ?? null}
+                onOpenProjectSettings={localWorkspaceProject ? () => openProjectSettings(localWorkspaceProject) : null}
+              />
+            )}
+            {remotePane && <header ref={setRemoteHeaderSlot} className="workspace-header-row drag relative shrink-0 items-center gap-x-1.5 gap-y-1 px-3 py-1.5 text-xs text-[--text]" data-testid={REMOTE_PANE_TESTIDS.header} />}
             {!remotePane && <header ref={setWorkspaceHeaderEl} className="workspace-header-row drag relative shrink-0 items-center gap-x-1.5 gap-y-1 px-3 py-1.5 text-xs" data-testid={DIFF_TESTIDS.tabBar}>
               <WorkspaceDestinations active={boardVisible ? null : mainTab} activityEnabled={activityEnabled}
                 diffCount={diffCount} envDirty={envDirty}
@@ -1293,8 +1314,13 @@ function MainApp() {
                     onOpenRemote={openPane}
                   />
                 : remotePane
-                ? <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId}
-                    projectName={remotePane.projectName} openRequest={remotePane} onClose={() => setRemotePane(null)} />
+                ? <WorkspaceHeaderSlotContext.Provider value={remoteHeaderSlot}>
+                    <RemoteShellCommandsContext.Provider value={remoteShellCommandsRef}>
+                      <RemoteProjectPane deviceId={remotePane.source.deviceId} deviceName={remotePane.deviceName} projectId={remotePane.projectId}
+                        projectName={remotePane.projectName} openRequest={remotePane} onClose={() => setRemotePane(null)}
+                        onSheetContentChange={setRemoteSheetContent} />
+                    </RemoteShellCommandsContext.Provider>
+                  </WorkspaceHeaderSlotContext.Provider>
                 : mainTab === 'settings'
                 ? settingsTarget
                   ? <ProjectSettingsTab key={settingsTarget.id} target={settingsTarget} onSaved={applyDefaultAgentProject} assignmentVisible={!boardVisible}>
@@ -1342,6 +1368,7 @@ function MainApp() {
                     activeAgentState={activeShellAgentStateLabel}
                     onOpenPalette={() => openPalette('')}
                     keepAwake={keepAwake}
+                    onOpenProjectSettings={selected ? () => openProjectSettings(selected) : null}
                   />
                 </div>
               </m.div>
@@ -1423,6 +1450,7 @@ function MainApp() {
       />
       <ToastStack />
       <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <FeedbackDialog open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
       <ProjectSearch
         open={searchOpen && localWorkspaceProject !== null}
         projectId={localWorkspaceProject?.id ?? null}

@@ -19,6 +19,7 @@
 import log from 'electron-log/main';
 import { buildFeaturePrompt, extractKindAndBody } from '@shared/story-feature-prompt';
 import type { StoryFeature } from '@shared/story-feature';
+import { extractTicketRefs } from '@shared/story-ref-extract';
 import { runCliTurn } from '../group-chat/engines/run-cli';
 import { claudeArgs, claudeProgress, parseClaude } from '../group-chat/engines/claude';
 import { npmCli } from '../group-chat/engines/cli';
@@ -116,6 +117,10 @@ async function generateOne(
   });
   const raw = await ask(projectPath, prompt);
   const { kind, body } = extractKindAndBody(raw);
+  // Pull `METAI-123`-style refs from the PR title + body so the
+  // renderer can badge the row with chips that link to the metaproject
+  // kanban. Deduplicated, in first-seen order.
+  const ticketRefs = extractTicketRefs(`${commit.title}\n${commit.body}`);
   return {
     id: commit.shortSha,
     sha: commit.sha,
@@ -126,6 +131,7 @@ async function generateOne(
     body,
     kind,
     edited: false,
+    ticketRefs: ticketRefs.length > 0 ? ticketRefs : undefined,
   };
 }
 

@@ -71,6 +71,7 @@ const paletteDeps: PaletteCommandDeps = {
   setThemeMode: noop,
   setThemePalette: noop,
   openSettings: noop,
+  openFeedback: noop,
 };
 
 /** Each rendered surface, as the markup (or text) it produces for a platform. */
@@ -151,7 +152,7 @@ const PLATFORM_COPY = Object.entries(SHORTCUT_COPY).filter(
 
 describe('shortcut labels on Linux (AC6)', () => {
   it.each(SURFACES)('%s shows no Mac glyph and a Ctrl+ form', (_name, render) => {
-    const out = render('other');
+    const out = render('linux');
     expect(out).not.toMatch(GLYPHS);
     expect(out).toContain('Ctrl+');
   });
@@ -159,8 +160,8 @@ describe('shortcut labels on Linux (AC6)', () => {
   it.each(PLATFORM_COPY)(
     'copy %s shows no Mac glyph and differs from the mac text',
     (_name, fn) => {
-      expect(fn('other')).not.toMatch(GLYPHS);
-      expect(fn('other')).not.toBe(fn('mac'));
+      expect(fn('linux')).not.toMatch(GLYPHS);
+      expect(fn('linux')).not.toBe(fn('mac'));
     },
   );
 
@@ -170,9 +171,9 @@ describe('shortcut labels on Linux (AC6)', () => {
   });
 
   it('names the ActivityBar sidebar toggle and the add-shell shortcut in the Ctrl form', () => {
-    expect(SURFACES[2]?.[1]('other')).toContain('aria-label="Toggle sidebar (Ctrl+B)"');
-    expect(SURFACES[3]?.[1]('other')).toContain('data-shortcut="Ctrl+T"');
-    expect(SURFACES[4]?.[1]('other')).toContain('>Ctrl+T<');
+    expect(SURFACES[2]?.[1]('linux')).toContain('aria-label="Toggle sidebar (Ctrl+B)"');
+    expect(SURFACES[3]?.[1]('linux')).toContain('data-shortcut="Ctrl+T"');
+    expect(SURFACES[4]?.[1]('linux')).toContain('>Ctrl+T<');
   });
 });
 

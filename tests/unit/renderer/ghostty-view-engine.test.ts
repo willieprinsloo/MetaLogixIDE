@@ -147,7 +147,7 @@ function observeFrame() {
   return { next: next.promise, cancel };
 }
 
-function interaction(platform: 'mac' | 'other' = 'other') {
+function interaction(platform: 'mac' | 'linux' = 'linux') {
   return { platform, keys: vi.fn(() => false), openWebLink: vi.fn(), focused: vi.fn(), paintBackdrop: vi.fn() };
 }
 

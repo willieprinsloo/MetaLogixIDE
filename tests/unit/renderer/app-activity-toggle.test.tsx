@@ -4,6 +4,7 @@ import { App } from '@renderer/App';
 import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { within } from '@testing-library/react';
 import type { Project } from '@shared/types';
 
 const project = (id: number): Project => ({
@@ -17,6 +18,8 @@ const bridge = vi.hoisted(() => ({
   listeners: new Map<string, Set<(payload: unknown) => void>>(),
   holdLocalOpen: null as Promise<{ project: Project }> | null,
   focus: [] as unknown[],
+  localShells: [0] as number[],
+  rpc: null as ((payload: { method?: string; params?: Record<string, unknown> }) => unknown) | null,
 }));
 
 vi.mock('@renderer/api', () => ({
@@ -35,7 +38,8 @@ vi.mock('@renderer/api', () => ({
       if (channel === 'metaproject:board-layout' || channel === 'metaproject:board-close') return { ok: true };
       if (channel === 'projects:open') return bridge.holdLocalOpen ?? { project: project(payload?.id ?? 1) };
       if (channel === 'projects:list') return { projects: [project(1)] };
-      if (channel === 'shells:alive-list') return { shells: [{ projectId: 1, shellIndex: 0 }] };
+      if (channel === 'shells:alive-list') return { shells: bridge.localShells.map((shellIndex) => ({ projectId: 1, shellIndex })) };
+      if (channel === 'p2p:rpc-call' && bridge.rpc) return bridge.rpc(payload as { method?: string });
       if (channel === 'settings:get') return { value: payload?.key === 'activity_log_enabled' ? bridge.activity : undefined };
       if (channel === 'files:peek') return { found: true, projectId: 1, relPath: 'src/a.ts' };
       return {};
@@ -60,7 +64,7 @@ vi.mock('@renderer/hooks/useAgentStates', () => ({
 vi.mock('@renderer/hooks/useWindowTerminalFocus', () => ({
   useWindowTerminalFocus: () => undefined,
   terminalFocus: {
-    requestProjectFocus: (projectId: number) => { bridge.focus.push({ project: projectId }); },
+    requestProjectFocus: (projectId: number, machine?: string) => { bridge.focus.push(machine === undefined ? { project: projectId } : { project: projectId, machine }); },
     cancelRequest: () => undefined,
     requestFocus: (key: { projectId: number; shellIndex: number }) => { bridge.focus.push({ shell: key }); },
   },
@@ -100,8 +104,8 @@ vi.mock('@renderer/components/NewProjectDialog', () => ({ NewProjectDialog: ({ o
 vi.mock('@renderer/components/ProjectSettingsTab', () => ({ ProjectSettingsTab: ({ children }: { children: ReactNode }) =>
   <section data-testid="project-settings-view">{children}</section> }));
 vi.mock('@renderer/components/ProjectEnvTab', () => ({ ProjectEnvTab: () => null }));
-vi.mock('@renderer/components/ShellTabsBar', () => ({ ShellTabsBar: ({ onSelect }: { onSelect: (shellIndex: number) => void }) =>
-  <button onClick={() => onSelect(2)}>Terminal tab 2</button> }));
+vi.mock('@renderer/components/ShellTabsBar', () => ({ ShellTabsBar: ({ onSelect, active }: { onSelect: (shellIndex: number) => void; active: number }) =>
+  <button data-active-shell={active} onClick={() => onSelect(2)}>Terminal tab 2</button> }));
 vi.mock('@renderer/components/ShellSplit', () => ({ ShellSplit: () => <div data-testid="shell-view" /> }));
 
 let container: HTMLDivElement | null = null;
@@ -147,6 +151,8 @@ beforeEach(() => {
   bridge.calls = [];
   bridge.listeners.clear();
   bridge.holdLocalOpen = null;
+  bridge.localShells = [0];
+  bridge.rpc = null;
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => window.setTimeout(() => callback(0), 0));
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('crypto', { randomUUID: () => '0856d88e-bbed-4f3e-8157-b9d3a4b34eea' });
@@ -177,7 +183,9 @@ it('does not expose hidden local workspace actions after a remote Fleet notice',
       listener({ deviceId: 'tower', deviceName: 'Tower', projectId: 1, projectName: 'Remote', shellIndex: 0 });
     }
   });
-  expect(document.querySelector('[data-testid="remote-project-pane"]')?.textContent).toContain('Remote @ Tower');
+  expect(document.querySelector('[data-testid="remote-project-pane"]')).not.toBeNull();
+  // The pane's tabs and identity render in the workspace header row above the sheet, like the local header.
+  expect(document.querySelector('[data-testid="remote-workspace-header"]')?.textContent).toContain('Remote @ Tower');
   await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="status-bar-palette-hint"]')?.click(); });
   expect(paletteContent()).toBe('');
   await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
@@ -187,6 +195,11 @@ it('does not expose hidden local workspace actions after a remote Fleet notice',
   });
   expect(bridge.calls.slice(before).map(({ channel }) => channel)).not.toContain('shells:launch-plain');
   expect(bridge.calls.slice(before).map(({ channel }) => channel)).not.toContain('shells:kill');
+  // They act on the remote host's tabs instead.
+  const remoteMethods = bridge.calls.slice(before).filter(({ channel }) => channel === 'p2p:rpc-call')
+    .map(({ payload }) => (payload as { method?: string; deviceId?: string }));
+  expect(remoteMethods).toContainEqual(expect.objectContaining({ method: 'shells.launchPlain', deviceId: 'tower' }));
+  expect(remoteMethods).toContainEqual(expect.objectContaining({ method: 'shells.kill', deviceId: 'tower' }));
   expect(stored('metaide.mainTab')).toBe('files');
 });
 
@@ -215,7 +228,9 @@ it('does not let a pending OS file open replace a later Fleet notice', async () 
   });
   expect(document.querySelector('[data-testid="remote-project-pane"]')).not.toBeNull();
   await act(async () => { completeOpen({ project: project(1) }); });
-  expect(document.querySelector('[data-testid="remote-project-pane"]')?.textContent).toContain('Remote @ Tower');
+  expect(document.querySelector('[data-testid="remote-project-pane"]')).not.toBeNull();
+  // The pane's tabs and identity render in the workspace header row above the sheet, like the local header.
+  expect(document.querySelector('[data-testid="remote-workspace-header"]')?.textContent).toContain('Remote @ Tower');
   expect(bridge.calls.slice(before).map(({ channel }) => channel)).not.toContain('shells:launch');
   expect(stored('metaide.mainTab')).toBe('shell');
 });
@@ -267,6 +282,25 @@ describe('selecting a terminal tab focuses its terminal', () => {
     expect(document.querySelector('[data-testid="main-column"]')).not.toBeNull();
     expect(bridge.focus).toEqual([]);
   });
+});
+
+it('a remote project\'s Shell tab makes the main sheet a shell sheet, like a local Shell tab; other tabs do not', async () => {
+  await mount({ activity: true, tab: 'files' });
+  const sheet = () => document.querySelector('main.workspace-sheet')?.getAttribute('data-sheet-content');
+  expect(sheet()).toBe('other');
+  await act(async () => {
+    for (const listener of bridge.listeners.get('p2p:focus-remote-shell') ?? []) {
+      listener({ deviceId: 'tower', deviceName: 'Tower', projectId: 1, projectName: 'Remote', shellIndex: 0 });
+    }
+  });
+  await flush();
+  expect(sheet()).toBe('shell');
+  // The pane draws no terminal box of its own inside the sheet.
+  expect(document.querySelector('[data-testid="remote-project-pane"] [data-sheet-content]')).toBeNull();
+  await act(async () => {
+    within(document.querySelector<HTMLElement>('[data-testid="remote-workspace-header"]')!).getByRole('button', { name: 'Files' }).click();
+  });
+  expect(sheet()).toBe('other');
 });
 
 describe('App activity-log switch', () => {
@@ -357,4 +391,144 @@ it('keeps the same unsaved Files surface behind Board and restores focus on retu
   expect(draft.value).toBe('unsaved draft');
   expect(draft.closest('[inert]')).toBeNull();
   expect(document.activeElement).toBe(opener);
+});
+
+describe('a remote project in the workspace header (AC1, AC16, AC18, AC19, AC28)', () => {
+  const LOCAL_IPC = ['shells:launch-plain', 'shells:kill', 'windows:popout-shell'];
+  const header = () => document.querySelector<HTMLElement>('[data-testid="remote-workspace-header"]');
+  const pane = () => document.querySelector<HTMLElement>('[data-testid="remote-project-pane"]');
+  const localHeader = () => document.querySelector<HTMLElement>('[data-testid="main-tab-bar"]');
+  const since = (n: number) => bridge.calls.slice(n);
+  const remoteCalls = (n: number) => since(n).filter(({ channel }) => channel === 'p2p:rpc-call')
+    .map(({ payload }) => payload as { deviceId: string; method: string; params: Record<string, unknown> });
+  const remoteMethods = (n: number) => remoteCalls(n).map(({ method }) => method).filter((m) => m.startsWith('shells.') && m !== 'shells.alive');
+  const localCalls = (n: number) => since(n).filter(({ channel }) => LOCAL_IPC.includes(channel));
+  const press = async (key: string, opts: { shift?: boolean } = {}) => {
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key, metaKey: true, shiftKey: opts.shift ?? false, bubbles: true, cancelable: true })); });
+    await flush();
+  };
+  const clickIn = async (root: HTMLElement, label: string) => {
+    await act(async () => {
+      [...root.querySelectorAll('button')].find((b) => (b.getAttribute('aria-label') ?? b.textContent) === label)!.click();
+    });
+    await flush();
+  };
+  async function openRemote(): Promise<void> {
+    await act(async () => {
+      for (const listener of bridge.listeners.get('p2p:focus-remote-shell') ?? []) {
+        listener({ deviceId: 'tower', deviceName: 'Tower', projectId: 1, projectName: 'Remote', shellIndex: 0 });
+      }
+    });
+    await flush();
+    await flush();
+  }
+
+  it('renders one header row, the remote one, holding destinations, tabs and identity outside the pane (AC1, AC2)', async () => {
+    await mount({ activity: true, tab: 'shell' });
+    expect(localHeader()).not.toBeNull();
+    await openRemote();
+    const rows = document.querySelectorAll('.workspace-header-row');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toBe(header());
+    expect(localHeader()).toBeNull();
+    expect(header()!.querySelector('.workspace-destinations')).not.toBeNull();
+    expect(header()!.querySelector('.workspace-project-actions')?.textContent).toContain('Remote @ Tower');
+    expect(within(header()!).getByRole('button', { name: 'Close remote project' })).toBeTruthy();
+    expect(within(header()!).getByText('Terminal tab 2')).toBeTruthy();
+    expect(pane()!.querySelector('.workspace-destinations, .workspace-project-actions')).toBeNull();
+    await clickIn(header()!, 'Files');
+    expect(within(header()!).queryByText('Terminal tab 2')).toBeNull();
+  });
+
+  it('on the Shell destination, Cmd+T opens a plain terminal and Cmd+W closes the shown tab on the host, with no local IPC (AC16)', async () => {
+    let next = 5;
+    bridge.rpc = ({ method }) => (method === 'shells.launch' ? { result: { shellIndex: 3 } } : method === 'shells.launchPlain' ? { result: { shellIndex: next++ } } : { result: [] });
+    await mount({ activity: true, tab: 'shell' });
+    await openRemote();
+    const before = bridge.calls.length;
+    await press('t');
+    await press('w');
+    expect(remoteCalls(before).filter(({ method }) => method === 'shells.launchPlain' || method === 'shells.kill')).toEqual([
+      { deviceId: 'tower', method: 'shells.launchPlain', params: { projectId: 1 } },
+      { deviceId: 'tower', method: 'shells.kill', params: { projectId: 1, shellIndex: 5 } },
+    ]);
+    expect(localCalls(before)).toEqual([]);
+  });
+
+  it('Cmd+W while no remote tab is shown does nothing (AC16)', async () => {
+    bridge.rpc = ({ method }) => (method === 'shells.launch' ? new Promise(() => {}) : { result: [] });
+    await mount({ activity: true, tab: 'shell' });
+    await openRemote();
+    const before = bridge.calls.length;
+    await press('w');
+    expect(remoteMethods(before)).toEqual([]);
+    expect(localCalls(before)).toEqual([]);
+  });
+
+  it('when the host cannot be reached, Cmd+T and Cmd+W toast and nothing local runs (AC16)', async () => {
+    bridge.rpc = ({ method }) => {
+      if (method === 'shells.launch') return { result: { shellIndex: 0 } };
+      if (method === 'shells.launchPlain' || method === 'shells.kill') throw new Error('not connected');
+      return { result: [] };
+    };
+    await mount({ activity: true, tab: 'shell' });
+    await openRemote();
+    const before = bridge.calls.length;
+    await press('t');
+    await press('w');
+    await flush();
+    expect(document.body.textContent).toContain('Could not open a terminal on the remote machine');
+    expect(document.body.textContent).toContain('Could not close the remote terminal');
+    expect(remoteMethods(before)).toEqual(['shells.launchPlain', 'shells.kill']);
+    expect(localCalls(before)).toEqual([]);
+  });
+
+  it('on a remote destination other than Shell, and for Cmd+Shift+T, the keys do nothing (AC16)', async () => {
+    await mount({ activity: true, tab: 'shell' });
+    await openRemote();
+    let before = bridge.calls.length;
+    await press('t', { shift: true });
+    expect(remoteMethods(before)).toEqual([]);
+    expect(localCalls(before)).toEqual([]);
+    await clickIn(header()!, 'Files');
+    before = bridge.calls.length;
+    await press('t');
+    await press('w');
+    expect(remoteMethods(before)).toEqual([]);
+    expect(localCalls(before)).toEqual([]);
+  });
+
+  it('remote chip and Shell destination clicks ask for focus on that machine, never the hidden local project (AC18, AC19)', async () => {
+    await mount({ activity: true, tab: 'shell' });
+    await openRemote();
+    bridge.focus = [];
+    await clickIn(header()!, 'Terminal tab 2');
+    expect(bridge.focus).toEqual([{ shell: { projectId: 1, shellIndex: 2, machine: 'tower' } }]);
+    await clickIn(header()!, 'Files');
+    bridge.focus = [];
+    await clickIn(header()!, 'Shell');
+    expect(bridge.focus).toEqual([{ project: 1, machine: 'tower' }]);
+  });
+
+  it('closing the remote project restores the local header, tab and terminal, and the keys act locally again (AC28)', async () => {
+    bridge.localShells = [0, 2];
+    await mount({ activity: true, tab: 'shell' });
+    await clickIn(localHeader()!, 'Terminal tab 2');
+    expect(localHeader()!.querySelector('[data-active-shell]')?.getAttribute('data-active-shell')).toBe('2');
+    await openRemote();
+    await clickIn(header()!, 'Close remote project');
+    expect(header()).toBeNull();
+    expect(pane()).toBeNull();
+    expect(localHeader()).not.toBeNull();
+    expect(within(localHeader()!).getByRole('button', { name: 'Shell' }).getAttribute('aria-current')).toBe('page');
+    expect(localHeader()!.querySelector('[data-active-shell]')?.getAttribute('data-active-shell')).toBe('2');
+    const before = bridge.calls.length;
+    await press('w');
+    await press('t');
+    expect(localCalls(before).map(({ channel, payload }) => ({ channel, payload }))).toEqual([
+      { channel: 'shells:kill', payload: { projectId: 1, shellIndex: 2 } },
+      expect.objectContaining({ channel: 'shells:launch-plain' }),
+    ]);
+    expect(remoteMethods(before)).toEqual([]);
+  });
 });

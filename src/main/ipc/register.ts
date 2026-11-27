@@ -71,6 +71,9 @@ import { listStoryChunks, readStoryHtml } from '@main/story/narrator';
 import { generateStoryChunkAI } from '@main/story/ai-narrator';
 import { refreshFeatures } from '@main/story/feature-generator';
 import { newestEntryMtime, readFeature, readFeatures, writeFeature } from '@main/story/feature-store';
+import { submitReport } from '@main/feedback/reporter';
+import { folderNameFor, isBindSkipped, recordBindSkip } from '@main/bind-prompt';
+import { release as osRelease } from 'node:os';
 import { readMetaIdeEnv, readMetaIdeCliProfiles } from '@main/domain/metaide-conf';
 
 const GIT_DIFF_KINDS: ReadonlySet<GitDiffKind> = new Set(['staged', 'unstaged', 'untracked']);
@@ -323,7 +326,7 @@ function inRunningGroupChat(s: Services): (sh: { projectId: number; shellIndex: 
  * name (project entries win). Empty project arrays fall all the way through
  * to the global list, so users on a brand-new project still see Claude.
  */
-function mergedCliProfiles(
+export function mergedCliProfiles(
   projectProfiles: Array<{ name: string; argv: string[]; env?: Record<string, string>; icon?: string }> | null,
   globalProfiles: Array<{ name: string; argv: string[]; env?: Record<string, string>; icon?: string }>,
 ): Array<{ name: string; argv: string[]; env?: Record<string, string>; icon?: string }> {
@@ -1014,6 +1017,43 @@ export const handlers: { [C in Exclude<CoreChannel, 'shells:snapshot' | 'setting
     return { ok: true } as const;
   },
 
+  'bind-prompt:status': async (s, { projectId }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    return { shouldPrompt: !isBindSkipped(p.path), folderName: folderNameFor(p.path) };
+  },
+  'bind-prompt:skip': async (s, { projectId }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    recordBindSkip(p.path);
+    return { ok: true } as const;
+  },
+
+  'feedback:submit': async (_s, req) => {
+    const title = (req.title ?? '').toString().trim();
+    if (!title) throw new Error('title is required');
+    if (req.type !== 'bug' && req.type !== 'idea') throw new Error('type must be bug or idea');
+    const result = submitReport({
+      type: req.type,
+      title,
+      description: (req.description ?? '').toString(),
+      source: { kind: 'user' },
+      context: {
+        appVersion: app.getVersion(),
+        osPlatform: process.platform,
+        osRelease: osRelease(),
+        terminalEngine: req.terminalEngine ?? 'unknown',
+        composedAt: new Date().toISOString(),
+      },
+    }, {});
+    return {
+      ok: result.ok,
+      message: result.message,
+      markdown: result.submitted?.markdown,
+      boardUrl: result.submitted?.boardUrl ?? null,
+    };
+  },
+
   /**
    * Resolve a `file://` URL (or absolute path) against every known project
    * root. Used by the shell's OSC-8 link handler to prefer opening a local
@@ -1629,6 +1669,20 @@ export const handlers: { [C in Exclude<CoreChannel, 'shells:snapshot' | 'setting
       win.webContents.send('story:features:changed', { projectId, feature: null });
     }
     return { added: result.added, failed: result.failed };
+  },
+  'story:features:repo-url': async (s, { projectId }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    try {
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const { parseGithubRepoUrl } = await import('@shared/story-ref-extract');
+      const run = promisify(execFile);
+      const { stdout } = await run('git', ['remote', 'get-url', 'origin'], { cwd: p.path });
+      return { repoUrl: parseGithubRepoUrl(stdout.trim()) };
+    } catch {
+      return { repoUrl: null };
+    }
   },
   'story:features:update': async (s, { projectId, id, title, body }) => {
     const p = s.projects.get(projectId);

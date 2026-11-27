@@ -213,6 +213,11 @@ export interface IpcContract extends MetaprojectIpc {
   'story:features:list': { request: { projectId: number }; response: { features: import('./story-feature').StoryFeature[]; lastRefresh: string | null } };
   'story:features:refresh': { request: { projectId: number }; response: { added: number; failed: number } };
   'story:features:update': { request: { projectId: number; id: string; title?: string; body?: string }; response: { feature: import('./story-feature').StoryFeature } };
+  /** Project's GitHub web URL, derived from `git remote get-url origin`
+   *  — returns `null` when the remote isn't a recognisable github.com
+   *  SSH or HTTPS URL. Cached by the renderer; the backing value doesn't
+   *  change often enough to warrant a watcher. */
+  'story:features:repo-url': { request: { projectId: number }; response: { repoUrl: string | null } };
 
   /**
    * Agent chat bus — one entry per human/agent message.
@@ -359,6 +364,41 @@ export interface IpcContract extends MetaprojectIpc {
 
   // open a URL in the OS default browser (or the file:// path in Finder / xdg-open)
   'app:open-external': { request: { url: string }; response: { ok: true } };
+
+  /**
+   * Report-a-bug / leave-feedback (METAI-6). Submit one user-composed
+   * report; the main side fills in version + OS context and returns the
+   * composed markdown (so the renderer can put it on the clipboard) and
+   * the board URL to open. Rate-limited per session.
+   */
+  /**
+   * One-time bind-prompt (METAI-8). When the user opens a project with no
+   * `.metaproject.yaml`, the renderer asks `bind-prompt:status` to decide
+   * whether to show the "Link / Create / Skip" banner. Skip writes a
+   * sentinel file at `.metaide/metaproject-skip` inside the project, so
+   * the choice survives a reload. Clearing the file (manually, or via
+   * the status-bar chip clicking through to Project Settings) brings
+   * the prompt back next time it's unlinked.
+   */
+  'bind-prompt:status': { request: { projectId: number }; response: { shouldPrompt: boolean; folderName: string } };
+  'bind-prompt:skip':   { request: { projectId: number }; response: { ok: true } };
+
+  'feedback:submit': {
+    request: {
+      type: import('./feedback').FeedbackType;
+      title: string;
+      description: string;
+      terminalEngine: 'xterm' | 'ghostty' | 'unknown';
+    };
+    response: {
+      ok: boolean;
+      message?: string;
+      /** The composed markdown — renderer copies it to the clipboard. */
+      markdown?: string;
+      /** The kanban URL on the signed-in metaproject board — null when signed out. */
+      boardUrl?: string | null;
+    };
+  };
   'app:resolve-local-file': {
     request: { url: string };
     response: { match: { projectId: number; relPath: string } | null };

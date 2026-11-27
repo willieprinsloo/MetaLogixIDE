@@ -10,7 +10,7 @@ describe('ensureAgentStanza', () => {
     const res = ensureAgentStanza(dir, 'claude');
     expect(res.appended).toBe(true);
     const txt = readFileSync(res.file, 'utf8');
-    expect(txt).toContain('# metaide-chat-bus@v3');
+    expect(txt).toContain('# metaide-chat-bus@v4');
     expect(txt).toContain('[metaide-chat');
     expect(txt).toContain('chat-outbox.jsonl');
   });
@@ -47,7 +47,7 @@ describe('ensureAgentStanza', () => {
     expect(txt).not.toContain('# metaide-chat-bus@v2');
     expect(txt).not.toContain('old v2 instructions that should not survive');
     // Fresh v3 marker is present exactly once.
-    expect(txt).toContain('# metaide-chat-bus@v3');
+    expect(txt).toContain('# metaide-chat-bus@v4');
     expect(txt.split('# metaide-chat-bus@').length - 1).toBe(1);
   });
 
@@ -77,7 +77,7 @@ describe('ensureAgentStanza', () => {
     const txt = readFileSync(res.file, 'utf8');
     expect(txt).toContain('existing');
     expect(txt).toContain('project-specific rules');
-    expect(txt).toContain('# metaide-chat-bus@v3');
+    expect(txt).toContain('# metaide-chat-bus@v4');
   });
 });
 

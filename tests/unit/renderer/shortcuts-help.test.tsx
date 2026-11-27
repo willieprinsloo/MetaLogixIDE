@@ -93,7 +93,7 @@ describe('ShortcutsHelp', () => {
 
 describe('ShortcutsHelp on Linux (AC6, AC13)', () => {
   const linux = () => renderToStaticMarkup(
-    <ShortcutPlatformContext.Provider value="other">
+    <ShortcutPlatformContext.Provider value="linux">
       <ShortcutsHelp open onClose={() => undefined} />
     </ShortcutPlatformContext.Provider>,
   );

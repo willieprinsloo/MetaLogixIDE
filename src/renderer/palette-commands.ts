@@ -47,6 +47,8 @@ export interface PaletteCommandDeps {
   readonly setThemeMode: (mode: ThemeMode) => void;
   readonly setThemePalette: (palette: ThemePalette) => void;
   readonly openSettings: (section?: SettingsSection) => void;
+  /** Opens the Report-a-bug / Leave-feedback dialog. */
+  readonly openFeedback: () => void;
   /** Keep-awake rows; omitted or null off macOS (and in pop-out windows), which lists none. */
   readonly keepAwake?: PaletteKeepAwake | null;
   /** Label notation for the hints; defaults to the runtime platform. */
@@ -103,6 +105,7 @@ export function buildPaletteCommands(d: PaletteCommandDeps): PaletteCommand[] {
     { id: 'theme.catppuccin', category: 'Theme', title: 'Use Catppuccin palette', run: () => d.setThemePalette('catppuccin') },
     { id: 'theme.rose-pine', category: 'Theme', title: 'Use Rosé Pine palette', run: () => d.setThemePalette('rose-pine') },
     { id: 'app.settings', category: 'App', title: 'Open Settings', hint: hint(SHORTCUTS.settings), run: () => d.openSettings() },
+    { id: 'app.feedback', category: 'App', title: 'Report a bug / Leave feedback…', run: d.openFeedback },
     ...keepAwakeCommands(d.keepAwake),
     ...SETTINGS_NAV_ITEMS.map(({ section, label }): PaletteCommand => ({
       id: `settings.${section}`,
