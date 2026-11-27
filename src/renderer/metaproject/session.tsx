@@ -173,6 +173,16 @@ export function useMetaprojectSession(): SessionContext {
   return session;
 }
 
+/** Non-throwing variant for components that might render outside the provider
+ *  — the status-bar chip is rendered in isolated unit tests that don't set up
+ *  a session. Returns `null` so the caller can render nothing instead of
+ *  crashing the whole tree. Prefer `useMetaprojectSession()` everywhere a
+ *  provider is guaranteed; callers of this function MUST be happy to draw
+ *  nothing when the result is null. */
+export function useOptionalMetaprojectSession(): SessionContext | null {
+  return useContext(Session);
+}
+
 /** Cancels only this consumer's intent when its target changes or unmounts. */
 export function useSignInIntent(scope: string | number | null) {
   const { request } = useMetaprojectSession();
