@@ -2,8 +2,14 @@ import { useLayoutEffect, useRef, type CSSProperties, type ReactNode, type RefOb
 import { m } from 'motion/react';
 import { FOLD_LABELS, paneFoldVariants, type FoldCustom } from '../pane-fold';
 
-/** How the folding pane's final width is found: a share of its row, or its content's own width. */
-export type FoldSize = { share: number } | 'intrinsic';
+/** Final width resolved by CSS from the nearest inline-size container: clamp(min, 100cqw - reserve, max), px. */
+export interface FoldClamp { min: number; max: number; reserve: number }
+
+/** How the folding pane's final width is found: a share of its row, its content's own width, or a CSS clamp. */
+export type FoldSize = { share: number } | 'intrinsic' | { clamp: FoldClamp };
+
+/** Opt-in behaviours; the sidebar and split leave them off. */
+export interface FoldOptions { inertWhileExiting?: boolean; startBleedPx?: number }
 
 interface Props {
   size: FoldSize;
@@ -12,6 +18,7 @@ interface Props {
   onFoldComplete?: (phase: 'enter' | 'exit') => void;
   className?: string;
   innerClassName?: string;
+  options?: FoldOptions;
   children: ReactNode;
 }
 
@@ -32,6 +39,7 @@ function useIntrinsicFoldSize(enabled: boolean, outer: RefObject<HTMLDivElement 
 }
 
 function widths(size: FoldSize): { outer: CSSProperties; inner: CSSProperties } {
+  if (typeof size === 'object' && 'clamp' in size) return { outer: {}, inner: {} }; // STUB: clamp sizing not implemented yet
   if (size === 'intrinsic') return { outer: { width: `calc(var(${FOLD_SIZE_VAR}) * var(--fold))` }, inner: {} };
   return {
     outer: { width: `calc(${size.share} * 100% * var(--fold))` },
@@ -49,12 +57,13 @@ function widths(size: FoldSize): { outer: CSSProperties; inner: CSSProperties } 
  * is clipped beyond `overflow: hidden`, nothing is transformed and opacity is 1. `custom` carries
  * the instant/reduced flags; `onFoldComplete` reports the end of an enter or exit.
  */
-export function FoldPane({ size, anchor, custom, onFoldComplete, className = '', innerClassName = '', children }: Props) {
+export function FoldPane({ size, anchor, custom, onFoldComplete, className = '', innerClassName = '', options, children }: Props) {
   const outerRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
   const intrinsic = size === 'intrinsic';
   useIntrinsicFoldSize(intrinsic, outerRef, innerRef);
   const style = widths(size);
+  void options; // STUB: options not implemented yet
 
   return (
     <m.div
