@@ -27,9 +27,11 @@ describe('stepDockFold', () => {
     expect(flip(closed(), source)).toEqual({ setting: true, context: true, animate: false, folding: false });
   });
 
-  it('ends a pointer slide in one step when a shortcut flips it mid-fold (AC11)', () => {
-    const sliding = flip(closed(), 'pointer');
-    expect(flip(sliding, 'shortcut')).toEqual({ setting: false, context: true, animate: false, folding: false });
+  it('ends a pointer slide in one step when a shortcut flips it mid-fold, holding until the fold completes (AC11, AC13)', () => {
+    const ended = flip(flip(closed(), 'pointer'), 'shortcut');
+    expect(ended).toEqual({ setting: false, context: true, animate: false, folding: true });
+    expect(stepDockFold(ended, { setting: false, context: true, source: 'shortcut' })).toBe(ended);
+    expect(completeDockFold(ended)).toEqual({ setting: false, context: true, animate: false, folding: false });
   });
 
   it('keeps folding when a second pointer flip reverses the slide (AC6)', () => {
@@ -55,10 +57,11 @@ describe('stepDockFold', () => {
     expect(flip(closed(false), 'pointer')).toEqual({ setting: true, context: false, animate: false, folding: false });
   });
 
-  it.each<DockToggleSource>(['shortcut', 'migration'])('snaps a pointer slide to its end in one step when a %s leaves the setting as it is (AC11)', (source) => {
+  it.each<DockToggleSource>(['shortcut', 'migration'])('snaps a pointer slide to its end in one step when a %s leaves the setting as it is, holding until the fold completes (AC11, AC13)', (source) => {
     const sliding = flip(closed(), 'pointer');
-    expect(stepDockFold(sliding, { setting: true, context: true, source }))
-      .toEqual({ setting: true, context: true, animate: false, folding: false });
+    const snapped = stepDockFold(sliding, { setting: true, context: true, source });
+    expect(snapped).toEqual({ setting: true, context: true, animate: false, folding: true });
+    expect(stepDockFold(snapped, { setting: true, context: true, source })).toBe(snapped);
   });
 
   it('returns the same state when neither input changed and nothing is folding, whatever the source (AC24)', () => {

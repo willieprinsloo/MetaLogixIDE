@@ -130,19 +130,39 @@ describe('useAgentsDockFold', () => {
     expect(isTerminalGeometryHeld()).toBe(false);
   });
 
-  it('releases at once when a shortcut ends a pointer slide (AC11)', () => {
+  it.each([
+    ['⌘J flips', false],
+    ['⇧⌘A leaves the setting open', true],
+  ] as const)('keeps the hold until the fold completes when %s mid-slide, then switches in one step (AC11, AC13)', (_, setting) => {
     render({ setting: true, context: true, source: 'pointer' });
-    render({ setting: false, context: true, source: 'shortcut' });
+    render({ setting, context: true, source: 'shortcut' });
+    expect(result().custom).toEqual({ instant: true, reduced: false });
+    expect(isTerminalGeometryHeld()).toBe(true);
+    complete();
     expect(isTerminalGeometryHeld()).toBe(false);
-    expect(result().custom.instant).toBe(true);
   });
 
-  it('releases at once and switches to one step when ⇧⌘A arrives during a pointer open (AC11)', () => {
+  it.each([false, true])('refits the terminals exactly once when a shortcut ends a pointer slide (setting %s) and the fold then completes (AC13)', (setting) => {
+    const releases = vi.fn();
+    const unsubscribe = onTerminalGeometryRelease(releases);
     render({ setting: true, context: true, source: 'pointer' });
+    render({ setting, context: true, source: 'shortcut' });
+    render({ setting, context: true, source: 'shortcut' });
+    expect(releases).not.toHaveBeenCalled();
+    complete();
+    complete();
+    expect(releases).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+
+  it('releases a shortcut-ended slide within the 1s watchdog when completion is never reported (AC11, AC14)', () => {
+    vi.useFakeTimers();
+    render({ setting: true, context: true, source: 'pointer' });
+    render({ setting: false, context: true, source: 'shortcut' });
+    act(() => { vi.advanceTimersByTime(999); });
     expect(isTerminalGeometryHeld()).toBe(true);
-    render({ setting: true, context: true, source: 'shortcut' });
+    act(() => { vi.advanceTimersByTime(1); });
     expect(isTerminalGeometryHeld()).toBe(false);
-    expect(result().custom).toEqual({ instant: true, reduced: false });
   });
 
   it('releases at once when the context changes mid-fold (AC22)', () => {
