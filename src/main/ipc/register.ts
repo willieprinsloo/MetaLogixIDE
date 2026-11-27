@@ -69,6 +69,8 @@ import { readRecentActivity } from '@main/activity/log';
 import { ACTIVITY_PAGE_MAX } from '@shared/activity';
 import { listStoryChunks, readStoryHtml } from '@main/story/narrator';
 import { generateStoryChunkAI } from '@main/story/ai-narrator';
+import { refreshFeatures } from '@main/story/feature-generator';
+import { newestEntryMtime, readFeature, readFeatures, writeFeature } from '@main/story/feature-store';
 import { readMetaIdeEnv, readMetaIdeCliProfiles } from '@main/domain/metaide-conf';
 
 const GIT_DIFF_KINDS: ReadonlySet<GitDiffKind> = new Set(['staged', 'unstaged', 'untracked']);
@@ -1598,6 +1600,52 @@ export const handlers: { [C in Exclude<CoreChannel, 'shells:snapshot' | 'setting
       win.webContents.send('story:changed', { projectId });
     }
     return { chunk };
+  },
+
+  'story:features:list': async (s, { projectId }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    return {
+      features: readFeatures(p.path),
+      lastRefresh: newestEntryMtime(p.path),
+    };
+  },
+  'story:features:refresh': async (s, { projectId }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    const result = await refreshFeatures({
+      projectPath: p.path,
+      projectName: p.name,
+      // Stream entries to the UI as they land — long refreshes don't
+      // leave the user staring at a spinner.
+      onEntry: (feature) => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          win.webContents.send('story:features:changed', { projectId, feature });
+        }
+      },
+    });
+    // Signal batch end so the renderer drops its "refreshing…" state.
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send('story:features:changed', { projectId, feature: null });
+    }
+    return { added: result.added, failed: result.failed };
+  },
+  'story:features:update': async (s, { projectId, id, title, body }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    const existing = readFeature(p.path, id);
+    if (!existing) throw new Error(`no feature entry ${id}`);
+    const next = {
+      ...existing,
+      title: title ?? existing.title,
+      body: body ?? existing.body,
+      edited: true,
+    };
+    writeFeature(p.path, next);
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send('story:features:changed', { projectId, feature: next });
+    }
+    return { feature: next };
   },
 
   'chat:append': async (s, req) => {
