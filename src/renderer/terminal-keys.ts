@@ -1,10 +1,17 @@
 /**
  * Pure routing for keys pressed while a terminal is focused, plus the xterm custom key handler built
- * on it. On other platforms the shell owns every unshifted Ctrl+letter and Ctrl+\ except Ctrl+F
- * (terminal find) and Ctrl+K (command palette); an explicit allow-list of Ctrl chords goes to the
- * app, and Ctrl+Shift+C/V copy and paste. On mac only ⌘F is taken; everything else keeps xterm's
- * default handling. The allow-list is explicit so chords xterm still maps (Ctrl+[, Ctrl+3–8,
- * Ctrl+Shift+- as ^_) stay with the shell.
+ * on it.
+ *
+ * On Linux the shell owns every unshifted Ctrl+letter and Ctrl+\ except Ctrl+F (terminal find) and
+ * Ctrl+K (command palette); an explicit allow-list of Ctrl chords goes to the app, and
+ * Ctrl+Shift+C/V copy and paste.
+ *
+ * On Windows users expect the Windows Terminal convention: plain Ctrl+V pastes, plain Ctrl+C copies
+ * when there's a selection and otherwise sends ^C to the shell. Ctrl+Shift+C and Ctrl+Shift+V still
+ * work too, for parity with Linux muscle memory.
+ *
+ * On mac only ⌘F is taken; everything else keeps xterm's default handling. The allow-list is
+ * explicit so chords xterm still maps (Ctrl+[, Ctrl+3–8, Ctrl+Shift+- as ^_) stay with the shell.
  */
 import { sanitizeTerminalCopy } from '@shared/sanitize-terminal-copy';
 import type {
@@ -18,7 +25,7 @@ import type {
 } from './shortcut-contract';
 import { chordKey, isPrimaryMod } from './shortcut-match';
 
-const OTHER_ROUTES: ReadonlyMap<string, TerminalKeyRoute> = new Map<string, TerminalKeyRoute>([
+const LINUX_ROUTES: ReadonlyMap<string, TerminalKeyRoute> = new Map<string, TerminalKeyRoute>([
   ['f', 'app'],
   ['j', 'app'],
   ['k', 'app'],
@@ -30,12 +37,27 @@ const OTHER_ROUTES: ReadonlyMap<string, TerminalKeyRoute> = new Map<string, Term
   ...[',', '/', '=', '+', 'shift++', '-', '0'].map((c) => [c, 'app'] as const),
 ]);
 
+/** Windows extends the Linux map with the Windows Terminal convention for the
+ *  two shared clipboard chords. Plain Ctrl+V pastes outright; plain Ctrl+C
+ *  routes to the special `copy-or-shell` value that the handler resolves against
+ *  the current selection (copy when something's selected, pass through to the
+ *  shell so ^C still interrupts when the selection is empty). */
+const WIN_ROUTES: ReadonlyMap<string, TerminalKeyRoute> = new Map<string, TerminalKeyRoute>([
+  ...LINUX_ROUTES,
+  ['c', 'copy-or-shell'],
+  ['v', 'paste'],
+]);
+
 const SHELL_CHORD = /^[a-z\\]$/;
 
-function routeOther(e: ShortcutKeyLike): TerminalKeyRoute {
-  if (!isPrimaryMod(e, 'other')) return 'default';
+function routeByTable(
+  e: ShortcutKeyLike,
+  platform: 'win' | 'linux',
+  table: ReadonlyMap<string, TerminalKeyRoute>,
+): TerminalKeyRoute {
+  if (!isPrimaryMod(e, platform)) return 'default';
   const chord = chordKey(e);
-  return OTHER_ROUTES.get(chord) ?? (SHELL_CHORD.test(chord) ? 'shell' : 'default');
+  return table.get(chord) ?? (SHELL_CHORD.test(chord) ? 'shell' : 'default');
 }
 
 function routeMac(e: ShortcutKeyLike): TerminalKeyRoute {
@@ -43,8 +65,11 @@ function routeMac(e: ShortcutKeyLike): TerminalKeyRoute {
 }
 
 /** Who handles a key pressed while a terminal is focused on `platform`. */
-export const routeTerminalKey: RouteTerminalKeyFn = (e, platform) =>
-  platform === 'mac' ? routeMac(e) : routeOther(e);
+export const routeTerminalKey: RouteTerminalKeyFn = (e, platform) => {
+  if (platform === 'mac') return routeMac(e);
+  if (platform === 'win') return routeByTable(e, 'win', WIN_ROUTES);
+  return routeByTable(e, 'linux', LINUX_ROUTES);
+};
 
 function copySelection(deps: TerminalKeyHandlerDeps): void {
   if (!deps.hasSelection()) return;
@@ -69,9 +94,14 @@ const CLIPBOARD_ACTIONS = { copy: copySelection, paste: pasteClipboard } as cons
  * xterm processes them; app keys return false so xterm sends nothing and the event bubbles to the
  * DOM listeners. Copy and paste also call `preventDefault` (which stops Chromium's native paste) and
  * act on keydown only, so each happens exactly once per press.
+ *
+ * `copy-or-shell` resolves at handler time against the current selection: with one, it copies;
+ * without, it falls through to the shell so plain Ctrl+C can still send ^C. This is the Windows
+ * Terminal convention that the Windows router emits for plain Ctrl+C.
  */
 export const createTerminalKeyHandler: CreateTerminalKeyHandlerFn = (deps) => (e) => {
-  const route = routeTerminalKey(e, deps.platform);
+  const raw = routeTerminalKey(e, deps.platform);
+  const route = raw === 'copy-or-shell' ? (deps.hasSelection() ? 'copy' : 'shell') : raw;
   if (route !== 'copy' && route !== 'paste') return route !== 'app';
   e.preventDefault();
   if ((e.type ?? 'keydown') === 'keydown') CLIPBOARD_ACTIONS[route](deps);

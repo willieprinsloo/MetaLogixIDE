@@ -4,7 +4,7 @@
  * unit tests all agree on. `mod` is the platform modifier (⌘ on mac, Ctrl elsewhere); `ctrl` is
  * the physical Control key regardless of platform.
  */
-export type ShortcutPlatform = 'mac' | 'other';
+export type ShortcutPlatform = 'mac' | 'win' | 'linux';
 
 export interface ShortcutKeyLike {
   readonly key: string;
@@ -43,7 +43,7 @@ export type AppShortcutActionFn = (e: ShortcutKeyLike, platform: ShortcutPlatfor
 export type ShortcutPredicateFn = (e: ShortcutKeyLike, platform: ShortcutPlatform) => boolean;
 
 /** Who handles a key pressed while a terminal is focused. */
-export type TerminalKeyRoute = 'shell' | 'app' | 'copy' | 'paste' | 'default';
+export type TerminalKeyRoute = 'shell' | 'app' | 'copy' | 'paste' | 'default' | 'copy-or-shell';
 export type RouteTerminalKeyFn = (e: ShortcutKeyLike, platform: ShortcutPlatform) => TerminalKeyRoute;
 
 export type TerminalTabAction = 'find' | 'zoom-in' | 'zoom-out' | 'zoom-reset';

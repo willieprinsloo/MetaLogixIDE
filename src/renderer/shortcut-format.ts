@@ -9,7 +9,8 @@ import type { FormatShortcutFn, ShortcutDef, ShortcutPlatform } from './shortcut
 
 const KEY_NAMES: Readonly<Record<ShortcutPlatform, Readonly<Record<string, string>>>> = {
   mac: { Enter: '↩' },
-  other: { Enter: 'Enter' },
+  win: { Enter: 'Enter' },
+  linux: { Enter: 'Enter' },
 };
 
 function keyName(key: string, platform: ShortcutPlatform): string {

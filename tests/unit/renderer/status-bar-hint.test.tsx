@@ -70,7 +70,7 @@ describe('StatusBar palette hint', () => {
 describe('StatusBar palette hint on Linux (AC6)', () => {
   function renderLinux(): string {
     return renderToStaticMarkup(
-      <ShortcutPlatformContext.Provider value="other">
+      <ShortcutPlatformContext.Provider value="linux">
         <StatusBar project={project} aliveCount={2} onOpenPalette={() => undefined} />
       </ShortcutPlatformContext.Provider>,
     );

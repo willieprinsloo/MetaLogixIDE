@@ -55,8 +55,11 @@ function keyEventFor(def: ShortcutDef): ShortcutKeyLike {
   };
 }
 
-/** True when the shell, not the app, gets this shortcut while a terminal is focused off mac. */
-const goesToShell = (def: ShortcutDef): boolean => routeTerminalKey(keyEventFor(def), 'other') === 'shell';
+/** True when the shell, not the app, gets this shortcut while a terminal is focused on `platform`.
+ *  Windows routes plain Ctrl+C and Ctrl+V to clipboard, not the shell, so this needs the real
+ *  platform rather than a fixed non-mac placeholder. */
+const goesToShell = (def: ShortcutDef, platform: ShortcutPlatform): boolean =>
+  routeTerminalKey(keyEventFor(def), platform) === 'shell';
 
 /** "A, B and C" */
 function listOf(items: readonly string[]): string {
@@ -66,7 +69,7 @@ function listOf(items: readonly string[]): string {
 /** One shortcut chip; off mac, a shell-owned key also carries a visible marker and a screen-reader note. */
 function ShortcutKey({ def, platform }: { readonly def: ShortcutDef; readonly platform: ShortcutPlatform }): React.JSX.Element {
   const label = formatShortcut(def, platform);
-  if (platform === 'mac' || !goesToShell(def)) return <kbd>{label}</kbd>;
+  if (platform === 'mac' || !goesToShell(def, platform)) return <kbd>{label}</kbd>;
   return (
     <span data-terminal-shell="true" className="inline-flex items-start">
       <kbd>{label}</kbd>
@@ -77,13 +80,13 @@ function ShortcutKey({ def, platform }: { readonly def: ShortcutDef; readonly pl
 }
 
 /** Off-mac note naming every shell-owned shortcut (sidebar backslash included) and the terminal-safe palette key. */
-function TerminalNote(): React.JSX.Element {
+function TerminalNote({ platform }: { readonly platform: ShortcutPlatform }): React.JSX.Element {
   const shellKeys = [...SHORTCUT_GROUPS.flatMap((g) => g.rows.flatMap((r) => r.keys)), SHORTCUTS.sidebarAlt]
-    .filter(goesToShell)
-    .map((def) => formatShortcut(def, 'other'));
+    .filter((def) => goesToShell(def, platform))
+    .map((def) => formatShortcut(def, platform));
   return (
     <p data-testid="shortcuts-terminal-note" className="px-5 pb-4 text-[11px] text-[--modal-text-muted]">
-      <span aria-hidden="true">* </span>In a terminal, {listOf(shellKeys)} go to the shell. Use {formatShortcut(SHORTCUTS.paletteCommands, 'other')} for the command palette.
+      <span aria-hidden="true">* </span>In a terminal, {listOf(shellKeys)} go to the shell. Use {formatShortcut(SHORTCUTS.paletteCommands, platform)} for the command palette.
     </p>
   );
 }
@@ -151,7 +154,7 @@ function ShortcutsSheet({ onClose }: Pick<ShortcutsHelpProps, 'onClose'>): React
             </section>
           ))}
         </div>
-        {platform !== 'mac' && <TerminalNote />}
+        {platform !== 'mac' && <TerminalNote platform={platform} />}
         <div className="px-4 py-2 border-t border-[--modal-hairline] text-[11px] text-[--modal-text-muted] text-right">
           <kbd>Esc</kbd> to close
         </div>
