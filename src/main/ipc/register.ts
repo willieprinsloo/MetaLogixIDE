@@ -72,6 +72,7 @@ import { generateStoryChunkAI } from '@main/story/ai-narrator';
 import { refreshFeatures } from '@main/story/feature-generator';
 import { newestEntryMtime, readFeature, readFeatures, writeFeature } from '@main/story/feature-store';
 import { submitReport } from '@main/feedback/reporter';
+import { folderNameFor, isBindSkipped, recordBindSkip } from '@main/bind-prompt';
 import { release as osRelease } from 'node:os';
 import { readMetaIdeEnv, readMetaIdeCliProfiles } from '@main/domain/metaide-conf';
 
@@ -1013,6 +1014,18 @@ export const handlers: { [C in Exclude<CoreChannel, 'shells:snapshot' | 'setting
     // rejected to prevent renderer-driven shell.openExternal abuse.
     if (!/^(https?|mailto|file):/i.test(url)) throw new Error('unsupported URL scheme');
     await shell.openExternal(url);
+    return { ok: true } as const;
+  },
+
+  'bind-prompt:status': async (s, { projectId }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    return { shouldPrompt: !isBindSkipped(p.path), folderName: folderNameFor(p.path) };
+  },
+  'bind-prompt:skip': async (s, { projectId }) => {
+    const p = s.projects.get(projectId);
+    if (!p) throw new Error(`no project ${projectId}`);
+    recordBindSkip(p.path);
     return { ok: true } as const;
   },
 
