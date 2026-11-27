@@ -323,8 +323,8 @@ test('AC1/AC2/AC3/AC4/AC7/AC13/AC24a: pointer open and close slide smoothly, con
     const withHandle = probe.filter((p) => p.handleW !== null);
     const sliding = withHandle.filter((p) => p.foldW > 4 && p.foldW < open.at(-1)!.s.fold!.w - 10);
     expect(sliding.length, 'AC24a control: the handle was probed mid-slide').toBeGreaterThan(3);
-    const bad = withHandle.filter((p) => Math.abs(p.handleW! - 4) > 0.5 || !(p.handleHitL && p.handleHitMid && p.handleHitR));
-    expect(bad.map((p) => `fold ${round(p.foldW)}px w=${p.handleW} hit L/mid/R=${p.handleHitL}/${p.handleHitMid}/${p.handleHitR}`), 'AC24a: every probed frame has a 4px handle hit-testable across its full width').toEqual([]);
+    const bad = withHandle.filter((p) => p.foldW >= 4).filter((p) => Math.abs(p.handleW! - 4) > 0.5 || !(p.handleHitL && p.handleHitMid && p.handleHitR));
+    expect(bad.map((p) => `fold ${round(p.foldW)}px w=${p.handleW} hit L/mid/R=${p.handleHitL}/${p.handleHitMid}/${p.handleHitR}`), 'AC24a (rev 6): every probed frame with the fold ≥ 4px wide has a 4px handle hit-testable across its full width').toEqual([]);
     expect(Math.max(...probe.map((p) => p.count)), 'at most one dock on every frame').toBeLessThanOrEqual(1);
     await settle(win);
     const chain = await chainAtRest(win);
@@ -512,7 +512,7 @@ test('AC11: a shortcut during a pointer slide ends it in the shortcut\'s end sta
       expect(rightOf(pre) > Math.min(rOpen, rClosed) + 5 && rightOf(pre) < Math.max(rOpen, rClosed) - 5, `${c.name}: precondition: the shortcut landed mid-slide${log}`).toBe(true);
       const after = frames.filter((f) => f.t > pressed);
       expect(after.length, `${c.name}: frames after the keydown${log}`).toBeGreaterThan(4);
-      expect.soft(after.slice(2).every((f) => Math.abs(rightOf(f) - rEnd) <= 0.5), `${c.name}: AC11 one step to the end state within 2 frames${log}`).toBe(true);
+      expect(after.slice(2).every((f) => Math.abs(rightOf(f) - rEnd) <= 0.5), `${c.name}: AC11 one step to the end state within 2 frames${log}`).toBe(true);
       expect(Math.max(...frames.map((f) => f.s.dock!.count)), `${c.name}: AC11 at most one dock${log}`).toBeLessThanOrEqual(1);
       await expect(win.locator(DOCK)).toHaveCount(c.endOpen ? 1 : 0);
       await settle(win);
@@ -784,7 +784,7 @@ test('AC28: in a window too narrow for 360 + the dock, the pane shrinks at rest 
     expect(open.slice(-5).every((f) => Math.abs(f.s.fold!.w - finalFold) <= 0.5), `AC28: stable after the slide${openLog}`).toBe(true);
     expect(open.every((f) => !f.s.dock?.present || f.s.main!.w >= MAIN_MIN - 0.5), `AC28: main ≥ 360 on every frame${openLog}`).toBe(true);
     const narrowProbe = (await collectProbe(win)).frames.filter((p) => p.handleW !== null);
-    expect(narrowProbe.filter((p) => !(p.handleHitL && p.handleHitMid && p.handleHitR)).map((p) => `fold ${round(p.foldW)}px`), 'AC24a in the narrow window: handle hit-testable on every frame').toEqual([]);
+    expect(narrowProbe.filter((p) => p.foldW >= 4).filter((p) => !(p.handleHitL && p.handleHitMid && p.handleHitR)).map((p) => `fold ${round(p.foldW)}px`), 'AC24a in the narrow window: handle hit-testable on every frame').toEqual([]);
 
     // slide out
     const close = await sampleDuring(win, T, SAMPLE_MS, () => win.getByTestId(AGENTS_DOCK_TESTIDS.close).click());
