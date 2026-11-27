@@ -37,7 +37,11 @@ export function shouldHonourRequest(input: { overlayOpen: boolean; active: Activ
   return !input.overlayOpen && input.active !== 'text-entry';
 }
 
-export interface ShellKey { projectId: number; shellIndex: number }
+/** The `machine` value of a terminal on this machine. A key without `machine` means this machine. */
+export const LOCAL_TERMINAL_MACHINE = 'local';
+
+/** Identifies one terminal. `machine` is the host's device id for a remote terminal; omitted (or LOCAL_TERMINAL_MACHINE) for a local one. */
+export interface ShellKey { projectId: number; shellIndex: number; machine?: string }
 
 export interface TerminalHandle {
   key: ShellKey;
@@ -59,8 +63,8 @@ export interface TerminalFocusCoordinator {
   onWindowBlur(): void;
   /** Focus the terminal with exactly this key (notification, popout, scrollback jump). */
   requestFocus(key: ShellKey): void;
-  /** Focus the primary (left-pane) terminal of `projectId` (project switch). */
-  requestProjectFocus(projectId: number): void;
+  /** Focus the primary (left-pane) terminal of `projectId` on `machine` (default: this machine). */
+  requestProjectFocus(projectId: number, machine?: string): void;
   /** Drop any pending request. Called when a new switch starts, so a superseded one never fires. */
   cancelRequest(): void;
 }
