@@ -1340,8 +1340,9 @@ function MainApp() {
               onDraggingChange={setColumnDragging}
             />
             <aside
-              className="shrink-0 border-l border-[--border] bg-[--surface] h-full overflow-hidden flex flex-col min-h-0"
+              className="workspace-sheet shrink-0 mt-2 mr-2 mb-2 rounded-[14px] bg-[--surface-sheet] overflow-hidden flex flex-col min-h-0"
               style={{ width: agentsDockWidth }}
+              data-sheet-content="shell"
               data-testid="agents-dock"
               aria-label="Agents"
             >
