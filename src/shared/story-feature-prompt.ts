@@ -1,18 +1,24 @@
 /**
- * Prompt builder for the Story feature feed.
+ * Prompt builder for the Story feature feed (newsfeed voice).
  *
- * Takes one commit's git-level facts and produces a prompt that asks
- * Claude to write a three-section handoff note — in plain English, for
- * someone who will OWN the solution later and isn't in the room when it
- * was built. Kept in `shared/` so unit tests can snapshot the prompt
- * without pulling the Electron main side.
+ * The feed reads like a product changelog: one concrete sentence you
+ * can say out loud, then a short paragraph of context. Not a spec,
+ * not a doc page — a post. Owner-friendly, release-notes voice.
  *
- * The prompt mandates a specific markdown shape so the renderer can
- * split it on headings without parsing prose. If a commit genuinely
- * has no user-visible outcome (a pure refactor, a test fix, a CI tweak)
- * the model is told to say so explicitly and label the entry
- * `MAINTENANCE` on its last line — the generator reads that line to
- * tag the stored entry, then strips it before saving the body.
+ * The prompt mandates a specific markdown shape:
+ *
+ *   # <headline — one sentence, user-visible change, concrete>
+ *
+ *   <body — 2–3 sentences of context in a single paragraph>
+ *
+ *   KIND: FEATURE | MAINTENANCE
+ *
+ * The renderer uses the first `# ` heading as the row's headline and
+ * the paragraph beneath as the body. The generator strips the KIND
+ * trailer before saving and uses it to tag the stored entry.
+ *
+ * Kept in shared/ so unit tests can snapshot the prompt without
+ * pulling the Electron main side.
  */
 
 export interface FeaturePromptInput {
@@ -32,13 +38,7 @@ export interface FeaturePromptInput {
   lines: { added: number; removed: number };
 }
 
-const SECTION_HEADINGS = [
-  '## What you can now do',
-  '## Why it matters',
-  '## Where it lives',
-] as const;
-
-export const FEATURE_SECTIONS = SECTION_HEADINGS;
+export const FEATURE_HEADING = '#';
 
 /** Last-line label the model must emit so the generator can tag the
  *  stored entry. The generator strips the line before saving. */
@@ -54,14 +54,8 @@ export function buildFeaturePrompt(input: FeaturePromptInput): string {
     ? 'direct commit on main'
     : `PR #${input.prNumber}`;
 
-  // NOTE: the prose rules below are deliberately prescriptive — the
-  // owner this is written for isn't technical, and models love to slip
-  // into implementation jargon ("the IPC handler now…") that leaves
-  // them none the wiser. Short sentences, concrete user actions,
-  // business words beat framework words.
   return [
-    `You are writing a short handoff note about ONE change that shipped in a project called "${input.projectName}".`,
-    'The reader is the person who will OWN this solution going forward. They are not a software engineer and were not in the room when this was built. They need to understand, in plain English, what the project can now do that it could not do before, and roughly where that capability lives in the codebase in case they need to hand that to a developer.',
+    `You are writing a short post for ${input.projectName}'s feature newsfeed. The reader will scroll through a list of these — like a changelog or a product news feed — so each one needs to be scannable in two seconds.`,
     '',
     `## The change (${prBadge})`,
     `Title: ${input.title}`,
@@ -70,20 +64,29 @@ export function buildFeaturePrompt(input: FeaturePromptInput): string {
     'Files touched:',
     files,
     '',
-    '## Your task',
-    'Write THREE sections in markdown, using exactly these headings, in this order:',
+    '## Your output',
+    'Write a markdown post in EXACTLY this shape — no more, no less:',
     '',
-    SECTION_HEADINGS.map((h) => h).join('\n'),
+    '    # <headline>',
+    '    ',
+    '    <body>',
+    '    ',
+    '    KIND: FEATURE',
     '',
-    'Rules for each section:',
-    '- 2 to 4 short sentences each.',
-    '- Write in plain English. Lead with what a human would notice. Avoid framework, API and protocol names unless they are user-visible (URLs, settings, menu items).',
-    '- "What you can now do" starts with "You can now…" or "The app now…". Describe the capability, not the code change.',
-    '- "Why it matters" is the business / product reason — what problem the user had before, what they can do faster/safer/at-all now.',
-    '- "Where it lives" names the one or two files or folders a developer would open to change or debug this. ONE sentence. No long path lists.',
+    'Rules for the **headline** (the `#` line):',
+    '- ONE short sentence. No trailing period.',
+    '- Lead with the concrete user-visible change. Name the button, the menu, the keyboard shortcut, the file path a user types, the error that no longer fires.',
+    '- Start with a verb when you can: "Pressing ⌘K opens…", "Windows terminals now paste…", "The status bar shows…". Avoid "Added", "Implemented" — those are engineering words, not user words.',
+    '- If there is NO user-visible change (a refactor, a test fix, a CI tweak, a build bump), say so plainly, e.g. "Internal cleanup: <what>" or "Security patch: <what>".',
     '',
-    `If this change has NO user-visible outcome (it is a refactor, a test fix, a CI tweak, a build bump, a dependency security patch), do NOT invent a user story. Collapse all three sections into a single paragraph that says plainly what kind of maintenance it was and why it was done. Then on the LAST line of your output write "${KIND_LABEL_MAINTENANCE}".`,
-    `Otherwise, on the LAST line of your output write "${KIND_LABEL_FEATURE}".`,
+    'Rules for the **body** (one paragraph, 2–3 sentences):',
+    '- Plain English. Think of a short LinkedIn post, not a spec. A human reads it over coffee.',
+    '- Sentence 1: what this does for the user, said differently from the headline. Before/after if it fits naturally.',
+    '- Sentence 2: why it matters — the problem it solves, the risk it closed, the hand-off friction it removed.',
+    '- Sentence 3 (optional): one hint at where this lives for someone who wants to dig in. ONE file or folder, in `backticks`. Never a long path list.',
+    '- No section headings inside the body. No bullet points. No tables.',
+    '',
+    `End the post with the exact trailer "${KIND_LABEL_FEATURE}" on its own last line. If this change is maintenance-only (no user-visible outcome), use "${KIND_LABEL_MAINTENANCE}" instead.`,
     '',
     'Output ONLY the markdown — no preamble, no code fence, no closing remarks.',
   ].join('\n');
@@ -103,4 +106,21 @@ export function extractKindAndBody(raw: string): { kind: 'feature' | 'maintenanc
     return { kind: 'feature', body: lines.slice(0, -1).join('\n').trimEnd() };
   }
   return { kind: 'feature', body: trimmed };
+}
+
+/** Split a post into its headline (from the first `# ` line) and
+ *  everything else. Older entries that were written against the
+ *  three-section prompt will have `## What you can now do` instead;
+ *  callers render the whole body as-is when no `# ` headline is found.
+ *
+ *  Returns `null` for the headline when there's no `# ` heading. The
+ *  renderer then uses the commit title as the fallback. */
+export function splitHeadlineAndBody(markdown: string): { headline: string | null; body: string } {
+  const trimmed = markdown.trim();
+  const lines = trimmed.split(/\r?\n/);
+  const headIdx = lines.findIndex((line) => /^#\s+\S/.test(line));
+  if (headIdx === -1) return { headline: null, body: trimmed };
+  const headline = lines[headIdx]!.replace(/^#\s+/, '').trim();
+  const rest = [...lines.slice(0, headIdx), ...lines.slice(headIdx + 1)].join('\n').trim();
+  return { headline, body: rest };
 }

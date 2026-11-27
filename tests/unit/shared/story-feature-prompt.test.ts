@@ -2,13 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   buildFeaturePrompt,
   extractKindAndBody,
-  FEATURE_SECTIONS,
   KIND_LABEL_FEATURE,
   KIND_LABEL_MAINTENANCE,
+  splitHeadlineAndBody,
 } from '@shared/story-feature-prompt';
 
-describe('buildFeaturePrompt', () => {
-  it('names the project, labels the PR, and lists all three mandated sections', () => {
+describe('buildFeaturePrompt (newsfeed voice)', () => {
+  it('names the project, labels the PR, and mandates a `# headline` plus one-paragraph body', () => {
     const prompt = buildFeaturePrompt({
       projectName: 'metaIDE',
       prNumber: 26,
@@ -17,11 +17,15 @@ describe('buildFeaturePrompt', () => {
       files: ['package.json', 'pnpm-lock.yaml'],
       lines: { added: 1081, removed: 831 },
     });
-    expect(prompt).toContain('metaIDE');
+    expect(prompt).toContain("metaIDE's feature newsfeed");
     expect(prompt).toContain('PR #26');
-    for (const heading of FEATURE_SECTIONS) {
-      expect(prompt).toContain(heading);
-    }
+    // The prompt must specify the exact output shape — `# <headline>`
+    // + a body paragraph + the kind trailer. A reader looking at the
+    // prompt should see each of those three pieces named.
+    expect(prompt).toContain('# <headline>');
+    expect(prompt).toContain('KIND: FEATURE');
+    // Changed-files are embedded so the model can hint at one path
+    // without inventing one.
     expect(prompt).toContain('package.json');
     expect(prompt).toContain('+1081 / -831');
   });
@@ -49,7 +53,6 @@ describe('buildFeaturePrompt', () => {
       files,
       lines: { added: 1, removed: 0 },
     });
-    // 30 cap — the 31st file must not appear verbatim.
     expect(prompt).toContain('file-29.ts');
     expect(prompt).not.toContain('file-30.ts');
   });
@@ -57,25 +60,51 @@ describe('buildFeaturePrompt', () => {
 
 describe('extractKindAndBody', () => {
   it('tags the entry as MAINTENANCE and strips the trailer', () => {
-    const raw = ['## What you can now do', 'No user-visible change.', '', KIND_LABEL_MAINTENANCE].join('\n');
+    const raw = ['# Internal cleanup: lint sweep', '', 'Removed a stray console.log.', '', KIND_LABEL_MAINTENANCE].join('\n');
     const { kind, body } = extractKindAndBody(raw);
     expect(kind).toBe('maintenance');
     expect(body).not.toContain('KIND:');
-    expect(body).toContain('No user-visible change.');
+    expect(body).toContain('# Internal cleanup');
   });
 
   it('tags the entry as FEATURE and strips the trailer', () => {
-    const raw = ['## What you can now do', 'You can now X.', '', KIND_LABEL_FEATURE].join('\n');
+    const raw = ['# Pressing ⌘K opens the palette', '', 'One-step fuzzy open.', '', KIND_LABEL_FEATURE].join('\n');
     const { kind, body } = extractKindAndBody(raw);
     expect(kind).toBe('feature');
     expect(body).not.toContain('KIND:');
-    expect(body).toContain('You can now X.');
+    expect(body).toContain('Pressing ⌘K');
   });
 
   it('defaults to feature when the model forgot the label — a missing trailer must not drop the entry', () => {
-    const raw = '## What you can now do\nYou can now X.';
+    const raw = '# Headline\n\nBody.';
     const { kind, body } = extractKindAndBody(raw);
     expect(kind).toBe('feature');
-    expect(body).toBe('## What you can now do\nYou can now X.');
+    expect(body).toBe('# Headline\n\nBody.');
+  });
+});
+
+describe('splitHeadlineAndBody', () => {
+  it('pulls the first `# ` line out as the headline and returns the rest as body', () => {
+    const { headline, body } = splitHeadlineAndBody('# The chip now links to the board\n\nShort post body.');
+    expect(headline).toBe('The chip now links to the board');
+    expect(body).toBe('Short post body.');
+  });
+
+  it('skips a blank line between heading and body cleanly', () => {
+    const { headline, body } = splitHeadlineAndBody('# Headline\n\n\nMultiline\nbody text.');
+    expect(headline).toBe('Headline');
+    expect(body).toContain('Multiline\nbody text.');
+  });
+
+  it('returns null headline + full body when the entry has no `# ` heading (older format)', () => {
+    const { headline, body } = splitHeadlineAndBody('## What you can now do\nYou can now X.');
+    expect(headline).toBeNull();
+    expect(body).toContain('## What you can now do');
+  });
+
+  it('is robust to blank input', () => {
+    const { headline, body } = splitHeadlineAndBody('');
+    expect(headline).toBeNull();
+    expect(body).toBe('');
   });
 });
