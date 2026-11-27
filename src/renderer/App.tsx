@@ -1171,7 +1171,7 @@ function MainApp() {
             </FoldPane>
           )}
         </AnimatePresence>
-        <div className="workspace-header-container flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden" data-testid="main-column">
+        <div className="workspace-header-container flex flex-1 flex-col min-h-0 min-w-[360px] overflow-hidden" data-testid="main-column">
             {!remotePane && <header ref={setWorkspaceHeaderEl} className="workspace-header-row drag relative shrink-0 items-center gap-x-1.5 gap-y-1 px-3 py-1.5 text-xs" data-testid={DIFF_TESTIDS.tabBar}>
               <WorkspaceDestinations active={boardVisible ? null : mainTab} activityEnabled={activityEnabled}
                 diffCount={diffCount} envDirty={envDirty}
@@ -1360,7 +1360,7 @@ function MainApp() {
               onDraggingChange={setColumnDragging}
             />
             <aside
-              className="shrink-0 mr-2 flex flex-col min-h-0"
+              className="shrink min-w-[240px] mr-2 flex flex-col min-h-0"
               style={{ width: agentsDockWidth }}
               data-testid="agents-dock"
               aria-label="Agents"
