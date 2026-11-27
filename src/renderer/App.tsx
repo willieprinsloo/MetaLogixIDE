@@ -72,12 +72,18 @@ import { useWindowFullscreen } from './hooks/useWindowFullscreen';
 import { activeElementKind, terminalFocus, useWindowTerminalFocus } from './hooks/useWindowTerminalFocus';
 import { useReportViewedShells } from './hooks/useReportViewedShells';
 import { Tooltip } from './components/Tooltip';
-import { FoldPane } from './components/FoldPane';
+import { FoldPane, type FoldOptions } from './components/FoldPane';
 import { usePrefersReducedMotion } from './hooks/usePrefersReducedMotion';
 import { useTerminalGeometryHold } from './hooks/useTerminalGeometryHold';
+import { useAgentsDockFold } from './hooks/useAgentsDockFold';
+import type { DockToggleSource } from './agents-dock-fold';
+import { DOCK_MARGIN_W, DOCK_MIN_W, MAIN_MIN_W } from './agents-dock-layout';
+import { AGENTS_DOCK_TESTIDS } from './agents-dock-copy';
 
 /** Status bar fold and sheet margin/rounding transition length. */
 const STATUS_BAR_MS = 200;
+/** The Agents dock's fold opt-ins: inert while it leaves, and room for its handle's 2px start overhang. */
+const DOCK_FOLD_OPTIONS: FoldOptions = { inertWhileExiting: true, startBleedPx: 2 };
 /** The status bar's fixed height (StatusBar's h-[34px]); its slot animates to this. */
 const STATUS_BAR_HEIGHT = 34;
 import { useSplitLifecycle } from './hooks/useSplitLifecycle';
@@ -248,6 +254,13 @@ function MainApp() {
     false,
     (v): v is boolean => typeof v === 'boolean',
   );
+  // Only a pointer toggle slides the dock; shortcuts and the start-up migration switch it in one step.
+  const [agentsDockSource, setAgentsDockSource] = useState<DockToggleSource>('migration');
+  const toggleAgentsDock = useCallback((source: DockToggleSource, open?: boolean) => {
+    setAgentsDockSource(source);
+    setAgentsDockOpen((v) => open ?? !v);
+  }, [setAgentsDockOpen]);
+  const agentsDockFold = useAgentsDockFold({ setting: agentsDockOpen, context: selected !== null && !remotePane, source: agentsDockSource });
   // Bumped by ⇧⌘A to focus the dock's composer without a mouse click; the
   // dock also auto-opens if it was closed when the shortcut fired.
   const [agentsComposerFocusTick, setAgentsComposerFocusTick] = useState(0);
@@ -257,7 +270,7 @@ function MainApp() {
   useEffect(() => {
     if (activeView === 'agents') {
       setActiveView('projects');
-      setAgentsDockOpen(true);
+      toggleAgentsDock('migration', true);
     }
     // Run once on mount only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -770,9 +783,9 @@ function MainApp() {
         openNewTerminalRef.current(false, tabMotionRef.current?.launchResult());
       },
       'new-terminal-window': () => openNewTerminalRef.current(true),
-      'toggle-agents-dock': () => setAgentsDockOpen((x) => !x),
+      'toggle-agents-dock': () => toggleAgentsDock('shortcut'),
       'focus-agents-composer': () => {
-        setAgentsDockOpen(true);
+        toggleAgentsDock('shortcut', true);
         setAgentsComposerFocusTick((t) => t + 1);
       },
     };
@@ -829,7 +842,7 @@ function MainApp() {
       window.removeEventListener('keydown', capture, true);
       window.removeEventListener('keydown', bubble);
     };
-  }, [openPalette, toggleSidebar, platform, restoreClosedTerminal, setSettingsOpen, setNewProjectOpen, setHelpOpen, setSearchOpen, setPromptsOpen, setScrollbackOpen]);
+  }, [openPalette, toggleSidebar, toggleAgentsDock, platform, restoreClosedTerminal, setSettingsOpen, setNewProjectOpen, setHelpOpen, setSearchOpen, setPromptsOpen, setScrollbackOpen]);
 
   // Keep the OS window title in sync with the current project so it reads
   // "lawreader — MetaLogix IDE" in Mission Control, Dock previews, and every
@@ -1088,7 +1101,7 @@ function MainApp() {
           agentsOpen={agentsDockOpen}
           onSelect={(v) => {
             if (v === 'agents') {
-              setAgentsDockOpen((x) => !x);
+              toggleAgentsDock('pointer');
               return;
             }
             const next = sidebarOpen && activeView === v && v !== 'projects' ? 'projects' : v;
@@ -1185,6 +1198,7 @@ function MainApp() {
             </FoldPane>
           )}
         </AnimatePresence>
+        <div className="workspace-row flex flex-1 min-w-0 min-h-0" data-testid={AGENTS_DOCK_TESTIDS.row}>
         <div className="workspace-header-container flex flex-1 flex-col min-h-0 min-w-[360px] overflow-hidden" data-testid="main-column">
             {!remotePane && !boardVisible && (
               <MetaprojectBindPrompt
@@ -1375,46 +1389,58 @@ function MainApp() {
             )}
           </AnimatePresence>
         </div>
-        {agentsDockOpen && selected && !remotePane && (
-          <>
-            <ResizeHandle
-              value={agentsDockWidth}
-              onChange={setAgentsDockWidth}
-              onReset={() => setAgentsDockWidth(340)}
-              min={260}
-              max={640}
-              side="right"
-              onDraggingChange={setColumnDragging}
-            />
-            <aside
-              className="shrink min-w-[240px] mr-2 flex flex-col min-h-0"
-              style={{ width: agentsDockWidth }}
-              data-testid="agents-dock"
-              aria-label="Agents"
-            >
-              <AgentChatTab
-                projectId={selected.id}
-                selfDevice={selfDeviceName}
-                focusTick={agentsComposerFocusTick}
-                barMinHeight={workspaceHeaderHeight || undefined}
-                panelClassName="workspace-sheet rounded-[14px] bg-[--surface-sheet] overflow-hidden !border-0"
-                panelSheetContent="shell"
-                barEnd={
-                  <Tooltip label="Close Agents pane" shortcut="⌘J to reopen">
-                    <button
-                      onClick={() => setAgentsDockOpen(false)}
-                      aria-label="Close Agents pane"
-                      className="w-5 h-5 flex items-center justify-center rounded text-[--text-muted] hover:bg-[--panel-strong] hover:text-[--text]"
-                      data-testid="agents-dock-close"
-                    >
-                      ×
-                    </button>
-                  </Tooltip>
-                }
-              />
-            </aside>
-          </>
+        {selected && !remotePane && (
+          <AnimatePresence initial={false} custom={agentsDockFold.custom}>
+            {agentsDockOpen && (
+              <FoldPane
+                key="agents-dock"
+                size={{ clamp: { min: DOCK_MIN_W + DOCK_MARGIN_W, max: agentsDockWidth + DOCK_MARGIN_W, reserve: MAIN_MIN_W } }}
+                anchor="start"
+                custom={agentsDockFold.custom}
+                onFoldComplete={agentsDockFold.onFoldComplete}
+                options={DOCK_FOLD_OPTIONS}
+              >
+                <ResizeHandle
+                  value={agentsDockWidth}
+                  onChange={setAgentsDockWidth}
+                  onReset={() => setAgentsDockWidth(340)}
+                  min={260}
+                  max={640}
+                  side="right"
+                  onDraggingChange={setColumnDragging}
+                />
+                <aside
+                  className="shrink min-w-[240px] mr-2 flex flex-col min-h-0"
+                  style={{ width: agentsDockWidth }}
+                  data-testid="agents-dock"
+                  aria-label="Agents"
+                >
+                  <AgentChatTab
+                    projectId={selected.id}
+                    selfDevice={selfDeviceName}
+                    focusTick={agentsComposerFocusTick}
+                    barMinHeight={workspaceHeaderHeight || undefined}
+                    panelClassName="workspace-sheet rounded-[14px] bg-[--surface-sheet] overflow-hidden !border-0"
+                    panelSheetContent="shell"
+                    barEnd={
+                      <Tooltip label="Close Agents pane" shortcut="⌘J to reopen">
+                        <button
+                          onClick={() => toggleAgentsDock('pointer', false)}
+                          aria-label="Close Agents pane"
+                          className="w-5 h-5 flex items-center justify-center rounded text-[--text-muted] hover:bg-[--panel-strong] hover:text-[--text]"
+                          data-testid="agents-dock-close"
+                        >
+                          ×
+                        </button>
+                      </Tooltip>
+                    }
+                  />
+                </aside>
+              </FoldPane>
+            )}
+          </AnimatePresence>
         )}
+        </div>
       </div>
 
       {unloadTarget && <UnloadSessionDialog key={unloadTarget.id} project={unloadTarget}

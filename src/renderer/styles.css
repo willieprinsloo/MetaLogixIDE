@@ -678,6 +678,8 @@ input::placeholder, textarea::placeholder {
 .workspace-project-actions > :has(> button) { -webkit-app-region: no-drag; }
 
 .workspace-header-container { container: workspace-header / inline-size; }
+/* The main column and the Agents dock share this row; the dock's fold clamps against its 100cqw. */
+.workspace-row { container-type: inline-size; }
 .workspace-header-row:not([hidden]) + .workspace-sheet { margin-top: 0; }
 [data-sheet-content="shell"] { --terminal-pane-radius: 12px; }
 .workspace-sheet[data-sheet-content="shell"] {
