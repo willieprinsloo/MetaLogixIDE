@@ -382,6 +382,17 @@ function MainApp() {
   // the left sheet so the two can be sized for their different content
   // (list of files vs an ambient chat stream).
   const [agentsDockWidth, setAgentsDockWidth] = usePersistedNumber('metaide.agentsDockWidth', 340, 260, 640);
+  // The Agents dock's roster bar matches the workspace header row's height, so the dock panel
+  // starts level with the main sheet below the header.
+  const [workspaceHeaderEl, setWorkspaceHeaderEl] = useState<HTMLElement | null>(null);
+  const [workspaceHeaderHeight, setWorkspaceHeaderHeight] = useState(0);
+  useEffect(() => {
+    if (!workspaceHeaderEl || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => setWorkspaceHeaderHeight(workspaceHeaderEl.offsetHeight));
+    ro.observe(workspaceHeaderEl);
+    setWorkspaceHeaderHeight(workspaceHeaderEl.offsetHeight);
+    return () => ro.disconnect();
+  }, [workspaceHeaderEl]);
   const [settingsOpen, updateSettingsOpen] = useState(false);
   // beforeOverlay lets the Board panel save a lease before another modal shows over it.
   const setSettingsOpen = useCallback((open: boolean) => { if (open) beforeOverlay(() => updateSettingsOpen(open)); else updateSettingsOpen(false); }, [beforeOverlay]);
@@ -1182,7 +1193,7 @@ function MainApp() {
               />
             )}
             {remotePane && <header ref={setRemoteHeaderSlot} className="workspace-header-row drag relative shrink-0 items-center gap-x-1.5 gap-y-1 px-3 py-1.5 text-xs text-[--text]" data-testid={REMOTE_PANE_TESTIDS.header} />}
-            {!remotePane && <header className="workspace-header-row drag relative shrink-0 items-center gap-x-1.5 gap-y-1 px-3 py-1.5 text-xs" data-testid={DIFF_TESTIDS.tabBar}>
+            {!remotePane && <header ref={setWorkspaceHeaderEl} className="workspace-header-row drag relative shrink-0 items-center gap-x-1.5 gap-y-1 px-3 py-1.5 text-xs" data-testid={DIFF_TESTIDS.tabBar}>
               <WorkspaceDestinations active={boardVisible ? null : mainTab} activityEnabled={activityEnabled}
                 diffCount={diffCount} envDirty={envDirty}
                 onSelect={selectDestination} />
@@ -1376,27 +1387,31 @@ function MainApp() {
               onDraggingChange={setColumnDragging}
             />
             <aside
-              className="shrink-0 border-l border-[--border] bg-[--surface] h-full overflow-hidden flex flex-col min-h-0"
+              className="shrink-0 mr-2 flex flex-col min-h-0"
               style={{ width: agentsDockWidth }}
               data-testid="agents-dock"
               aria-label="Agents"
             >
-              <div className="shrink-0 flex items-center justify-between pl-3 pr-1.5 py-1 border-b border-[--border] text-[11px] text-[--text-muted]">
-                <span className="uppercase tracking-wide">Agents</span>
-                <Tooltip label="Close Agents pane" shortcut="⌘J to reopen">
-                  <button
-                    onClick={() => setAgentsDockOpen(false)}
-                    aria-label="Close Agents pane"
-                    className="w-5 h-5 flex items-center justify-center rounded hover:bg-[--panel-strong] hover:text-[--text]"
-                    data-testid="agents-dock-close"
-                  >
-                    ×
-                  </button>
-                </Tooltip>
-              </div>
-              <div className="flex-1 min-h-0">
-                <AgentChatTab projectId={selected.id} selfDevice={selfDeviceName} focusTick={agentsComposerFocusTick} />
-              </div>
+              <AgentChatTab
+                projectId={selected.id}
+                selfDevice={selfDeviceName}
+                focusTick={agentsComposerFocusTick}
+                barMinHeight={workspaceHeaderHeight || undefined}
+                panelClassName="workspace-sheet rounded-[14px] bg-[--surface-sheet] overflow-hidden !border-0"
+                panelSheetContent="shell"
+                barEnd={
+                  <Tooltip label="Close Agents pane" shortcut="⌘J to reopen">
+                    <button
+                      onClick={() => setAgentsDockOpen(false)}
+                      aria-label="Close Agents pane"
+                      className="w-5 h-5 flex items-center justify-center rounded text-[--text-muted] hover:bg-[--panel-strong] hover:text-[--text]"
+                      data-testid="agents-dock-close"
+                    >
+                      ×
+                    </button>
+                  </Tooltip>
+                }
+              />
             </aside>
           </>
         )}

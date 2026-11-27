@@ -417,6 +417,15 @@ In split mode, each terminal paints a separate 14px rounded card with a
 1px gray border, regardless of focus. The workspace has no shared terminal
 border or background, so the workspace chrome is visible through the 10px
 resize gap.
+The right-side Agents dock has no title row. Its roster bar (agent pills,
+Start round, the close button) sits on the chrome above the dock's panel,
+the way the Shell tabs sit above the Shell sheet. The bar takes the height
+of the workspace header row, so the panel starts level with the main sheet.
+The panel holds only the thread. It carries `data-sheet-content="shell"`,
+so it gets the Shell sheet's surface and 14px corners, but it draws no
+border. The composer sits below the panel, on the chrome, and its text box
+is a little darker than the panel. The roster bar and the composer have no
+horizontal padding, so they line up with the panel's edges.
 Dialogs and popovers keep their edges because they float.
 
 `src/renderer/styles.css` ("Chrome surfaces and semantic hues") derives every

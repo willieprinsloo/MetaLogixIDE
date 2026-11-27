@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactElement } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactElement, type ReactNode } from 'react';
 import { api } from '@renderer/api';
 import { useAgentChat } from '@renderer/hooks/useAgentChat';
 import { useChatRoster } from '@renderer/hooks/useChatRoster';
@@ -35,8 +35,23 @@ const ENGINE_COLOUR: Readonly<Record<MemberEngine, string>> = {
  * `focusTick` is a monotonic counter the parent bumps when the ⇧⌘A
  * shortcut fires — any change (including the first non-zero value) lands
  * focus in the composer without the user clicking the pane.
+ *
+ * Layout: the roster bar (pills, Start round) sits above the panel, outside
+ * it, the way the Shell tabs sit above the Shell sheet. `panelClassName` and
+ * `panelSheetContent` style the panel holding the thread and composer;
+ * `barEnd` is appended to the bar (the dock's close button); `barMinHeight`
+ * lets the parent match the bar to the workspace header row, so the panel
+ * starts at the same height as the Shell sheet.
  */
-export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick }: { projectId: number; selfDevice: string; focusTick?: number }) {
+export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick, panelClassName, panelSheetContent, barEnd, barMinHeight }: {
+  projectId: number;
+  selfDevice: string;
+  focusTick?: number;
+  panelClassName?: string;
+  panelSheetContent?: string;
+  barEnd?: ReactNode;
+  barMinHeight?: number;
+}) {
   const { entries, send } = useAgentChat(projectId);
   const { rows: liveRoster, selfDevice: rosterSelfDevice } = useChatRoster();
   const intent = useAgentIntent(projectId);
@@ -254,7 +269,8 @@ export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick 
   return (
     <div className="h-full min-h-0 flex flex-col" data-testid="agent-chat-tab">
       {/* Horizontal pill bar — compact, reclaims horizontal space for the thread. */}
-      <div className="shrink-0 border-b border-[--border] px-3 py-2 flex items-center gap-1.5 overflow-x-auto">
+      <div className="shrink-0 px-0 py-1.5 flex items-center gap-1.5 overflow-x-auto" data-testid="agent-chat-bar"
+        style={barMinHeight ? { minHeight: barMinHeight } : undefined}>
         {roster.length === 0 ? (
           <div className="text-[--text-muted] text-xs flex items-center gap-2">
             <span>No agents running.</span>
@@ -386,8 +402,10 @@ export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick 
             </span>
           </>
         )}
+        {barEnd && <div className={`${roster.length === 0 ? 'ml-auto ' : ''}shrink-0 flex items-center`}>{barEnd}</div>}
       </div>
-      <section className="flex-1 flex flex-col min-h-0">
+      <section className={`flex-1 flex flex-col min-h-0 ${panelClassName ?? ''}`} data-testid="agent-chat-panel"
+        {...(panelSheetContent ? { 'data-sheet-content': panelSheetContent } : {})}>
         <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2">
           {timeline.length === 0 ? (
             <div className="h-full flex items-center justify-center p-6 text-center">
@@ -409,9 +427,10 @@ export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick 
             item.kind === 'chat' ? renderChatRow(item.chat, selfDevice) : renderRoundRow(item.log, item.group)
           ))}
         </div>
-        <div className="p-3 border-t border-[--border] relative">
+      </section>
+      <div className="shrink-0 pt-2 pb-2 relative" data-testid="agent-chat-composer">
           {candidates.length > 0 && mention && (
-            <div className="absolute bottom-full left-3 right-3 mb-1 max-h-56 overflow-y-auto rounded-md border border-[--border] bg-[--panel-strong] shadow-xl z-10">
+            <div className="absolute bottom-full left-0 right-0 mb-1 max-h-56 overflow-y-auto rounded-md border border-[--border] bg-[--panel-strong] shadow-xl z-10">
               {candidates.map((r, i) => {
                 return (
                   <button
@@ -445,10 +464,9 @@ export function AgentChatTab({ projectId, selfDevice: selfDeviceProp, focusTick 
               ? 'Spawn an agent in a shell first (⌘T → run claude / codex / …)'
               : 'Tap an agent above or type @ · Enter sends · Shift-Enter for a new line'}
             rows={2}
-            className="w-full bg-[--surface] border border-[--border] rounded px-2 py-1 text-sm resize-none focus:outline-none focus:border-[--accent]"
+            className="w-full bg-black/20 border border-[--border] rounded px-2 py-1 text-sm resize-none focus:outline-none focus:border-[--accent]"
           />
-        </div>
-      </section>
+      </div>
     </div>
   );
 }
