@@ -1,22 +1,25 @@
 /**
- * Story tab — the feature-ledger handoff view.
+ * Story tab — the newsfeed.
  *
- * Left rail: one row per capability that shipped, newest first.
- * Right pane: the three-section plain-English note for the selected
- * entry — what you can now do, why it matters, where it lives.
+ * A single scrollable column of posts. Each post is a full card read
+ * in place: date header, PR / ticket chips, a one-sentence headline,
+ * a short paragraph of context, and an Edit affordance. Day headers
+ * break the stream into "Today", "Yesterday", or a dated chunk, so a
+ * reader scanning for a specific moment lands on it.
  *
- * "Refresh" scans git since the last entry and streams new rows in as
- * each one is generated. Nothing older is ever rewritten; the human
+ * Refresh walks git since the last entry and streams new posts into
+ * the top of the feed. Nothing older is ever rewritten; the human
  * can edit any entry after the fact and the edited bit persists.
  *
- * The old activity-window narrator still exists on the main side and
- * writes to `.metaide/story/` — this tab no longer surfaces it; the
- * feature feed is the owner-facing lens on the project.
+ * The old two-pane layout (left rail + right detail) is gone — the
+ * feed reads top to bottom like a product changelog, not a doc page
+ * with a sidebar.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '@renderer/api';
 import type { StoryFeature } from '@shared/story-feature';
+import { splitHeadlineAndBody } from '@shared/story-feature-prompt';
 import { githubPrUrl } from '@shared/story-ref-extract';
 import { useAssignment } from '@renderer/metaproject/useAssignment';
 import { useOptionalMetaprojectSession } from '@renderer/metaproject/session';
@@ -29,48 +32,36 @@ interface Props {
 export function StoryTab({ projectId }: Props) {
   const mpSession = useOptionalMetaprojectSession();
   const [kanbanUrl, setKanbanUrl] = useState<string | null>(null);
-  // Only mount the assignment reader when the metaproject session
-  // provider is live — otherwise `useAssignment` throws by design.
-  // A tiny child component carries the hook and reports its finding
-  // back through `onKanbanUrl`, so the main component stays clean.
-  const kanbanReader = mpSession !== null
+  const reader = mpSession !== null
     ? <KanbanUrlReader projectId={projectId} onResolve={setKanbanUrl} />
     : null;
-  return <StoryTabCore projectId={projectId} kanbanUrl={kanbanUrl} extra={kanbanReader} />;
+  return <Newsfeed projectId={projectId} kanbanUrl={kanbanUrl} extra={reader} />;
 }
 
-function StoryTabCore({ projectId, kanbanUrl, extra }: { projectId: number; kanbanUrl: string | null; extra: React.ReactNode }) {
+function Newsfeed({ projectId, kanbanUrl, extra }: { projectId: number; kanbanUrl: string | null; extra: React.ReactNode }) {
   const [features, setFeatures] = useState<StoryFeature[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [repoUrl, setRepoUrl] = useState<string | null>(null);
   const [showMaintenance, setShowMaintenance] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [draftTitle, setDraftTitle] = useState('');
-  const [draftBody, setDraftBody] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [repoUrl, setRepoUrl] = useState<string | null>(null);
 
   const refreshList = useCallback(async () => {
     try {
       const { features } = await api.invoke('story:features:list', { projectId });
       setFeatures(features);
-      // Auto-select the newest entry on first load; do not jump off
-      // what the human is reading on a streaming update.
-      setSelectedId((cur) => cur ?? features[0]?.id ?? null);
     } catch (err) {
       setError(String(err));
     }
   }, [projectId]);
 
   useEffect(() => {
-    setSelectedId(null);
     setError(null);
+    setEditingId(null);
   }, [projectId]);
 
   useEffect(() => { void refreshList(); }, [refreshList]);
 
-  // Fetch the GitHub repo URL once per project change. Rare to shift
-  // mid-session (requires editing .git/config), so no watcher.
   useEffect(() => {
     let cancelled = false;
     setRepoUrl(null);
@@ -88,20 +79,15 @@ function StoryTabCore({ projectId, kanbanUrl, extra }: { projectId: number; kanb
     const off = api.on('story:features:changed', (ev) => {
       if (ev.projectId !== projectId) return;
       if (ev.feature === null) {
-        // Batch end — drop the refreshing indicator.
         setRefreshing(false);
         return;
       }
       setFeatures((cur) => {
         const next = cur.filter((f) => f.id !== ev.feature!.id);
         next.unshift(ev.feature!);
-        // Keep newest first — the main side already feeds in that order,
-        // but a mid-batch edit event could arrive out of order.
         next.sort((a, b) => b.ts.localeCompare(a.ts));
         return next;
       });
-      // Auto-select the first streamed entry on an empty feed.
-      setSelectedId((cur) => cur ?? ev.feature!.id);
     });
     return off;
   }, [projectId]);
@@ -115,310 +101,199 @@ function StoryTabCore({ projectId, kanbanUrl, extra }: { projectId: number; kanb
       setError(String(err));
       setRefreshing(false);
     }
-    // The batch-end event resets `refreshing`; the call above resolves
-    // when the main side returns the summary, which is after that event.
   }, [projectId]);
-
-  const selected = useMemo(
-    () => features.find((f) => f.id === selectedId) ?? null,
-    [features, selectedId],
-  );
 
   const visibleFeatures = useMemo(
     () => (showMaintenance ? features : features.filter((f) => f.kind === 'feature')),
     [features, showMaintenance],
   );
 
-  const startEdit = useCallback(() => {
-    if (!selected) return;
-    setDraftTitle(selected.title);
-    setDraftBody(selected.body);
-    setEditing(true);
-  }, [selected]);
-
-  const saveEdit = useCallback(async () => {
-    if (!selected) return;
-    try {
-      await api.invoke('story:features:update', {
-        projectId,
-        id: selected.id,
-        title: draftTitle,
-        body: draftBody,
-      });
-      setEditing(false);
-    } catch (err) {
-      setError(String(err));
-    }
-  }, [projectId, selected, draftTitle, draftBody]);
-
-  const cancelEdit = useCallback(() => setEditing(false), []);
+  // Group by local day so the header above each run of posts reads
+  // "Today" / "Yesterday" / a dated label. Each group keeps its posts
+  // in the same newest-first order as the full list.
+  const groups = useMemo(() => groupByDay(visibleFeatures), [visibleFeatures]);
 
   return (
-    <div className="h-full flex min-h-0" data-testid="story-tab">
+    <div className="h-full flex flex-col min-h-0 bg-[--bg]" data-testid="story-tab">
       {extra}
-      {/* Left rail: feature feed */}
-      <aside className="w-80 shrink-0 border-r border-[--border] flex flex-col min-h-0">
-        <div className="px-3 py-2 border-b border-[--border] flex items-center gap-2">
-          <button
-            onClick={refresh}
-            disabled={refreshing}
-            className="text-[11px] px-2 py-1 rounded border border-[color:var(--accent)]/40 text-[color:var(--accent)] hover:bg-[--accent-soft] disabled:opacity-50 disabled:cursor-not-allowed"
-            data-testid="story-refresh"
-            title="Scan git for new merges and direct feat:/fix: commits, and generate a handoff note for each."
-          >
-            {refreshing ? '…scanning' : '↻ Refresh'}
-          </button>
-          <label className="text-[11px] text-[--text-muted] flex items-center gap-1 ml-auto cursor-pointer" title="Show maintenance-only entries (refactors, test fixes, CI tweaks).">
-            <input
-              type="checkbox"
-              checked={showMaintenance}
-              onChange={(e) => setShowMaintenance(e.target.checked)}
-              className="accent-[color:var(--accent)]"
-              data-testid="story-show-maintenance"
-            />
-            maintenance
-          </label>
-          <span className="text-[11px] text-[--text-muted] tabular-nums">{visibleFeatures.length}</span>
-        </div>
-        <div className="flex-1 overflow-auto min-h-0">
-          {features.length === 0 && !refreshing && (
-            <div className="p-6 text-[12px] text-[--text-muted] text-center leading-relaxed">
-              No features logged yet.
-              <br />
-              <br />
-              Press <span className="text-[color:var(--accent)]">↻ Refresh</span> — I&apos;ll walk the git history and write a short handoff note for each change that shipped.
-            </div>
-          )}
-          <ul>
-            {visibleFeatures.map((f) => (
-              <li key={f.id}>
-                <button
-                  onClick={() => { setEditing(false); setSelectedId(f.id); }}
-                  className={`w-full text-left px-3 py-2 border-b border-[--border] hover:bg-[--surface-hover] ${selectedId === f.id ? 'bg-[--accent-soft]' : ''} ${f.kind === 'maintenance' ? 'opacity-60' : ''}`}
-                  data-testid="story-feature-row"
-                >
-                  <div className="flex items-center gap-1.5 text-[11px] text-[--text-muted] mb-0.5 flex-wrap">
-                    <span className="tabular-nums">{formatDate(f.ts)}</span>
-                    {f.prNumber !== null && (
-                      <PrLink prNumber={f.prNumber} repoUrl={repoUrl} />
-                    )}
-                    {f.ticketRefs?.map((ref) => (
-                      <TicketChip key={ref} refToken={ref} kanbanUrl={kanbanUrl} />
-                    ))}
-                    {f.kind === 'maintenance' && <span className="px-1 rounded bg-[--panel] text-[10px] uppercase tracking-wide">maintenance</span>}
-                    {f.edited && <span className="text-[10px] italic" title="This entry was hand-edited.">edited</span>}
-                  </div>
-                  <div className="text-[13px] text-[--text] leading-snug">{f.title}</div>
-                  {f.scope && <div className="text-[11px] text-[--text-muted] truncate mt-0.5 font-mono opacity-80">{f.scope}</div>}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </aside>
-
-      {/* Right pane: detail */}
-      <section className="flex-1 min-w-0 flex flex-col min-h-0 bg-[--bg]">
-        {error && (
-          <div className="px-3 py-1.5 text-[11px] text-[--hue-orange-soft-text] bg-[--hue-orange-soft] border-b border-[--border]">
-            {error}
-          </div>
-        )}
-        {selected ? (
-          editing ? (
-            <FeatureEditor
-              title={draftTitle}
-              body={draftBody}
-              onTitle={setDraftTitle}
-              onBody={setDraftBody}
-              onSave={saveEdit}
-              onCancel={cancelEdit}
-            />
-          ) : (
-            <FeatureDetail feature={selected} onEdit={startEdit} repoUrl={repoUrl} kanbanUrl={kanbanUrl} />
-          )
-        ) : (
-          <div className="flex-1 flex items-center justify-center text-[--text-muted] text-sm">
-            {features.length === 0 ? 'Press Refresh to build the feed.' : 'Select a feature on the left.'}
-          </div>
-        )}
-      </section>
-    </div>
-  );
-}
-
-function FeatureDetail({ feature, onEdit, repoUrl, kanbanUrl }: { feature: StoryFeature; onEdit: () => void; repoUrl: string | null; kanbanUrl: string | null }) {
-  const html = useMemo(() => renderStoryFeatureBody(feature.body), [feature.body]);
-  return (
-    <div className="flex-1 overflow-auto min-h-0 flex flex-col" data-testid="story-feature-detail">
-      <header className="px-6 pt-6 pb-3 border-b border-[--border]">
-        <div className="flex items-center gap-2 text-[11px] text-[--text-muted] mb-1 tabular-nums">
-          <span>{formatFullDate(feature.ts)}</span>
-          {feature.prNumber !== null && (
-            <PrLink prNumber={feature.prNumber} repoUrl={repoUrl} />
-          )}
-          {feature.ticketRefs?.map((ref) => (
-            <TicketChip key={ref} refToken={ref} kanbanUrl={kanbanUrl} />
-          ))}
-          <span className="font-mono">{feature.id}</span>
-          {feature.edited && <span className="italic">· edited</span>}
-          <button
-            onClick={onEdit}
-            className="ml-auto text-[11px] px-2 py-0.5 rounded border border-[--border] text-[--text] hover:bg-[--surface-hover]"
-            data-testid="story-feature-edit"
-            title="Edit this entry's title or prose."
-          >
-            Edit
-          </button>
-        </div>
-        <h1 className="text-[18px] text-[--text] font-medium leading-tight">{feature.title}</h1>
-        {feature.scope && <div className="mt-2 text-[12px] text-[--text-muted] font-mono">{feature.scope}</div>}
+      <header className="px-4 py-2 border-b border-[--border] flex items-center gap-3 shrink-0">
+        <button
+          onClick={refresh}
+          disabled={refreshing}
+          className="text-[12px] px-2.5 py-1 rounded-md border border-[color:var(--accent)]/40 text-[color:var(--accent)] hover:bg-[--accent-soft] disabled:opacity-50 disabled:cursor-not-allowed"
+          data-testid="story-refresh"
+          title="Scan git for new merges and direct feat:/fix: commits, and generate a post for each."
+        >
+          {refreshing ? '…scanning' : '↻ Refresh'}
+        </button>
+        <label className="text-[12px] text-[--text-muted] flex items-center gap-1.5 cursor-pointer" title="Show maintenance-only posts (refactors, test fixes, CI tweaks).">
+          <input
+            type="checkbox"
+            checked={showMaintenance}
+            onChange={(e) => setShowMaintenance(e.target.checked)}
+            className="accent-[color:var(--accent)]"
+            data-testid="story-show-maintenance"
+          />
+          Show maintenance
+        </label>
+        <span className="ml-auto text-[11px] text-[--text-muted] tabular-nums">{visibleFeatures.length} post{visibleFeatures.length === 1 ? '' : 's'}</span>
       </header>
-      <article
-        className="px-6 py-5 text-[14px] text-[--text] leading-relaxed story-feature-prose"
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
+
+      {error && (
+        <div className="mx-4 mt-2 px-3 py-1.5 text-[12px] text-[--hue-orange-soft-text] bg-[--hue-orange-soft] border border-[--border] rounded-md shrink-0" role="alert">
+          {error}
+        </div>
+      )}
+
+      <div className="flex-1 overflow-auto min-h-0" data-testid="story-newsfeed">
+        {features.length === 0 && !refreshing && (
+          <div className="p-10 text-[13px] text-[--text-muted] text-center leading-relaxed max-w-md mx-auto">
+            Nothing to read yet.
+            <br />
+            <br />
+            Press <span className="text-[color:var(--accent)]">↻ Refresh</span> — I&apos;ll walk the git history and write a short post for each change that shipped.
+          </div>
+        )}
+        {groups.map((group) => (
+          <section key={group.key} className="px-4 pt-5 pb-1" data-testid="story-day-group">
+            <h2 className="text-[11px] uppercase tracking-wide text-[--text-muted] mb-3 flex items-center gap-2">
+              <span className="h-px flex-1 bg-[--border]" aria-hidden="true" />
+              <span className="font-medium">{group.label}</span>
+              <span className="h-px flex-1 bg-[--border]" aria-hidden="true" />
+            </h2>
+            <ul className="space-y-3 max-w-3xl mx-auto">
+              {group.features.map((f) => (
+                <li key={f.id}>
+                  <Post
+                    feature={f}
+                    editing={editingId === f.id}
+                    onStartEdit={() => setEditingId(f.id)}
+                    onEndEdit={() => setEditingId(null)}
+                    projectId={projectId}
+                    repoUrl={repoUrl}
+                    kanbanUrl={kanbanUrl}
+                  />
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
+      </div>
     </div>
   );
 }
 
-function FeatureEditor({
-  title,
-  body,
-  onTitle,
-  onBody,
-  onSave,
-  onCancel,
-}: {
-  title: string;
-  body: string;
-  onTitle: (v: string) => void;
-  onBody: (v: string) => void;
-  onSave: () => void;
-  onCancel: () => void;
-}) {
-  return (
-    <div className="flex-1 flex flex-col min-h-0" data-testid="story-feature-editor">
-      <header className="px-6 pt-6 pb-3 border-b border-[--border] flex items-center gap-2">
+interface PostProps {
+  feature: StoryFeature;
+  editing: boolean;
+  onStartEdit: () => void;
+  onEndEdit: () => void;
+  projectId: number;
+  repoUrl: string | null;
+  kanbanUrl: string | null;
+}
+
+function Post({ feature, editing, onStartEdit, onEndEdit, projectId, repoUrl, kanbanUrl }: PostProps): React.JSX.Element {
+  const { headline, body } = useMemo(() => splitHeadlineAndBody(feature.body), [feature.body]);
+  const displayHeadline = headline ?? feature.title;
+  const html = useMemo(() => renderStoryFeatureBody(body), [body]);
+  const [draftTitle, setDraftTitle] = useState(displayHeadline);
+  const [draftBody, setDraftBody] = useState(feature.body);
+
+  useEffect(() => {
+    if (editing) {
+      setDraftTitle(displayHeadline);
+      setDraftBody(feature.body);
+    }
+  }, [editing, displayHeadline, feature.body]);
+
+  const save = useCallback(async () => {
+    try {
+      // Keep the stored body in its markdown-with-headline shape so a
+      // re-edit round-trips cleanly. If the user changed the headline,
+      // rewrite the first `# ` line in the body; otherwise persist the
+      // body as-typed.
+      const persistBody = withUpdatedHeadline(draftBody, draftTitle);
+      await api.invoke('story:features:update', { projectId, id: feature.id, title: feature.title, body: persistBody });
+      onEndEdit();
+    } catch {
+      // Error path kept quiet here; the IPC either succeeded or threw,
+      // and the editor stays open so the user can retry.
+    }
+  }, [draftBody, draftTitle, feature.id, feature.title, onEndEdit, projectId]);
+
+  if (editing) {
+    return (
+      <article className="rounded-lg border border-[color:var(--accent)]/40 bg-[--panel] p-4 flex flex-col gap-2" data-testid="story-post-editor">
         <input
-          value={title}
-          onChange={(e) => onTitle(e.target.value)}
-          className="flex-1 bg-transparent text-[--text] text-[18px] font-medium outline-none border-b border-transparent focus:border-[color:var(--accent)]"
-          data-testid="story-feature-edit-title"
+          value={draftTitle}
+          onChange={(e) => setDraftTitle(e.target.value)}
+          className="w-full bg-transparent text-[16px] text-[--text] font-medium outline-none border-b border-transparent focus:border-[color:var(--accent)] pb-1"
+          data-testid="story-post-edit-title"
+          autoFocus
         />
+        <textarea
+          value={draftBody}
+          onChange={(e) => setDraftBody(e.target.value)}
+          rows={6}
+          className="w-full bg-transparent text-[13px] text-[--text] font-mono leading-relaxed outline-none resize-y"
+          data-testid="story-post-edit-body"
+          spellCheck
+        />
+        <div className="flex justify-end gap-2">
+          <button onClick={onEndEdit} className="text-[11px] px-2 py-1 rounded-md border border-[--border] text-[--text-muted] hover:bg-[--surface-hover]" data-testid="story-post-cancel">Cancel</button>
+          <button onClick={save} className="text-[11px] px-2 py-1 rounded-md border border-[color:var(--accent)]/40 text-[color:var(--accent)] hover:bg-[--accent-soft]" data-testid="story-post-save">Save</button>
+        </div>
+      </article>
+    );
+  }
+
+  return (
+    <article
+      className={`rounded-lg border border-[--border] bg-[--panel] p-4 ${feature.kind === 'maintenance' ? 'opacity-60' : ''}`}
+      data-testid="story-post"
+      data-kind={feature.kind}
+    >
+      <header className="flex items-center gap-2 text-[11px] text-[--text-muted] mb-1.5 flex-wrap">
+        <span className="tabular-nums">{formatTime(feature.ts)}</span>
+        {feature.prNumber !== null && <PrChip prNumber={feature.prNumber} repoUrl={repoUrl} />}
+        {feature.ticketRefs?.map((ref) => <TicketChip key={ref} refToken={ref} kanbanUrl={kanbanUrl} />)}
+        {feature.kind === 'maintenance' && <span className="px-1 rounded bg-[--panel] text-[10px] uppercase tracking-wide">maintenance</span>}
+        {feature.edited && <span className="text-[10px] italic" title="Hand-edited.">edited</span>}
         <button
-          onClick={onCancel}
-          className="text-[11px] px-2 py-1 rounded border border-[--border] text-[--text-muted] hover:bg-[--surface-hover]"
-          data-testid="story-feature-cancel"
+          onClick={onStartEdit}
+          className="ml-auto text-[11px] text-[--text-muted] hover:text-[--text]"
+          data-testid="story-post-edit"
+          title="Edit this post."
         >
-          Cancel
-        </button>
-        <button
-          onClick={onSave}
-          className="text-[11px] px-2 py-1 rounded border border-[color:var(--accent)]/40 text-[color:var(--accent)] hover:bg-[--accent-soft]"
-          data-testid="story-feature-save"
-        >
-          Save
+          Edit
         </button>
       </header>
-      <textarea
-        value={body}
-        onChange={(e) => onBody(e.target.value)}
-        className="flex-1 min-h-0 px-6 py-5 bg-transparent text-[--text] text-[14px] leading-relaxed outline-none resize-none font-mono"
-        data-testid="story-feature-edit-body"
-        spellCheck
-      />
-    </div>
+      <h3 className="text-[15px] text-[--text] font-medium leading-snug mb-1.5" data-testid="story-post-headline">{displayHeadline}</h3>
+      {body.trim() && (
+        <div
+          className="text-[13px] text-[--text] leading-relaxed story-feature-prose"
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      )}
+    </article>
   );
 }
 
-/** `2026-11-27T13:00:00Z` → `Nov 27`. Today shows "today"; yesterday "yesterday". */
-function formatDate(iso: string): string {
-  try {
-    const d = new Date(iso);
-    const now = new Date();
-    const dayMs = 24 * 60 * 60 * 1000;
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-    const target = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-    if (target === startOfToday) return 'today';
-    if (target === startOfToday - dayMs) return 'yesterday';
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  } catch {
-    return iso.slice(0, 10);
+/** Replace or insert a `# <headline>` line at the top of a body
+ *  blob. Keeps the rest of the body untouched. */
+function withUpdatedHeadline(body: string, headline: string): string {
+  const trimmed = body.trim();
+  const lines = trimmed.split(/\r?\n/);
+  const idx = lines.findIndex((l) => /^#\s+\S/.test(l));
+  if (idx >= 0) {
+    lines[idx] = `# ${headline.trim()}`;
+    return lines.join('\n');
   }
+  return `# ${headline.trim()}\n\n${trimmed}`.trim();
 }
 
-function formatFullDate(iso: string): string {
-  try {
-    const d = new Date(iso);
-    const date = d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
-    const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-    return `${date} · ${hhmm}`;
-  } catch {
-    return iso;
-  }
-}
-
-/** PR number chip. Clickable when the repo URL resolved; plain text
- *  otherwise (e.g. the user hasn't configured a GitHub remote, or it's
- *  a self-hosted forge). The row button that wraps the chip uses
- *  `stopPropagation` so clicking the link doesn't also select the row. */
-function PrLink({ prNumber, repoUrl }: { prNumber: number; repoUrl: string | null }): React.JSX.Element {
-  const url = githubPrUrl(repoUrl, prNumber);
-  if (!url) {
-    return <span className="text-[color:var(--accent)]">#{prNumber}</span>;
-  }
-  return (
-    <a
-      href={url}
-      onClick={(e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        void api.invoke('app:open-external', { url });
-      }}
-      className="text-[color:var(--accent)] underline-offset-2 hover:underline"
-      title={`Open PR #${prNumber} on GitHub`}
-      data-testid="story-feature-pr-link"
-      data-pr-number={prNumber}
-    >
-      #{prNumber}
-    </a>
-  );
-}
-
-/** Metaproject ticket ref chip (e.g. `METAI-7`). Clickable when the
- *  current project is linked to a metaproject board — opens the
- *  kanban. v1 does not resolve the ref to the exact ticket URL; the
- *  user lands on the board, where the identifier badge is enough to
- *  find the ticket. Follow-up work can swap the href when the server
- *  gains a `/tickets/<ref>` deep link. */
-function TicketChip({ refToken, kanbanUrl }: { refToken: string; kanbanUrl: string | null }): React.JSX.Element {
-  const base = `px-1 rounded text-[10px] uppercase tracking-wide font-medium`;
-  if (!kanbanUrl) {
-    return <span className={`${base} bg-[--panel] text-[--text-muted]`} data-testid="story-feature-ticket-chip">{refToken}</span>;
-  }
-  return (
-    <a
-      href={kanbanUrl}
-      onClick={(e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        void api.invoke('app:open-external', { url: kanbanUrl });
-      }}
-      className={`${base} bg-[color:var(--accent-soft)] text-[color:var(--accent)] hover:brightness-110`}
-      title={`Open the metaproject board (search for ${refToken})`}
-      data-testid="story-feature-ticket-chip"
-      data-ref={refToken}
-    >
-      {refToken}
-    </a>
-  );
-}
-
-/** Reads the current project's metaproject assignment and reports the
- *  kanban URL up to StoryTab. Mounts only when the session provider is
- *  present — `useAssignment` throws without one, so we can't call it
- *  unconditionally from StoryTab. Renders nothing visible. */
+/** Metaproject kanban URL reader. Mounts only inside a provider. */
 function KanbanUrlReader({ projectId, onResolve }: { projectId: number; onResolve: (url: string | null) => void }): null {
   const { state } = useAssignment(projectId);
   useEffect(() => {
@@ -427,4 +302,95 @@ function KanbanUrlReader({ projectId, onResolve }: { projectId: number; onResolv
     onResolve(a.kind === 'linked' ? `${a.origin}/projects/${a.remoteId}/kanban` : null);
   }, [state, onResolve]);
   return null;
+}
+
+function PrChip({ prNumber, repoUrl }: { prNumber: number; repoUrl: string | null }): React.JSX.Element {
+  const url = githubPrUrl(repoUrl, prNumber);
+  if (!url) return <span className="px-1 rounded text-[10px] uppercase tracking-wide bg-[--accent-soft] text-[color:var(--accent)]">#{prNumber}</span>;
+  return (
+    <a
+      href={url}
+      onClick={(e) => { e.preventDefault(); e.stopPropagation(); void api.invoke('app:open-external', { url }); }}
+      className="px-1 rounded text-[10px] uppercase tracking-wide bg-[--accent-soft] text-[color:var(--accent)] hover:brightness-110"
+      title={`Open PR #${prNumber} on GitHub`}
+      data-testid="story-post-pr-link"
+      data-pr-number={prNumber}
+    >
+      #{prNumber}
+    </a>
+  );
+}
+
+function TicketChip({ refToken, kanbanUrl }: { refToken: string; kanbanUrl: string | null }): React.JSX.Element {
+  const base = 'px-1 rounded text-[10px] uppercase tracking-wide font-medium';
+  if (!kanbanUrl) return <span className={`${base} bg-[--panel] text-[--text-muted]`} data-testid="story-post-ticket-chip">{refToken}</span>;
+  return (
+    <a
+      href={kanbanUrl}
+      onClick={(e) => { e.preventDefault(); e.stopPropagation(); void api.invoke('app:open-external', { url: kanbanUrl }); }}
+      className={`${base} bg-[color:var(--accent-soft)] text-[color:var(--accent)] hover:brightness-110`}
+      title={`Open the metaproject board (search for ${refToken})`}
+      data-testid="story-post-ticket-chip"
+      data-ref={refToken}
+    >
+      {refToken}
+    </a>
+  );
+}
+
+interface DayGroup {
+  key: string;
+  label: string;
+  features: StoryFeature[];
+}
+
+function groupByDay(features: StoryFeature[]): DayGroup[] {
+  const groups = new Map<string, StoryFeature[]>();
+  for (const f of features) {
+    const key = dayKey(f.ts);
+    const list = groups.get(key) ?? [];
+    list.push(f);
+    groups.set(key, list);
+  }
+  const now = new Date();
+  const todayKey = dayKey(now.toISOString());
+  const yesterdayKey = dayKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1).toISOString());
+  return [...groups.entries()]
+    .sort(([a], [b]) => b.localeCompare(a))
+    .map(([key, items]) => ({
+      key,
+      label: key === todayKey ? 'Today' : key === yesterdayKey ? 'Yesterday' : formatDayLabel(items[0]!.ts),
+      features: items,
+    }));
+}
+
+function dayKey(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  } catch {
+    return iso.slice(0, 10);
+  }
+}
+
+function formatDayLabel(iso: string): string {
+  try {
+    const d = new Date(iso);
+    const now = new Date();
+    const sameYear = d.getFullYear() === now.getFullYear();
+    return d.toLocaleDateString(undefined, sameYear ? { weekday: 'short', month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric' });
+  } catch {
+    return iso.slice(0, 10);
+  }
+}
+
+function formatTime(iso: string): string {
+  try {
+    const d = new Date(iso);
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    return `${hh}:${mm}`;
+  } catch {
+    return '';
+  }
 }
