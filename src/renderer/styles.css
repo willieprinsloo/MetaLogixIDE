@@ -1220,3 +1220,39 @@ kbd {
   }
   .fleet-projects-pane [data-testid="resize-handle"] { display: none; }
 }
+
+/* Story feature-feed right-pane prose. The feed is the handoff surface;
+   the three Claude-written sections need tight rhythm — a bit more space
+   above headings than between paragraphs, so scans land on "What you can
+   now do / Why it matters / Where it lives" instantly. Markdown-it emits
+   plain <h2>/<p>/<code>; everything here is scoped to .story-feature-prose
+   so the global typography stays untouched. */
+.story-feature-prose h2 {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin: 1.5rem 0 0.5rem;
+}
+.story-feature-prose h2:first-child { margin-top: 0; }
+.story-feature-prose p { margin: 0 0 0.75rem; }
+.story-feature-prose p:last-child { margin-bottom: 0; }
+.story-feature-prose a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, var(--accent) 40%, transparent);
+}
+.story-feature-prose a:hover { text-decoration-color: var(--accent); }
+.story-feature-prose code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+  background: color-mix(in oklab, var(--panel) 60%, transparent);
+}
+.story-feature-prose ul, .story-feature-prose ol {
+  margin: 0 0 0.75rem;
+  padding-left: 1.25rem;
+}
+.story-feature-prose li { margin: 0.1rem 0; }

@@ -1,0 +1,14 @@
+diff --git a/lib/dom-parser.js b/lib/dom-parser.js
+index d74ba8dcb7b42d275a33fcdd5c64318a27cf2286..fabd784a092d6b932967ca8d221f79bdf7b8ec7f 100644
+--- a/lib/dom-parser.js
++++ b/lib/dom-parser.js	
+@@ -221,6 +221,9 @@ function DOMParser(options) {
+  * @see https://html.spec.whatwg.org/#dom-domparser-parsefromstring-dev
+  */
+ DOMParser.prototype.parseFromString = function (source, mimeType) {
++	// Compat shim: older callers (e.g. plist@3) pass no mimeType. The spec and 0.9.x+
++	// require a valid one; default `undefined` to the legacy "text/xml" rather than throwing.
++	if (mimeType === undefined) mimeType = 'text/xml';
+ 	if (!isValidMimeType(mimeType)) {
+ 		throw new TypeError('DOMParser.parseFromString: the provided mimeType "' + mimeType + '" is not valid.');
+ 	}
