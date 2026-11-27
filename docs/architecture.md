@@ -394,11 +394,14 @@ In split mode, each terminal paints a separate 14px rounded card with a
 1px gray border, regardless of focus. The workspace has no shared terminal
 border or background, so the workspace chrome is visible through the 10px
 resize gap.
-The right-side Agents dock is a sheet of its own. It uses the same surface,
-14px corners and 1px border as the Shell sheet, because it carries
-`data-sheet-content="shell"`. It is inset 8px on the top, right and bottom,
-and runs the full window height, so its top does not line up with the main
-sheet's top.
+The right-side Agents dock has no title row. Its roster bar (agent pills,
+Start round, the close button) sits on the chrome above the dock's panel,
+the way the Shell tabs sit above the Shell sheet. The bar takes the height
+of the workspace header row, so the panel starts level with the main sheet.
+The panel holds the thread and the composer. It carries
+`data-sheet-content="shell"`, so it gets the Shell sheet's surface and 14px
+corners, but it draws no border, and nothing inside it draws a divider. The
+composer's text box is a little darker than the panel.
 Dialogs and popovers keep their edges because they float.
 
 `src/renderer/styles.css` ("Chrome surfaces and semantic hues") derives every

@@ -158,3 +158,46 @@ describe('AgentChatTab', () => {
     });
   });
 });
+
+describe('AgentChatTab dock layout', () => {
+  const cls = (el: Element | null): string[] => (el?.getAttribute('class') ?? '').split(/\s+/).filter(Boolean);
+
+  it('puts the roster bar outside the panel and the thread and composer inside it', async () => {
+    const { container } = render(<AgentChatTab projectId={1} selfDevice="laptop"
+      panelClassName="workspace-sheet rounded-[14px] bg-[--surface-sheet]" barEnd={<button>Close dock</button>} />);
+    await screen.findByText('hello');
+    const bar = container.querySelector('[data-testid="agent-chat-bar"]');
+    const panel = container.querySelector('[data-testid="agent-chat-panel"]');
+    expect(bar).not.toBeNull();
+    expect(panel).not.toBeNull();
+    expect(panel!.contains(bar)).toBe(false);
+    expect(panel!.querySelector('textarea')).not.toBeNull();
+    expect(panel!.textContent).toContain('hello');
+    expect(cls(panel)).toEqual(expect.arrayContaining(['workspace-sheet', 'rounded-[14px]', 'bg-[--surface-sheet]']));
+    expect(bar!.contains(screen.getByRole('button', { name: 'Close dock' }))).toBe(true);
+  });
+
+  it('draws no borders between the bar, the thread and the composer', async () => {
+    const { container } = render(<AgentChatTab projectId={1} selfDevice="laptop" />);
+    await screen.findByText('hello');
+    const bar = container.querySelector('[data-testid="agent-chat-bar"]');
+    const composer = container.querySelector('[data-testid="agent-chat-composer"]');
+    expect(bar).not.toBeNull();
+    expect(composer).not.toBeNull();
+    expect(cls(bar)).not.toContain('border-b');
+    expect(cls(composer)).not.toContain('border-t');
+  });
+
+  it('gives the composer textbox a darker background than the panel', async () => {
+    render(<AgentChatTab projectId={1} selfDevice="laptop" />);
+    const box = await screen.findByRole('textbox');
+    expect(cls(box)).toContain('bg-black/20');
+    expect(cls(box)).not.toContain('bg-[--surface]');
+  });
+
+  it('applies the bar height it is given, so the panel starts where the Shell sheet starts', async () => {
+    const { container } = render(<AgentChatTab projectId={1} selfDevice="laptop" barMinHeight={44} />);
+    await screen.findByText('hello');
+    expect((container.querySelector('[data-testid="agent-chat-bar"]') as HTMLElement).style.minHeight).toBe('44px');
+  });
+});

@@ -93,7 +93,10 @@ vi.mock('@renderer/components/Settings', () => ({ Settings: () => null }));
 vi.mock('@renderer/components/NewProjectDialog', () => ({ NewProjectDialog: ({ open }: { open: boolean }) =>
   open ? <div role="dialog" aria-label="New project">New project</div> : null }));
 vi.mock('@renderer/components/ShellTabsBar', () => ({ ShellTabsBar: () => null }));
-vi.mock('@renderer/components/AgentChatTab', () => ({ AgentChatTab: () => <div data-testid="agent-chat-tab" /> }));
+vi.mock('@renderer/components/AgentChatTab', () => ({ AgentChatTab: ({ panelClassName, panelSheetContent, barEnd }: {
+  panelClassName?: string; panelSheetContent?: string; barEnd?: ReactNode;
+}) => <div data-testid="agent-chat-tab"><div data-testid="agent-chat-bar">{barEnd}</div>
+  <div data-testid="agent-chat-panel" className={panelClassName} data-sheet-content={panelSheetContent} /></div> }));
 vi.mock('@renderer/components/ShellSplit', () => ({ ShellSplit: () => <div data-testid="shell-view" /> }));
 
 let container: HTMLDivElement | null = null;
@@ -135,32 +138,42 @@ afterEach(async () => {
 const classes = (el: Element | null): string[] => (el?.getAttribute('class') ?? '').split(/\s+/).filter(Boolean);
 
 describe('Agents dock surface', () => {
-  it('carries the Shell sheet content marker, so the shell surface and border rules apply to it', async () => {
+  const panel = (): Element | null => document.querySelector('[data-testid="agents-dock"] [data-testid="agent-chat-panel"]');
+
+  it('gives the dock panel the Shell sheet content marker, so the shell surface rules apply to it', async () => {
     await mount();
-    const sheet = document.querySelector('main.workspace-sheet');
-    const dock = document.querySelector('[data-testid="agents-dock"]');
-    expect(sheet?.getAttribute('data-sheet-content')).toBe('shell');
-    expect(dock).not.toBeNull();
-    expect(dock?.getAttribute('data-sheet-content')).toBe('shell');
-    expect(dock?.querySelector('[data-testid="agent-chat-tab"]')).not.toBeNull();
+    expect(document.querySelector('main.workspace-sheet')?.getAttribute('data-sheet-content')).toBe('shell');
+    expect(panel()).not.toBeNull();
+    expect(panel()?.getAttribute('data-sheet-content')).toBe('shell');
   });
 
-  it('paints the same background, corners and sheet class as the Shell sheet, without the old edge border', async () => {
+  it('paints the panel with the Shell sheet background and corners, and no border', async () => {
     await mount();
     const sheet = classes(document.querySelector('main.workspace-sheet'));
-    const dock = classes(document.querySelector('[data-testid="agents-dock"]'));
+    const p = classes(panel());
     for (const shared of ['workspace-sheet', 'rounded-[14px]', 'bg-[--surface-sheet]']) {
       expect(sheet).toContain(shared);
-      expect(dock).toContain(shared);
+      expect(p).toContain(shared);
     }
-    expect(dock).not.toContain('bg-[--surface]');
-    expect(dock).not.toContain('border-l');
+    expect(p).toContain('!border-0');
   });
 
-  it('is inset 8px from the window edge on top, right and bottom', async () => {
+  it('is not itself a sheet: the roster bar sits above the panel, outside it', async () => {
     await mount();
-    const dock = classes(document.querySelector('[data-testid="agents-dock"]'));
-    expect(dock).toEqual(expect.arrayContaining(['mt-2', 'mr-2', 'mb-2']));
-    expect(dock).not.toContain('h-full');
+    const dock = document.querySelector('[data-testid="agents-dock"]');
+    expect(dock).not.toBeNull();
+    expect(classes(dock)).not.toContain('workspace-sheet');
+    expect(dock?.hasAttribute('data-sheet-content')).toBe(false);
+    expect(classes(panel())).toEqual(expect.arrayContaining(['mb-2']));
+  });
+
+  it('has no "Agents" title row; its close button lives in the roster bar', async () => {
+    await mount();
+    const dock = document.querySelector('[data-testid="agents-dock"]')!;
+    expect(dock.querySelector('[data-testid="agent-chat-tab"]')).not.toBeNull();
+    expect([...dock.querySelectorAll('span')].some((s) => s.textContent === 'Agents')).toBe(false);
+    const close = dock.querySelector('[data-testid="agents-dock-close"]');
+    expect(close).not.toBeNull();
+    expect(dock.querySelector('[data-testid="agent-chat-bar"]')!.contains(close)).toBe(true);
   });
 });
