@@ -366,6 +366,18 @@ export interface IpcContract extends MetaprojectIpc {
    * composed markdown (so the renderer can put it on the clipboard) and
    * the board URL to open. Rate-limited per session.
    */
+  /**
+   * One-time bind-prompt (METAI-8). When the user opens a project with no
+   * `.metaproject.yaml`, the renderer asks `bind-prompt:status` to decide
+   * whether to show the "Link / Create / Skip" banner. Skip writes a
+   * sentinel file at `.metaide/metaproject-skip` inside the project, so
+   * the choice survives a reload. Clearing the file (manually, or via
+   * the status-bar chip clicking through to Project Settings) brings
+   * the prompt back next time it's unlinked.
+   */
+  'bind-prompt:status': { request: { projectId: number }; response: { shouldPrompt: boolean; folderName: string } };
+  'bind-prompt:skip':   { request: { projectId: number }; response: { ok: true } };
+
   'feedback:submit': {
     request: {
       type: import('./feedback').FeedbackType;

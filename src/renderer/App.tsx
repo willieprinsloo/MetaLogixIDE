@@ -30,6 +30,7 @@ import { ActivityBar, ABButton, type ActivityView } from './components/ActivityB
 import { CommandPalette } from './components/CommandPalette';
 import { ShortcutsHelp } from './components/ShortcutsHelp';
 import { FeedbackDialog } from './components/FeedbackDialog';
+import { MetaprojectBindPrompt } from './components/MetaprojectBindPrompt';
 import type { PaletteRequest, PaletteSeed } from './command-palette-contract';
 import { buildPaletteCommands } from './palette-commands';
 import { paletteKeyAction } from './palette-keys';
@@ -1174,6 +1175,12 @@ function MainApp() {
           )}
         </AnimatePresence>
         <div className="workspace-header-container flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden" data-testid="main-column">
+            {!remotePane && !boardVisible && (
+              <MetaprojectBindPrompt
+                projectId={localWorkspaceProject?.id ?? null}
+                onOpenProjectSettings={localWorkspaceProject ? () => openProjectSettings(localWorkspaceProject) : null}
+              />
+            )}
             {remotePane && <header ref={setRemoteHeaderSlot} className="workspace-header-row drag relative shrink-0 items-center gap-x-1.5 gap-y-1 px-3 py-1.5 text-xs text-[--text]" data-testid={REMOTE_PANE_TESTIDS.header} />}
             {!remotePane && <header className="workspace-header-row drag relative shrink-0 items-center gap-x-1.5 gap-y-1 px-3 py-1.5 text-xs" data-testid={DIFF_TESTIDS.tabBar}>
               <WorkspaceDestinations active={boardVisible ? null : mainTab} activityEnabled={activityEnabled}
