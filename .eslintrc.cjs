@@ -9,6 +9,7 @@ module.exports = {
     'plugin:react/recommended',
     'plugin:react-hooks/recommended'
   ],
+  ignorePatterns: ['out/**', 'dist/**', 'node_modules/**', '.claude/**', '.worktrees/**', 'mobile/ios/**', 'mobile/android/**', 'mobile/.expo/**'],
   settings: { react: { version: 'detect' } },
   rules: {
     'react/react-in-jsx-scope': 'off',
