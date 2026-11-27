@@ -25,6 +25,7 @@ function deps(over: Partial<PaletteCommandDeps> = {}) {
     setThemeMode: vi.fn(),
     setThemePalette: vi.fn(),
     openSettings: vi.fn(),
+    openFeedback: vi.fn(),
   } satisfies Record<DepFn, unknown>;
   return { fns, deps: { hasProject: true, hasPrimary: true, sidebarOpen: true, statusBarVisible: true, ...fns, ...over } };
 }
@@ -63,6 +64,7 @@ const LEGACY: ReadonlyArray<readonly [string, string, string, string | undefined
   ['theme.catppuccin', 'Theme', 'Use Catppuccin palette', undefined],
   ['theme.rose-pine', 'Theme', 'Use Rosé Pine palette', undefined],
   ['app.settings', 'App', 'Open Settings', '⌘,'],
+  ['app.feedback', 'App', 'Report a bug / Leave feedback…', undefined],
 ];
 
 const NEEDS_PROJECT = [
@@ -103,6 +105,7 @@ const EFFECTS: ReadonlyArray<readonly [string, DepFn, readonly unknown[]]> = [
   ['theme.catppuccin', 'setThemePalette', ['catppuccin']],
   ['theme.rose-pine', 'setThemePalette', ['rose-pine']],
   ['app.settings', 'openSettings', []],
+  ['app.feedback', 'openFeedback', []],
   ['term.new', 'openNewTerminal', [false]],
   ['term.new-window', 'openNewTerminal', [true]],
 ];

@@ -71,6 +71,8 @@ import { listStoryChunks, readStoryHtml } from '@main/story/narrator';
 import { generateStoryChunkAI } from '@main/story/ai-narrator';
 import { refreshFeatures } from '@main/story/feature-generator';
 import { newestEntryMtime, readFeature, readFeatures, writeFeature } from '@main/story/feature-store';
+import { submitReport } from '@main/feedback/reporter';
+import { release as osRelease } from 'node:os';
 import { readMetaIdeEnv, readMetaIdeCliProfiles } from '@main/domain/metaide-conf';
 
 const GIT_DIFF_KINDS: ReadonlySet<GitDiffKind> = new Set(['staged', 'unstaged', 'untracked']);
@@ -1012,6 +1014,31 @@ export const handlers: { [C in Exclude<CoreChannel, 'shells:snapshot' | 'setting
     if (!/^(https?|mailto|file):/i.test(url)) throw new Error('unsupported URL scheme');
     await shell.openExternal(url);
     return { ok: true } as const;
+  },
+
+  'feedback:submit': async (_s, req) => {
+    const title = (req.title ?? '').toString().trim();
+    if (!title) throw new Error('title is required');
+    if (req.type !== 'bug' && req.type !== 'idea') throw new Error('type must be bug or idea');
+    const result = submitReport({
+      type: req.type,
+      title,
+      description: (req.description ?? '').toString(),
+      source: { kind: 'user' },
+      context: {
+        appVersion: app.getVersion(),
+        osPlatform: process.platform,
+        osRelease: osRelease(),
+        terminalEngine: req.terminalEngine ?? 'unknown',
+        composedAt: new Date().toISOString(),
+      },
+    }, {});
+    return {
+      ok: result.ok,
+      message: result.message,
+      markdown: result.submitted?.markdown,
+      boardUrl: result.submitted?.boardUrl ?? null,
+    };
   },
 
   /**

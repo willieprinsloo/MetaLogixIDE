@@ -13,7 +13,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-const MARKER = '# metaide-chat-bus@v3';
+const MARKER = '# metaide-chat-bus@v4';
 /** Matches any prior marker so the upgrade path can find + replace the
  *  old stanza block regardless of which version wrote it. */
 const MARKER_ANY_RE = /^# metaide-chat-bus@v\d+\s*$/m;
@@ -54,6 +54,22 @@ const STANZA = [
   '',
   'Example:',
   '    bash: echo \'{"from":{"agent":"claude","shell":0},"text":"refactoring auth middleware"}\' >> .metaide/intent-outbox.jsonl',
+  '',
+  '## Report a bug or leave feedback',
+  '',
+  'If you hit something that looks like a metaIDE bug (the IDE itself, not whatever you\'re working on), or you want to leave feedback for the metaIDE team, append ONE JSON line to `.metaide/feedback-outbox.jsonl`:',
+  '',
+  '    {"type":"bug","title":"short one-line summary","description":"what happened and what you expected","from":{"agent":"claude","shell":0}}',
+  '',
+  '- `type` is `bug` or `idea`.',
+  '- `title` is a one-line summary a reviewer can scan.',
+  '- `description` is the full story in markdown. Optional.',
+  '- `from.agent` is your CLI family; `from.shell` is this shell\'s index (0 is fine when unsure).',
+  '',
+  'metaIDE tails the file and turns each line into a ticket on its own board (project 129), with an `agent-reported` label. Keep it to real issues; the budget is three per ten minutes per agent.',
+  '',
+  'Example:',
+  '    bash: echo \'{"type":"bug","title":"status bar chip wraps on narrow windows","from":{"agent":"claude","shell":0}}\' >> .metaide/feedback-outbox.jsonl',
   '',
   '## Writing style',
   '',

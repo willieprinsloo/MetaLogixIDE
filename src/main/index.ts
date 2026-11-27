@@ -14,6 +14,7 @@ import { readRecentChat } from './chat/log';
 import { ensureAgentStanza, buildOnboardingNudge, nudgeAgentShell } from './chat/onboard';
 import { startOutboxWatcher } from './chat/outbox-watcher';
 import { startIntentWatcher } from './chat/intent-watcher';
+import { startFeedbackWatcher } from './feedback/outbox-watcher';
 import { isWorkerWindowId } from './p2p/worker/windowWorker';
 import { buildServices, type Services } from './services';
 import { createCredentialStore } from './credential-store';
@@ -718,6 +719,20 @@ function installNotifications(services: Services, hooks: HookSource): void {
     projects: services.projects.list(),
     onChanged: ({ projectId, update }) => {
       broadcast('intent:changed', { projectId, update });
+    },
+  });
+
+  // Agent → feedback outbox. Tails each project's
+  // `.metaide/feedback-outbox.jsonl` and composes a ticket payload for
+  // every well-formed line, the same shape the UI dialog produces.
+  // Direct POST to the tickets API is a follow-up (METAI-9); for now
+  // we log each accepted report and leave the operator to copy-paste
+  // it onto the board.
+  services.feedback = startFeedbackWatcher({
+    projects: services.projects.list(),
+    runtime: () => ({ appVersion: app.getVersion(), metaprojectOrigin: null }),
+    onSubmitted: ({ projectId, submitted }) => {
+      log.info('[feedback] agent report ready', { projectId, title: submitted.ticket.name });
     },
   });
 }

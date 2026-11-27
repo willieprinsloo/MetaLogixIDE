@@ -80,6 +80,7 @@ export interface Services {
   /** Tails `.metaide/intent-outbox.jsonl` in every project; drives the
    *  "what each agent is doing" badge in the renderer. */
   intent?: import('./chat/intent-watcher').IntentWatcher;
+  feedback?: import('./feedback/outbox-watcher').FeedbackWatcher;
   /** safeStorage-backed credential store; attached in createServices once `app` is ready. */
   credentialStore: CredentialStore | null;
 }

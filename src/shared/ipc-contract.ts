@@ -359,6 +359,29 @@ export interface IpcContract extends MetaprojectIpc {
 
   // open a URL in the OS default browser (or the file:// path in Finder / xdg-open)
   'app:open-external': { request: { url: string }; response: { ok: true } };
+
+  /**
+   * Report-a-bug / leave-feedback (METAI-6). Submit one user-composed
+   * report; the main side fills in version + OS context and returns the
+   * composed markdown (so the renderer can put it on the clipboard) and
+   * the board URL to open. Rate-limited per session.
+   */
+  'feedback:submit': {
+    request: {
+      type: import('./feedback').FeedbackType;
+      title: string;
+      description: string;
+      terminalEngine: 'xterm' | 'ghostty' | 'unknown';
+    };
+    response: {
+      ok: boolean;
+      message?: string;
+      /** The composed markdown — renderer copies it to the clipboard. */
+      markdown?: string;
+      /** The kanban URL on the signed-in metaproject board — null when signed out. */
+      boardUrl?: string | null;
+    };
+  };
   'app:resolve-local-file': {
     request: { url: string };
     response: { match: { projectId: number; relPath: string } | null };
