@@ -1346,6 +1346,7 @@ function MainApp() {
                     activeAgentState={activeShellAgentStateLabel}
                     onOpenPalette={() => openPalette('')}
                     keepAwake={keepAwake}
+                    onOpenProjectSettings={selected ? () => openProjectSettings(selected) : null}
                   />
                 </div>
               </m.div>
