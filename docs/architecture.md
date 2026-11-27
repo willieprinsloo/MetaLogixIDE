@@ -394,6 +394,11 @@ In split mode, each terminal paints a separate 14px rounded card with a
 1px gray border, regardless of focus. The workspace has no shared terminal
 border or background, so the workspace chrome is visible through the 10px
 resize gap.
+The right-side Agents dock is a sheet of its own. It uses the same surface,
+14px corners and 1px border as the Shell sheet, because it carries
+`data-sheet-content="shell"`. It is inset 8px on the top, right and bottom,
+and runs the full window height, so its top does not line up with the main
+sheet's top.
 Dialogs and popovers keep their edges because they float.
 
 `src/renderer/styles.css` ("Chrome surfaces and semantic hues") derives every
