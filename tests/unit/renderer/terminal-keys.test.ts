@@ -157,10 +157,10 @@ function harness(
 const event = (
   base: ShortcutKeyLike,
   type = 'keydown',
-): TerminalKeyEvent & { preventDefault: ReturnType<typeof vi.fn> } => ({
+): TerminalKeyEvent & { preventDefault: ReturnType<typeof vi.fn<() => void>> } => ({
   ...base,
   type,
-  preventDefault: vi.fn(),
+  preventDefault: vi.fn<() => void>(),
 });
 
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
