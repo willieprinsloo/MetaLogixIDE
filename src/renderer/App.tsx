@@ -467,13 +467,22 @@ function MainApp() {
     }
   }, [selected, activeShellIndex, isPopped]);
 
+  /** A workspace destination tab was clicked; Shell also puts keyboard focus in the left-pane terminal. */
+  function selectDestination(tab: MainTab) {
+    if (tab === 'settings') { openSelectedProjectSettings(); return; }
+    setMainTab(tab);
+    if (tab === 'shell' && selected) terminalFocus.requestProjectFocus(selected.id);
+  }
+
   const tabLaunchRef = useRef(0);
   const tabMotionRef = useRef<ShellTabMotion>(null);
+  /** A terminal tab was clicked: show that shell and put keyboard focus in it. */
   function selectTerminalTab(shellIndex: number) {
     if (!selected) return;
     ++tabLaunchRef.current;
     terminalFocus.cancelRequest();
     setActiveShellIndex(shellIndex);
+    terminalFocus.requestFocus({ projectId: selected.id, shellIndex });
   }
 
   const restoreClosedTerminal = useCallback((projectId: number, shellIndex: number) => {
@@ -1155,7 +1164,7 @@ function MainApp() {
             {!remotePane && <header className="workspace-header-row drag relative shrink-0 items-center gap-x-1.5 gap-y-1 px-3 py-1.5 text-xs" data-testid={DIFF_TESTIDS.tabBar}>
               <WorkspaceDestinations active={boardVisible ? null : mainTab} activityEnabled={activityEnabled}
                 diffCount={diffCount} envDirty={envDirty}
-                onSelect={(tab) => tab === 'settings' ? openSelectedProjectSettings() : setMainTab(tab)} />
+                onSelect={selectDestination} />
               {!boardVisible && selected && mainTab === 'shell' && (
                 <ShellTabsBar
                   key={`shell-tabs-${selected.id}`}

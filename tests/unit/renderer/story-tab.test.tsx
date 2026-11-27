@@ -177,7 +177,7 @@ describe('StoryTab', () => {
     // ACTUAL throw to stage the sticky-error scenario, so stub one chunk to
     // reject via the invoke mock on the first call only.
     const api = (await import('@renderer/api')).api as unknown as { invoke: ReturnType<typeof vi.fn> };
-    const original = api.invoke.getMockImplementation()!;
+    const original = api.invoke.getMockImplementation() as (ch: string, req: unknown) => Promise<unknown>;
     let firstReadFailed = false;
     api.invoke.mockImplementation(async (ch: string, req: unknown) => {
       if (ch === 'story:read' && (req as { file: string }).file === 'bad.html' && !firstReadFailed) {
