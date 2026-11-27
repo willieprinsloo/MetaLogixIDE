@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import type { AgentKind, AgentState } from '@shared/agent-state';
 import { HARNESS_LABEL } from '@shared/agent-harness';
@@ -22,10 +22,13 @@ const sameShells = (a: readonly RemoteProjectShell[], b: readonly RemoteProjectS
 
 /**
  * The live shells (tabs) of one project on a paired machine, in tab order. Polled, because the host
- * pushes no shell-list events over P2P. A failed poll keeps the last list.
+ * pushes no shell-list events over P2P; `refresh` polls at once (after opening or closing a tab). A
+ * failed poll keeps the last list.
  */
-export function useRemoteProjectShells(deviceId: string, projectId: number, active = true): RemoteProjectShell[] {
+export function useRemoteProjectShells(deviceId: string, projectId: number, active = true): { shells: RemoteProjectShell[]; refresh: () => void } {
   const [state, setState] = useState<{ key: string; shells: RemoteProjectShell[] }>({ key: '', shells: [] });
+  const [tick, setTick] = useState(0);
+  const refresh = useCallback(() => setTick((n) => n + 1), []);
   const key = `${deviceId}:${projectId}`;
 
   useEffect(() => {
@@ -54,10 +57,10 @@ export function useRemoteProjectShells(deviceId: string, projectId: number, acti
     tick();
     const id = window.setInterval(tick, POLL_MS);
     return () => { cancelled = true; window.clearInterval(id); };
-  }, [active, deviceId, projectId, key]);
+  }, [active, deviceId, projectId, key, tick]);
 
   // A list fetched for a previous (device, project) never shows against the new one.
-  return state.key === key ? state.shells : EMPTY;
+  return { shells: state.key === key ? state.shells : EMPTY, refresh };
 }
 
 const EMPTY: RemoteProjectShell[] = [];

@@ -274,6 +274,26 @@ type Frame =
 - `shells.launch(projectId, forceFirst?)` — same contract as local
   `shells:launch` IPC
 - `shells.kill(projectId, shellIndex)`
+- `shells.cliProfiles(projectId)` → `{ profiles: [{ name, scope, icon? }], defaultName }`; the
+  host's saved CLI profiles for the viewer's add-tab menu. Names, scopes and icons only: a
+  profile's command and environment never leave the host. No workspace grant needed.
+- `shells.launchProfile(projectId, profileName)` → `{ shellIndex }`; opens a tab running a saved
+  profile, resolved on the host by name. No raw command is accepted. Unresolvable name →
+  `unknown_profile`. No workspace grant needed.
+- `shells.launchPlain(projectId)` → `{ shellIndex }`; opens a tab with the host's login shell. No
+  workspace grant needed.
+- `shells.removeCliProfile(projectId, name)` → `{ ok }`; removes a project-scoped profile (global
+  profiles are left alone). Needs the workspace grant, else `forbidden`.
+- `shells.setDefaultCli(projectId, name | null)` → `{ defaultName }`; sets or clears the project's
+  auto-launch profile. Needs the workspace grant (`forbidden`), refuses `custom_command` when the
+  project has a custom launch command, and answers `unknown_profile` for a name with no saved
+  profile.
+
+All five answer `unknown_project` first for an unknown project. When several checks apply the
+order is `invalid_params`, `unknown_project`, `forbidden`, `custom_command`, `unknown_profile`.
+The grant is the same call-time check as `workspace.*`, so a revoked grant stops the two settings
+methods on an already-open link. An older host answers `unknown_method`, and the viewer's menu
+says so.
 
 **Notices (agent notifications for the IDE instance in use)** — added
 2026-11-17, see `docs/architecture.md` ("Claude notifications")

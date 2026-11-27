@@ -445,7 +445,7 @@ function agentSettings(s: WorkspaceServices, project: Project, root: string): Re
   return {
     defaultAgent: configured && configured.length <= 256 ? configured : null,
     choices: [...choices],
-    hasCustomCommand: Boolean(project.config.launchCmd?.first || project.config.launchCmd?.subsequent),
+    hasCustomCommand: hasCustomLaunchCommand(project),
   };
 }
 
@@ -500,6 +500,16 @@ function readActivity(project: Project, root: string): Result<'workspace.activit
   return { entries };
 }
 
+/** The error every grant-gated method raises when the paired desktop lacks the host's workspace grant. */
+export function workspaceForbidden(): RpcError {
+  return new RpcError('forbidden', 'workspace access requires a grant from the host');
+}
+
+/** True when the project's config carries a custom first or subsequent launch command. */
+export function hasCustomLaunchCommand(project: Project): boolean {
+  return Boolean(project.config.launchCmd?.first || project.config.launchCmd?.subsequent);
+}
+
 /** Registers only the workspace contract; both the device and root must be eligible. */
 export function registerWorkspace(
   peer: RpcPeer, s: WorkspaceServices, desktopAllowed: () => boolean, projectsChanged: () => void, policy: WorkspaceRootPolicy,
@@ -508,7 +518,7 @@ export function registerWorkspace(
     method: M, run: (root: string, params: Params<M>, project: Project) => Result<M> | Promise<Result<M>>,
   ): void {
     peer.handle(method, async (params, ctx) => {
-      if (!desktopAllowed()) throw new RpcError('forbidden', 'workspace access requires a grant from the host');
+      if (!desktopAllowed()) throw workspaceForbidden();
       if (ctx.stream !== undefined) throw new RpcError('not_a_stream', 'workspace methods are not streams');
       const project = s.projects.get(params.projectId);
       if (!project) throw new RpcError('unknown_project', 'no such project');

@@ -323,7 +323,7 @@ function inRunningGroupChat(s: Services): (sh: { projectId: number; shellIndex: 
  * name (project entries win). Empty project arrays fall all the way through
  * to the global list, so users on a brand-new project still see Claude.
  */
-function mergedCliProfiles(
+export function mergedCliProfiles(
   projectProfiles: Array<{ name: string; argv: string[]; env?: Record<string, string>; icon?: string }> | null,
   globalProfiles: Array<{ name: string; argv: string[]; env?: Record<string, string>; icon?: string }>,
 ): Array<{ name: string; argv: string[]; env?: Record<string, string>; icon?: string }> {

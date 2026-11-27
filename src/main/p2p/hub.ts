@@ -3,13 +3,15 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, lstat
 import { homedir, hostname } from 'node:os';
 import { dirname, join, parse, resolve, sep } from 'node:path';
 import { z } from 'zod';
-import { RpcMethods, type Params, type Result, type RpcMethodName } from '../../shared/p2p-contract';
+import { RpcMethods, SHELL_TAB_RPC_ERRORS, type Params, type Result, type RpcMethodName } from '../../shared/p2p-contract';
 import type { Services } from '../services';
-import { emitAliveShellsChanged, emitProjectsChanged, handlers } from '../ipc/register';
+import type { Project } from '../../shared/types';
+import { emitAliveShellsChanged, emitProjectsChanged, handlers, mergedCliProfiles } from '../ipc/register';
+import { setProjectDefaultAgent } from '../domain/project-default-agent';
 import { RpcError, type HandlerContext, type RpcPeer } from './rpc';
 import { safeFileName } from '../drops/file-name';
 import { createUploadQuota, createUploadService, type UploadOutcome, type UploadQuota } from './uploads';
-import { registerWorkspace } from './workspace';
+import { hasCustomLaunchCommand, registerWorkspace, workspaceForbidden } from './workspace';
 import { nodeWorkspaceRootFs, type WorkspaceRootPolicy } from './workspace-root-policy';
 
 /*
@@ -297,8 +299,9 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
   // handler) is audited through the peer's onCall hook; one entry per call, streams at open.
   peer.setOnCall(record);
   const workspaceAllowed = opts.desktopWorkspaceAllowed;
+  const desktopAllowed = (): boolean => typeof workspaceAllowed === 'function' ? workspaceAllowed() : workspaceAllowed === true;
   registerWorkspace(
-    peer, s, () => typeof workspaceAllowed === 'function' ? workspaceAllowed() : workspaceAllowed === true,
+    peer, s, desktopAllowed,
     events.projectsChanged, hostWorkspacePolicy(s, auditPath, opts),
   );
 
@@ -312,7 +315,7 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
 
   const projectRoot = (projectId: number): string => {
     const p = s.projects.get(projectId);
-    if (!p) throw new RpcError('unknown_project', `no project ${projectId}`);
+    if (!p) throw new RpcError(SHELL_TAB_RPC_ERRORS.unknownProject, `no project ${projectId}`);
     return p.path;
   };
 
@@ -327,7 +330,7 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
 
   on('projects.get', async ({ id }) => {
     const p = s.projects.get(id);
-    if (!p) throw new RpcError('unknown_project', `no project ${id}`);
+    if (!p) throw new RpcError(SHELL_TAB_RPC_ERRORS.unknownProject, `no project ${id}`);
     return { ...p };
   });
 
@@ -362,6 +365,59 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
     await handlers['shells:kill'](s, { projectId, shellIndex });
     events.aliveShellsChanged();
     return { ok: true } as const;
+  });
+
+  /** Resolves the project or raises `unknown_project`. */
+  const projectOrThrow = (projectId: number): Project => {
+    const project = s.projects.get(projectId);
+    if (!project) throw new RpcError(SHELL_TAB_RPC_ERRORS.unknownProject, `no project ${projectId}`);
+    return project;
+  };
+
+  // Tab management for a viewer's add-tab menu. Profiles are resolved and run on this host by name;
+  // their commands and environment never reach the peer, and no raw command is accepted.
+  on('shells.cliProfiles', async ({ projectId }) => {
+    const project = projectOrThrow(projectId);
+    const { profiles } = await handlers['shells:cli-profiles-list'](s, { projectId });
+    return {
+      profiles: profiles.slice(0, 200).map((p) => ({ name: p.name, scope: p.scope, ...(p.icon ? { icon: p.icon } : {}) })),
+      defaultName: project.config.defaultCliName ?? null,
+    };
+  });
+
+  on('shells.launchProfile', async ({ projectId, profileName }) => {
+    const project = projectOrThrow(projectId);
+    const launchable = mergedCliProfiles(project.config.cliProfiles ?? null, s.settings.get('default_cli_profiles'));
+    if (!launchable.some((p) => p.name === profileName)) throw new RpcError(SHELL_TAB_RPC_ERRORS.unknownProfile, `no CLI profile named "${profileName}"`);
+    const r = await handlers['shells:launch-cli'](s, { projectId, profileName });
+    events.aliveShellsChanged();
+    events.projectsChanged();
+    return { shellIndex: r.shellIndex };
+  });
+
+  on('shells.launchPlain', async ({ projectId }) => {
+    projectOrThrow(projectId);
+    const r = await handlers['shells:launch-plain'](s, { projectId });
+    events.aliveShellsChanged();
+    return { shellIndex: r.shellIndex };
+  });
+
+  on('shells.removeCliProfile', async ({ projectId, name }) => {
+    projectOrThrow(projectId);
+    if (!desktopAllowed()) throw workspaceForbidden();
+    await handlers['shells:cli-profiles-remove'](s, { projectId, name });
+    events.projectsChanged();
+    return { ok: true } as const;
+  });
+
+  on('shells.setDefaultCli', async ({ projectId, name }) => {
+    const project = projectOrThrow(projectId);
+    if (!desktopAllowed()) throw workspaceForbidden();
+    if (hasCustomLaunchCommand(project)) throw new RpcError(SHELL_TAB_RPC_ERRORS.customCommand, 'this project uses a custom launch command');
+    const result = setProjectDefaultAgent(s, { projectId, name });
+    if (!result.ok) throw new RpcError(SHELL_TAB_RPC_ERRORS.unknownProfile, result.error);
+    events.projectsChanged();
+    return { defaultName: result.project.config.defaultCliName ?? null };
   });
 
   // Active shells.attach streams on this peer, by wire stream id. Input/resize only act on these.

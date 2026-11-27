@@ -15,6 +15,9 @@ import { useShortcutPlatform } from '@renderer/shortcut-platform';
 import { deriveProfileName } from '@renderer/cli-profile-name';
 import { ICON_SIZE } from './icon-size';
 import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
+import { errMessage, isOlderHostError } from '@renderer/p2p/err-message';
+import { remoteMachineLabel } from '@renderer/p2p/remote-tabs';
+import { REMOTE_ACTIVE_CHIP_CLASS, REMOTE_MENU_COPY } from '@renderer/remote-pane-contract';
 
 /** Receives the confirmed local shell index before the strip's next membership update. */
 export type ShellLaunched = (shellIndex: number) => void;
@@ -33,12 +36,19 @@ export interface ShellMenuProfile {
   readonly argv?: readonly string[];
 }
 
+/** The + menu's remote source: the host's display name (for the older-host message) and its profile RPCs. */
 export interface RemoteShellMenu {
+  readonly hostName: string;
   readonly profiles: () => Promise<readonly ShellMenuProfile[]>;
   readonly remove: (name: string) => Promise<void>;
   readonly setDefault: (name: string | null) => Promise<void>;
 }
 
+type RemoteMenuError = 'older-host' | 'failed';
+
+function remoteMenuErrorCopy(error: RemoteMenuError, hostName: string): string {
+  return error === 'older-host' ? REMOTE_MENU_COPY.olderHost(remoteMachineLabel(hostName)) : REMOTE_MENU_COPY.loadFailed;
+}
 
 /** The add-shell menu: saved CLI profiles with a default-star toggle, a custom-command form and the plain terminal row. */
 export function NewShellMenu({
@@ -63,7 +73,7 @@ export function NewShellMenu({
 }) {
   const platform = useShortcutPlatform();
   const [profiles, setProfiles] = useState<readonly ShellMenuProfile[]>([]);
-  const [profilesError, setProfilesError] = useState(false);
+  const [profilesError, setProfilesError] = useState<RemoteMenuError | null>(null);
   const [customOpen, setCustomOpen] = useState(false);
   const [customName, setCustomName] = useState('');
   const [customCmd, setCustomCmd] = useState('');
@@ -77,9 +87,9 @@ export function NewShellMenu({
           ? await remoteMenu.profiles()
           : (await api.invoke('shells:cli-profiles-list', { projectId })).profiles;
         setProfiles(profiles);
-        setProfilesError(false);
-      } catch {
-        if (remoteMenu) setProfilesError(true);
+        setProfilesError(null);
+      } catch (e) {
+        if (remoteMenu) setProfilesError(isOlderHostError(e) ? 'older-host' : 'failed');
       }
     })();
   }, [projectId, remoteMenu]);
@@ -113,8 +123,12 @@ export function NewShellMenu({
 
   async function removeProfile(name: string) {
     try {
-      if (remoteMenu) await remoteMenu.remove(name);
-      else await api.invoke('shells:cli-profiles-remove', { projectId, name });
+      if (remoteMenu) {
+        await remoteMenu.remove(name);
+        setProfiles(await remoteMenu.profiles().catch(() => profiles.filter(p => p.name !== name)));
+        return;
+      }
+      await api.invoke('shells:cli-profiles-remove', { projectId, name });
       setProfiles(prev => prev.filter(p => p.name !== name));
     } catch { /* ignore */ }
   }
@@ -179,7 +193,7 @@ export function NewShellMenu({
         </div>
         <p className="mt-2 text-xs leading-relaxed text-[--hue-orange-text]">{PROJECT_SETTINGS_COPY.menuDefaultNotice}</p>
       </div>
-      {profilesError && <p role="alert" className="px-3 py-4 text-xs text-[--danger]">Could not load remote CLIs. Reconnect and open this menu again.</p>}
+      {profilesError && remoteMenu && <p role="alert" className="px-3 py-4 text-xs text-[--danger]">{remoteMenuErrorCopy(profilesError, remoteMenu.hostName)}</p>}
       {profiles.length === 0 && !profilesError && (
         <div className="px-3 py-4 text-xs text-[--text-muted] text-center">
           No CLIs configured yet. Add one below.
@@ -219,7 +233,7 @@ export function NewShellMenu({
                     }
                     toast(isDefault ? `Cleared folder default` : `${p.name} will auto-launch in this folder`, { kind: 'success', timeoutMs: 1400 });
                   } catch (e) {
-                    toast('Could not set default', { kind: 'error', detail: String(e).replace(/^Error:\s*/, '') });
+                    toast('Could not set default', { kind: 'error', detail: errMessage(e) });
                   } finally {
                     setSavingDefault(false);
                   }
@@ -243,7 +257,8 @@ export function NewShellMenu({
           </div>
         );
       })}
-      <div className="border-t border-[--border]">
+      {/* A remote host runs only its own saved profiles; viewers cannot send it a raw command. */}
+      {!remoteMenu && <div className="border-t border-[--border]">
         <button
           onClick={() => setCustomOpen(true)}
           className="w-full text-left px-3 py-2 text-xs hover:bg-[--panel] flex items-center gap-2 text-[--text-muted] hover:text-[--text]"
@@ -251,7 +266,7 @@ export function NewShellMenu({
           <span className="w-5 text-center text-base leading-none">＋</span>
           <span>Add a custom command…</span>
         </button>
-      </div>
+      </div>}
       <div className="border-t border-[--border]">
         <button
           onClick={onLaunchPlainTab}
@@ -451,7 +466,7 @@ class ChipStrip extends Component<ChipStripProps> {
                 data-testid={SHELL_TAB_TEST_ID}
                 data-shell-index={s.shellIndex}
                 className={`terminal-chip group flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-md cursor-pointer whitespace-nowrap
-                  ${isActive ? 'bg-[--surface-active]' : 'hover:bg-[--surface-hover]'}`}
+                  ${isActive ? REMOTE_ACTIVE_CHIP_CLASS : 'hover:bg-[--surface-hover]'}`}
                 onClick={() => onSelect(s.shellIndex)}
               >
                 {renderDot ? renderDot(s, isActive) : <ShellTabDot projectId={projectId} shellIndex={s.shellIndex} isActive={isActive} />}

@@ -7,7 +7,9 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { DIFF_TESTIDS } from '../../src/renderer/diff-tab-copy';
 import { ENV_TESTIDS } from '../../src/renderer/project-env-copy';
+import { REMOTE_ACTIVE_CHIP_CLASS, REMOTE_PANE_TESTIDS } from '../../src/renderer/remote-pane-contract';
 import { MACHINE_TESTIDS } from '../../src/renderer/sidebar-copy';
+import { SHELL_TAB_TEST_ID } from '../../src/shared/agent-state';
 import type { FleetEntry } from '../../src/shared/p2p-contract';
 import { createFrameDecoder, encodeFrame, SignalingTypes as Signal } from '../../src/shared/signaling-wire';
 import { baseEnv, closeApp, guardedLaunch, waitForShell, type LaunchScope } from './helpers/claude-harness';
@@ -233,6 +235,22 @@ async function selectDestination(pane: Locator, name: Parameters<typeof destinat
   await expect(button).toHaveAttribute('aria-current', 'page');
 }
 
+/** Chips carry no tab role (AC22): select by test id, and read the active state from the shared class. */
+function chips(header: Locator): Locator {
+  return header.getByTestId(SHELL_TAB_TEST_ID);
+}
+
+function chip(header: Locator, shellIndex: number): Locator {
+  return header.locator(`[data-testid="${SHELL_TAB_TEST_ID}"][data-shell-index="${shellIndex}"]`);
+}
+
+const ACTIVE_CHIP = new RegExp(REMOTE_ACTIVE_CHIP_CLASS.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+
+async function chipIndexes(header: Locator): Promise<number[]> {
+  const all = await chips(header).evaluateAll((nodes) => nodes.map((node) => Number(node.getAttribute('data-shell-index'))));
+  return all.sort((a, b) => a - b);
+}
+
 async function expectShellOutput(win: Page, marker: string): Promise<void> {
   await expect.poll(async () => (await terminalProbes(win)).map((probe) => probe.screen).join('\n'),
     { message: `viewer renders host PTY output: ${marker}`, timeout: 15_000 }).toContain(marker);
@@ -307,13 +325,31 @@ test('paired Electron Shell works without a grant; other workspace tabs require 
         .getByTestId(MACHINE_TESTIDS.remoteProjectRow).filter({ has: win.getByText(HOST_PROJECT, { exact: true }) });
       await expect(hostRow, 'paired machine lists the host project').toBeVisible({ timeout: 10_000 });
       await hostRow.click();
-      const pane = win.getByTestId('remote-project-pane');
-      await expect(pane.getByText(`${HOST_PROJECT} @ ${HOST_NAME}`, { exact: true })).toBeVisible();
+      // AC1/AC2: identity, Close and destinations live in the header row, not in the pane body.
+      const pane = win.getByTestId(REMOTE_PANE_TESTIDS.pane);
+      const header = win.getByTestId(REMOTE_PANE_TESTIDS.header);
+      await expect(header).toBeVisible();
+      await expect(header).toHaveClass(/workspace-header-row/);
+      await expect(localHeader, 'local header row is not rendered while a remote pane is open').toBeHidden();
+      await expect(header.getByText(`${HOST_PROJECT} @ ${HOST_NAME}`, { exact: true })).toBeVisible();
+      await expect(header.locator('.workspace-project-actions')).toContainText(`${HOST_PROJECT} @ ${HOST_NAME}`);
+      await expect(pane.getByText(`${HOST_PROJECT} @ ${HOST_NAME}`, { exact: true }), 'identity is not inside the pane').toHaveCount(0);
+      await expect(header.locator('.workspace-destinations')).toBeVisible();
+      await expect(pane.locator('.workspace-destinations'), 'pane has no destinations of its own in-app').toHaveCount(0);
+      await expect(pane.locator('.shell-tabs-bar'), 'pane has no tabs bar of its own in-app').toHaveCount(0);
       const unavailable = pane.getByRole('status').filter({ hasText: 'Workspace access unavailable' });
-      const closePane = pane.getByRole('button', { name: 'Close remote project', exact: true });
+      const closePane = header.getByRole('button', { name: 'Close remote project', exact: true });
+      await expect(closePane).toBeVisible();
+      await expect(pane.getByRole('button', { name: 'Close remote project', exact: true })).toHaveCount(0);
       await expect(unavailable).toBeVisible({ timeout: 10_000 });
-      await expect(destination(pane, 'Activity')).toBeHidden();
-      await expect(destination(pane, 'Shell')).toHaveAttribute('aria-current', 'page');
+      await expect(destination(header, 'Activity')).toBeHidden();
+      await expect(destination(header, 'Shell')).toHaveAttribute('aria-current', 'page');
+      // AC9: the same ShellTabsBar as local, a direct child of the header row, with host chips and no tab roles.
+      await expect(header.locator('.shell-tabs-bar')).toBeVisible();
+      await expect(header.locator(':scope > .shell-tabs-bar'), 'tabs bar is a direct child of the row').toHaveCount(1);
+      await expect(chip(header, alternate.shellIndex)).toBeVisible({ timeout: 10_000 });
+      await expect(chip(header, primary.shellIndex)).toBeVisible();
+      await expect(header.getByRole('tab'), 'remote chips have no tab role').toHaveCount(0);
       await expectShellOutput(win, 'HOST_PRIMARY_SHELL');
       await expect(readHostNotes()).rejects.toThrow(/workspace access requires a grant from the host/i);
 
@@ -324,14 +360,37 @@ test('paired Electron Shell works without a grant; other workspace tabs require 
       await closePane.click();
       await expect(pane).toBeHidden();
       await hostRow.click();
-      await expect(destination(pane, 'Activity')).toBeVisible({ timeout: 10_000 });
+      await expect(destination(header, 'Activity')).toBeVisible({ timeout: 10_000 });
       await expect(unavailable).toBeHidden();
-      const alternateTab = pane.getByTestId('remote-shell-tabs').locator(`[role="tab"][data-shell-index="${alternate.shellIndex}"]`);
+      const alternateTab = chip(header, alternate.shellIndex);
+      const primaryTab = chip(header, primary.shellIndex);
       await alternateTab.click();
-      await expect(alternateTab).toHaveAttribute('aria-selected', 'true');
+      await expect(alternateTab).toHaveClass(ACTIVE_CHIP);
+      await expect(primaryTab, 'positive control: inactive chip lacks the active class').not.toHaveClass(ACTIVE_CHIP);
       await expectShellOutput(win, 'HOST_ALTERNATE_SHELL');
 
-      await selectDestination(pane, 'Files');
+      // AC11: open a tab through + > Terminal. The new chip appears selected without waiting for the host list.
+      const before = await chipIndexes(header);
+      await header.getByTestId('tabbar-new-shell').click();
+      await win.getByRole('button', { name: /^.{0,4}Terminal\s+(Ctrl|⌘)/ }).click();
+      await expect.poll(async () => (await chipIndexes(header)).length, { message: 'new chip appears' }).toBe(before.length + 1);
+      const opened = (await chipIndexes(header)).find((index) => !before.includes(index));
+      if (opened === undefined) throw new Error('No new remote chip found after opening a Terminal');
+      const openedTab = chip(header, opened);
+      await expect(openedTab).toHaveClass(ACTIVE_CHIP);
+      await expect(alternateTab, 'previously active chip is no longer active').not.toHaveClass(ACTIVE_CHIP);
+      // Close it with the chip's x. The shown chip goes away and a remaining one takes over.
+      await openedTab.hover();
+      await openedTab.getByRole('button', { name: /^Close /i }).click();
+      await expect(openedTab).toHaveCount(0);
+      await expect.poll(() => chipIndexes(header), { message: 'only the original chips remain' }).toEqual(before);
+      await alternateTab.click();
+      await expect(alternateTab).toHaveClass(ACTIVE_CHIP);
+      await expectShellOutput(win, 'HOST_ALTERNATE_SHELL');
+
+      await selectDestination(header, 'Files');
+      // AC4: no tabs bar on a non-Shell destination (positive control: it is present on Shell, asserted above).
+      await expect(header.locator('.shell-tabs-bar')).toHaveCount(0);
       await expect(pane.getByTestId('file-entry').filter({ hasText: ACTIVITY_TARGET })).toBeVisible();
       await expect(pane.getByTestId('file-entry').filter({ hasText: VIEWER_ACTIVITY })).toHaveCount(0);
       await pane.getByTestId('file-entry').filter({ hasText: NOTES }).click();
@@ -345,11 +404,12 @@ test('paired Electron Shell works without a grant; other workspace tabs require 
       await preview.getByRole('button', { name: 'Save', exact: true }).click();
       await expect.poll(() => readFileSync(join(host.path, NOTES), 'utf8'), { message: 'save reaches host disk' }).toBe(`${HOST_SAVED}\n`);
 
-      await selectDestination(pane, 'Shell');
-      await expect(alternateTab).toHaveAttribute('aria-selected', 'true');
+      await selectDestination(header, 'Shell');
+      await expect(header.locator('.shell-tabs-bar')).toBeVisible();
+      await expect(alternateTab).toHaveClass(ACTIVE_CHIP);
       await expectShellOutput(win, 'HOST_ALTERNATE_SHELL');
 
-      await selectDestination(pane, 'Diff');
+      await selectDestination(header, 'Diff');
       const diff = pane.getByTestId(DIFF_TESTIDS.panel);
       await expect(diffRow(diff, 'host-staged.txt', 'staged')).toBeVisible();
       await expect(diffRow(diff, 'host-untracked.txt', 'untracked')).toBeVisible();
@@ -364,7 +424,7 @@ test('paired Electron Shell works without a grant; other workspace tabs require 
       await expect(diffRow(diff, 'host-refresh.txt', 'untracked')).toBeVisible();
       await expect(savedChange).toHaveAttribute('aria-current', /^(?!false$).+/);
 
-      await selectDestination(pane, 'Settings');
+      await selectDestination(header, 'Settings');
       const agent = pane.getByRole('combobox', { name: 'Default agent', exact: true });
       await expect(agent.locator('option:checked')).toHaveText(HOST_AGENT);
       await expect(agent.locator('option').filter({ hasText: VIEWER_AGENT })).toHaveCount(0);
@@ -373,7 +433,7 @@ test('paired Electron Shell works without a grant; other workspace tabs require 
       await expect.poll(async () => (await project(host.win, HOST_PROJECT)).config.defaultCliName,
         { message: 'remote settings write persists in host database' }).toBe(HOST_ALT);
 
-      await selectDestination(pane, 'Activity');
+      await selectDestination(header, 'Activity');
       const activity = pane.getByTestId('activity-tab');
       const target = activity.getByRole('button', { name: ACTIVITY_TARGET, exact: true });
       await expect(target).toBeVisible();
@@ -384,21 +444,42 @@ test('paired Electron Shell works without a grant; other workspace tabs require 
       })}\n`);
       await expect(activity.getByText(LIVE_ACTIVITY, { exact: true })).toBeVisible({ timeout: 10_000 });
       await target.click();
-      await expect(destination(pane, 'Files')).toHaveAttribute('aria-current', 'page');
+      await expect(destination(header, 'Files')).toHaveAttribute('aria-current', 'page');
       await expect(preview).toContainText(ACTIVITY_CONTENT);
 
       await ipc(host.win, 'settings:set', { key: 'activity_log_enabled', value: false });
-      await expect(destination(pane, 'Activity')).toBeHidden({ timeout: 10_000 });
+      await expect(destination(header, 'Activity')).toBeHidden({ timeout: 10_000 });
+
+      // AC15: closing the last tab leaves the empty state; a shell opened on the host later appears and attaches.
+      await selectDestination(header, 'Shell');
+      const noShells = pane.getByTestId(REMOTE_PANE_TESTIDS.noShells);
+      await expect(noShells, 'positive control: empty state absent while chips exist').toHaveCount(0);
+      for (const index of await chipIndexes(header)) {
+        const target = chip(header, index);
+        await target.hover();
+        await target.getByRole('button', { name: /^Close /i }).click();
+        await expect(target).toHaveCount(0);
+      }
+      await expect(noShells).toBeVisible({ timeout: 10_000 });
+      await expect(noShells).toContainText(`No terminals open on ${HOST_NAME}. Use + to open one.`);
+      await expect(chips(header)).toHaveCount(0);
+      const relaunchedArgv = [...host.altArgv.slice(0, 2), 'HOST_RELAUNCHED_SHELL'];
+      const relaunched = await ipc(host.win, 'shells:launch-cli', { projectId: host.id, argv: relaunchedArgv });
+      await expect(chip(header, relaunched.shellIndex)).toBeVisible({ timeout: 15_000 });
+      await expect(noShells).toHaveCount(0);
+      await expectShellOutput(win, 'HOST_RELAUNCHED_SHELL');
 
       expect(await ipc(host.win, 'p2p:set-workspace-access', { deviceId: viewerOnHost.deviceId, allowed: false }))
         .toEqual({ ok: true });
       expect((await pairedPeer(host.win, VIEWER_NAME)).workspaceAccess).toBe(false);
       await expect(readHostNotes()).rejects.toThrow(/workspace access requires a grant from the host/i);
-      await selectDestination(pane, 'Shell');
-      await expectShellOutput(win, 'HOST_ALTERNATE_SHELL');
+      await selectDestination(header, 'Shell');
+      await expectShellOutput(win, 'HOST_RELAUNCHED_SHELL');
 
       await closePane.click();
       await expect(pane).toBeHidden();
+      await expect(header).toBeHidden();
+      await expect(localHeader).toBeVisible();
       await expect(destination(localHeader, 'Files')).toHaveAttribute('aria-current', 'page');
       await expect(destination(localHeader, 'Activity')).toBeVisible();
       await win.getByTestId('file-entry').filter({ hasText: NOTES }).click();
