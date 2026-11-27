@@ -1,214 +1,168 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { StoryChunk } from '@shared/story';
+import type { StoryFeature } from '@shared/story-feature';
 
 /**
- * Mutable per-test state so one test can seed a chunk list, another can
- * stage an error, and `story:changed` subscribers see fresh values when
- * the component re-fetches.
+ * Mutable per-test state — tests can seed features, a refresh can
+ * stream new ones in via the mocked `on()`, and an edit can update
+ * one in place. Keeps each test isolated via `beforeEach`.
  */
-let chunks: StoryChunk[] = [];
-let chunkHtmlById: Record<string, string | null> = {};
-let generateFails = false;
-const changedListeners: Array<(ev: { projectId: number }) => void> = [];
+let features: StoryFeature[] = [];
+let refreshFails = false;
+const changeListeners: Array<(ev: { projectId: number; feature: StoryFeature | null }) => void> = [];
 
-const SAMPLE_HTML = '<!doctype html><html><head><title>t</title></head><body><h1>Spike</h1><p>Nice</p></body></html>';
+function emitChange(ev: { projectId: number; feature: StoryFeature | null }): void {
+  for (const l of changeListeners.slice()) l(ev);
+}
+
+function makeFeature(overrides: Partial<StoryFeature> = {}): StoryFeature {
+  return {
+    id: 'aaaaaaa',
+    sha: 'a'.repeat(40),
+    ts: '2026-11-27T13:00:00.000Z',
+    prNumber: 26,
+    title: 'fix(deps): bump majors',
+    scope: 'src/main/',
+    body: '## What you can now do\nYou can now install cleanly.\n## Why it matters\nFewer CVEs on the shelf.\n## Where it lives\npnpm-workspace.yaml.',
+    kind: 'feature',
+    edited: false,
+    ...overrides,
+  };
+}
 
 vi.mock('@renderer/api', () => ({
   api: {
     invoke: vi.fn().mockImplementation(async (ch: string, req: unknown) => {
-      if (ch === 'story:list') return { chunks };
-      if (ch === 'story:read') {
-        const r = req as { file: string };
-        return { html: chunkHtmlById[r.file] ?? SAMPLE_HTML };
+      if (ch === 'story:features:list') {
+        return { features, lastRefresh: null };
       }
-      if (ch === 'story:generate') {
-        if (generateFails) throw new Error('generator exploded');
-        const chunk: StoryChunk = {
-          file: 'generated.html',
-          ts: '2026-11-24T14:15:00.000Z',
-          title: 'Generated chunk',
-          blurb: 'just now',
-        };
-        chunks = [chunk, ...chunks];
-        chunkHtmlById[chunk.file] = SAMPLE_HTML;
-        return { chunk };
+      if (ch === 'story:features:refresh') {
+        if (refreshFails) throw new Error('refresh exploded');
+        // Simulate the main side streaming one entry in then signalling end.
+        const streamed = makeFeature({ id: 'newest1', sha: 'n'.repeat(40), ts: '2026-11-28T09:00:00.000Z', title: 'feat: new thing' });
+        features = [streamed, ...features];
+        const r = req as { projectId: number };
+        emitChange({ projectId: r.projectId, feature: streamed });
+        emitChange({ projectId: r.projectId, feature: null });
+        return { added: 1, failed: 0 };
+      }
+      if (ch === 'story:features:update') {
+        const r = req as { projectId: number; id: string; title?: string; body?: string };
+        const idx = features.findIndex((f) => f.id === r.id);
+        if (idx >= 0) {
+          const existing = features[idx]!;
+          const updated: StoryFeature = {
+            ...existing,
+            title: r.title ?? existing.title,
+            body: r.body ?? existing.body,
+            edited: true,
+          };
+          features[idx] = updated;
+          emitChange({ projectId: r.projectId, feature: updated });
+          return { feature: updated };
+        }
       }
       return {};
     }),
-    on: vi.fn().mockImplementation((ch: string, cb: (ev: { projectId: number }) => void) => {
-      if (ch === 'story:changed') changedListeners.push(cb);
-      return () => { /* noop */ };
+    on: vi.fn().mockImplementation((ch: string, cb: (ev: { projectId: number; feature: StoryFeature | null }) => void) => {
+      if (ch === 'story:features:changed') {
+        changeListeners.push(cb);
+        return () => {
+          const i = changeListeners.indexOf(cb);
+          if (i >= 0) changeListeners.splice(i, 1);
+        };
+      }
+      return () => {};
     }),
   },
 }));
 
-// The theme hook reads from localStorage + sets a data attribute on
-// <html>; stub it to return 'dark' consistently so the srcDoc
-// theme-injection check is deterministic.
-vi.mock('@renderer/hooks/useTheme', () => ({
-  useTheme: () => ({ mode: 'dark', palette: 'default', effective: 'dark', setMode: () => {}, setPalette: () => {}, cycle: () => {} }),
-}));
-
-// Dynamic import so the mocks above are in place before React resolves
-// the component tree.
-async function mount(projectId = 42) {
-  const { StoryTab } = await import('@renderer/components/StoryTab');
-  return render(<StoryTab projectId={projectId} />);
-}
+const { StoryTab } = await import('@renderer/components/StoryTab');
 
 beforeEach(() => {
-  chunks = [];
-  chunkHtmlById = {};
-  generateFails = false;
-  changedListeners.length = 0;
+  features = [];
+  refreshFails = false;
+  changeListeners.length = 0;
 });
-afterEach(() => { cleanup(); });
+afterEach(() => cleanup());
 
-describe('StoryTab', () => {
-  it('shows the empty-state copy when the project has no chunks yet', async () => {
-    await mount();
-    await waitFor(() => {
-      expect(screen.getByText(/Nothing to read yet/i)).toBeTruthy();
-    });
+describe('StoryTab (feature feed)', () => {
+  it('shows the empty-state copy when nothing has shipped yet', async () => {
+    render(<StoryTab projectId={1} />);
+    await screen.findByText(/No features logged yet/i);
+    // The Refresh button is the only way out of the empty state.
+    expect(screen.getByTestId('story-refresh').textContent).toContain('Refresh');
   });
 
-  it('lists past chunks and auto-selects the newest on mount', async () => {
-    chunks = [
-      { file: 'b.html', ts: '2026-11-24T14:10:00Z', title: 'Newer chunk', blurb: 'now' },
-      { file: 'a.html', ts: '2026-11-24T13:00:00Z', title: 'Older chunk', blurb: 'before' },
+  it('lists seeded features newest-first and auto-selects the top row', async () => {
+    features = [
+      makeFeature({ id: 'newer--', ts: '2026-11-27T12:00:00.000Z', title: 'newer one' }),
+      makeFeature({ id: 'older--', ts: '2026-11-20T09:00:00.000Z', title: 'older one' }),
     ];
-    chunkHtmlById['b.html'] = SAMPLE_HTML;
-    await mount();
-    await waitFor(() => {
-      expect(screen.getByText('Newer chunk')).toBeTruthy();
-      expect(screen.getByText('Older chunk')).toBeTruthy();
-    });
-    // The reader iframe should have rendered the auto-selected chunk's html.
-    const frame = await waitFor(() => screen.getByTestId('story-frame') as HTMLIFrameElement);
-    expect(frame.getAttribute('srcDoc')?.includes('Spike')).toBe(true);
+    render(<StoryTab projectId={1} />);
+    const rows = await screen.findAllByTestId('story-feature-row');
+    expect(rows[0]?.textContent).toContain('newer one');
+    expect(rows[1]?.textContent).toContain('older one');
+    // The right pane renders the auto-selected top entry.
+    await screen.findByTestId('story-feature-detail');
   });
 
-  it('stamps data-theme on the iframe srcdoc so the reader matches the IDE theme', async () => {
-    chunks = [{ file: 'a.html', ts: '2026-11-24T14:00:00Z', title: 'A', blurb: 'now' }];
-    chunkHtmlById['a.html'] = SAMPLE_HTML;
-    await mount();
-    const frame = await waitFor(() => screen.getByTestId('story-frame') as HTMLIFrameElement);
-    const srcDoc = frame.getAttribute('srcDoc') ?? '';
-    // The transformer stamps the current theme on <html>.
-    expect(srcDoc).toMatch(/<html[^>]*data-theme="dark"/);
-    // And injects a last-wins :root override so old chunks respect the theme
-    // without needing to be regenerated.
-    expect(srcDoc).toContain('data-ide-theme-override="1"');
-  });
-
-  it('calls story:generate when the "Catch me up" button is pressed and shows the new chunk', async () => {
-    await mount();
-    const btn = await waitFor(() => screen.getByTestId('story-catch-up'));
-    fireEvent.click(btn);
-    await waitFor(() => {
-      expect(screen.getByText('Generated chunk')).toBeTruthy();
-    });
-  });
-
-  it('shows an error line when generation fails and does not crash', async () => {
-    generateFails = true;
-    await mount();
-    const btn = await waitFor(() => screen.getByTestId('story-catch-up'));
-    fireEvent.click(btn);
-    await waitFor(() => {
-      expect(screen.getByText(/generator exploded/i)).toBeTruthy();
-    });
-  });
-
-  it('refreshes the list when story:changed fires for this project', async () => {
-    await mount(7);
-    // Before — empty list, "Nothing to read yet".
-    await waitFor(() => screen.getByText(/Nothing to read yet/i));
-    // Simulate an external chunk write (another window generated).
-    chunks = [{ file: 'from-elsewhere.html', ts: '2026-11-24T14:20:00Z', title: 'Elsewhere', blurb: '' }];
-    chunkHtmlById['from-elsewhere.html'] = SAMPLE_HTML;
-    for (const l of changedListeners) l({ projectId: 7 });
-    await waitFor(() => {
-      expect(screen.getByText('Elsewhere')).toBeTruthy();
-    });
-  });
-
-  it('ignores story:changed events for a different project', async () => {
-    await mount(7);
-    await waitFor(() => screen.getByText(/Nothing to read yet/i));
-    chunks = [{ file: 'elsewhere.html', ts: '2026-11-24T14:20:00Z', title: 'Elsewhere', blurb: '' }];
-    for (const l of changedListeners) l({ projectId: 999 });
-    // Give any accidental refresh a tick to resolve.
-    await new Promise((r) => setTimeout(r, 30));
-    expect(screen.queryByText('Elsewhere')).toBeNull();
-  });
-
-  it('clears the selected chunk when the projectId changes', async () => {
-    // Project A has chunks; auto-select picks the newest.
-    chunks = [{ file: 'a.html', ts: '2026-11-24T14:00:00Z', title: 'A chunk', blurb: 'now' }];
-    chunkHtmlById['a.html'] = SAMPLE_HTML;
-    const { rerender } = await mount(1);
-    await waitFor(() => screen.getByText('A chunk'));
-
-    // Switch to project B — stash a new list before the re-render.
-    chunks = [{ file: 'b.html', ts: '2026-11-24T14:30:00Z', title: 'B chunk', blurb: 'now' }];
-    chunkHtmlById['b.html'] = SAMPLE_HTML;
-    const { StoryTab } = await import('@renderer/components/StoryTab');
-    rerender(<StoryTab projectId={2} />);
-
-    // The new chunk must show; the stale "A chunk" from project 1 must be gone.
-    await waitFor(() => {
-      expect(screen.getByText('B chunk')).toBeTruthy();
-      expect(screen.queryByText('A chunk')).toBeNull();
-    });
-  });
-
-  it('clears the error banner when a later chunk reads successfully', async () => {
-    chunks = [
-      { file: 'bad.html', ts: '2026-11-24T14:00:00Z', title: 'Bad', blurb: '' },
-      { file: 'good.html', ts: '2026-11-24T13:00:00Z', title: 'Good', blurb: '' },
+  it('hides maintenance entries by default and reveals them via the toggle', async () => {
+    features = [
+      makeFeature({ id: 'feat---', title: 'feat: add export', kind: 'feature' }),
+      makeFeature({ id: 'maint--', title: 'chore: bump prettier', kind: 'maintenance' }),
     ];
-    chunkHtmlById['bad.html'] = null;
-    chunkHtmlById['good.html'] = SAMPLE_HTML;
-    // story:read returns `html: null` when the file is missing — that's not
-    // an exception, but the empty-right-pane shows and no error. We need an
-    // ACTUAL throw to stage the sticky-error scenario, so stub one chunk to
-    // reject via the invoke mock on the first call only.
-    const api = (await import('@renderer/api')).api as unknown as { invoke: ReturnType<typeof vi.fn> };
-    const original = api.invoke.getMockImplementation()!;
-    let firstReadFailed = false;
-    api.invoke.mockImplementation(async (ch: string, req: unknown) => {
-      if (ch === 'story:read' && (req as { file: string }).file === 'bad.html' && !firstReadFailed) {
-        firstReadFailed = true;
-        throw new Error('corrupt chunk');
-      }
-      return original(ch, req);
-    });
+    render(<StoryTab projectId={1} />);
+    // Only the feature row is in the left rail; the detail pane also shows
+    // the feature title, so we scope the assertion to the row list instead
+    // of matching free text (which would be ambiguous).
+    const rowsBefore = await screen.findAllByTestId('story-feature-row');
+    expect(rowsBefore).toHaveLength(1);
+    expect(rowsBefore[0]?.textContent).toContain('feat: add export');
 
-    await mount();
-    // "Bad" auto-selected, read throws → error banner visible.
-    await waitFor(() => expect(screen.getByText(/corrupt chunk/)).toBeTruthy());
-
-    // Click "Good" — read succeeds, the banner must clear.
-    fireEvent.click(screen.getByText('Good'));
-    await waitFor(() => expect(screen.queryByText(/corrupt chunk/)).toBeNull());
-
-    // Restore.
-    api.invoke.mockImplementation(original);
+    fireEvent.click(screen.getByTestId('story-show-maintenance'));
+    const rowsAfter = await screen.findAllByTestId('story-feature-row');
+    expect(rowsAfter).toHaveLength(2);
+    const texts = rowsAfter.map((r) => r.textContent);
+    expect(texts.some((t) => t?.includes('chore: bump prettier'))).toBe(true);
   });
 
-  it('isolates the chunk via iframe sandbox so page scripts cannot escape', async () => {
-    chunks = [{ file: 'a.html', ts: '2026-11-24T14:00:00Z', title: 'A', blurb: '' }];
-    chunkHtmlById['a.html'] = SAMPLE_HTML;
-    await mount();
-    const frame = await waitFor(() => screen.getByTestId('story-frame') as HTMLIFrameElement);
-    const sandbox = frame.getAttribute('sandbox') ?? '';
-    // same-origin is needed for in-document scrolling / anchors; scripts
-    // are NOT in the allow-list, so inline script tags in a chunk cannot run.
-    expect(sandbox).toContain('allow-same-origin');
-    expect(sandbox).not.toContain('allow-scripts');
-    expect(sandbox).not.toContain('allow-top-navigation');
+  it('refresh streams a new entry in and selects it on an empty feed', async () => {
+    render(<StoryTab projectId={1} />);
+    await screen.findByText(/No features logged yet/i);
+    fireEvent.click(screen.getByTestId('story-refresh'));
+    const rows = await screen.findAllByTestId('story-feature-row');
+    expect(rows[0]?.textContent).toContain('feat: new thing');
+    // After the batch-end signal the Refresh button is clickable again.
+    await waitFor(() => expect((screen.getByTestId('story-refresh') as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it('a failed refresh shows the error and does not leave the button spinning', async () => {
+    refreshFails = true;
+    render(<StoryTab projectId={1} />);
+    await screen.findByText(/No features logged yet/i);
+    fireEvent.click(screen.getByTestId('story-refresh'));
+    await screen.findByText(/refresh exploded/);
+    await waitFor(() => expect((screen.getByTestId('story-refresh') as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it('edit → save round-trips through story:features:update and shows the edited badge', async () => {
+    features = [makeFeature({ title: 'original title' })];
+    render(<StoryTab projectId={1} />);
+    // Wait for the detail pane to render (title shows there and in the row);
+    // both are fine — we just need the Edit button available.
+    await screen.findByTestId('story-feature-edit');
+    fireEvent.click(screen.getByTestId('story-feature-edit'));
+    const titleInput = await screen.findByTestId('story-feature-edit-title') as HTMLInputElement;
+    fireEvent.change(titleInput, { target: { value: 'edited title' } });
+    fireEvent.click(screen.getByTestId('story-feature-save'));
+    // After save we're back in detail view; row list and detail pane now
+    // both carry the new title, so match multiple.
+    const matches = await screen.findAllByText('edited title');
+    expect(matches.length).toBeGreaterThan(0);
+    // The edited badge appears in both the row and the detail header.
+    const badges = await screen.findAllByText(/edited/);
+    expect(badges.length).toBeGreaterThan(0);
   });
 });

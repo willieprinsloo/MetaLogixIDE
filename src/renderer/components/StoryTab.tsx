@@ -1,168 +1,178 @@
 /**
- * Story tab — plain-English chunks of what the agents have been doing.
+ * Story tab — the feature-ledger handoff view.
  *
- * Left column: list of past chunks, newest first.
- * Right column: the selected chunk, rendered as its self-contained HTML
- * inside a sandboxed iframe. Styling and timeline belong to the page,
- * not this shell — the window just hosts them.
+ * Left rail: one row per capability that shipped, newest first.
+ * Right pane: the three-section plain-English note for the selected
+ * entry — what you can now do, why it matters, where it lives.
  *
- * "✨ Catch me up" asks the main process to generate a fresh chunk from
- * the last 15 minutes of activity; `story:changed` refreshes the list.
+ * "Refresh" scans git since the last entry and streams new rows in as
+ * each one is generated. Nothing older is ever rewritten; the human
+ * can edit any entry after the fact and the edited bit persists.
+ *
+ * The old activity-window narrator still exists on the main side and
+ * writes to `.metaide/story/` — this tab no longer surfaces it; the
+ * feature feed is the owner-facing lens on the project.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '@renderer/api';
-import { useTheme } from '@renderer/hooks/useTheme';
-import type { StoryChunk } from '@shared/story';
+import type { StoryFeature } from '@shared/story-feature';
+import { renderStoryFeatureBody } from '@renderer/story/renderFeatureBody';
 
 interface Props {
   projectId: number;
 }
 
-/** The window selector shown next to "Catch me up". `'auto'` lets the
- *  picker walk the ladder (15m → 7d) until it has enough to narrate —
- *  the right default for most projects. A number pins the lookback. */
-type WindowChoice = 'auto' | 15 | 60 | 240 | 1440 | 4320 | 10080;
-
-const WINDOW_LABELS: Array<{ value: WindowChoice; label: string }> = [
-  { value: 'auto', label: 'Auto' },
-  { value: 15, label: '15 min' },
-  { value: 60, label: '1 hour' },
-  { value: 240, label: '4 hours' },
-  { value: 1440, label: 'Today (24 h)' },
-  { value: 4320, label: '3 days' },
-  { value: 10080, label: '7 days' },
-];
-
 export function StoryTab({ projectId }: Props) {
-  const { effective: theme } = useTheme();
-  const [chunks, setChunks] = useState<StoryChunk[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [html, setHtml] = useState<string | null>(null);
-  const [generating, setGenerating] = useState(false);
+  const [features, setFeatures] = useState<StoryFeature[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [windowChoice, setWindowChoice] = useState<WindowChoice>('auto');
+  const [showMaintenance, setShowMaintenance] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draftTitle, setDraftTitle] = useState('');
+  const [draftBody, setDraftBody] = useState('');
 
   const refreshList = useCallback(async () => {
     try {
-      const { chunks } = await api.invoke('story:list', { projectId });
-      setChunks(chunks);
-      // If nothing is selected yet, open the newest automatically — the
-      // empty right-pane isn't useful when there are chunks to read.
-      setSelected((cur) => cur ?? chunks[0]?.file ?? null);
+      const { features } = await api.invoke('story:features:list', { projectId });
+      setFeatures(features);
+      // Auto-select the newest entry on first load; do not jump off
+      // what the human is reading on a streaming update.
+      setSelectedId((cur) => cur ?? features[0]?.id ?? null);
     } catch (err) {
       setError(String(err));
     }
   }, [projectId]);
 
-  // Clear selection when projectId changes — otherwise the html effect
-  // reads a filename from the previous project and the reader shows
-  // "loading…" forever while story:read returns null.
   useEffect(() => {
-    setSelected(null);
-    setHtml(null);
+    setSelectedId(null);
     setError(null);
   }, [projectId]);
 
   useEffect(() => { void refreshList(); }, [refreshList]);
 
+  // Stream new entries in as the main side writes them.
   useEffect(() => {
-    const off = api.on('story:changed', (ev) => {
+    const off = api.on('story:features:changed', (ev) => {
       if (ev.projectId !== projectId) return;
-      void refreshList();
+      if (ev.feature === null) {
+        // Batch end — drop the refreshing indicator.
+        setRefreshing(false);
+        return;
+      }
+      setFeatures((cur) => {
+        const next = cur.filter((f) => f.id !== ev.feature!.id);
+        next.unshift(ev.feature!);
+        // Keep newest first — the main side already feeds in that order,
+        // but a mid-batch edit event could arrive out of order.
+        next.sort((a, b) => b.ts.localeCompare(a.ts));
+        return next;
+      });
+      // Auto-select the first streamed entry on an empty feed.
+      setSelectedId((cur) => cur ?? ev.feature!.id);
     });
     return off;
-  }, [projectId, refreshList]);
+  }, [projectId]);
 
-  // Load HTML for the selected chunk.
-  useEffect(() => {
-    let cancelled = false;
-    if (!selected) { setHtml(null); return; }
-    (async () => {
-      try {
-        const { html } = await api.invoke('story:read', { projectId, file: selected });
-        if (cancelled) return;
-        setHtml(html);
-        // A successful read clears any error from a previous failed read —
-        // otherwise the red banner hangs around while a good chunk displays.
-        setError(null);
-      } catch (err) {
-        if (!cancelled) setError(String(err));
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [projectId, selected]);
-
-  const catchUp = useCallback(async () => {
-    setGenerating(true);
+  const refresh = useCallback(async () => {
+    setRefreshing(true);
     setError(null);
     try {
-      const { chunk } = await api.invoke('story:generate', { projectId, windowMinutes: windowChoice });
-      // Select the new chunk so the right pane jumps to it immediately.
-      setSelected(chunk.file);
-      await refreshList();
+      await api.invoke('story:features:refresh', { projectId });
     } catch (err) {
       setError(String(err));
-    } finally {
-      setGenerating(false);
+      setRefreshing(false);
     }
-  }, [projectId, refreshList, windowChoice]);
+    // The batch-end event resets `refreshing`; the call above resolves
+    // when the main side returns the summary, which is after that event.
+  }, [projectId]);
+
+  const selected = useMemo(
+    () => features.find((f) => f.id === selectedId) ?? null,
+    [features, selectedId],
+  );
+
+  const visibleFeatures = useMemo(
+    () => (showMaintenance ? features : features.filter((f) => f.kind === 'feature')),
+    [features, showMaintenance],
+  );
+
+  const startEdit = useCallback(() => {
+    if (!selected) return;
+    setDraftTitle(selected.title);
+    setDraftBody(selected.body);
+    setEditing(true);
+  }, [selected]);
+
+  const saveEdit = useCallback(async () => {
+    if (!selected) return;
+    try {
+      await api.invoke('story:features:update', {
+        projectId,
+        id: selected.id,
+        title: draftTitle,
+        body: draftBody,
+      });
+      setEditing(false);
+    } catch (err) {
+      setError(String(err));
+    }
+  }, [projectId, selected, draftTitle, draftBody]);
+
+  const cancelEdit = useCallback(() => setEditing(false), []);
 
   return (
     <div className="h-full flex min-h-0" data-testid="story-tab">
-      {/* Left column: chunk list */}
-      <aside className="w-72 shrink-0 border-r border-[--border] flex flex-col min-h-0">
+      {/* Left rail: feature feed */}
+      <aside className="w-80 shrink-0 border-r border-[--border] flex flex-col min-h-0">
         <div className="px-3 py-2 border-b border-[--border] flex items-center gap-2">
           <button
-            onClick={catchUp}
-            disabled={generating}
+            onClick={refresh}
+            disabled={refreshing}
             className="text-[11px] px-2 py-1 rounded border border-[color:var(--accent)]/40 text-[color:var(--accent)] hover:bg-[--accent-soft] disabled:opacity-50 disabled:cursor-not-allowed"
-            data-testid="story-catch-up"
-            title={
-              windowChoice === 'auto'
-                ? 'Summarise agent activity. Auto picks a window from 15 min out to 7 days until it has enough to narrate.'
-                : `Summarise the last ${WINDOW_LABELS.find((w) => w.value === windowChoice)?.label} of agent activity.`
-            }
+            data-testid="story-refresh"
+            title="Scan git for new merges and direct feat:/fix: commits, and generate a handoff note for each."
           >
-            {generating ? '…writing' : '✨ Catch me up'}
+            {refreshing ? '…scanning' : '↻ Refresh'}
           </button>
-          <select
-            value={String(windowChoice)}
-            onChange={(e) => {
-              const v = e.target.value;
-              setWindowChoice(v === 'auto' ? 'auto' : (Number(v) as WindowChoice));
-            }}
-            disabled={generating}
-            className="text-[11px] px-1.5 py-1 rounded border border-[--border] bg-[--panel] text-[--text] hover:bg-[--panel-strong] disabled:opacity-50 disabled:cursor-not-allowed"
-            data-testid="story-window-select"
-            title="How far back to look. Auto expands until there's enough to narrate."
-          >
-            {WINDOW_LABELS.map((w) => (
-              <option key={String(w.value)} value={String(w.value)}>{w.label}</option>
-            ))}
-          </select>
-          <span className="ml-auto text-[11px] text-[--text-muted] tabular-nums">{chunks.length}</span>
+          <label className="text-[11px] text-[--text-muted] flex items-center gap-1 ml-auto cursor-pointer" title="Show maintenance-only entries (refactors, test fixes, CI tweaks).">
+            <input
+              type="checkbox"
+              checked={showMaintenance}
+              onChange={(e) => setShowMaintenance(e.target.checked)}
+              className="accent-[color:var(--accent)]"
+              data-testid="story-show-maintenance"
+            />
+            maintenance
+          </label>
+          <span className="text-[11px] text-[--text-muted] tabular-nums">{visibleFeatures.length}</span>
         </div>
         <div className="flex-1 overflow-auto min-h-0">
-          {chunks.length === 0 && !generating && (
+          {features.length === 0 && !refreshing && (
             <div className="p-6 text-[12px] text-[--text-muted] text-center leading-relaxed">
-              Nothing to read yet.
+              No features logged yet.
               <br />
               <br />
-              Press <span className="text-[color:var(--accent)]">✨ Catch me up</span> and I&apos;ll turn the last 15 minutes of agent activity into a short, readable write-up.
+              Press <span className="text-[color:var(--accent)]">↻ Refresh</span> — I&apos;ll walk the git history and write a short handoff note for each change that shipped.
             </div>
           )}
           <ul>
-            {chunks.map((c) => (
-              <li key={c.file}>
+            {visibleFeatures.map((f) => (
+              <li key={f.id}>
                 <button
-                  onClick={() => setSelected(c.file)}
-                  className={`w-full text-left px-3 py-2 border-b border-[--border] hover:bg-[--surface-hover] ${selected === c.file ? 'bg-[--accent-soft]' : ''}`}
-                  data-testid="story-chunk"
+                  onClick={() => { setEditing(false); setSelectedId(f.id); }}
+                  className={`w-full text-left px-3 py-2 border-b border-[--border] hover:bg-[--surface-hover] ${selectedId === f.id ? 'bg-[--accent-soft]' : ''} ${f.kind === 'maintenance' ? 'opacity-60' : ''}`}
+                  data-testid="story-feature-row"
                 >
-                  <div className="text-[13px] text-[--text] truncate">{c.title}</div>
-                  <div className="text-[11px] text-[--text-muted] truncate mt-0.5">{formatWhen(c.ts)}</div>
-                  <div className="text-[11px] text-[--text-muted] truncate mt-0.5 opacity-80">{c.blurb}</div>
+                  <div className="flex items-center gap-1.5 text-[11px] text-[--text-muted] mb-0.5">
+                    <span className="tabular-nums">{formatDate(f.ts)}</span>
+                    {f.prNumber !== null && <span className="text-[color:var(--accent)]">#{f.prNumber}</span>}
+                    {f.kind === 'maintenance' && <span className="px-1 rounded bg-[--panel] text-[10px] uppercase tracking-wide">maintenance</span>}
+                    {f.edited && <span className="text-[10px] italic" title="This entry was hand-edited.">edited</span>}
+                  </div>
+                  <div className="text-[13px] text-[--text] leading-snug">{f.title}</div>
+                  {f.scope && <div className="text-[11px] text-[--text-muted] truncate mt-0.5 font-mono opacity-80">{f.scope}</div>}
                 </button>
               </li>
             ))}
@@ -170,18 +180,29 @@ export function StoryTab({ projectId }: Props) {
         </div>
       </aside>
 
-      {/* Right column: rendered chunk */}
+      {/* Right pane: detail */}
       <section className="flex-1 min-w-0 flex flex-col min-h-0 bg-[--bg]">
         {error && (
           <div className="px-3 py-1.5 text-[11px] text-[--hue-orange-soft-text] bg-[--hue-orange-soft] border-b border-[--border]">
             {error}
           </div>
         )}
-        {html ? (
-          <ChunkFrame html={html} theme={theme} />
+        {selected ? (
+          editing ? (
+            <FeatureEditor
+              title={draftTitle}
+              body={draftBody}
+              onTitle={setDraftTitle}
+              onBody={setDraftBody}
+              onSave={saveEdit}
+              onCancel={cancelEdit}
+            />
+          ) : (
+            <FeatureDetail feature={selected} onEdit={startEdit} />
+          )
         ) : (
           <div className="flex-1 flex items-center justify-center text-[--text-muted] text-sm">
-            {selected ? 'loading…' : 'Select a chunk on the left.'}
+            {features.length === 0 ? 'Press Refresh to build the feed.' : 'Select a feature on the left.'}
           </div>
         )}
       </section>
@@ -189,61 +210,107 @@ export function StoryTab({ projectId }: Props) {
   );
 }
 
-function ChunkFrame({ html, theme }: { html: string; theme: 'light' | 'dark' }) {
-  // Stamp the IDE's current theme onto the chunk's root so the page
-  // matches the surrounding window — the CSS reads `:root[data-theme=...]`
-  // first, falling back to prefers-color-scheme when the attribute is
-  // absent (which is how the file looks when opened standalone).
-  const themed = useMemo(() => withDataTheme(html, theme), [html, theme]);
-  // srcDoc keeps document isolation without needing a blob URL — avoids
-  // Electron CSP edge cases that were showing a blank white iframe.
+function FeatureDetail({ feature, onEdit }: { feature: StoryFeature; onEdit: () => void }) {
+  const html = useMemo(() => renderStoryFeatureBody(feature.body), [feature.body]);
   return (
-    <iframe
-      srcDoc={themed}
-      sandbox="allow-same-origin"
-      className="w-full h-full border-0"
-      data-testid="story-frame"
-      title="Story chunk"
-    />
+    <div className="flex-1 overflow-auto min-h-0 flex flex-col" data-testid="story-feature-detail">
+      <header className="px-6 pt-6 pb-3 border-b border-[--border]">
+        <div className="flex items-center gap-2 text-[11px] text-[--text-muted] mb-1 tabular-nums">
+          <span>{formatFullDate(feature.ts)}</span>
+          {feature.prNumber !== null && <span className="text-[color:var(--accent)]">#{feature.prNumber}</span>}
+          <span className="font-mono">{feature.id}</span>
+          {feature.edited && <span className="italic">· edited</span>}
+          <button
+            onClick={onEdit}
+            className="ml-auto text-[11px] px-2 py-0.5 rounded border border-[--border] text-[--text] hover:bg-[--surface-hover]"
+            data-testid="story-feature-edit"
+            title="Edit this entry's title or prose."
+          >
+            Edit
+          </button>
+        </div>
+        <h1 className="text-[18px] text-[--text] font-medium leading-tight">{feature.title}</h1>
+        {feature.scope && <div className="mt-2 text-[12px] text-[--text-muted] font-mono">{feature.scope}</div>}
+      </header>
+      <article
+        className="px-6 py-5 text-[14px] text-[--text] leading-relaxed story-feature-prose"
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    </div>
   );
 }
 
-function withDataTheme(html: string, theme: 'light' | 'dark'): string {
-  if (!html) return '';
-  // Stamp data-theme on the <html> element (new template reads it) AND
-  // inject a last-wins override so chunks generated before the template
-  // update still match the IDE theme AND use the newer layout density.
-  const overrideVars = theme === 'dark'
-    ? '--bg:#0e0e0d;--fg:#ebe9e6;--muted:#8a8a85;--rule:#2a2a28;--accent:#f97316;--panel:#181816;'
-    : '--bg:#fafaf9;--fg:#1a1a1a;--muted:#666;--rule:#e5e5e5;--accent:#c2410c;--panel:#f3f3f2;';
-  const override = `<style data-ide-theme-override="1">
-    :root{${overrideVars}}
-    main{max-width:60rem !important;padding:1.75rem 2rem 3rem !important;}
-    header{padding-bottom:1rem !important;margin-bottom:1.5rem !important;}
-    h1{font-size:1.6rem !important;margin:0 0 0.4rem !important;}
-    details{margin-top:2rem !important;padding-top:1rem !important;}
-  </style>`;
-  const withTheme = html.replace(/<html\b([^>]*)>/i, (_, attrs) => {
-    const cleaned = String(attrs).replace(/\sdata-theme="[^"]*"/gi, '');
-    return `<html${cleaned} data-theme="${theme}">`;
-  });
-  // Injected right before </head> so it overrides earlier :root blocks.
-  return withTheme.includes('</head>')
-    ? withTheme.replace('</head>', `${override}</head>`)
-    : withTheme + override;
+function FeatureEditor({
+  title,
+  body,
+  onTitle,
+  onBody,
+  onSave,
+  onCancel,
+}: {
+  title: string;
+  body: string;
+  onTitle: (v: string) => void;
+  onBody: (v: string) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="flex-1 flex flex-col min-h-0" data-testid="story-feature-editor">
+      <header className="px-6 pt-6 pb-3 border-b border-[--border] flex items-center gap-2">
+        <input
+          value={title}
+          onChange={(e) => onTitle(e.target.value)}
+          className="flex-1 bg-transparent text-[--text] text-[18px] font-medium outline-none border-b border-transparent focus:border-[color:var(--accent)]"
+          data-testid="story-feature-edit-title"
+        />
+        <button
+          onClick={onCancel}
+          className="text-[11px] px-2 py-1 rounded border border-[--border] text-[--text-muted] hover:bg-[--surface-hover]"
+          data-testid="story-feature-cancel"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={onSave}
+          className="text-[11px] px-2 py-1 rounded border border-[color:var(--accent)]/40 text-[color:var(--accent)] hover:bg-[--accent-soft]"
+          data-testid="story-feature-save"
+        >
+          Save
+        </button>
+      </header>
+      <textarea
+        value={body}
+        onChange={(e) => onBody(e.target.value)}
+        className="flex-1 min-h-0 px-6 py-5 bg-transparent text-[--text] text-[14px] leading-relaxed outline-none resize-none font-mono"
+        data-testid="story-feature-edit-body"
+        spellCheck
+      />
+    </div>
+  );
 }
 
-function formatWhen(iso: string): string {
+/** `2026-11-27T13:00:00Z` → `Nov 27`. Today shows "today"; yesterday "yesterday". */
+function formatDate(iso: string): string {
   try {
     const d = new Date(iso);
     const now = new Date();
-    const sameDay =
-      d.getFullYear() === now.getFullYear() &&
-      d.getMonth() === now.getMonth() &&
-      d.getDate() === now.getDate();
+    const dayMs = 24 * 60 * 60 * 1000;
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const target = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    if (target === startOfToday) return 'today';
+    if (target === startOfToday - dayMs) return 'yesterday';
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  } catch {
+    return iso.slice(0, 10);
+  }
+}
+
+function formatFullDate(iso: string): string {
+  try {
+    const d = new Date(iso);
+    const date = d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
     const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-    if (sameDay) return `today · ${hhmm}`;
-    const date = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
     return `${date} · ${hhmm}`;
   } catch {
     return iso;

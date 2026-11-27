@@ -204,6 +204,17 @@ export interface IpcContract extends MetaprojectIpc {
   'story:generate': { request: { projectId: number; windowMinutes?: number | 'auto' }; response: { chunk: import('./story').StoryChunk } };
 
   /**
+   * Story feature feed — the handoff view. `story:features:list` returns
+   * every stored entry (newest first) for the left rail; `story:features:refresh`
+   * scans git since the last-seen SHA and appends new entries, firing
+   * `story:features:changed` after each one lands so the renderer streams
+   * them in; `story:features:update` lets the human edit a generated entry.
+   */
+  'story:features:list': { request: { projectId: number }; response: { features: import('./story-feature').StoryFeature[]; lastRefresh: string | null } };
+  'story:features:refresh': { request: { projectId: number }; response: { added: number; failed: number } };
+  'story:features:update': { request: { projectId: number; id: string; title?: string; body?: string }; response: { feature: import('./story-feature').StoryFeature } };
+
+  /**
    * Agent chat bus — one entry per human/agent message.
    * `chat:append` serialises writes through the main service so each entry
    * gets a unique id + ts + a fan-out event. `chat:list` paginates from
@@ -623,6 +634,11 @@ export interface IpcEvents extends MetaprojectEvents {
   'activity:changed': { projectId: number; entry: import('./activity').ActivityEntry };
   /** A new story chunk was written; the renderer re-fetches the list. */
   'story:changed': { projectId: number };
+  /** Streams new feature entries to the renderer as refresh writes
+   *  them to disk, one event per entry. `feature: null` means the
+   *  batch finished — the renderer uses it to drop the "refreshing…"
+   *  indicator. */
+  'story:features:changed': { projectId: number; feature: import('./story-feature').StoryFeature | null };
   /** A new chat entry was appended (or an existing one updated with cap-held delivery metadata). */
   'chat:changed': { projectId: number; entry: import('./chat').ChatEntry };
   /** A shell's status badge text changed — one entry per shift. The
