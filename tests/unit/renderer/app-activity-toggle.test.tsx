@@ -16,6 +16,7 @@ const bridge = vi.hoisted(() => ({
   calls: [] as Array<{ channel: string; payload: unknown }>,
   listeners: new Map<string, Set<(payload: unknown) => void>>(),
   holdLocalOpen: null as Promise<{ project: Project }> | null,
+  focus: [] as unknown[],
 }));
 
 vi.mock('@renderer/api', () => ({
@@ -58,7 +59,11 @@ vi.mock('@renderer/hooks/useAgentStates', () => ({
 }));
 vi.mock('@renderer/hooks/useWindowTerminalFocus', () => ({
   useWindowTerminalFocus: () => undefined,
-  terminalFocus: { requestProjectFocus: () => undefined, cancelRequest: () => undefined, requestFocus: () => undefined },
+  terminalFocus: {
+    requestProjectFocus: (projectId: number) => { bridge.focus.push({ project: projectId }); },
+    cancelRequest: () => undefined,
+    requestFocus: (key: { projectId: number; shellIndex: number }) => { bridge.focus.push({ shell: key }); },
+  },
 }));
 vi.mock('@renderer/hooks/useTerminalGeometryHold', () => ({ useTerminalGeometryHold: () => undefined }));
 vi.mock('@renderer/hooks/usePrefersReducedMotion', () => ({ usePrefersReducedMotion: () => false }));
@@ -92,7 +97,8 @@ vi.mock('@renderer/components/ChatTab', () => ({ ChatTab: () => null }));
 vi.mock('@renderer/components/Settings', () => ({ Settings: () => null }));
 vi.mock('@renderer/components/NewProjectDialog', () => ({ NewProjectDialog: ({ open }: { open: boolean }) =>
   open ? <div role="dialog" aria-label="New project">New project</div> : null }));
-vi.mock('@renderer/components/ShellTabsBar', () => ({ ShellTabsBar: () => null }));
+vi.mock('@renderer/components/ShellTabsBar', () => ({ ShellTabsBar: ({ onSelect }: { onSelect: (shellIndex: number) => void }) =>
+  <button onClick={() => onSelect(2)}>Terminal tab 2</button> }));
 vi.mock('@renderer/components/ShellSplit', () => ({ ShellSplit: () => <div data-testid="shell-view" /> }));
 
 let container: HTMLDivElement | null = null;
@@ -208,6 +214,39 @@ it('does not let a pending OS file open replace a later Fleet notice', async () 
   expect(document.querySelector('[data-testid="remote-project-pane"]')?.textContent).toContain('Remote @ Tower');
   expect(bridge.calls.slice(before).map(({ channel }) => channel)).not.toContain('shells:launch');
   expect(stored('metaide.mainTab')).toBe('shell');
+});
+
+describe('selecting a terminal tab focuses its terminal', () => {
+  /** Clicks the button whose accessible label or text is `label` (the destination tabs are icon-only). */
+  const click = async (label: string) => {
+    await act(async () => {
+      [...document.querySelectorAll('button')].find((b) => (b.getAttribute('aria-label') ?? b.textContent) === label)!.click();
+    });
+    await flush();
+  };
+
+  it('clicking the Shell destination asks for the selected project primary terminal (AC1)', async () => {
+    await mount({ activity: true, tab: 'files' });
+    bridge.focus = [];
+    await click('Shell');
+    expect(document.querySelector('[data-testid="shell-view"]')).not.toBeNull();
+    expect(bridge.focus).toEqual([{ project: 1 }]);
+  });
+
+  it('clicking a tab in the terminal tabs bar asks for exactly that shell (AC2)', async () => {
+    await mount({ activity: true, tab: 'shell' });
+    bridge.focus = [];
+    await click('Terminal tab 2');
+    expect(bridge.focus).toEqual([{ shell: { projectId: 1, shellIndex: 2 } }]);
+  });
+
+  it('clicking a non-terminal destination asks for no terminal (AC3)', async () => {
+    await mount({ activity: true, tab: 'shell' });
+    bridge.focus = [];
+    await click('Files');
+    expect(document.querySelector('[data-testid="files-view"]')).not.toBeNull();
+    expect(bridge.focus).toEqual([]);
+  });
 });
 
 describe('App activity-log switch', () => {
