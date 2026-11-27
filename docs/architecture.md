@@ -60,8 +60,31 @@ the `WorkspaceDestinations` controls, but remote navigation and data requests
 are scoped to the paired device and its project ID. Returning to Shell restores
 the selected running session; a fleet notice selects its shell. Shell session
 tabs are polled from `shells.alive` while Shell is visible and use the same
-labels as local sessions (`src/shared/shell-launch-name.ts`). Remote shell
-sessions can be viewed and switched, not added or closed from the tab strip.
+labels as local sessions (`src/shared/shell-launch-name.ts`).
+
+Inside the app, the remote pane uses the same header row as the local
+workspace. App renders one `workspace-header-row` (`remote-workspace-header`)
+in place of the local one and provides it through `WorkspaceHeaderSlotContext`
+(`src/renderer/components/WorkspaceHeaderSlot.tsx`). The pane portals its
+destinations, its terminal tabs bar and its "<project> @ <machine>" identity
+into that row. Without a slot (standalone, in tests) it draws them inline
+above its body. The tabs bar is the shared `ShellTabsBar` on its `remoteMenu`
+path. Chips, the close button on each chip and the + menu act on the host
+through `shells.cliProfiles`, `shells.launchProfile`, `shells.launchPlain`,
+`shells.removeCliProfile`, `shells.setDefaultCli` and `shells.kill`. The menu
+lists only profile names, scopes and icons (`useRemoteShellMenu` drops
+anything else a host sends) and has no custom-command entry. Cmd/Ctrl+T and
+Cmd/Ctrl+W reach the shown remote tab through `RemoteShellCommandsContext`
+while the remote Shell destination shows. Tabs opened or closed here show at
+once and are reconciled with the 3 s poll (`src/renderer/p2p/remote-tabs.ts`,
+`useRemoteTabs.ts`). Closing the shown tab falls back to the picked tab, then
+the first-launched tab, then the first live tab. Closing the last tab leaves
+an empty state (`remote-no-shells`). The pane tells App whether Shell shows,
+so the main sheet takes `data-sheet-content="shell"` exactly as for a local
+Shell tab. A host on an older build answers the tab methods with
+`unknown_method`: its chips still list, switch and close, and the + menu says
+that machine needs a newer MetaLogix IDE (`isOlderHostError`,
+`src/renderer/p2p/err-message.ts`).
 
 Remote Files supports browsing, source previews, text editing and ordinary
 file/folder operations on the host. Binary and rich previews, local file
@@ -1096,7 +1119,8 @@ JS realm, so a module-level instance gives one owner per window.
 |---|---|---|
 | Logic | `src/renderer/terminal-focus.ts` | Classifies the active element, holds the focus rules, and builds the coordinator. DOM-free. |
 | Adapter | `src/renderer/hooks/useWindowTerminalFocus.ts` | Creates the window's one `terminalFocus` coordinator. Owns the `window` `focus` and `blur` listeners and passes the overlay flag in a layout effect. This is defensive: it keeps the flag current before any later task, such as an awaited IPC reply, issues a request. React 18 already flushes passive effects at the end of a click or key commit, so the existing tests pass with either effect. |
-| Presentation | `src/renderer/components/ShellTab.tsx` | Registers its terminal, and reports when it opens, when it is used, and when it unmounts. |
+| Presentation | `src/renderer/components/ShellTab.tsx` | Registers its terminal under `terminalFocusKey`, which adds the host's device id as `machine` for a remote terminal, and reports when it opens, when it is used, and when it unmounts. |
+| Presentation | `src/renderer/p2p/useRemoteTabs.ts`, `src/renderer/components/RemoteProjectPane.tsx` | A remote chip click or a newly opened remote tab requests that shell on its host (`machine: deviceId`); the remote Shell destination requests that host's `primary` terminal. |
 | Presentation | `src/renderer/App.tsx` | Computes the overlay flag, marks the left pane and the popout terminal as `primary`, forwards `shell:focus-request`, popout open, scrollback-search jumps and terminal-tab clicks to `requestFocus`, and project switches (sidebar, command palette, new-project dialog) and Shell-tab clicks to `requestProjectFocus`. |
 
 Rules:
@@ -1117,6 +1141,12 @@ Rules:
 - A new local terminal tab requests focus for its shell when the launch
   succeeds. If the user navigates elsewhere or focuses a different text
   field while the launch waits, the new tab does not take over.
+- A focus key names the machine as well as the project and shell. A key
+  without `machine` means this machine (`LOCAL_TERMINAL_MACHINE`). A request
+  only matches a terminal on the same machine, and `requestProjectFocus`
+  without a machine only matches this machine's `primary` terminals, so a
+  remote terminal with the same project id is never focused by a local
+  project switch.
 - A request expires after `FOCUS_REQUEST_TTL_MS`. It is honoured when no
   overlay is open and no text-entry element has focus, checked when the
   terminal opens, or at once when it is already open. A window blur drops
