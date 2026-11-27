@@ -265,7 +265,7 @@ export interface P2PSettings {
 }
 export type P2PSettingsView = P2PSettings & { deviceFingerprint: string };
 
-/** Error codes the shell-tab RPCs raise as `RpcError`s, shared by the hub and its tests. */
+/** Error codes the shell-tab RPCs raise as `RpcError`s from the hub; `forbidden` comes from the shared workspace grant check. */
 export const SHELL_TAB_RPC_ERRORS = {
   forbidden: 'forbidden',
   customCommand: 'custom_command',

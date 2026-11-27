@@ -99,6 +99,7 @@ import { useAgentFileFollow } from './hooks/useAgentFileFollow';
 import type { SheetContent } from './frosted-chrome-contract';
 import { WorkspaceHeaderSlotContext } from './components/WorkspaceHeaderSlot';
 import { RemoteShellCommandsContext, type RemoteShellCommands } from './components/RemoteShellCommands';
+import { REMOTE_PANE_TESTIDS } from './remote-pane-contract';
 
 
 interface PopoutInfo {
@@ -182,11 +183,8 @@ function MainApp() {
   const [remotePane, setRemotePane] = useState<OpenPaneRequest | null>(null);
   const remotePaneRef = useRef(remotePane);
   remotePaneRef.current = remotePane;
-  // ⌘T / ⌘W reach a remote project's shell tabs through this ref (filled by its Shell view).
   const remoteShellCommandsRef = useRef<RemoteShellCommands | null>(null);
-  // The header row a remote project pane portals its tabs, shell strip and actions into (same layout as the local header).
   const [remoteHeaderSlot, setRemoteHeaderSlot] = useState<HTMLElement | null>(null);
-  // Whether the remote pane shows its Shell tab; the main sheet then takes the shell styling, as for a local Shell tab.
   const [remoteSheetContent, setRemoteSheetContent] = useState<SheetContent>('other');
   const localWorkspaceProject = remotePane ? null : selected;
   function openLocalWorkspaceFile(relPath: string, line: number | null): void {
@@ -1172,7 +1170,7 @@ function MainApp() {
           )}
         </AnimatePresence>
         <div className="workspace-header-container flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden" data-testid="main-column">
-            {remotePane && <header ref={setRemoteHeaderSlot} className="workspace-header-row drag relative shrink-0 items-center gap-x-1.5 gap-y-1 px-3 py-1.5 text-xs text-[--text]" data-testid="remote-workspace-header" />}
+            {remotePane && <header ref={setRemoteHeaderSlot} className="workspace-header-row drag relative shrink-0 items-center gap-x-1.5 gap-y-1 px-3 py-1.5 text-xs text-[--text]" data-testid={REMOTE_PANE_TESTIDS.header} />}
             {!remotePane && <header className="workspace-header-row drag relative shrink-0 items-center gap-x-1.5 gap-y-1 px-3 py-1.5 text-xs" data-testid={DIFF_TESTIDS.tabBar}>
               <WorkspaceDestinations active={boardVisible ? null : mainTab} activityEnabled={activityEnabled}
                 diffCount={diffCount} envDirty={envDirty}

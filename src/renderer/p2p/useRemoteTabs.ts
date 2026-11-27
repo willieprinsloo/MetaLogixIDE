@@ -24,6 +24,8 @@ export interface RemoteTabs {
   readonly shellIndex: number | null;
   /** Why the pane's first `shells.launch` failed, if it did. */
   readonly error: string | null;
+  /** Whether the pane's first `shells.launch` has settled (either way); until then the pane is still loading. */
+  readonly attached: boolean;
   readonly select: (shellIndex: number) => void;
   readonly open: (method: RemoteOpenMethod, params: Record<string, unknown>, onLaunched?: ShellLaunched) => Promise<void>;
   readonly close: (shellIndex: number) => void;
@@ -44,16 +46,18 @@ const without = (set: ReadonlySet<number>, index: number): ReadonlySet<number> =
 function useLaunchedShell(call: RemoteCall) {
   const [launched, setLaunched] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [attached, setAttached] = useState(false);
   useEffect(() => {
     let cancelled = false;
     setError(null);
+    setAttached(false);
     call('shells.launch', {}).then(
-      ({ result }) => { if (!cancelled) setLaunched(rpcIndex(result) ?? 0); },
-      (e: unknown) => { if (!cancelled) setError(errMessage(e)); },
+      ({ result }) => { if (!cancelled) { setLaunched(rpcIndex(result) ?? 0); setAttached(true); } },
+      (e: unknown) => { if (!cancelled) { setError(errMessage(e)); setAttached(true); } },
     );
     return () => { cancelled = true; };
   }, [call]);
-  return { launched, setLaunched, error };
+  return { launched, setLaunched, error, attached };
 }
 
 /** Tabs opened or closed here, kept until the host's polled list agrees. */
@@ -91,7 +95,7 @@ export function useRemoteTabs(deviceId: string, projectId: number, active: boole
   const { shells: polled, refresh } = useRemoteProjectShells(deviceId, projectId, active);
   const call = useCallback<RemoteCall>((method, params) =>
     api.invoke('p2p:rpc-call', { deviceId, method, params: { projectId, ...params } }), [deviceId, projectId]);
-  const { launched, setLaunched, error } = useLaunchedShell(call);
+  const { launched, setLaunched, error, attached } = useLaunchedShell(call);
   const [picked, setPicked] = useState<number | null>(initialShellIndex ?? null);
   useEffect(() => { if (initialShellIndex !== undefined) setPicked(initialShellIndex); }, [initialShellIndex, openRequest]);
   const tabs = useOptimisticTabs(polled);
@@ -128,7 +132,7 @@ export function useRemoteTabs(deviceId: string, projectId: number, active: boole
     });
   }, [shells, picked, launched, setLaunched, markClosing, settleClose, call, refresh]);
 
-  return { shells, shellIndex, error, select, open, close, call };
+  return { shells, shellIndex, error, attached, select, open, close, call };
 }
 
 const PROFILE_SCOPES: ReadonlySet<unknown> = new Set(['project', 'global']);

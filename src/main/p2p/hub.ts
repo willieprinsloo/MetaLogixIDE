@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, lstat
 import { homedir, hostname } from 'node:os';
 import { dirname, join, parse, resolve, sep } from 'node:path';
 import { z } from 'zod';
-import { RpcMethods, type Params, type Result, type RpcMethodName } from '../../shared/p2p-contract';
+import { RpcMethods, SHELL_TAB_RPC_ERRORS, type Params, type Result, type RpcMethodName } from '../../shared/p2p-contract';
 import type { Services } from '../services';
 import type { Project } from '../../shared/types';
 import { emitAliveShellsChanged, emitProjectsChanged, handlers, mergedCliProfiles } from '../ipc/register';
@@ -315,7 +315,7 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
 
   const projectRoot = (projectId: number): string => {
     const p = s.projects.get(projectId);
-    if (!p) throw new RpcError('unknown_project', `no project ${projectId}`);
+    if (!p) throw new RpcError(SHELL_TAB_RPC_ERRORS.unknownProject, `no project ${projectId}`);
     return p.path;
   };
 
@@ -330,7 +330,7 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
 
   on('projects.get', async ({ id }) => {
     const p = s.projects.get(id);
-    if (!p) throw new RpcError('unknown_project', `no project ${id}`);
+    if (!p) throw new RpcError(SHELL_TAB_RPC_ERRORS.unknownProject, `no project ${id}`);
     return { ...p };
   });
 
@@ -370,7 +370,7 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
   /** Resolves the project or raises `unknown_project`. */
   const projectOrThrow = (projectId: number): Project => {
     const project = s.projects.get(projectId);
-    if (!project) throw new RpcError('unknown_project', `no project ${projectId}`);
+    if (!project) throw new RpcError(SHELL_TAB_RPC_ERRORS.unknownProject, `no project ${projectId}`);
     return project;
   };
 
@@ -388,7 +388,7 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
   on('shells.launchProfile', async ({ projectId, profileName }) => {
     const project = projectOrThrow(projectId);
     const launchable = mergedCliProfiles(project.config.cliProfiles ?? null, s.settings.get('default_cli_profiles'));
-    if (!launchable.some((p) => p.name === profileName)) throw new RpcError('unknown_profile', `no CLI profile named "${profileName}"`);
+    if (!launchable.some((p) => p.name === profileName)) throw new RpcError(SHELL_TAB_RPC_ERRORS.unknownProfile, `no CLI profile named "${profileName}"`);
     const r = await handlers['shells:launch-cli'](s, { projectId, profileName });
     events.aliveShellsChanged();
     events.projectsChanged();
@@ -413,9 +413,9 @@ export function wireHub(peer: RpcPeer, opts: HubOptions): HubHandle {
   on('shells.setDefaultCli', async ({ projectId, name }) => {
     const project = projectOrThrow(projectId);
     if (!desktopAllowed()) throw workspaceForbidden();
-    if (hasCustomLaunchCommand(project)) throw new RpcError('custom_command', 'this project uses a custom launch command');
+    if (hasCustomLaunchCommand(project)) throw new RpcError(SHELL_TAB_RPC_ERRORS.customCommand, 'this project uses a custom launch command');
     const result = setProjectDefaultAgent(s, { projectId, name });
-    if (!result.ok) throw new RpcError('unknown_profile', result.error);
+    if (!result.ok) throw new RpcError(SHELL_TAB_RPC_ERRORS.unknownProfile, result.error);
     events.projectsChanged();
     return { defaultName: result.project.config.defaultCliName ?? null };
   });

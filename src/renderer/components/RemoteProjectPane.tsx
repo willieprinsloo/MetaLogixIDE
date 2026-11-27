@@ -216,7 +216,7 @@ function RemoteProjectShells({ active, deviceId, deviceName, projectId, projectN
       {slot ? createPortal(bar, slot) : <div className="shrink-0 py-1" aria-label={`Shells of ${projectName} on ${hostLabel}`} data-testid={REMOTE_PANE_TESTIDS.shellTabs}>{bar}</div>}
       <div className="flex-1 min-h-0 relative">
         {error && shells.length === 0 && <div className="p-4 text-[12px] text-[--danger]">Could not open remote shell: {error}</div>}
-        {!error && shellIndex === null && shells.length === 0 && (
+        {tabs.attached && !error && shellIndex === null && shells.length === 0 && (
           <div className="p-4 text-[12px] text-[--text-muted]" data-testid={REMOTE_PANE_TESTIDS.noShells}>No terminals open on {hostLabel}. Use + to open one.</div>
         )}
         {shellIndex !== null && (

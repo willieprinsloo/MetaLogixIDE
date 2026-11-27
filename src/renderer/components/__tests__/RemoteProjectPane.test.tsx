@@ -635,6 +635,30 @@ describe('RemoteProjectPane', () => {
       }
     });
 
+    test('while the first launch is pending the empty state stays hidden; once settled with no shells it shows (AC15, AC16)', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const launch = deferred<{ shellIndex: number }>();
+        fakeHost({ 'shells.launch': () => launch.promise, 'shells.kill': () => { alive = []; return { ok: true }; } });
+        alive = [];
+        renderPane();
+        await waitFor(() => expect(rpc('shells.alive').length).toBeGreaterThan(0));
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        expect(screen.getByTestId('tabbar-new-shell')).toBeTruthy();
+        expect(screen.queryByTestId('remote-no-shells')).toBeNull();
+        expect(shown()).toBeNull();
+        alive = [row(2, ['claude'])];
+        await act(async () => { launch.resolve({ shellIndex: 2 }); });
+        await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+        await waitFor(() => expect(chips()).toHaveLength(1));
+        expect(screen.queryByTestId('remote-no-shells')).toBeNull();
+        fireEvent.click(screen.getByRole('button', { name: 'Close Claude' }));
+        expect((await screen.findByTestId('remote-no-shells')).textContent).toBe('No terminals open on Tower. Use + to open one.');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     test('a poll that lists the new shell before its launch returns leaves exactly one chip, selected on return (AC17)', async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
       try {
