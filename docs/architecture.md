@@ -1087,8 +1087,8 @@ Rules:
 ### Terminal focus
 
 When a window gains OS focus, the user switches project, or the user clicks
-the Shell tab or a terminal tab, the visible shell terminal takes keyboard focus, so typing goes to the Claude Code
-prompt without a click. One
+the Shell tab or a terminal tab, the visible shell terminal takes keyboard
+focus, so typing goes to the Claude Code prompt without a click. One
 coordinator per window makes the decision. Each renderer window is its own
 JS realm, so a module-level instance gives one owner per window.
 
@@ -1109,11 +1109,11 @@ Rules:
   opens, and the rule is checked again at that moment.
 - A notification click, a popout open, a jump from scrollback search or a
   click on a terminal tab requests that specific shell. A click on the Shell
-  tab requests the selected project's `primary` terminal. A project switch requests the target
-  project's `primary` (left-pane) terminal, whichever shell it shows. There
-  is one pending request; a newer one replaces it, and starting a new
-  switch or scrollback jump cancels it. A switch that lands on the Files
-  tab requests nothing.
+  tab requests the selected project's `primary` terminal. A project switch
+  requests the target project's `primary` (left-pane) terminal, whichever
+  shell it shows. There is one pending request; a newer one replaces it,
+  and starting a new switch or scrollback jump cancels it. A switch that
+  lands on the Files tab requests nothing.
 - A new local terminal tab requests focus for its shell when the launch
   succeeds. If the user navigates elsewhere or focuses a different text
   field while the launch waits, the new tab does not take over.
