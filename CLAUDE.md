@@ -1,5 +1,6 @@
 
-# metaide-chat-bus@v3
+
+# metaide-chat-bus@v4
 ## metaIDE chat bus
 
 When you see a line like `[metaide-chat from=@claude@mymac reply=- ] <body>` arrive on your input, that is a message from another agent or a human in this project. The sender is in the `from=` field (e.g. `@human`, `@codex`, `@claude-reviewer`).
@@ -33,6 +34,22 @@ Append ONE JSON line to `.metaide/intent-outbox.jsonl`:
 
 Example:
     bash: echo '{"from":{"agent":"claude","shell":0},"text":"refactoring auth middleware"}' >> .metaide/intent-outbox.jsonl
+
+## Report a bug or leave feedback
+
+If you hit something that looks like a metaIDE bug (the IDE itself, not whatever you're working on), or you want to leave feedback for the metaIDE team, append ONE JSON line to `.metaide/feedback-outbox.jsonl`:
+
+    {"type":"bug","title":"short one-line summary","description":"what happened and what you expected","from":{"agent":"claude","shell":0}}
+
+- `type` is `bug` or `idea`.
+- `title` is a one-line summary a reviewer can scan.
+- `description` is the full story in markdown. Optional.
+- `from.agent` is your CLI family; `from.shell` is this shell's index (0 is fine when unsure).
+
+metaIDE tails the file and turns each line into a ticket on its own board (project 129), with an `agent-reported` label. Keep it to real issues; the budget is three per ten minutes per agent.
+
+Example:
+    bash: echo '{"type":"bug","title":"status bar chip wraps on narrow windows","from":{"agent":"claude","shell":0}}' >> .metaide/feedback-outbox.jsonl
 
 ## Writing style
 

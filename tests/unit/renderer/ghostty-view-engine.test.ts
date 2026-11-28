@@ -148,7 +148,10 @@ function observeFrame() {
 }
 
 function interaction(platform: 'mac' | 'linux' = 'linux') {
-  return { platform, keys: vi.fn(() => false), openWebLink: vi.fn(), focused: vi.fn(), paintBackdrop: vi.fn() };
+  return {
+    platform, keys: vi.fn(() => false), openWebLink: vi.fn(), openHyperlink: vi.fn(),
+    focused: vi.fn(), paintBackdrop: vi.fn(),
+  };
 }
 
 beforeEach(() => {
@@ -402,6 +405,22 @@ describe('Ghostty view adapter', () => {
     expect(linkRegistration.dispose).toHaveBeenCalledOnce();
     expect(terminal.dispose).toHaveBeenCalledOnce();
     expect(host.querySelector('[data-terminal-find]')).toBeNull();
+    expect(host.hasAttribute(GHOSTTY_HOST_ATTRIBUTE)).toBe(false);
+  });
+
+  it('routes OSC-8 hyperlink clicks through the interaction handler attached on reveal', async () => {
+    const { open, host } = setup();
+    const view = await open();
+    const handlers = interaction();
+    view.reveal(handlers);
+    const options = vendor.create.mock.calls[0]?.[0];
+    expect(options?.linkHandler?.activate).toBeTypeOf('function');
+    const range = { start: { x: 1, y: 1 }, end: { x: 7, y: 1 } };
+    options?.linkHandler?.activate(new MouseEvent('click'), 'https://example.test/preview', range);
+    expect(handlers.openHyperlink.mock.calls).toEqual([['https://example.test/preview']]);
+    view.dispose();
+    options?.linkHandler?.activate(new MouseEvent('click'), 'https://after-dispose', range);
+    expect(handlers.openHyperlink.mock.calls).toEqual([['https://example.test/preview']]);
     expect(host.hasAttribute(GHOSTTY_HOST_ATTRIBUTE)).toBe(false);
   });
 

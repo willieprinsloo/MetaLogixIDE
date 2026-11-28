@@ -95,6 +95,22 @@ function openTerminalWebLink(url: string): void {
   void api.invoke('app:open-external', { url }).catch(() => toast('Could not open terminal link', { kind: 'error' }));
 }
 
+/**
+ * OSC-8 hyperlink activation — scheme-guarded, routes file:// inside a
+ * project to the IDE's Files tab via `metaide:open-in-files`, and anything
+ * else (http(s), mailto) to the OS default handler. Shared by the xterm
+ * fallback and the Ghostty engine so the behaviour cannot drift.
+ */
+function openTerminalHyperlink(url: string): void {
+  void openSafeHyperlink(url, {
+    invokeOpenExternal: (u) => api.invoke('app:open-external', { url: u }),
+    invokeResolveLocal: (u) => api.invoke('app:resolve-local-file', { url: u }),
+    openInIde: (projectId, relPath) => {
+      window.dispatchEvent(new CustomEvent('metaide:open-in-files', { detail: { projectId, relPath } }));
+    },
+  });
+}
+
 type StreamHandlers = { data: (d: string) => void; exit: (code: number | null) => void };
 
 interface RemoteShellWiring {
@@ -270,18 +286,7 @@ export function ShellTab({
       // linkHandler is set. Routes through the same scheme-guarded helper
       // + app:open-external path as plain-text URLs.
       linkHandler: {
-        activate: (_ev, text) => {
-          void openSafeHyperlink(text, {
-            invokeOpenExternal: (url) => api.invoke('app:open-external', { url }),
-            invokeResolveLocal: (url) => api.invoke('app:resolve-local-file', { url }),
-            openInIde: (projectId, relPath) => {
-              // Broadcast to App.tsx, which owns the route switch and
-              // openInFiles state. CustomEvent avoids threading a callback
-              // through every shell host.
-              window.dispatchEvent(new CustomEvent('metaide:open-in-files', { detail: { projectId, relPath } }));
-            },
-          });
-        },
+        activate: (_ev, text) => openTerminalHyperlink(text),
       },
       macOptionClickForcesSelection: true,
       scrollback: TERMINAL_SCROLLBACK_LINES,
@@ -313,15 +318,7 @@ export function ShellTab({
     term.loadAddon(unicode11);
     term.unicode.activeVersion = '11';
     // Plain-text URL clicks route through the same scheme-guarded helper as OSC-8.
-    term.loadAddon(new WebLinksAddon((_ev: MouseEvent, url: string) => {
-      void openSafeHyperlink(url, {
-        invokeOpenExternal: (u) => api.invoke('app:open-external', { url: u }),
-        invokeResolveLocal: (u) => api.invoke('app:resolve-local-file', { url: u }),
-        openInIde: (projectId, relPath) => {
-          window.dispatchEvent(new CustomEvent('metaide:open-in-files', { detail: { projectId, relPath } }));
-        },
-      });
-    }));
+    term.loadAddon(new WebLinksAddon((_ev: MouseEvent, url: string) => openTerminalHyperlink(url)));
     // Clipboard writes from remote shells via OSC 52 (Frits #71).
     const clipboard = {
       writeText: (text) => navigator.clipboard.writeText(text),
@@ -630,7 +627,8 @@ export function ShellTab({
           ghosttyRef.current = candidate ?? null;
           if (candidate) {
             candidate.reveal({ platform: platformRef.current, keys, pathLinks: remoteDeviceId ? undefined : pathLinks,
-              openWebLink: openTerminalWebLink, focused: focusReg.used, paintBackdrop });
+              openWebLink: openTerminalWebLink, openHyperlink: openTerminalHyperlink,
+              focused: focusReg.used, paintBackdrop });
             if (standbyElement) standbyElement.style.visibility = 'hidden';
             candidateHost.inert = false;
             show(candidate.surface);
