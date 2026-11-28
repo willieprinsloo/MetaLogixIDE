@@ -175,4 +175,14 @@ describe('Agents dock surface', () => {
     expect(close).not.toBeNull();
     expect(dock.querySelector('[data-testid="agent-chat-bar"]')!.contains(close)).toBe(true);
   });
+
+  it('shrinks before it squeezes the main column, which keeps a usable minimum width', async () => {
+    await mount();
+    const dock = classes(document.querySelector('[data-testid="agents-dock"]'));
+    const main = classes(document.querySelector('[data-testid="main-column"]'));
+    expect(dock).not.toContain('shrink-0');
+    expect(dock).toEqual(expect.arrayContaining(['shrink', 'min-w-[240px]']));
+    expect(main).toContain('min-w-[360px]');
+    expect(main).not.toContain('min-w-0');
+  });
 });

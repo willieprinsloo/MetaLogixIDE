@@ -1185,7 +1185,7 @@ function MainApp() {
             </FoldPane>
           )}
         </AnimatePresence>
-        <div className="workspace-header-container flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden" data-testid="main-column">
+        <div className="workspace-header-container flex flex-1 flex-col min-h-0 min-w-[360px] overflow-hidden" data-testid="main-column">
             {!remotePane && !boardVisible && (
               <MetaprojectBindPrompt
                 projectId={localWorkspaceProject?.id ?? null}
@@ -1387,7 +1387,7 @@ function MainApp() {
               onDraggingChange={setColumnDragging}
             />
             <aside
-              className="shrink-0 mr-2 flex flex-col min-h-0"
+              className="shrink min-w-[240px] mr-2 flex flex-col min-h-0"
               style={{ width: agentsDockWidth }}
               data-testid="agents-dock"
               aria-label="Agents"
