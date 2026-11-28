@@ -108,7 +108,8 @@ async function closeDock(win: Page): Promise<void> {
 
 /** Puts focus on the activity bar's blank area, so a shortcut is not typed into a terminal. */
 async function focusOutOfTerminal(win: Page): Promise<void> {
-  await win.getByTestId('activity-bar').click({ position: { x: 20, y: 400 } });
+  // Blur rather than click the activity bar: a fixed-offset click can land on a view button in a tall window and switch away from the terminal.
+  await win.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); });
 }
 
 /** Sets the dock open or closed with ⌘J (one step) and waits for rest. Uses the shortcut so it never slides. */
@@ -294,8 +295,21 @@ function assertRefit(frames: Frame[], what: string, tEnd: number): void {
   const log = logOf(frames, what);
   expect(frames.every((f) => f.s.screen?.present), `${what}: terminal present on every frame (control)${log}`).toBe(true);
   const ch = changes(frames, screenKey);
-  expect(ch.length, `${what}: AC13 terminal resized at most once${log}`).toBeLessThanOrEqual(1);
+  expect.soft(ch.length, `${what}: AC13 terminal resized at most once${log}`).toBeLessThanOrEqual(1);
   if (ch.length === 1) expect(frames[ch[0]!]!.t, `${what}: AC13 the refit comes after the slide ended${log}`).toBeGreaterThanOrEqual(tEnd);
+}
+
+/**
+ * AC13 as amended for AC11 (spec Decision 9): a shortcut that ends a pointer slide may cause one
+ * extra transient refit, so the terminal size changes at most twice, and the last change lands at or
+ * after the end state. Deferred follow-up: hold the terminal until the final layout lands.
+ */
+function assertShortcutRefit(frames: Frame[], what: string, tEnd: number): void {
+  const log = logOf(frames, what);
+  expect(frames.every((f) => f.s.screen?.present), `${what}: terminal present on every frame (control)${log}`).toBe(true);
+  const ch = changes(frames, screenKey);
+  expect(ch.length, `${what}: AC13 (Decision 9) terminal resized at most twice${log}`).toBeLessThanOrEqual(2);
+  if (ch.length > 0) expect(frames[ch[ch.length - 1]!]!.t, `${what}: AC13 (Decision 9) the last refit is at or after the end state${log}`).toBeGreaterThanOrEqual(tEnd);
 }
 
 /* ─────────────────────────────── groups ─────────────────────────────── */
@@ -500,6 +514,7 @@ test('AC11: a shortcut during a pointer slide ends it in the shortcut\'s end sta
     ];
     for (const c of cases) {
       await ensureDock(win, c.from);
+      expect.soft(await win.locator(T.screen).count(), `${c.name}: precondition: the primary terminal's .xterm-screen exists`).toBe(1);
       await startFrames(win, T, 1500);
       await win.getByTestId(AGENTS_DOCK_TESTIDS.toggle).click();
       await win.waitForTimeout(90);
@@ -514,6 +529,9 @@ test('AC11: a shortcut during a pointer slide ends it in the shortcut\'s end sta
       expect(after.length, `${c.name}: frames after the keydown${log}`).toBeGreaterThan(4);
       expect(after.slice(2).every((f) => Math.abs(rightOf(f) - rEnd) <= 0.5), `${c.name}: AC11 one step to the end state within 2 frames${log}`).toBe(true);
       expect(Math.max(...frames.map((f) => f.s.dock!.count)), `${c.name}: AC11 at most one dock${log}`).toBeLessThanOrEqual(1);
+      const tReached = firstT(frames, (f) => f.t > pressed && Math.abs(rightOf(f) - rEnd) <= 0.5);
+      expect(tReached, `${c.name}: the end state was reached${log}`).not.toBeNull();
+      assertShortcutRefit(frames, `${c.name} (AC13 via AC11)`, tReached!);
       await expect(win.locator(DOCK)).toHaveCount(c.endOpen ? 1 : 0);
       await settle(win);
       expect(Math.abs((await rest(win)).mainRight - rEnd), `${c.name}: ends at rest in the end state${log}`).toBeLessThanOrEqual(0.5);
