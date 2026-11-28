@@ -31,6 +31,11 @@ interface GhosttyInteraction {
   readonly keys: (event: KeyboardEvent) => boolean;
   readonly pathLinks?: (text: string) => readonly TerminalFileLink[];
   readonly openWebLink: (url: string) => void;
+  // OSC-8 hyperlink activation (ESC ] 8 ; ; URL BEL text ESC ] 8 ; ; BEL):
+  // Codex and other TUIs emit these to render underlined, blue-styled text
+  // whose URL is the link payload. xterm parses them but swallows the
+  // click unless the linkHandler has a real activate function.
+  readonly openHyperlink: (url: string) => void;
   readonly focused: () => void;
   readonly paintBackdrop: (color: string | undefined) => void;
 }
@@ -103,11 +108,17 @@ export async function openGhosttyView(
     queueMicrotask(() => { if (!disposed) handlers.fault(); });
   }
   const quiet = () => {};
+  // Populated by reveal(); cleared by dispose() so a late click after
+  // teardown no-ops instead of reaching a stale handler.
+  let openHyperlink: ((url: string) => void) | undefined;
   const terminal = new Terminal({
     ...appearance,
     scrollback: 12_000,
     allowTransparency: true,
-    linkHandler: { allowNonHttpProtocols: false, activate: quiet },
+    linkHandler: {
+      allowNonHttpProtocols: false,
+      activate: (_ev, text) => { openHyperlink?.(text); },
+    },
     logger: { trace: quiet, debug: quiet, info: quiet, warn: quiet, error: fault },
     gespenst: { ...runtime, worker: false, renderer: 'webgl2' },
   });
@@ -115,6 +126,7 @@ export async function openGhosttyView(
   function dispose() {
     if (disposed) return;
     disposed = true;
+    openHyperlink = undefined;
     signal.removeEventListener('abort', dispose);
     host.removeEventListener('webglcontextlost', fault, true);
     for (const listener of disposables) listener.dispose();
@@ -179,6 +191,7 @@ export async function openGhosttyView(
     },
     reveal(interaction) {
       if (disposed || faulted) return;
+      openHyperlink = interaction.openHyperlink;
       disposables.push(watchTerminalBackdrop(terminal, interaction.paintBackdrop, {
         // Reading even one edge cell can unpack a block of Ghostty's grid.
         intervalMs: 125,
