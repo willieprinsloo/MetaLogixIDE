@@ -426,6 +426,15 @@ so it gets the Shell sheet's surface and 14px corners, but it draws no
 border. The composer sits below the panel, on the chrome, and its text box
 is a little darker than the panel. The roster bar and the composer have no
 horizontal padding, so they line up with the panel's edges.
+The dock slides in and out when the user clicks the Agents button in the
+activity bar or the dock's close button. It uses the same fold as the
+sidebar (see "Split shell and motion"). Other changes switch it in one
+step: ⌘J, ⇧⌘A, the start-up migration, app start, a remote pane, and a
+project change that shows or hides the dock. Its width is 340px by default
+(the user can resize it from 260px to 640px) and it shrinks to 240px, plus
+an 8px right margin, so the main column keeps 360px (PR #35). The slide
+keeps this shrink, because the dock's final width is a CSS `clamp` of the
+`.workspace-row` width (see the motion rules).
 Dialogs and popovers keep their edges because they float.
 
 `src/renderer/styles.css` ("Chrome surfaces and semantic hues") derives every
@@ -1063,6 +1072,10 @@ kill.
 | Presentation | `src/renderer/components/ShellTabsBar.tsx`, `SplitPill.tsx` | The tab strip: chips, the new-shell menu, and the labelled **Split** toggle (`aria-pressed`). |
 | Presentation | `src/renderer/components/ShellSplit.tsx`, `SplitPaneHeader.tsx`, `SplitGutter.tsx`, `FoldPane.tsx` | Split mode: pane cards, headers (dot, label, abbreviated project path, To tab, Close), the focused-pane ring, and the resizable gutter (**Resize panes**, arrow keys move it by 2%). |
 | Logic | `src/renderer/shell-label.ts`, `split-ratio.ts`, `split-copy.ts` | Chip labels and which shells the strip hides; the ratio default, clamp and sanitising; exact test ids and copy. |
+| Presentation | `src/renderer/components/FoldPane.tsx` (shared fold) | Takes a `size`: `{ share }`, `'intrinsic'`, or `{ clamp: { min, max, reserve } }`. The clamp sets `--fold-size` to `clamp(min, 100cqw - reserve, max)` in CSS, against the nearest inline-size container. Optional `options`: `inertWhileExiting` (blur focus and set `inert` on a leaving pane) `startBleedPx` (widen the clip box past the start edge) and `snapOnInstant` (when `custom.instant` turns on while the pane stays, jump a running fold to its end in one step). All are off by default, so the sidebar and split do not change. |
+| Presentation | `src/renderer/styles.css` (`.workspace-row`) | `.workspace-row` holds the main column and the Agents dock. It is an inline-size container (`container-type: inline-size`), which is the `100cqw` base of the dock's clamp. It is not a containing block for `position: fixed` descendants (size containment does not create one), so fixed elements inside it are still placed against the window. |
+| Logic | `src/renderer/agents-dock-fold.ts`, `agents-dock-layout.ts`, `agents-dock-copy.ts` | The pure fold state machine (`stepDockFold`: only a pointer toggle with a visible dock animates; a shortcut during a running slide ends it in one step and the terminal hold is released when the dock reaches its end state; a context change is instant and drops a running fold). The layout constants 240, 8 and 360 (they must match the App classes `min-w-[240px]`, `mr-2`, `min-w-[360px]`). The dock's test ids. |
+| Adapter | `src/renderer/hooks/useAgentsDockFold.ts` | Runs the state machine each render, holds terminal geometry during a pointer slide, and reads reduced motion live. The hold watchdog counts as fold complete, so the next slide takes a fresh hold. |
 | Logic | `src/renderer/pane-fold.ts`, `pending-kill.ts`, `terminal-geometry-hold.ts`, `menu-motion.ts`, `motion-tokens.ts` | Fold and menu transitions, shells awaiting a kill or an activation after their exit, the terminal size hold, and the shared durations and easings. |
 | Adapter | `src/renderer/hooks/useTerminalGeometryHold.ts`, `usePrefersReducedMotion.ts` | Holds terminal refits while a fold runs; reads the OS reduced-motion setting live. |
 | State | `src/renderer/hooks/useSplitLifecycle.ts`, `src/renderer/App.tsx` | The hook owns close, To tab, and the pending kill and activation sets with their flush and focus effects; App holds `rightShellIndex`, `splitRatio` and the sidebar fold, and wires the hook. |
@@ -1081,9 +1094,25 @@ Rules:
   mid-fold toggle. The left terminal is never remounted by a split open
   or close.
 - Keyboard toggles (⌘B or Ctrl+B, ⌘\ or Ctrl+\, palette commands) stay instant.
+- The Agents dock is also a `--fold` fold. It anchors at its start edge
+  and slides only on a pointer toggle (activity-bar button, dock close
+  button). ⌘J, ⇧⌘A, the start-up migration, app start and context changes
+  (remote pane, project selection) switch it in one step. A context change
+  also drops a fold that is running. A shortcut pressed while the dock is
+  sliding ends the slide in one step (⇧⌘A snaps it fully open). Terminals
+  hold their size during the slide, like other folds, and refit once.
+- The dock's final width is `clamp(248px, 100cqw - 360px, width + 8px)`
+  against `.workspace-row`, where `width` is the saved dock width. The
+  clamp lives in CSS, so a narrow window keeps PR #35's shrink at every
+  frame of the slide. The main column keeps at least 360px.
+- A leaving dock is inert. Focus inside it is blurred when the exit starts
+  and the `inert` attribute is set until it unmounts.
+- The dock's resize handle overhangs the dock by 2px. `startBleedPx: 2`
+  widens the clip box so the handle stays painted and can be hit.
 - With reduced motion, panes and menus fade (at least 150ms) and the
-  layout changes in one step. The panes read the setting live because
-  motion's `useReducedMotion` reads it once per mount.
+  layout changes in one step. The Agents dock does the same as the
+  sidebar. The panes read the setting live because motion's
+  `useReducedMotion` reads it once per mount.
 - `ContextMenu` and the new-shell menu animate in and out. A leaving menu
   drops its backdrop, role and test id and takes no pointer or keyboard
   input; reopening during an exit reuses the same instance, and a menu

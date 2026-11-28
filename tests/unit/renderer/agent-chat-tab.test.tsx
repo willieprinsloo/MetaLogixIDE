@@ -193,6 +193,14 @@ describe('AgentChatTab dock layout', () => {
     expect(cls(composer)).not.toContain('border-t');
   });
 
+  it('wraps the roster bar instead of clipping it, so Start round stays visible', async () => {
+    const { container } = render(<AgentChatTab projectId={1} selfDevice="laptop" />);
+    await screen.findByText('hello');
+    const bar = cls(container.querySelector('[data-testid="agent-chat-bar"]'));
+    expect(bar).toContain('flex-wrap');
+    expect(bar).not.toContain('overflow-x-auto');
+  });
+
   it('gives the roster bar no horizontal padding', async () => {
     const { container } = render(<AgentChatTab projectId={1} selfDevice="laptop" />);
     await screen.findByText('hello');
