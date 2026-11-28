@@ -120,11 +120,12 @@ function Newsfeed({ projectId, kanbanUrl, extra }: { projectId: number; kanbanUr
         <button
           onClick={refresh}
           disabled={refreshing}
-          className="text-[12px] px-2.5 py-1 rounded-md border border-[color:var(--accent)]/40 text-[color:var(--accent)] hover:bg-[--accent-soft] disabled:opacity-50 disabled:cursor-not-allowed"
+          className="text-[12px] px-2.5 py-1 rounded-md border border-[color:var(--accent)]/40 text-[color:var(--accent)] hover:bg-[--accent-soft] disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
           data-testid="story-refresh"
           title="Scan git for new merges and direct feat:/fix: commits, and generate a post for each."
         >
-          {refreshing ? '…scanning' : '↻ Refresh'}
+          <span className={`inline-block ${refreshing ? 'animate-spin' : ''}`} aria-hidden="true">↻</span>
+          {refreshing ? 'Scanning…' : 'Refresh'}
         </button>
         <label className="text-[12px] text-[--text-muted] flex items-center gap-1.5 cursor-pointer" title="Show maintenance-only posts (refactors, test fixes, CI tweaks).">
           <input
@@ -139,6 +140,16 @@ function Newsfeed({ projectId, kanbanUrl, extra }: { projectId: number; kanbanUr
         <span className="ml-auto text-[11px] text-[--text-muted] tabular-nums">{visibleFeatures.length} post{visibleFeatures.length === 1 ? '' : 's'}</span>
       </header>
 
+      {refreshing && (
+        <div
+          className="h-0.5 bg-[color:var(--accent)]/70 animate-pulse shrink-0"
+          data-testid="story-progress"
+          role="progressbar"
+          aria-label="Scanning git history for new changes"
+          aria-busy="true"
+        />
+      )}
+
       {error && (
         <div className="mx-4 mt-2 px-3 py-1.5 text-[12px] text-[--hue-orange-soft-text] bg-[--hue-orange-soft] border border-[--border] rounded-md shrink-0" role="alert">
           {error}
@@ -152,6 +163,19 @@ function Newsfeed({ projectId, kanbanUrl, extra }: { projectId: number; kanbanUr
             <br />
             <br />
             Press <span className="text-[color:var(--accent)]">↻ Refresh</span> — I&apos;ll walk the git history and write a short post for each change that shipped.
+          </div>
+        )}
+        {features.length === 0 && refreshing && (
+          <div
+            className="p-10 text-[13px] text-[--text-muted] text-center leading-relaxed max-w-md mx-auto"
+            data-testid="story-scanning"
+            aria-live="polite"
+          >
+            <span className="inline-block animate-spin mr-2 text-[color:var(--accent)]" aria-hidden="true">↻</span>
+            <span className="animate-pulse">Scanning git history for changes that shipped…</span>
+            <br />
+            <br />
+            <span className="text-[11px] opacity-70">This takes a moment on the first run — I&apos;m reading each commit and writing a short post for it.</span>
           </div>
         )}
         {groups.map((group) => (

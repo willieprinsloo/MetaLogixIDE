@@ -10,7 +10,17 @@ import type { StoryFeature } from '@shared/story-feature';
  */
 let features: StoryFeature[] = [];
 let refreshFails = false;
+// Optional gate the test can hold to observe the mid-refresh UI
+// (progress strip, scanning placeholder, disabled button) before the
+// invoke resolves and the event stream clears the refreshing flag.
+let refreshHold: Promise<void> | null = null;
+let refreshRelease: (() => void) | null = null;
 const changeListeners: Array<(ev: { projectId: number; feature: StoryFeature | null }) => void> = [];
+
+function holdRefresh(): () => void {
+  refreshHold = new Promise<void>((r) => { refreshRelease = r; });
+  return () => { refreshRelease?.(); };
+}
 
 function emitChange(ev: { projectId: number; feature: StoryFeature | null }): void {
   for (const l of changeListeners.slice()) l(ev);
@@ -52,6 +62,7 @@ vi.mock('@renderer/api', () => ({
       }
       if (ch === 'story:features:refresh') {
         if (refreshFails) throw new Error('refresh exploded');
+        if (refreshHold) await refreshHold;
         const streamed = makeFeature({ id: 'newest1', sha: 'n'.repeat(40), ts: new Date(Date.now() + 60_000).toISOString(), title: 'feat: new thing', body: '# A new thing shipped\n\nIt works.' });
         features = [streamed, ...features];
         const r = req as { projectId: number };
@@ -91,6 +102,8 @@ const { StoryTab } = await import('@renderer/components/StoryTab');
 beforeEach(() => {
   features = [];
   refreshFails = false;
+  refreshHold = null;
+  refreshRelease = null;
   changeListeners.length = 0;
 });
 afterEach(() => cleanup());
@@ -150,6 +163,27 @@ describe('StoryTab (newsfeed)', () => {
     fireEvent.click(screen.getByTestId('story-refresh'));
     const headlines = await screen.findAllByTestId('story-post-headline');
     expect(headlines[0]?.textContent).toBe('A new thing shipped');
+    await waitFor(() => expect((screen.getByTestId('story-refresh') as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it('shows a visible scanning indicator while a refresh is running (progress strip + body placeholder + disabled button)', async () => {
+    const release = holdRefresh();
+    render(<StoryTab projectId={1} />);
+    await screen.findByText(/Nothing to read yet/i);
+    fireEvent.click(screen.getByTestId('story-refresh'));
+    // While the refresh is held, the user sees a progress strip under
+    // the header and a "scanning git history" placeholder in the body,
+    // and the refresh button is disabled.
+    await screen.findByTestId('story-progress');
+    expect(screen.getByTestId('story-scanning')).toBeTruthy();
+    expect((screen.getByTestId('story-refresh') as HTMLButtonElement).disabled).toBe(true);
+    // Let the refresh complete; the indicators disappear and the new
+    // post lands in the feed.
+    release();
+    const headlines = await screen.findAllByTestId('story-post-headline');
+    expect(headlines[0]?.textContent).toBe('A new thing shipped');
+    await waitFor(() => expect(screen.queryByTestId('story-progress')).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId('story-scanning')).toBeNull());
     await waitFor(() => expect((screen.getByTestId('story-refresh') as HTMLButtonElement).disabled).toBe(false));
   });
 
